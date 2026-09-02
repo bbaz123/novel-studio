@@ -283,6 +283,9 @@ async function renderWorks() {
   const content = $('#content');
   await loadWorks();
   const works = state.works;
+  let demo = null;
+  try { demo = await api('/demo/status'); } catch (_) { /* 旧服务端无此接口时静默 */ }
+  const demoExists = !!(demo && demo.exists);
   content.innerHTML = `
     <div class="page-head">
       <div>
@@ -293,7 +296,7 @@ async function renderWorks() {
         <button class="btn" data-action="new-work">＋ 新建作品</button>
       </div>
     </div>
-    ${works.length ? '' : '<div class="empty">还没有作品，可以点击右上角“新建作品”开始创作。</div>'}
+    ${works.length ? '' : '<div class="empty">还没有作品，可以点击右上角“新建作品”开始创作，或一键导入下方示例小说体验。</div>'}
     <div class="grid cols-3">
       ${works.map((w) => `
         <div class="card work-card">
@@ -308,6 +311,21 @@ async function renderWorks() {
           </div>
         </div>
       `).join('')}
+    </div>
+    <div class="card mt-12">
+      <div class="card-head">
+        <span class="card-title">🧪 示例小说</span>
+        <span class="muted" style="font-size:12px">演示 dsh 创作内核：世界观词条激活 / 角色卡 / 长期记忆 / 事件账本 / 反 AI 腔红线</span>
+      </div>
+      <div class="muted">《雾都缝匠》：织忆师沈砚的都市奇幻（2 卷 3 线 6 章：前 4 章含正文、后 2 章留空可续写；4 张角色卡、5 条世界观词条、伏笔与状态事件）。可随时删除。</div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        ${demoExists
+          ? `
+            <button class="btn" data-action="demo-open" data-id="${demo.work_id}">打开《雾都缝匠》</button>
+            <button class="btn small secondary" data-action="demo-reinstall" title="删除后重新导入，覆盖示例数据">重新导入</button>
+            <button class="btn small danger" data-action="demo-remove">删除示例数据</button>`
+          : `<button class="btn" data-action="demo-install">✨ 一键导入示例小说《雾都缝匠》</button>`}
+      </div>
     </div>`;
 }
 
@@ -1442,7 +1460,12 @@ async function runHarnessFromMessages(messages, options = {}) {
   }).join('\n\n');
   const data = await api('/harness/run', {
     method: 'POST',
-    body: { prompt, timeout: options.timeout || 600000, model: options.model || undefined, action: options.action || 'harness' }
+    body: {
+      prompt, timeout: options.timeout || 600000, model: options.model || undefined, action: options.action || 'harness',
+      work_id: state.workId || state.work?.id || undefined,
+      chapter_id: state.currentChapterId || undefined,
+      mode: options.mode || undefined
+    }
   });
   return data.output || '';
 }
@@ -1968,6 +1991,12 @@ function aiContextBlock() {
   }
   const notes = [ctx.work_author_note, ctx.chapter_author_note].filter(Boolean).join('\n');
   if (notes) parts.push(`作者注：\n${notes}`);
+  // 创作内核注入：前文衔接 + 最近事件 + 反 AI 腔红线（若服务端已提供）
+  if (ctx.story_tail) parts.push(`前文衔接（上一节/当前节尾部）：\n${ctx.story_tail.slice(0, 1500)}`);
+  if (ctx.recent_events?.length) {
+    parts.push(`最近发生的事件：\n${ctx.recent_events.slice(0, 12).map((e) => `- [${e.kind}] ${e.summary.slice(0, 150)}`).join('\n')}`);
+  }
+  if (ctx.style_contract) parts.push(ctx.style_contract);
   return parts.join('\n\n');
 }
 
@@ -2311,7 +2340,10 @@ async function runToolbarAIWrite() {
           prompt: buildAIWritingDialoguePrompt(initial, history),
           timeout: 600000,
           model: 'deepseek-v4-flash',
-          action: 'write'
+          action: 'write',
+          work_id: state.workId || state.work?.id || undefined,
+          chapter_id: state.currentChapterId || undefined,
+          mode: 'continuation'
         }
       });
       const raw = data.output || '';
@@ -2756,6 +2788,54 @@ document.addEventListener('click', async (e) => {
           state.currentChapterId = null;
         }
         await loadWorks(true);
+        await render();
+        break;
+      }
+
+      case 'demo-install':
+      case 'demo-reinstall': {
+        const btn = actionEl;
+        const reinstall = action === 'demo-reinstall';
+        if (btn) btn.disabled = true;
+        try {
+          const r = await api('/demo/install', { method: 'POST', body: { force: !!reinstall } });
+          toast(`已导入示例《${r.title || '雾都缝匠'}》：${r.counts.chapters} 章 / ${r.counts.characters} 角色 / ${r.counts.world_entries} 世界观词条 / ${r.counts.events} 事件`, 'success');
+          state.workId = r.work_id;
+          state.loadedWorkId = null;
+          state.work = null;
+          state.view = 'overview';
+          state.currentChapterId = null;
+        } catch (e) {
+          toast('导入失败：' + e.message, 'error');
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+        await render();
+        break;
+      }
+
+      case 'demo-remove': {
+        if (!confirm('删除示例作品《雾都缝匠》？\n其卷、剧情线、章节、角色、设定、记忆与事件会全部删除。')) break;
+        await api('/demo/remove', { method: 'POST' });
+        toast('示例数据已删除', 'success');
+        if (state.workId && state.work?.title === '雾都缝匠') {
+          state.workId = null;
+          state.work = null;
+          state.loadedWorkId = null;
+          state.view = 'works';
+          state.currentChapterId = null;
+        }
+        await loadWorks(true);
+        await render();
+        break;
+      }
+
+      case 'demo-open': {
+        state.workId = Number(actionEl.dataset.id);
+        state.loadedWorkId = null;
+        state.work = null;
+        state.view = 'overview';
+        state.currentChapterId = null;
         await render();
         break;
       }

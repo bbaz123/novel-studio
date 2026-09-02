@@ -135,7 +135,7 @@ function patchDefaultModel(yaml, model) {
 /**
  * 运行一次 dsh headless 任务。
  * @param {string} prompt 给 AI 的任务描述
- * @param {{ timeout?: number, model?: string }} [options]
+ * @param {{ timeout?: number, model?: string, env?: Record<string,string> }} [options]
  * @returns {Promise<string>} 任务输出
  */
 export async function runHarnessTask(prompt, options = {}) {
@@ -163,16 +163,19 @@ export async function runHarnessTask(prompt, options = {}) {
     return await new Promise((resolve, reject) => {
       const pnpmJs = findPnpmJs();
       const taskArgs = ['dsh', '--profile', 'headless', String(prompt || '').trim()];
+      const childEnv = { ...process.env, ...(options.env || {}) };
       const child = pnpmJs
         ? spawn(process.execPath, [pnpmJs, ...taskArgs], {
             cwd: HARNESS_DIR,
             shell: false,
-            windowsHide: true
+            windowsHide: true,
+            env: childEnv
           })
         : spawn('pnpm', taskArgs, {
             cwd: HARNESS_DIR,
             shell: true,
-            windowsHide: true
+            windowsHide: true,
+            env: childEnv
           });
 
       let stdout = '';

@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS world_entries (
   content TEXT NOT NULL DEFAULT '',
   keywords TEXT NOT NULL DEFAULT '',
   is_pinned INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 50,
   position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -175,6 +176,38 @@ CREATE TABLE IF NOT EXISTS chapter_save_versions (
   content TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 故事事件账本：支撑增量记忆、伏笔/状态追踪与回滚依据。
+CREATE TABLE IF NOT EXISTS story_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL DEFAULT 'event',
+  summary TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 长期记忆版本历史：每次自动/手动更新都留快照，可回滚（git 式记忆）。
+CREATE TABLE IF NOT EXISTS memory_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'manual',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 反 AI 腔红线清单（写作风格契约）：kind = word | phrase | regex。
+CREATE TABLE IF NOT EXISTS writing_redlines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER REFERENCES works(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'phrase',
+  pattern TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // 兼容旧数据库：给已存在的表补充新增列
@@ -183,6 +216,7 @@ try { db.exec(`ALTER TABLE chapters ADD COLUMN author_note TEXT NOT NULL DEFAULT
 try { db.exec(`ALTER TABLE characters ADD COLUMN mes_example TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE characters ADD COLUMN tags TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE characters ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 50`); } catch (_) {}
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_volumes_work ON volumes(work_id);
@@ -198,4 +232,8 @@ CREATE INDEX IF NOT EXISTS idx_ai_error_logs_created ON ai_error_logs(created_at
 CREATE INDEX IF NOT EXISTS idx_chapter_save_versions_chapter ON chapter_save_versions(chapter_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_world_entries_work ON world_entries(work_id, position ASC);
 CREATE INDEX IF NOT EXISTS idx_creation_tasks_work ON creation_tasks(work_id);
+CREATE INDEX IF NOT EXISTS idx_story_events_work ON story_events(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_story_events_chapter ON story_events(chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_versions_work ON memory_versions(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_writing_redlines_work ON writing_redlines(work_id, created_at DESC);
 `);

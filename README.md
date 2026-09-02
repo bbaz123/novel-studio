@@ -13,6 +13,7 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 - 多部作品管理，完整层级：**作品 → 卷 → 章节 / 场景**
 - 作品列表页只展示“我的作品”，入口简洁
 - 作品支持新建、编辑简介、删除
+- 一键导入示例小说《雾都缝匠》（演示世界观词条/角色卡/长期记忆/事件账本/反 AI 腔红线），可随时删除
 
 ### 重新整理后的侧边栏
 
@@ -152,6 +153,7 @@ novel-studio/
 ├── db.js               # SQLite 初始化与建表
 ├── server.js           # HTTP 服务与 API 路由
 ├── harness.js          # DeepSeek Harness 桥接层
+├── demo-data.json      # 示例小说《雾都缝匠》演示数据（“我的作品”页一键导入，可选）
 ├── harness-plugins/    # Harness 创作插件（可选）
 ├── package.json
 ├── start-novel-studio.cmd

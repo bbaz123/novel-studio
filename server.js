@@ -106,7 +106,7 @@ const RESOURCE_CONFIG = {
   characters: { table: 'characters', order: 'name ASC', fields: ['work_id', 'name', 'identity', 'appearance', 'personality', 'background', 'status', 'avatar_color', 'mes_example', 'tags', 'system_prompt'], defaults: { identity: '', appearance: '', personality: '', background: '', status: '', avatar_color: '#8b5cf6', mes_example: '', tags: '', system_prompt: '' } },
   relations: { table: 'character_relations', order: 'id ASC', fields: ['work_id', 'from_character_id', 'to_character_id', 'relation', 'description'], defaults: { relation: '', description: '' } },
   plotline_characters: { table: 'plotline_characters', order: 'id ASC', fields: ['work_id', 'plotline_id', 'character_id', 'status', 'notes'], defaults: { status: '', notes: '' } },
-  world_entries: { table: 'world_entries', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'content', 'keywords', 'is_pinned', 'position'], defaults: { content: '', keywords: '', is_pinned: 0, position: 0 } },
+  world_entries: { table: 'world_entries', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'content', 'keywords', 'is_pinned', 'priority', 'position'], defaults: { content: '', keywords: '', is_pinned: 0, priority: 50, position: 0 } },
   creation_tasks: { table: 'creation_tasks', order: 'id DESC', fields: ['work_id', 'prompt', 'status', 'stages_json', 'result_json', 'error'], defaults: { prompt: '', status: 'running', stages_json: '{}', result_json: '{}', error: '' } },
   api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', model: 'deepseek-chat', temperature: 0.8, max_tokens: 4096 } }
 };
@@ -114,7 +114,7 @@ const RESOURCE_CONFIG = {
 const NUMERIC_FIELDS = new Set([
   'work_id', 'volume_id', 'plotline_id', 'parent_id', 'category_id',
   'from_character_id', 'to_character_id', 'character_id', 'position',
-  'is_pinned', 'temperature', 'max_tokens'
+  'is_pinned', 'priority', 'temperature', 'max_tokens'
 ]);
 
 function getList(resource, where) {
@@ -395,13 +395,33 @@ function getStoryMemory(workId) {
   return row?.summary || '';
 }
 
-// 保存作品的长期记忆摘要。
-function saveStoryMemory(workId, summary) {
-  prepare(`
-    INSERT INTO story_memories (work_id, summary, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(work_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at
-  `).run(workId, asString(summary), now());
+// 保存作品的长期记忆摘要（git 式：每次变更自动写入 memory_versions 快照，可回滚）。
+// 兼容旧调用 saveStoryMemory(workId, summary)；新调用可传 { source, note }。
+function saveStoryMemory(workId, summary, opts = {}) {
+  summary = asString(summary);
+  const prev = getStoryMemory(workId);
+  if (prev === summary && summary !== '') {
+    return { unchanged: true, work_id: workId, summary };
+  }
+  const source = asString(opts.source, 'manual') || 'manual';
+  const note = asString(opts.note, '');
+  db.exec('BEGIN');
+  try {
+    prepare(`
+      INSERT INTO story_memories (work_id, summary, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(work_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at
+    `).run(workId, summary, now());
+    const info = prepare(`
+      INSERT INTO memory_versions (work_id, summary, source, note)
+      VALUES (?, ?, ?, ?)
+    `).run(workId, summary, source, note);
+    db.exec('COMMIT');
+    return { ok: true, work_id: workId, summary, version_id: Number(info.lastInsertRowid), source };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
 
 // 自动压缩作品内容为长期记忆摘要。
@@ -460,15 +480,499 @@ function buildAIContext(chapterId) {
     .replace(/\{characters\}/g, charNames)
     .replace(/\{summary\}/g, chapter.summary || '');
 
+  // 创作内核增强：前文衔接尾巴、最近事件、写作红线（供提示词注入/界面预览）
+  const allChap = prepare('SELECT id, title, position FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(work.id);
+  const pos = allChap.findIndex((c) => c.id === chapter.id);
+  const prevChapRow = pos > 0 ? allChap[pos - 1] : null;
+  let storyTail = '';
+  if (prevChapRow) {
+    const pc = prepare('SELECT content FROM chapters WHERE id = ?').get(prevChapRow.id);
+    if (pc) storyTail = plainText(pc.content || '').slice(-1200);
+  }
+  if (!storyTail) storyTail = plainText(chapter.content || '').slice(-1200);
+  const recentEvents = listStoryEvents(work.id, 12);
+  const redlineRows = listRedlines(work.id);
+
   return {
     work: { id: work.id, title: work.title },
     chapter: { id: chapter.id, title: chapter.title, summary: chapter.summary },
+    prev_chapter: prevChapRow ? { id: prevChapRow.id, title: prevChapRow.title } : null,
     characters,
     world_entries: worldEntries,
     story_memory: getStoryMemory(work.id),
+    story_tail: storyTail,
+    recent_events: recentEvents.map((e) => ({ kind: e.kind, summary: e.summary, chapter_id: e.chapter_id, created_at: e.created_at })),
+    redlines: redlineRows.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note })),
+    style_contract: renderStyleContract(redlineRows),
     work_author_note: replaceVars(work.author_note || ''),
     chapter_author_note: replaceVars(chapter.author_note || '')
   };
+}
+
+// ---------- 创作内核：写作红线 / 事件账本 / 记忆版本 / 场景上下文 ----------
+// 供 dsh 创作插件与后续 UI 调用；生成前取上下文、生成后扫描红线、落事件与记忆快照。
+
+const DEFAULT_REDLINES = [
+  { kind: 'word', pattern: '微微', note: 'AI 高频微动作词，尤其“微微一愣/微微一笑”连击，慎用' },
+  { kind: 'word', pattern: '缓缓', note: '慢动作万能前缀，易显拖沓' },
+  { kind: 'word', pattern: '不禁', note: '典型 AI 腔触发词，慎用' },
+  { kind: 'word', pattern: '仿佛', note: '比喻万能引子，一个段落内至多一次' },
+  { kind: 'word', pattern: '眸', note: '眸/眼眸/眼底堆砌是 AI 腔重灾区' },
+  { kind: 'word', pattern: '嘴角', note: '嘴角微表情模板（勾起/上扬/弧度）' },
+  { kind: 'word', pattern: '一抹', note: '“一抹 X”万能量词（神色/笑意/弧度）' },
+  { kind: 'word', pattern: '不由得', note: 'AI 腔触发词，慎用' },
+  { kind: 'word', pattern: '心中一动', note: '情绪套话' },
+  { kind: 'word', pattern: '心念电转', note: '情绪套话' },
+  { kind: 'word', pattern: '波澜不惊', note: '装逼套话' },
+  { kind: 'word', pattern: '深不可测', note: '装逼套话' },
+  { kind: 'word', pattern: '不怒自威', note: '装逼套话' },
+  { kind: 'word', pattern: '眼神一凝', note: '反应套话' },
+  { kind: 'word', pattern: '沉声道', note: '对话标签套话，改用动作/语气代替' },
+  { kind: 'word', pattern: '冷冷道', note: '对话标签套话' },
+  { kind: 'word', pattern: '冷哼一声', note: '高频反应模板' },
+  { kind: 'word', pattern: '空气仿佛凝固', note: '场景停顿模板句' },
+  { kind: 'word', pattern: '时间仿佛静止', note: '场景停顿模板句' },
+  { kind: 'phrase', pattern: '眼中闪过', note: '“眼中闪过+神色”万能反应句' },
+  { kind: 'phrase', pattern: '眼底掠过', note: '同上' },
+  { kind: 'phrase', pattern: '脸上浮现', note: '表情万能句' },
+  { kind: 'phrase', pattern: '嘴角勾起一抹', note: '笑容模板句' },
+  { kind: 'phrase', pattern: '在这一刻', note: '时间放大模板，慎用' },
+  { kind: 'phrase', pattern: '一股强大的气势', note: '气势万能句' },
+  { kind: 'phrase', pattern: '一股恐怖的', note: '威压模板' },
+  { kind: 'regex', pattern: '(?:眼中|眼底|眸中).{0,8}(?:闪过|掠过|闪过一丝)', note: '“眼中闪过 X”家族' },
+  { kind: 'regex', pattern: '浑身一震', note: '“X 浑身一震”型反应模板' }
+];
+
+const VALID_REDLINE_KINDS = new Set(['word', 'phrase', 'regex']);
+
+// 首次启动时写入默认红线（work_id 为空 = 全局默认）。
+function seedRedlinesIfEmpty() {
+  const row = prepare('SELECT COUNT(*) AS c FROM writing_redlines WHERE work_id IS NULL').get();
+  if (Number(row.c) > 0) return;
+  db.exec('BEGIN');
+  try {
+    const stmt = prepare('INSERT INTO writing_redlines (work_id, kind, pattern, note) VALUES (NULL, ?, ?, ?)');
+    for (const r of DEFAULT_REDLINES) stmt.run(r.kind, r.pattern, r.note || '');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+// 读取红线：全局默认 + 作品级覆盖（作品级存在时优先于同名全局项）。
+function listRedlines(workId) {
+  const globalRows = prepare('SELECT * FROM writing_redlines WHERE work_id IS NULL ORDER BY id ASC').all();
+  const workRows = workId ? prepare('SELECT * FROM writing_redlines WHERE work_id = ? ORDER BY id ASC').all(workId) : [];
+  const byKey = new Map(globalRows.filter((r) => Number(r.enabled)).map((r) => [`${r.kind}:${r.pattern}`, r]));
+  for (const r of workRows) {
+    const key = `${r.kind}:${r.pattern}`;
+    if (Number(r.enabled)) byKey.set(key, r);
+    else byKey.delete(key);
+  }
+  return [...byKey.values()];
+}
+
+// 全量替换某一 scope 的红线（workId 为空则替换全局默认）。
+function replaceRedlines(workId, entries) {
+  if (!Array.isArray(entries)) throw new Error('entries 必须是数组');
+  db.exec('BEGIN');
+  try {
+    prepare('DELETE FROM writing_redlines WHERE work_id IS ?').run(workId ?? null);
+    const stmt = prepare('INSERT INTO writing_redlines (work_id, kind, pattern, note, enabled) VALUES (?, ?, ?, ?, ?)');
+    for (const e of entries) {
+      const kind = asString(e.kind, 'phrase');
+      if (!VALID_REDLINE_KINDS.has(kind)) throw new Error(`未知红线类型：${kind}`);
+      stmt.run(workId ?? null, kind, asString(e.pattern, ''), asString(e.note, ''), e.enabled === false ? 0 : 1);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return listRedlines(workId);
+}
+
+// 把红线渲染成给模型看的“写作风格契约”文本。
+function renderStyleContract(rows) {
+  const enabled = rows.filter((r) => Number(r.enabled));
+  if (!enabled.length) return '（未启用任何红线规则）';
+  const lines = enabled.map((r) => {
+    const kindName = r.kind === 'regex' ? '句式模式' : (r.kind === 'word' ? '慎用词' : '慎用句式');
+    return `- [${kindName}] ${r.pattern}${r.note ? `（${r.note}）` : ''}`;
+  });
+  return [
+    '【写作风格红线 · 反 AI 腔】请在写作时主动避免以下词句；若确需使用，每次出现前先问自己是否有更具体、更有画面感的写法：',
+    ...lines
+  ].join('\n');
+}
+
+// 在文本中确定性扫描红线命中（用于生成后自查）。
+function scanAgainstRedlines(rows, text) {
+  const hits = [];
+  const clean = String(text || '');
+  if (!clean) return hits;
+  for (const r of rows) {
+    if (!Number(r.enabled)) continue;
+    const pattern = String(r.pattern || '');
+    if (!pattern) continue;
+    let count = 0;
+    let sample = '';
+    try {
+      if (r.kind === 'regex') {
+        const re = new RegExp(pattern, 'g');
+        const found = clean.match(re) || [];
+        count = found.length;
+        sample = found[0] || '';
+      } else {
+        let idx = -1;
+        while ((idx = clean.indexOf(pattern, idx + 1)) !== -1) {
+          count += 1;
+          if (!sample) sample = clean.slice(Math.max(0, idx - 14), idx + pattern.length + 14);
+        }
+      }
+    } catch (_) { /* 非法正则跳过 */ }
+    if (count > 0) hits.push({ kind: r.kind, pattern, note: r.note || '', count, sample: sample || '' });
+  }
+  return hits.sort((a, b) => b.count - a.count);
+}
+
+// ---------- 故事事件账本 ----------
+function addStoryEvent(workId, { chapterId, kind = 'event', summary = '', payload = {} }) {
+  const info = prepare(`
+    INSERT INTO story_events (work_id, chapter_id, kind, summary, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(workId, chapterId || null, asString(kind, 'event'), asString(summary, ''), JSON.stringify(payload || {}));
+  return Number(info.lastInsertRowid);
+}
+
+function listStoryEvents(workId, limit = 40) {
+  return prepare(`
+    SELECT * FROM story_events WHERE work_id = ?
+    ORDER BY created_at DESC, id DESC LIMIT ?
+  `).all(workId, limit).map((e) => {
+    let payload = {};
+    try { payload = JSON.parse(e.payload || '{}'); } catch (_) {}
+    return { id: e.id, chapter_id: e.chapter_id, kind: e.kind, summary: e.summary, payload, created_at: e.created_at };
+  });
+}
+
+// ---------- 记忆版本 ----------
+function listMemoryVersions(workId) {
+  return prepare('SELECT id, work_id, summary, source, note, created_at FROM memory_versions WHERE work_id = ? ORDER BY created_at DESC, id DESC LIMIT 100').all(workId);
+}
+
+// 回滚到指定版本：把该版本写回当前生效摘要，并记一条 rollback 快照。
+function rollbackMemory(versionId) {
+  const version = prepare('SELECT * FROM memory_versions WHERE id = ?').get(versionId);
+  if (!version) throw new Error('记忆版本不存在');
+  const result = saveStoryMemory(version.work_id, version.summary, { source: 'rollback', note: `回滚到版本 #${version.id}` });
+  return { ok: true, work_id: version.work_id, summary: result.summary, version_id: result.version_id };
+}
+
+// ---------- 场景化创作上下文（ST 式装配） ----------
+// mode: full（默认，整章代写/分析）| continuation（接龙，重视前文尾巴）| fragment（片段补写）
+function buildNovelContext(workId, chapterId, mode = 'full') {
+  const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
+  if (!work) return null;
+
+  const allChapters = prepare('SELECT id, work_id, volume_id, plotline_id, parent_id, title, summary, position, created_at, updated_at FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const volumes = prepare('SELECT * FROM volumes WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const plotlines = prepare('SELECT * FROM plotlines WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const allCharacters = prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
+  const nameById = new Map(allCharacters.map((c) => [c.id, c.name]));
+
+  let chapter = null;
+  let chapterIndex = -1;
+  if (chapterId) {
+    chapterIndex = allChapters.findIndex((c) => c.id === Number(chapterId));
+    chapter = chapterIndex >= 0 ? allChapters[chapterIndex] : prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) || null;
+  }
+  const prevChapter = chapterIndex > 0 ? allChapters[chapterIndex - 1] : null;
+  const nextChapter = chapterIndex >= 0 && chapterIndex < allChapters.length - 1 ? allChapters[chapterIndex + 1] : null;
+  if (chapter && !chapter.content) {
+    const full = prepare('SELECT content FROM chapters WHERE id = ?').get(chapter.id);
+    chapter = { ...chapter, content: full?.content || '' };
+  }
+
+  const corpus = [
+    work.title, work.description,
+    chapter?.title || '', chapter?.summary || '', plainText(chapter?.content || '').slice(0, 3000),
+    prevChapter?.title || '', prevChapter?.summary || ''
+  ].join(' ').toLowerCase();
+
+  // 出场角色：当前章节剧情线关联 + 正文/摘要命中 + 兜底前 8 位；去重、限量。
+  const sceneCharIds = new Set();
+  if (chapter?.plotline_id) {
+    const rows = prepare('SELECT character_id FROM plotline_characters WHERE plotline_id = ? ORDER BY id ASC').all(chapter.plotline_id);
+    rows.forEach((r) => sceneCharIds.add(Number(r.character_id)));
+  }
+  for (const c of allCharacters) {
+    if (c.name && corpus.includes(c.name.toLowerCase())) sceneCharIds.add(c.id);
+  }
+  if (!sceneCharIds.size) {
+    allCharacters.slice(0, 8).forEach((c) => sceneCharIds.add(c.id));
+  }
+  const sceneCharacters = allCharacters.filter((c) => sceneCharIds.has(c.id)).slice(0, 12);
+  const charCardsText = sceneCharacters.map((c) => {
+    const parts = [
+      `【${c.name}】`,
+      c.identity ? `身份：${c.identity}` : '',
+      c.appearance ? `外貌：${c.appearance}` : '',
+      c.personality ? `性格：${c.personality}` : '',
+      c.background ? `背景：${(c.background || '').slice(0, 500)}` : '',
+      c.status ? `当前状态：${c.status}` : '',
+      c.tags ? `标签：${c.tags}` : ''
+    ].filter(Boolean).join('\n');
+    let extra = '';
+    if (c.mes_example) extra += `\n对话示例（学习其口吻）：${c.mes_example.slice(0, 400)}`;
+    if (c.system_prompt) extra += `\n角色系统提示：${c.system_prompt.slice(0, 400)}`;
+    return parts + extra;
+  }).join('\n\n');
+
+  // 人物关系（仅出场角色之间）
+  const sceneIdList = sceneCharacters.map((c) => c.id);
+  const relations = sceneIdList.length > 1
+    ? prepare(`
+        SELECT * FROM character_relations WHERE work_id = ? AND
+        from_character_id IN (${sceneIdList.map(() => '?').join(',')}) AND to_character_id IN (${sceneIdList.map(() => '?').join(',')})
+      `).all(workId, ...sceneIdList, ...sceneIdList)
+    : [];
+  const relationsText = relations.length
+    ? relations.map((r) => `${nameById.get(r.from_character_id) || '?'} —${r.relation || '关系'}→ ${nameById.get(r.to_character_id) || '?'}${r.description ? `（${r.description.slice(0, 160)}）` : ''}`).join('\n')
+    : '';
+
+  // 世界观词条：固定(pinned)优先 + 关键词命中，按 priority 降序限量截断。
+  const allEntries = prepare('SELECT * FROM world_entries WHERE work_id = ? ORDER BY is_pinned DESC, priority DESC, position ASC, id ASC').all(workId);
+  const worldEntries = [];
+  for (const entry of allEntries) {
+    if (worldEntries.length >= 30) break;
+    const pinned = Number(entry.is_pinned) === 1;
+    let matched = pinned;
+    if (!matched) {
+      const keywords = String(entry.keywords || '').split(/[,，、\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
+      matched = keywords.some((k) => corpus.includes(k));
+    }
+    if (matched) worldEntries.push(entry);
+  }
+  const worldEntriesText = worldEntries.map((w) => `【${w.title}】${String(w.content || '').slice(0, 600)}`).join('\n');
+
+  // 大纲层：卷 + 剧情线 + 章节标题/摘要（长作品只给前 30 + 最近 30，中间省略计数）
+  const outlineLines = [];
+  for (const v of volumes) outlineLines.push(`【卷】${v.title}${v.summary ? `：${v.summary.slice(0, 200)}` : ''}`);
+  for (const p of plotlines) outlineLines.push(`【${p.kind === 'side' ? '支线' : '主线'}】${p.title}${p.summary ? `：${p.summary.slice(0, 200)}` : ''}`);
+  const total = allChapters.length;
+  const skip = total > 80 ? total - 40 - 30 : -1;
+  const shown = allChapters.filter((c, i) => skip < 0 || i < 30 || i >= skip || c.id === chapter?.id);
+  if (skip >= 0) outlineLines.push(`（中间 ${total - 40 - 30} 章已省略，仅列最近进展）`);
+  for (const c of shown) {
+    const marker = c.id === chapter?.id ? '★' : '';
+    outlineLines.push(`第${c.position + 1}节${marker} ${c.title}${c.summary ? `：${c.summary.slice(0, 120)}` : ''}`);
+  }
+  const outlineText = outlineLines.join('\n');
+
+  const storyMemory = getStoryMemory(workId);
+  const events = listStoryEvents(workId, 30);
+  const eventsText = events.length
+    ? events.map((e, i) => `${events.length - i}. [${e.kind}] ${e.summary.slice(0, 200)}`).join('\n')
+    : '（暂无事件账本记录）';
+
+  // 前文尾巴：接龙模式取当前章节尾部；新章节/片段取上一章尾部。
+  const currentTail = chapter ? plainText(chapter.content || '').slice(-4000) : '';
+  const prevFullRow = prevChapter ? prepare('SELECT content FROM chapters WHERE id = ?').get(prevChapter.id) : null;
+  const prevTailText = prevFullRow ? plainText(prevFullRow.content || '').slice(-1500) : '';
+  let storyTail = '';
+  if (mode === 'continuation') {
+    storyTail = currentTail;
+  } else if (mode === 'fragment') {
+    storyTail = currentTail || prevTailText;
+  } else {
+    storyTail = prevTailText || (currentTail ? currentTail.slice(-1500) : '');
+  }
+  if (!storyTail) storyTail = prevTailText || (chapter ? plainText(chapter.content || '').slice(-800) : '');
+
+  const redlines = listRedlines(workId);
+  const styleContract = renderStyleContract(redlines);
+
+  const section = (label, text) => (text ? `【${label}】\n${text}` : `【${label}】\n（无）`);
+
+  const assembled = [
+    section('作品', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}`),
+    section('卷/剧情线/章节进度（大纲）', outlineText),
+    section('长期记忆（已发生的故事摘要）', storyMemory || '（无，可建议压缩一次）'),
+    section('最近事件（事件账本）', eventsText),
+    section('当前场景', chapter ? `第${chapter.position + 1}节 ${chapter.title}${chapter.summary ? `\n大纲摘要：${chapter.summary}` : ''}${chapter.author_note ? `\n作者注：${chapter.author_note}` : ''}` : '（未指定具体章节）'),
+    section('前文衔接', storyTail),
+    section('出场角色卡', charCardsText),
+    relationsText ? section('人物关系', relationsText) : '',
+    section('激活的世界观设定（优先级排列）', worldEntriesText),
+    section('写作风格红线', styleContract)
+  ].filter(Boolean).join('\n\n');
+
+  return {
+    ok: true,
+    mode,
+    work: { id: work.id, title: work.title },
+    chapter: chapter ? { id: chapter.id, title: chapter.title, summary: chapter.summary, position: chapter.position, volume_id: chapter.volume_id, plotline_id: chapter.plotline_id } : null,
+    prev_chapter: prevChapter ? { id: prevChapter.id, title: prevChapter.title } : null,
+    next_chapter: nextChapter ? { id: nextChapter.id, title: nextChapter.title } : null,
+    story_memory: storyMemory,
+    events,
+    scene_characters: sceneCharacters.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status })),
+    scene_character_ids: sceneIdList,
+    world_entries: worldEntries.map((w) => ({ id: w.id, title: w.title, pinned: Number(w.is_pinned) === 1, priority: Number(w.priority ?? 50), keywords: w.keywords, content_preview: String(w.content || '').slice(0, 600) })),
+    relations: relations.map((r) => ({ from: nameById.get(r.from_character_id) || null, to: nameById.get(r.to_character_id) || null, relation: r.relation, description: r.description })),
+    redlines: redlines.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note })),
+    style_contract: styleContract,
+    assembled
+  };
+}
+
+// 记忆增量更新辅助：在“已有摘要”基础上合并一段“本批次进展”，返回新的摘要文本。
+// 只负责文本拼接约定，真正的语义压缩由模型完成；本函数供插件生成可写入的 summary。
+function mergeMemoryDraft(prevSummary, deltaEventsText) {
+  const base = (prevSummary || '').trim();
+  const delta = (deltaEventsText || '').trim();
+  if (!delta) return base;
+  if (!base) return delta;
+  // 新事件置顶、旧摘要压缩保留——模型侧负责进一步精简，这里只做安全合并。
+  return `${delta}\n\n【此前进度】${base}`;
+}
+
+// ---------- 示例小说一键导入（演示数据 demo-data.json） ----------
+// 与脚本版 demo/seed-demo.js 等价，走数据库直写；UI 入口在“我的作品”页。
+const DEMO_TITLE = '雾都缝匠';
+let _demoData = null;
+
+function demoDataJson() {
+  if (_demoData === null) {
+    try {
+      _demoData = JSON.parse(fs.readFileSync(path.join(__dirname, 'demo-data.json'), 'utf8'));
+    } catch (e) {
+      _demoData = { err: `${e && e.code ? e.code + ': ' : ''}${(e && e.message) || e}` }; // 文件缺失/损坏时给出可读错误
+    }
+  }
+  return _demoData;
+}
+
+// 段落 → 简单 HTML（适配富文本编辑器；已含标签的原样保留）
+function demoToHtml(text) {
+  if (!text) return '';
+  if (/^</.test(String(text).trim())) return String(text).trim();
+  return String(text)
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`)
+    .join('');
+}
+
+function demoFindWork(title) {
+  return prepare('SELECT id FROM works WHERE title = ?').get(title) || null;
+}
+
+function deleteDemoWork(title) {
+  const row = demoFindWork(title);
+  if (!row) return false;
+  deleteRow('works', row.id);
+  return true;
+}
+
+// 导入示例作品；force=true 时先删除同名作品再重建。
+function installDemo(force) {
+  const data = demoDataJson();
+  if (!data) throw new Error('缺少演示数据文件 demo-data.json（请与 server.js 放在同一目录）');
+  if (data.err) throw new Error(`演示数据读取失败：${data.err}`);
+  const title = asString(data.work.title, DEMO_TITLE);
+  if (demoFindWork(title)) {
+    if (!force) throw new Error(`示例《${title}》已存在；如需覆盖请用重新导入`);
+    deleteDemoWork(title);
+  }
+
+  const idMap = { volume: new Map(), plotline: new Map(), category: new Map(), character: new Map(), chapter: new Map() };
+
+  db.exec('BEGIN');
+  try {
+    const workId = insertRow('works', { title, description: asString(data.work.description), author_note: asString(data.work.author_note) });
+
+    (data.volumes || []).forEach((v, i) => {
+      idMap.volume.set(v.title, insertRow('volumes', { work_id: workId, title: asString(v.title, `卷${i + 1}`), summary: asString(v.summary), position: i }));
+    });
+    (data.plotlines || []).forEach((p, i) => {
+      idMap.plotline.set(p.title, insertRow('plotlines', { work_id: workId, title: asString(p.title, `线${i + 1}`), kind: p.kind === 'side' ? 'side' : 'main', summary: asString(p.summary), position: i }));
+    });
+    (data.categories || []).forEach((c, i) => {
+      idMap.category.set(c.name, insertRow('categories', { work_id: workId, name: asString(c.name, `分类${i + 1}`), color: asString(c.color, '#6366f1'), position: i }));
+    });
+    (data.terms || []).forEach((t) => {
+      insertRow('terms', { work_id: workId, category_id: idMap.category.get(t.category) ?? null, title: asString(t.title, '词条'), content: asString(t.content), tags: asString(t.tags) });
+    });
+    (data.characters || []).forEach((c) => {
+      idMap.character.set(c.name, insertRow('characters', {
+        work_id: workId, name: asString(c.name, '角色'),
+        identity: asString(c.identity), appearance: asString(c.appearance), personality: asString(c.personality),
+        background: asString(c.background), status: asString(c.status), avatar_color: asString(c.avatar_color, '#8b5cf6'),
+        mes_example: asString(c.mes_example), tags: asString(c.tags), system_prompt: asString(c.system_prompt)
+      }));
+    });
+    (data.relations || []).forEach((r) => {
+      const fromId = idMap.character.get(r.from);
+      const toId = idMap.character.get(r.to);
+      if (!fromId || !toId) return;
+      insertRow('relations', { work_id: workId, from_character_id: fromId, to_character_id: toId, relation: asString(r.relation), description: asString(r.description) });
+    });
+    (data.worldEntries || []).forEach((w, i) => {
+      insertRow('world_entries', { work_id: workId, title: asString(w.title, `设定${i + 1}`), content: asString(w.content), keywords: asString(w.keywords), is_pinned: Number(w.is_pinned) ? 1 : 0, priority: Number(w.priority) || 50, position: i });
+    });
+    (data.plotlineCharacters || []).forEach((pc) => {
+      const cId = idMap.character.get(pc.character);
+      const pId = idMap.plotline.get(pc.plotline);
+      if (!cId || !pId) return;
+      insertRow('plotline_characters', { work_id: workId, plotline_id: pId, character_id: cId, status: asString(pc.status), notes: asString(pc.notes) });
+    });
+    (data.chapters || []).forEach((ch, i) => {
+      const id = insertRow('chapters', {
+        work_id: workId,
+        volume_id: idMap.volume.get(ch.volume) ?? null,
+        plotline_id: idMap.plotline.get(ch.plotline) ?? null,
+        parent_id: null,
+        title: asString(ch.title, `第${i + 1}节`),
+        summary: asString(ch.summary),
+        content: demoToHtml(ch.content),
+        position: i
+      });
+      idMap.chapter.set(ch.title, id);
+    });
+    db.exec('COMMIT');
+
+    // 长期记忆（新作品无旧记忆，直接写入一次并留快照）
+    if (data.memory && asString(data.memory.summary)) {
+      saveStoryMemory(workId, asString(data.memory.summary), { source: asString(data.memory.source, 'manual') || 'manual', note: asString(data.memory.note, '示例导入') });
+    }
+    // 事件账本
+    let eventCount = 0;
+    (data.events || []).forEach((e) => {
+      addStoryEvent(workId, { chapterId: idMap.chapter.get(e.chapter) ?? null, kind: asString(e.kind, 'event'), summary: asString(e.summary), payload: e.payload || {} });
+      eventCount += 1;
+    });
+
+    return {
+      work_id: workId, title,
+      counts: {
+        volumes: (data.volumes || []).length,
+        plotlines: (data.plotlines || []).length,
+        categories: (data.categories || []).length,
+        terms: (data.terms || []).length,
+        characters: (data.characters || []).length,
+        world_entries: (data.worldEntries || []).length,
+        chapters: (data.chapters || []).length,
+        events: eventCount
+      }
+    };
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* 事务可能未开始 */ }
+    throw e;
+  }
 }
 
 // ---------- AI auto-create novel ----------
@@ -715,6 +1219,25 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, stats);
   }
 
+  // 示例小说演示数据：一键导入/删除（UI 在“我的作品”页）
+  if (resource === 'demo' && method === 'GET' && segments[2] === 'status') {
+    const row = demoFindWork(DEMO_TITLE);
+    return sendJSON(res, 200, { ok: true, exists: !!row, title: DEMO_TITLE, work_id: row ? row.id : null });
+  }
+  if (resource === 'demo' && method === 'POST' && segments[2] === 'install') {
+    const body = await readBody(req);
+    try {
+      const result = installDemo(body.force === true);
+      return sendJSON(res, 201, { ok: true, ...result });
+    } catch (e) {
+      return sendError(res, 409, e.message);
+    }
+  }
+  if (resource === 'demo' && method === 'POST' && segments[2] === 'remove') {
+    const removed = deleteDemoWork(DEMO_TITLE);
+    return sendJSON(res, 200, { ok: true, removed });
+  }
+
   // AI 上下文：角色卡 / 世界观 / 作者注
   if (resource === 'ai_context' && method === 'GET') {
     const chapterId = Number(query.chapter_id);
@@ -739,14 +1262,87 @@ async function handleAPI(req, res, pathname, query) {
   if (resource === 'story_memory' && method === 'GET') {
     const workId = Number(query.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (segments[2] === 'versions') {
+      return sendJSON(res, 200, { work_id: workId, versions: listMemoryVersions(workId) });
+    }
     return sendJSON(res, 200, { work_id: workId, summary: getStoryMemory(workId) });
+  }
+  if (resource === 'story_memory' && method === 'POST' && segments[2] === 'rollback') {
+    const body = await readBody(req);
+    const versionId = Number(body.version_id);
+    if (!versionId) return sendError(res, 400, '缺少 version_id');
+    try {
+      const result = rollbackMemory(versionId);
+      return sendJSON(res, 200, { ok: true, ...result });
+    } catch (e) {
+      return sendError(res, 404, e.message);
+    }
   }
   if (resource === 'story_memory' && method === 'PUT') {
     const body = await readBody(req);
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
-    saveStoryMemory(workId, body.summary || '');
-    return sendJSON(res, 200, { ok: true, work_id: workId, summary: body.summary || '' });
+    // summary 直接提交；或 delta 增量：与当前摘要做安全拼接（语义压缩由调用方模型完成）。
+    let summary = asString(body.summary, '');
+    if (!summary && body.delta) {
+      summary = mergeMemoryDraft(getStoryMemory(workId), asString(body.delta, ''));
+    }
+    const result = saveStoryMemory(workId, summary, {
+      source: body.source || 'manual',
+      note: body.note || ''
+    });
+    return sendJSON(res, 200, { ...result, work_id: workId });
+  }
+
+  // ---------- Novel Studio 创作内核（供 dsh 插件 / 后台自动化调用） ----------
+  if (resource === 'novel' && segments[2] === 'ping' && method === 'GET') {
+    return sendJSON(res, 200, { ok: true, service: 'novel-studio', engine: 'novel-core', port: PORT });
+  }
+  if (resource === 'novel' && segments[2] === 'context' && method === 'GET') {
+    const workId = Number(query.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    const chapterId = Number(query.chapter_id) || null;
+    const mode = asString(query.mode, 'full');
+    const ctx = buildNovelContext(workId, chapterId, mode);
+    if (!ctx) return sendError(res, 404, '作品不存在');
+    return sendJSON(res, 200, ctx);
+  }
+  if (resource === 'novel' && segments[2] === 'redlines' && method === 'GET') {
+    const workId = Number(query.work_id) || null;
+    return sendJSON(res, 200, { work_id: workId, redlines: listRedlines(workId) });
+  }
+  if (resource === 'novel' && segments[2] === 'redlines' && method === 'PUT') {
+    const body = await readBody(req);
+    const workId = Number(body.work_id) || null;
+    try {
+      const redlines = replaceRedlines(workId, body.entries || []);
+      return sendJSON(res, 200, { ok: true, work_id: workId, redlines });
+    } catch (e) {
+      return sendError(res, 400, e.message);
+    }
+  }
+  if (resource === 'novel' && segments[2] === 'scan' && method === 'POST') {
+    const body = await readBody(req);
+    const workId = Number(body.work_id) || null;
+    const hits = scanAgainstRedlines(listRedlines(workId), asString(body.text, ''));
+    return sendJSON(res, 200, { ok: true, work_id: workId, total: hits.reduce((s, h) => s + h.count, 0), hits });
+  }
+  if (resource === 'novel' && segments[2] === 'events' && method === 'GET') {
+    const workId = Number(query.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    return sendJSON(res, 200, { work_id: workId, events: listStoryEvents(workId, Number(query.limit) || 40) });
+  }
+  if (resource === 'novel' && segments[2] === 'events' && method === 'POST') {
+    const body = await readBody(req);
+    const workId = Number(body.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    const id = addStoryEvent(workId, {
+      chapterId: Number(body.chapter_id) || null,
+      kind: asString(body.kind, 'event'),
+      summary: asString(body.summary, ''),
+      payload: body.payload || {}
+    });
+    return sendJSON(res, 201, { ok: true, id, work_id: workId });
   }
 
   // DeepSeek Harness 桥接
@@ -762,8 +1358,20 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     if (!body.prompt || !String(body.prompt).trim()) return sendError(res, 400, '缺少 prompt');
     try {
-      const output = await runHarnessTask(body.prompt, { timeout: body.timeout || undefined, model: body.model || undefined });
-      return sendJSON(res, 200, { ok: true, output });
+      const env = { NOVELSTUDIO_BASE_URL: `http://127.0.0.1:${PORT}` };
+      if (body.work_id) env.NOVELSTUDIO_WORK_ID = String(body.work_id);
+      if (body.chapter_id) env.NOVELSTUDIO_CHAPTER_ID = String(body.chapter_id);
+      if (body.mode) env.NOVELSTUDIO_MODE = String(body.mode);
+      const output = await runHarnessTask(body.prompt, {
+        timeout: body.timeout || undefined,
+        model: body.model || undefined,
+        env
+      });
+      // 生成后确定性红线扫描（反 AI 腔自检），随结果一起返回，不阻塞正文。
+      const redlineRows = listRedlines(Number(body.work_id) || null);
+      const scanHits = scanAgainstRedlines(redlineRows, output);
+      const scan = { enabled: redlineRows.length > 0, total: scanHits.reduce((s, h) => s + h.count, 0), hits: scanHits.slice(0, 50) };
+      return sendJSON(res, 200, { ok: true, output, scan });
     } catch (e) {
       logAIError(body.action || 'harness', e, '/api/harness/run');
       return sendError(res, 502, e.message);
@@ -953,6 +1561,9 @@ function serveStatic(req, res, pathname) {
     }
   });
 }
+
+// 首次启动写入默认红线清单（幂等）
+seedRedlinesIfEmpty();
 
 const server = http.createServer(async (req, res) => {
   const { pathname, query } = getPath(req);
