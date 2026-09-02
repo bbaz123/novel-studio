@@ -1,0 +1,31 @@
+{
+  "name": "novel-writing",
+  "version": "0.1.0",
+  "description": "Novel Studio 小说创作插件包：定义世界观、角色、大纲、正文、审查等创作工具。",
+  "tools": [
+    {
+      "name": "story_architect",
+      "description": "根据创作需求生成完整世界观设定，包括力量体系、势力、地理、历史、核心冲突。"
+    },
+    {
+      "name": "character_designer",
+      "description": "根据世界观和创作需求生成主要角色卡，包含姓名、身份、外貌、性格、背景、状态、对话示例。"
+    },
+    {
+      "name": "outline_planner",
+      "description": "设计分卷结构和每章大纲，支持长篇多章节规划。"
+    },
+    {
+      "name": "chapter_writer",
+      "description": "根据大纲生成章节正文草稿，支持不同创作策略和模型路由。"
+    },
+    {
+      "name": "consistency_checker",
+      "description": "检查角色、世界观、大纲和正文之间的一致性，输出修改建议。"
+    },
+    {
+      "name": "memory_compressor",
+      "description": "把已有章节和设定压缩为长期记忆摘要，用于长篇小说上下文管理。"
+    }
+  ]
+}

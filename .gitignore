@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Local database & sensitive local data
+# API keys are stored in novel.db — never upload local databases.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+
+# IDE / editor
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.swp
+*.swo
+
+# Logs / temp
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tmp/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Novel Studio · 小说创作工坊</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar" class="sidebar hidden">
+      <div class="sidebar-head">
+        <button class="icon-btn" data-action="back-works" title="返回作品列表">🏠</button>
+        <span class="sidebar-logo">📖</span>
+        <div class="sidebar-title" id="sidebar-title">Novel Studio</div>
+      </div>
+      <nav class="sidebar-nav" id="sidebar-nav">
+        <button data-view="works">📚 我的作品</button>
+        <button data-view="overview">📊 总览</button>
+        <button data-view="writing">✍️ 正文写作</button>
+        <button data-view="settings">📘 小说设定</button>
+        <button data-view="ai-board">🤖 AI创造板块</button>
+      </nav>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-btn sidebar-toggle" id="sidebar-toggle" title="切换侧栏">☰</button>
+          <span class="topbar-title" id="topbar-title">Novel Studio</span>
+        </div>
+        <div class="search-box">
+          <input type="search" id="global-search" placeholder="全局搜索设定 / 大纲 / 正文 / 角色..." autocomplete="off">
+          <div class="search-results" id="search-results" hidden></div>
+        </div>
+        <div class="topbar-right" id="topbar-right"></div>
+      </header>
+      <main id="content" class="content"></main>
+    </div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <div id="tooltip" class="tooltip" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
