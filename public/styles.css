@@ -811,6 +811,29 @@ textarea { resize: vertical; }
 .ai-context-section b { color: #c7d2fe; }
 .ai-context-section div { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
 
+/* 小说设定 AI 生成：候选项勾选列表 */
+.gen-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.gen-item-row:hover { background: var(--bg-hover); }
+.gen-item-row input { margin-top: 3px; }
+.gen-item-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
 @media (max-width: 900px) {
   .grid.cols-4 { grid-template-columns: repeat(2, 1fr); }
   .grid.cols-3 { grid-template-columns: 1fr; }

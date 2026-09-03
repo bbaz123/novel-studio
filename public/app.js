@@ -35,6 +35,10 @@ const state = {
   pendingAIInstruction: null,
   pendingAIQuestion: null,
   pendingAIFinal: null,
+  pendingGenResult: null,
+  genSelected: [],
+  genSubmit: null,
+  genContextCache: '',
   pipelinePaused: false,
   pipelineStopped: false,
   pipelineResume: null,
@@ -108,6 +112,35 @@ function toast(message, type = '') {
   setTimeout(() => el.remove(), 2600);
 }
 
+// 小说设定各实体弹窗的保存动作 → AI 生成回填类型映射。
+const GEN_FILL_KIND_BY_ACTION = {
+  'save-plotline': 'plotline',
+  'save-volume': 'volume',
+  'save-chapter': 'chapter',
+  'save-term': 'term',
+  'save-character': 'character',
+  'save-relation': 'relation',
+  'save-plotline-char': 'pstate'
+};
+
+// 在可生成实体的新建/编辑弹窗页脚自动插入「✨ AI 填充」按钮。
+function enhanceModalGenFill() {
+  const foot = $('.modal-foot');
+  if (!foot) return;
+  const saveBtn = foot.querySelector('[data-action^="save-"]');
+  if (!saveBtn) return;
+  const kind = GEN_FILL_KIND_BY_ACTION[saveBtn.dataset.action];
+  if (!kind) return;
+  if (foot.querySelector('[data-action="gen-fill"]')) return;
+  const btn = document.createElement('button');
+  btn.className = 'btn secondary';
+  btn.dataset.action = 'gen-fill';
+  btn.dataset.kind = kind;
+  btn.textContent = '✨ AI 填充';
+  btn.title = 'AI 先提问澄清后生成并回填该表单，可再修改后保存';
+  foot.insertBefore(btn, saveBtn);
+}
+
 function openModal({ title, body, footer = '', large = false, onMount } = {}) {
   const root = $('#modal-root');
   root.innerHTML = `
@@ -122,6 +155,7 @@ function openModal({ title, body, footer = '', large = false, onMount } = {}) {
       </div>
     </div>`;
   if (onMount) onMount($('.modal-body'));
+  enhanceModalGenFill();
 }
 
 function closeModal() {
@@ -138,6 +172,11 @@ function closeModal() {
   if (state.pendingAIFinal) {
     const resolve = state.pendingAIFinal;
     state.pendingAIFinal = null;
+    resolve(null);
+  }
+  if (state.pendingGenResult) {
+    const resolve = state.pendingGenResult;
+    state.pendingGenResult = null;
     resolve(null);
   }
   $('#modal-root').innerHTML = '';
@@ -492,6 +531,7 @@ async function renderPlot(content) {
         <div class="row mb-8">
           <h3 style="margin:0">剧情线</h3>
           <div class="grow"></div>
+          <button class="btn small secondary" data-action="ai-gen-plotlines-new" title="AI 生成剧情线（可一次生成多条）">✨ AI</button>
           <button class="btn small" data-action="new-plotline">＋</button>
         </div>
         ${plotlines.length ? plotlines.map((p) => `
@@ -666,6 +706,7 @@ async function renderOutline(content) {
       <div class="page-actions">
         <button class="btn small ${state.outlineMode === 'mind' ? '' : 'secondary'}" data-action="set-outline-mode" data-mode="mind">思维导图</button>
         <button class="btn small ${state.outlineMode === 'list' ? '' : 'secondary'}" data-action="set-outline-mode" data-mode="list">列表</button>
+        <button class="btn secondary" data-action="ai-gen-outline">✨ AI 大纲（整卷）</button>
         <button class="btn secondary" data-action="new-volume">＋ 新建卷</button>
         <button class="btn" data-action="new-chapter">＋ 新建章节/场景</button>
       </div>
@@ -969,7 +1010,7 @@ async function renderTerms(content) {
             <button class="btn small danger" data-action="delete-category" data-id="${c.id}">删</button>
           </div>
         `).join('')}
-        <div class="mt-12"><button class="btn small secondary" data-action="new-term">＋ 新建词条</button></div>
+        <div class="mt-12" style="display:flex;gap:6px"><button class="btn small secondary" data-action="new-term">＋ 新建词条</button><button class="btn small secondary" data-action="ai-gen-terms-new" title="AI 生成词条（可一次生成多条）">✨ AI 词条</button></div>
       </div>
       <div class="panel terms-list">
         <div class="mb-8"><input id="term-search" placeholder="搜索词条..." value=""></div>
@@ -1015,6 +1056,7 @@ async function renderCharacters(content) {
         <div class="row mb-8">
           <b>角色</b>
           <div class="grow"></div>
+          <button class="btn small secondary" data-action="ai-gen-characters-new" title="AI 生成角色（完整档案，可一次生成多个）">✨ AI</button>
           <button class="btn small" data-action="new-character">＋</button>
         </div>
         <input id="character-search" placeholder="搜索角色..." class="mb-8">
@@ -1124,7 +1166,7 @@ async function renderST(content) {
       </div>
     </div>
     <div class="card mb-12">
-      <div class="card-head"><span class="card-title">作品作者注</span><button class="btn small" data-action="save-st-work-note">保存作品作者注</button></div>
+      <div class="card-head"><span class="card-title">作品作者注</span><button class="btn small secondary" data-action="ai-gen-work-note" title="AI 起草作品作者注">✨ AI 起草</button><button class="btn small" data-action="save-st-work-note">保存作品作者注</button></div>
       <textarea id="st-work-author-note" rows="3" placeholder="整部作品通用的 AI 提示，支持 {title} {work} {characters} {summary}">${esc(state.work?.author_note || '')}</textarea>
     </div>
     <div class="card mb-12">
@@ -1137,6 +1179,7 @@ async function renderST(content) {
         <div class="row mt-8">
           <span class="muted">章节级作者注会追加在作品作者注之后</span>
           <div class="grow"></div>
+          <button class="btn small secondary" data-action="ai-gen-chapter-note" title="AI 起草当前章节作者注">✨ AI 起草</button>
           <button class="btn small" data-action="save-st-chapter-note" data-id="${currentChapter?.id || ''}">保存章节作者注</button>
         </div>
       ` : '<div class="muted">当前作品还没有章节</div>'}
@@ -1191,6 +1234,7 @@ async function renderMemory(content) {
       <div class="card-head">
         <span class="card-title">📚 故事记忆</span>
         <div class="row">
+          <button class="btn small secondary" data-action="ai-gen-memory" title="AI 起草/更新长期记忆">✨ AI 起草记忆</button>
           <button class="btn small secondary" data-action="compress-story-memory">🧠 自动压缩记忆</button>
           <button class="btn small" data-action="save-story-memory">保存记忆</button>
         </div>
@@ -1208,6 +1252,7 @@ async function renderMemory(content) {
         <div class="row mt-8">
           <span class="muted">章节级作者注会与作品作者注一起进入 AI 上下文</span>
           <div class="grow"></div>
+          <button class="btn small secondary" data-action="ai-gen-chapter-note" title="AI 起草当前章节作者注">✨ AI 起草</button>
           <button class="btn small" data-action="save-st-chapter-note" data-id="${currentChapter?.id || ''}">保存章节作者注</button>
         </div>
       ` : '<div class="muted">当前作品还没有章节</div>'}
@@ -1393,7 +1438,8 @@ const AI_ACTION_LABELS = {
   chat: 'AI 对话',
   test: '连接测试',
   harness: 'Harness 深度创作',
-  pipeline: '创作工作台流水线'
+  pipeline: '创作工作台流水线',
+  'settings-gen': '小说设定 AI 生成'
 };
 
 // 拉取最近 AI 报错并渲染到 AI 设置页。
@@ -2610,6 +2656,689 @@ async function runAIOutline() {
   }
 }
 
+// ---------- AI 生成器：小说设定各实体（通用） ----------
+// 参考 novel-writing-plugin 创作内核（deepseek-harness）：
+// 上下文采用 ST 式分层装配（novel/context 的 assembled），纪律为“一次只问一个问题”，
+// 结构化产出用【提问】/【成文】协议 + “字段名：值”行 + “=====” 分隔多项。
+
+const GEN_KEYS = {
+  plotline: {
+    label: '剧情线',
+    keys: [
+      { key: 'title', als: ['名称', '剧情线名称'], label: '名称' },
+      { key: 'kind', als: ['类型'], label: '类型（主线/支线）' },
+      { key: 'summary', als: ['简介', '剧情简介'], label: '简介' }
+    ],
+    rules: '类型只填“主线”或“支线”。若为“完整规划多条线”请一次生成 1-4 条（主线 + 支线）。'
+  },
+  volume: {
+    label: '卷',
+    keys: [
+      { key: 'title', als: ['卷名', '名称'], label: '卷名' },
+      { key: 'summary', als: ['卷简介', '简介'], label: '卷简介' }
+    ],
+    rules: ''
+  },
+  chapter: {
+    label: '章节/场景',
+    keys: [
+      { key: 'title', als: ['章节标题', '标题', '名称'], label: '标题' },
+      { key: 'summary', als: ['大纲摘要', '摘要'], label: '摘要' }
+    ],
+    rules: '只生成标题与大纲摘要（细纲），不要生成正文。'
+  },
+  term: {
+    label: '设定词条',
+    keys: [
+      { key: 'title', als: ['词条名', '名称'], label: '词条名' },
+      { key: 'category', als: ['分类', '建议分类'], label: '分类' },
+      { key: 'tags', als: ['标签'], label: '标签（逗号分隔）' },
+      { key: 'content', als: ['详细介绍', '内容'], label: '详细介绍' }
+    ],
+    rules: '内容要具体、可被正文直接引用；分类尽量使用现有分类名，若必须新分类再给新分类名。'
+  },
+  character: {
+    label: '角色',
+    keys: [
+      { key: 'name', als: ['姓名', '名称'], label: '姓名' },
+      { key: 'identity', als: ['身份'], label: '身份' },
+      { key: 'appearance', als: ['外貌'], label: '外貌' },
+      { key: 'personality', als: ['性格'], label: '性格' },
+      { key: 'background', als: ['背景'], label: '背景' },
+      { key: 'status', als: ['当前状态', '状态'], label: '当前状态' },
+      { key: 'tags', als: ['标签'], label: '标签（逗号分隔）' },
+      { key: 'mes_example', als: ['对话示例'], label: '对话示例' },
+      { key: 'system_prompt', als: ['系统提示'], label: '系统提示' }
+    ],
+    rules: '完整角色卡一次生成：姓名/身份/外貌/性格/背景/当前状态/标签/对话示例(mes_example，示范该角色说话口吻)/系统提示(system_prompt，角色专属全局指令)。'
+  },
+  relation: {
+    label: '人物关系',
+    keys: [
+      { key: 'to_character', als: ['关联角色', '对方角色'], label: '关联角色姓名' },
+      { key: 'relation', als: ['关系'], label: '关系' },
+      { key: 'description', als: ['描述'], label: '描述' }
+    ],
+    rules: '关联角色必须是当前作品里已存在的角色姓名；关系如：师徒/宿敌/恋人/君臣。'
+  },
+  pstate: {
+    label: '剧情线级角色状态',
+    keys: [
+      { key: 'status', als: ['状态'], label: '状态' },
+      { key: 'notes', als: ['备注', '说明'], label: '备注' }
+    ],
+    rules: ''
+  }
+};
+
+function genKeysListText(spec) {
+  return spec.keys.map((k) => k.als[0] + (k.als.length > 1 ? `（${k.als.slice(1).join('/')}）` : '')).join('、');
+}
+
+function buildGenSystem(label, plural, extra = '') {
+  const spec = GEN_KEYS[label] || { keys: [], rules: '' };
+  const keysText = genKeysListText(spec);
+  const multi = plural ? `
+- 若这次需要生成多个候选项：每个候选项按上面的“字段名：值”逐行输出，候选项之间用单独一行“=====”分隔；不要用 Markdown 列表或代码围栏。` : `
+- 本次只需要生成一项：按上面的“字段名：值”逐行输出（第一行“字段名：值”开始，不要输出任何前言）。`;
+  return `你是资深中文网络小说创作与设定策划助手（服务 novel-studio，遵循 deepseek-harness novel-writing 创作内核纪律）。你负责为当前作品生成/完善「${spec.label}」。
+
+【输出协议】
+- 若还需要澄清需求才能达到 95% 信心：第一行必须严格是【提问】，并且一次只问一个问题，不要输出其他内容。
+- 若已能理解需求：第一行必须严格是【成文】，随后直接输出内容，不要解释、不要客套。
+- 【成文】输出时：${multi}
+- 需要输出的字段：${keysText}。
+- ${spec.rules || '保持与既有设定一致，不冲突、不重复。'}
+${extra}`;
+}
+
+// 从服务器取“ST 式分层上下文”（参考 novel-writing-plugin 的 novel_context 装配），
+// 再补上内核未覆盖的小说设定内容：设定词条库 / 分类 / 全量人物关系 / 剧情线级状态 / 作者注。
+async function genWorkContextBlock() {
+  let ctx = '';
+  try {
+    const data = await api(`/novel/context?work_id=${state.workId}&mode=full`);
+    if (data && data.assembled) ctx = data.assembled;
+  } catch (_) { /* 内核不可用时退化为本地组装 */ }
+  const extra = [];
+  if (state.terms.length) {
+    extra.push('【设定词条库】\n' + state.terms.slice(0, 60).map((t) => `【${t.title}】${String(t.content || '').slice(0, 400)}${t.tags ? `（标签：${t.tags}）` : ''}`).join('\n'));
+  }
+  if (state.categories.length) {
+    extra.push('【设定分类】\n' + state.categories.map((c) => c.name).join('、'));
+  }
+  if (state.relations.length) {
+    const nameOf = (id) => state.characters.find((c) => c.id === id)?.name || `#${id}`;
+    extra.push('【人物关系（全）】\n' + state.relations.map((r) => `${nameOf(r.from_character_id)} —${r.relation || '相关'}→ ${nameOf(r.to_character_id)}${r.description ? `（${String(r.description).slice(0, 200)}）` : ''}`).join('\n'));
+  }
+  if (state.plotlineCharacters.length) {
+    const pName = (id) => state.plotlines.find((p) => p.id === id)?.title || `#${id}`;
+    const cName = (id) => state.characters.find((c) => c.id === id)?.name || `#${id}`;
+    extra.push('【剧情线级角色状态】\n' + state.plotlineCharacters.map((p) => `${cName(p.character_id)}｜${pName(p.plotline_id)}｜${p.status || '未记录'}${p.notes ? ' — ' + p.notes : ''}`).join('\n'));
+  }
+  if (state.work?.author_note) extra.push('【作品作者注】\n' + state.work.author_note.slice(0, 800));
+  const context = [];
+  if (ctx) context.push(ctx);
+  if (extra.length) context.push(extra.join('\n\n'));
+  return context.join('\n\n') || '（当前作品暂无可参考的设定内容）';
+}
+
+function genDialoguePrompt(system, context, initial, history) {
+  const lines = [];
+  lines.push(system);
+  lines.push('');
+  lines.push('【当前小说上下文】');
+  lines.push(context);
+  lines.push('');
+  lines.push('【用户最初请求】');
+  lines.push(initial);
+  if (history.length) {
+    lines.push('');
+    lines.push('【已进行的对话】');
+    history.forEach((m) => lines.push(m.role === 'assistant' ? `助手：${m.content}` : `用户：${m.content}`));
+  }
+  lines.push('');
+  lines.push('请决定下一步：需要澄清就先输出【提问】并只问一个问题；已经理解就直接输出【成文】并给出全部内容。');
+  return lines.join('\n');
+}
+
+// 弹窗询问 AI 的一次追问（小说设定生成版，按钮协议与正文 AI 写作一致）。
+function askAIGenQuestion(question) {
+  return new Promise((resolve) => {
+    state.pendingAIQuestion = resolve;
+    openModal({
+      title: 'AI 生成 · 需要向你确认',
+      body: `
+        <div class="ai-writing-question">${esc(question).replace(/\n/g, '<br>')}</div>
+        <div class="field mt-12">
+          <label>你的回答</label>
+          <textarea id="ai-writing-answer" rows="3" placeholder="直接回答 AI 的问题，它会继续追问，直到理解你的需求"></textarea>
+        </div>`,
+      footer: `
+        <button class="btn secondary" data-close-modal>取消</button>
+        <button class="btn secondary" data-action="ai-writing-skip">跳过提问直接生成</button>
+        <button class="btn" data-action="ai-writing-answer">提交回答</button>`
+    });
+    const input = $('#ai-writing-answer');
+    if (input) input.focus();
+  });
+}
+
+// 多轮【提问】→【成文】生成循环，返回最终文本；用户中途取消返回 null。
+async function runGenAskLoop({ system, initial }) {
+  const history = [];
+  const context = await genWorkContextBlock();
+  let turns = 10;
+  while (turns-- > 0) {
+    const data = await api('/harness/run', {
+      method: 'POST',
+      body: {
+        prompt: genDialoguePrompt(system, context, initial, history),
+        timeout: 600000,
+        model: 'deepseek-v4-pro',
+        action: 'settings-gen',
+        work_id: state.workId,
+        chapter_id: state.currentChapterId || undefined,
+        mode: 'full'
+      }
+    });
+    const parsed = parseAIWritingOutput(data.output || '');
+    if (parsed.finalText) return parsed.finalText;
+    if (parsed.question) {
+      const answer = await askAIGenQuestion(parsed.question);
+      if (answer === null) return null;
+      if (answer.type === 'skip') {
+        history.push({ role: 'user', content: '请不要再提问，直接给出最终结果。' });
+        continue;
+      }
+      history.push({ role: 'assistant', content: `【提问】${parsed.question}` });
+      history.push({ role: 'user', content: answer.value || '（未填写）' });
+      continue;
+    }
+    throw new Error('AI 返回内容无法识别，请重试');
+  }
+  throw new Error('对话轮次过多，已停止');
+}
+
+function genSplitItems(text) {
+  return String(text || '')
+    .split(/\n\s*(?:={5,}|-{5,}|—{4,})\s*\n/)
+    .map((s) => s.replace(/^\s*(?:={5,}|-{5,}|—{4,})/, '').trim())
+    .filter(Boolean);
+}
+
+// 按“字段名：值”逐行解析一块文本为对象。
+function genParseOne(text, spec) {
+  const obj = {};
+  const lines = String(text || '').split(/\r?\n/);
+  let cur = null;
+  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    let hit = null;
+    for (const f of (spec.keys || [])) {
+      for (const al of f.als) {
+        if (new RegExp('^' + escRe(al) + '\\s*[:：]').test(line)) { hit = f; break; }
+      }
+      if (hit) break;
+    }
+    if (hit) {
+      cur = hit.key;
+      const clean = line.replace(new RegExp('^' + hit.als.map((a) => escRe(a)).join('|') + '\\s*[:：]'), '').trim();
+      obj[cur] = ((obj[cur] || '') + ' ' + clean).trim();
+    } else if (cur) {
+      obj[cur] = (obj[cur] || '') + '\n' + line;
+    }
+  }
+  Object.keys(obj).forEach((k) => { obj[k] = String(obj[k]).trim(); });
+  return obj;
+}
+
+let genResultItems = [];
+
+// 展示生成结果：多项→勾选列表；单项/纯文本→预览。
+function showGenResultModal(title, text, items) {
+  return new Promise((resolve) => {
+    state.pendingGenResult = resolve;
+    genResultItems = items || [];
+    const multi = items && items.length > 1;
+    const body = multi
+      ? `<div class="muted mb-8">AI 生成了 ${items.length} 项，勾选要导入的：</div>
+         ${items.map((it, i) => `<label class="gen-item-row"><input type="checkbox" class="gen-item-cb" data-i="${i}" checked><span class="grow gen-item-text">${esc(genItemPreview(it))}</span></label>`).join('')}`
+      : `<div class="ai-apply-preview">${esc(text).replace(/\n/g, '<br>')}</div>
+         ${items && items.length === 1 ? `<div class="muted mt-8">将按上面的字段回填（可稍后再编辑）。</div>` : ''}`;
+    openModal({
+      title: `✨ AI 生成结果 · ${title}`,
+      body,
+      footer: `
+        <button class="btn secondary" data-close-modal>取消</button>
+        <button class="btn secondary" data-action="gen-regen">重新生成</button>
+        <button class="btn" data-action="gen-apply">${multi ? '导入勾选项' : '确认使用'}</button>`,
+      large: true
+    });
+  });
+}
+
+function genItemPreview(it) {
+  if (!it) return '';
+  const rows = [];
+  Object.entries(it).forEach(([k, v]) => {
+    if (Array.isArray(v)) {
+      if (v.length) rows.push(`${k}：共 ${v.length} 项`);
+      return;
+    }
+    const s = String(v || '').trim();
+    if (s) rows.push(`${k}：${s.length > 120 ? s.slice(0, 120) + '…' : s}`);
+  });
+  return rows.join('\n') || '（空项）';
+}
+
+// 统一“需求输入 → 先问答 → 结果(勾选/确认) → 回调”的驱动。
+async function genDialog(cfg) {
+  let initial = cfg.initial || `请根据当前作品设定，为「${cfg.label}」生成内容。`;
+  for (;;) {
+    let text;
+    try {
+      text = await runGenAskLoop({ system: buildGenSystem(cfg.label, !!cfg.plural, cfg.extra), initial });
+    } catch (e) {
+      toast('AI 生成失败：' + e.message, 'error');
+      return false;
+    }
+    if (text === null) return false;
+    let items = null;
+    if (cfg.customParse) items = cfg.customParse(text);
+    else if (cfg.parseItems !== false) {
+      items = cfg.plural
+        ? genSplitItems(text).map((b) => genParseOne(b, GEN_KEYS[cfg.label]))
+        : [genParseOne(text, GEN_KEYS[cfg.label] || { keys: [] })];
+    }
+    const act = await showGenResultModal(cfg.label, text, items);
+    if (act === 'regen') {
+      initial = initial + '\n（用户点击了“重新生成”：请换一种思路/结构与表述重新完整输出。）';
+      continue;
+    }
+    if (act === 'apply') {
+      const sel = state.genSelected && state.genSelected.length ? state.genSelected : (items || []);
+      await cfg.onApply(sel, text);
+      return true;
+    }
+    return false;
+  }
+}
+
+// 纯文本类生成（长期记忆 / 作者注）：不走字段解析。
+async function genTextDialog(cfg) {
+  let initial = cfg.initial || '请生成内容。';
+  for (;;) {
+    let text;
+    try {
+      text = await runGenAskLoop({ system: cfg.system, initial });
+    } catch (e) {
+      toast('AI 生成失败：' + e.message, 'error');
+      return false;
+    }
+    if (text === null) return false;
+    const act = await showGenResultModal(cfg.label, text, null);
+    if (act === 'regen') {
+      initial = initial + '\n（用户点击了“重新生成”：请换一种思路重新完整输出。）';
+      continue;
+    }
+    if (act === 'apply') {
+      await cfg.onApply(text);
+      return true;
+    }
+    return false;
+  }
+}
+
+// 需求输入弹窗（各“AI 生成新…”入口共用）。
+function openGenRequester(opts) {
+  state.genSubmit = opts.onSubmit;
+  openModal({
+    title: `✨ ${opts.title}`,
+    body: `
+      <div class="field">
+        <label>你想生成什么？一句话即可，AI 会先提问澄清</label>
+        <textarea id="gen-req-input" rows="4" placeholder="${esc(opts.placeholder || '例如：…')}"></textarea>
+      </div>
+      <div class="muted">${opts.hint ? opts.hint : ''} 生成过程会先向你提问（可跳过），结果出来后确认/勾选再入库。</div>`,
+    footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="gen-run">✨ 开始生成</button>`
+  });
+}
+
+async function genRefresh() {
+  await loadWorkData(true);
+  await render();
+}
+
+// 清理标签：中英文逗号/顿号分隔，去空、限量。
+function cleanCsv(v, limit = 12) {
+  return String(v || '').split(/[,，、;；]/).map((s) => s.trim()).filter(Boolean).slice(0, limit).join(',');
+}
+
+function pickColor() {
+  const colors = ['#8b5cf6', '#f43f5e', '#10b981', '#3b82f6', '#f59e0b', '#14b8a6', '#ef4444', '#6366f1'];
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function matchCategoryId(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  const c = state.categories.find((x) => x.name === n);
+  return c ? c.id : null;
+}
+
+// ---------- 各实体：批量新建（页签头部入口） ----------
+function genQuickPlotlines() {
+  openGenRequester({
+    title: 'AI 生成剧情线',
+    placeholder: '例如：生成 1 条主线 + 2 条支线，修仙争霸背景下，主线和支线彼此交织',
+    hint: '生成多条时可直接勾选需要入库的线。',
+    onSubmit: async (req) => {
+      if (!req.trim()) { toast('请先描述需求', 'error'); return; }
+      const ok = await genDialog({
+        label: 'plotline', plural: true, initial: req,
+        onApply: async (items) => {
+          let n = 0;
+          for (const it of items) {
+            const title = String(it.title || '').trim();
+            if (!title) continue;
+            const kind = /支线|side/i.test(it.kind || '') ? 'side' : 'main';
+            await api('/plotlines', { method: 'POST', body: { work_id: state.workId, title, kind, summary: it.summary || '', position: state.plotlines.length + n } });
+            n++;
+          }
+          toast(n ? `已新建 ${n} 条剧情线` : '没有可导入的剧情线', n ? 'success' : 'error');
+          await genRefresh();
+        }
+      });
+      void ok;
+    }
+  });
+}
+
+// 解析“卷名/卷简介/章节N：标题|摘要”格式的一个卷块（含其章节树）。
+function genParseVolumeBlock(text) {
+  const block = { title: '', summary: '', chapters: [] };
+  const lines = String(text || '').split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    let m = line.match(/^卷名\s*[:：]\s*(.+)$/);
+    if (m) { block.title = m[1].trim(); continue; }
+    m = line.match(/^卷简介\s*[:：]\s*([\s\S]*)$/);
+    if (m) { block.summary = m[1].trim(); continue; }
+    m = line.match(/^章节\s*\d+\s*[:：]\s*(.*)$/);
+    if (m) {
+      const [t, s] = m[1].trim().split(/[|｜]/).map((x) => x.trim());
+      block.chapters.push({ title: t || `第${block.chapters.length + 1}章`, summary: s || '' });
+      continue;
+    }
+    if (block.summary) block.summary += '\n' + line;
+  }
+  return block;
+}
+
+function genQuickOutline() {
+  openGenRequester({
+    title: 'AI 生成整卷大纲',
+    placeholder: '例如：写第一卷“少年觉醒”，7-9 章，从废材觉醒到初露锋芒',
+    hint: 'AI 会一次生成 1-3 卷，每卷含若干章（标题+摘要）。勾选要导入的卷，确认后自动创建卷与章节框架（只建标题与摘要，不生成正文）。',
+    onSubmit: async (req) => {
+      if (!req.trim()) { toast('请先描述需求', 'error'); return; }
+      const ok = await genDialog({
+        label: 'volume', plural: true, initial: req,
+        extra: '整卷大纲的格式要求：每个候选项代表“一卷”。先输出“卷名：…”和“卷简介：…”，随后逐行输出“章节N：标题|摘要”（N 从 1 开始，每卷建议 3-10 章；摘要为一句话大纲）。不同卷之间用单独一行“=====”分隔。只给出卷与章节的标题/摘要（细纲），不要生成正文。',
+        customParse: (text) => genSplitItems(text).map((b) => genParseVolumeBlock(b)).filter((v) => v.title),
+        onApply: async (volumes) => {
+          if (!volumes.length) { toast('没有可导入的卷', 'error'); return; }
+          let count = 0;
+          for (const v of volumes) {
+            const vol = await api('/volumes', { method: 'POST', body: { work_id: state.workId, title: String(v.title || '').slice(0, 60), summary: v.summary || '', position: state.volumes.length } });
+            const chs = (v.chapters || []).slice(0, 30);
+            for (let i = 0; i < chs.length; i++) {
+              const ch = chs[i];
+              if (!ch.title) continue;
+              await api('/chapters', { method: 'POST', body: { work_id: state.workId, volume_id: vol.id, title: String(ch.title).slice(0, 80), summary: ch.summary || '', position: i } });
+              count++;
+            }
+          }
+          toast(`已创建 ${volumes.length} 卷、${count} 个章节`, 'success');
+          await genRefresh();
+        }
+      });
+      void ok;
+    }
+  });
+}
+
+function genQuickTerms() {
+  openGenRequester({
+    title: 'AI 生成设定词条',
+    placeholder: '例如：为修仙世界生成 5 条词条：灵根、功法、丹药、门派、境界体系',
+    hint: '一次生成多条词条，勾选后批量入库；分类会优先匹配现有分类，缺失时自动新建。',
+    onSubmit: async (req) => {
+      if (!req.trim()) { toast('请先描述需求', 'error'); return; }
+      const ok = await genDialog({
+        label: 'term', plural: true, initial: req,
+        onApply: async (items) => {
+          const createdCats = {};
+          let n = 0;
+          for (const it of items) {
+            const title = String(it.title || '').trim();
+            if (!title) continue;
+            const catName = String(it.category || '').trim();
+            let category_id = matchCategoryId(catName);
+            if (category_id === null && catName && catName !== '未分类') {
+              if (!createdCats[catName]) {
+                const cat = await api('/categories', { method: 'POST', body: { work_id: state.workId, name: catName.slice(0, 20), color: pickColor(), position: state.categories.length } });
+                createdCats[catName] = cat.id;
+              }
+              category_id = createdCats[catName];
+            }
+            await api('/terms', { method: 'POST', body: { work_id: state.workId, category_id: category_id || null, title, content: it.content || '', tags: cleanCsv(it.tags) } });
+            n++;
+          }
+          toast(n ? `已新建 ${n} 个词条` : '没有可导入的词条', n ? 'success' : 'error');
+          await genRefresh();
+        }
+      });
+      void ok;
+    }
+  });
+}
+
+function genQuickCharacters() {
+  openGenRequester({
+    title: 'AI 生成角色',
+    placeholder: '例如：生成 3 个主要角色：天才剑修女主、腹黑商贾男主、忠犬护卫，包含完整档案',
+    hint: '每个角色生成完整档案（含对话示例与系统提示）；生成多条时勾选需要入库的角色。',
+    onSubmit: async (req) => {
+      if (!req.trim()) { toast('请先描述需求', 'error'); return; }
+      const ok = await genDialog({
+        label: 'character', plural: true, initial: req,
+        onApply: async (items) => {
+          let n = 0;
+          for (const it of items) {
+            const name = String(it.name || '').trim();
+            if (!name) continue;
+            await api('/characters', { method: 'POST', body: { work_id: state.workId, name, identity: it.identity || '', appearance: it.appearance || '', personality: it.personality || '', background: it.background || '', status: it.status || '', avatar_color: pickColor(), mes_example: it.mes_example || '', tags: cleanCsv(it.tags), system_prompt: it.system_prompt || '' } });
+            n++;
+          }
+          toast(n ? `已新建 ${n} 个角色` : '没有可导入的角色', n ? 'success' : 'error');
+          await genRefresh();
+        }
+      });
+      void ok;
+    }
+  });
+}
+
+function genMemorySystem() {
+  return `你是资深小说编辑（deepseek-harness novel-writing 创作内核）。为当前作品起草/更新「长期记忆 / 故事摘要」。
+
+长期记忆用于记录“已经发生的重要剧情、伏笔、角色状态变化”，供后续正文写作与 AI 上下文自动带入。
+
+【输出协议】
+- 需要澄清时第一行【提问】并一次只问一个问题；能理解后第一行【成文】直接输出。
+- 【成文】输出一段 200-800 字的中文摘要草稿（纯文本，无需字段格式），内容基于【当前小说上下文】里的既有记忆与事件，把你想补充/调整的进展自然地合并进去。`;
+}
+
+function genNoteSystem(scope) {
+  const target = scope === 'work' ? '整部作品通用的 AI 提示（作品作者注）' : '当前章节的 AI 提示（章节作者注）';
+  return `你是资深小说编辑（deepseek-harness novel-writing 创作内核）。为当前作品起草${target}。
+
+作者注是写给写作 AI 的“幕后指令/风格提醒/剧情备忘”，会随正文写作带入 AI 上下文。它应短小、具体、可执行。
+
+【输出协议】
+- 需要澄清时第一行【提问】并一次只问一个问题；能理解后第一行【成文】直接输出。
+- 【成文】输出一段 50-300 字的中文作者注草稿（纯文本，无需字段格式）。`;
+}
+
+function genTextAreaFlow(label, system, placeholder, hint, onApply) {
+  openGenRequester({
+    title: label,
+    placeholder,
+    hint,
+    onSubmit: async (req) => {
+      if (!req.trim()) { toast('请先描述需求', 'error'); return; }
+      const ok = await genTextDialog({ label, system, initial: req, onApply });
+      void ok;
+    }
+  });
+}
+
+// ---------- 编辑弹窗内的 AI 回填 ----------
+function genFillFromModal(kind) {
+  const spec = GEN_KEYS[kind];
+  if (!spec) return;
+  const modalEl = $('.modal');
+  if (!modalEl) return;
+  const saveBtn = modalEl.querySelector('[data-action^="save-"]');
+  const id = saveBtn ? saveBtn.dataset.id : '';
+  const draft = collectModalData(modalEl);
+  const baseOf = () => {
+    if (!id) return {};
+    if (kind === 'plotline') return state.plotlines.find((p) => p.id === Number(id)) || {};
+    if (kind === 'volume') return state.volumes.find((v) => v.id === Number(id)) || {};
+    if (kind === 'chapter') return state.chapters.find((c) => c.id === Number(id)) || {};
+    if (kind === 'term') return state.terms.find((t) => t.id === Number(id)) || {};
+    if (kind === 'character') return state.characters.find((c) => c.id === Number(id)) || {};
+    return {};
+  };
+  // 取消/失败时按用户当前表单内容恢复，避免丢失已填内容。
+  const restoreDraft = () => reopen(mergeParsedEntity(kind, baseOf(), draft, {}));
+  const reopen = (obj) => reopenEntityModal(kind, obj, id, draft);
+  closeModal();
+
+  openGenRequester({
+    title: `AI 生成「${spec.label}」并填入表单`,
+    placeholder: '描述你想生成的内容，AI 会先提问澄清',
+    hint: spec.rules ? spec.rules : '',
+    onSubmit: async (req) => {
+      if (!req.trim()) { toast('请先描述需求', 'error'); restoreDraft(); return; }
+      const base = baseOf();
+      try {
+        const ok = await genDialog({
+          label: kind, plural: false, initial: req,
+          onApply: async (items) => {
+            const parsed = items && items.length ? items[0] : {};
+            const merged = mergeParsedEntity(kind, base, draft, parsed);
+            reopen(merged);
+            toast('AI 结果已回填表单，请确认后保存', 'success');
+          }
+        });
+        if (!ok) restoreDraft();
+      } catch (e) {
+        toast('AI 生成失败：' + e.message, 'error');
+        restoreDraft();
+      }
+    }
+  });
+}
+
+function castNums(obj) {
+  const out = { ...obj };
+  ['position', 'volume_id', 'plotline_id', 'category_id', 'work_id', 'from_character_id', 'to_character_id', 'character_id'].forEach((k) => {
+    if (out[k] !== undefined && out[k] !== null && out[k] !== '') {
+      const n = Number(out[k]);
+      if (Number.isFinite(n)) out[k] = n;
+    }
+  });
+  return out;
+}
+
+function mergeParsedEntity(kind, base, draft, parsed) {
+  const merged = { ...(base || {}), ...castNums(draft) };
+  if (!merged.work_id && state.workId) merged.work_id = state.workId;
+  if (kind === 'plotline') {
+    if (parsed.title) merged.title = String(parsed.title).trim();
+    if (parsed.kind) merged.kind = /支线|side/i.test(parsed.kind) ? 'side' : 'main';
+    if (parsed.summary) merged.summary = String(parsed.summary).trim();
+  } else if (kind === 'volume') {
+    if (parsed.title) merged.title = String(parsed.title).trim();
+    if (parsed.summary) merged.summary = String(parsed.summary).trim();
+  } else if (kind === 'chapter') {
+    if (parsed.title) merged.title = String(parsed.title).trim();
+    if (parsed.summary) merged.summary = String(parsed.summary).trim();
+  } else if (kind === 'term') {
+    if (parsed.title) merged.title = String(parsed.title).trim();
+    if (parsed.content) merged.content = String(parsed.content).trim();
+    if (parsed.tags) merged.tags = cleanCsv(parsed.tags);
+    const cid = matchCategoryId(parsed.category);
+    if (cid !== null) merged.category_id = cid;
+  } else if (kind === 'character') {
+    ['name', 'identity', 'appearance', 'personality', 'background', 'status'].forEach((f) => { if (parsed[f]) merged[f] = String(parsed[f]).trim(); });
+    if (parsed.tags) merged.tags = cleanCsv(parsed.tags);
+    if (parsed.mes_example) merged.mes_example = String(parsed.mes_example).trim();
+    if (parsed.system_prompt) merged.system_prompt = String(parsed.system_prompt).trim();
+  } else if (kind === 'relation') {
+    if (parsed.relation) merged.relation = String(parsed.relation).trim();
+    if (parsed.description) merged.description = String(parsed.description).trim();
+    if (parsed.to_character) merged.to_character = String(parsed.to_character).trim();
+  } else if (kind === 'pstate') {
+    if (parsed.status) merged.status = String(parsed.status).trim();
+    if (parsed.notes) merged.notes = String(parsed.notes).trim();
+  }
+  return merged;
+}
+
+function reopenEntityModal(kind, obj, id, draft) {
+  const entity = { ...obj };
+  if (id && id !== '') entity.id = Number(id);
+  if (kind === 'plotline') openPlotlineModal(entity);
+  else if (kind === 'volume') openVolumeModal(entity);
+  else if (kind === 'chapter') openChapterModal(entity);
+  else if (kind === 'term') openTermModal(entity);
+  else if (kind === 'character') openCharacterModal(entity);
+  else if (kind === 'relation') {
+    const fromId = Number(draft.from_character_id || entity.from_character_id || 0);
+    openRelationModal(fromId);
+    setModalField('relation', obj.relation);
+    setModalField('description', obj.description);
+    setModalField('to_character_id', obj.to_character);
+  } else if (kind === 'pstate') {
+    const charId = Number(draft.character_id || entity.character_id || 0);
+    const plotId = Number(draft.plotline_id || entity.plotline_id || 0);
+    openPlotlineCharModal(charId, plotId);
+    setModalField('status', obj.status);
+    setModalField('notes', obj.notes);
+  }
+}
+
+function setModalField(name, value) {
+  const el = $('.modal')?.querySelector(`[name="${name}"]`);
+  if (!el || value === undefined || value === null) return;
+  const s = String(value).trim();
+  if (!s) return;
+  if (el.tagName === 'SELECT') {
+    const opt = Array.from(el.options).find((o) => o.text === s || o.value === s);
+    if (opt) el.value = opt.value;
+  } else {
+    el.value = s;
+  }
+}
+
 async function runAICreateNovel() {
   const promptEl = $('#ai-create-prompt');
   const prompt = (promptEl?.value || '').trim();
@@ -3495,6 +4224,86 @@ document.addEventListener('click', async (e) => {
       case 'ai-insert':
         insertAIDraft();
         break;
+
+      // ---------- 小说设定 AI 生成 ----------
+      case 'ai-gen-plotlines-new':
+        genQuickPlotlines();
+        break;
+
+      case 'ai-gen-outline':
+        genQuickOutline();
+        break;
+
+      case 'ai-gen-terms-new':
+        genQuickTerms();
+        break;
+
+      case 'ai-gen-characters-new':
+        genQuickCharacters();
+        break;
+
+      case 'ai-gen-memory':
+        genTextAreaFlow('AI 起草长期记忆', genMemorySystem(), '例如：把最近几章确认发生的事件、新伏笔与角色状态变化整理进长期记忆', '生成的是草稿，会写入上方记忆框，你仍可修改后点“保存记忆”。', async (text) => {
+          const el = $('#story-memory-input');
+          if (el) { el.value = text; toast('已写入记忆草稿，可修改后保存', 'success'); }
+        });
+        break;
+
+      case 'ai-gen-work-note':
+        genTextAreaFlow('AI 起草作品作者注', genNoteSystem('work'), '例如：整部作品保持“冷幽默、快节奏、少描写多对话”的风格', '草稿会写入“作品作者注”输入框，可修改后保存。', async (text) => {
+          const el = $('#st-work-author-note');
+          if (el) { el.value = text; toast('已写入作品作者注草稿', 'success'); }
+        });
+        break;
+
+      case 'ai-gen-chapter-note': {
+        const sel = $('#st-chapter-select');
+        const chId = sel ? Number(sel.value) : state.currentChapterId;
+        const ch = state.chapters.find((c) => c.id === chId) || null;
+        const noteInfo = ch ? `当前章节：${ch.title}${ch.summary ? `\n大纲摘要：${ch.summary.slice(0, 300)}` : ''}` : '';
+        genTextAreaFlow('AI 起草章节作者注', genNoteSystem('chapter'), '例如：本章需要让读者感受到主角的动摇与抉择', noteInfo ? `关联章节：\n${noteInfo}` : '生成时请结合当前章节情况。', async (text) => {
+          const el = $('#st-chapter-author-note');
+          if (el) { el.value = text; toast('已写入章节作者注草稿', 'success'); }
+        });
+        break;
+      }
+
+      case 'gen-fill':
+        genFillFromModal(actionEl.dataset.kind);
+        break;
+
+      case 'gen-run': {
+        const req = ($('#gen-req-input')?.value || '').trim();
+        const submit = state.genSubmit;
+        if (!req) { toast('请先描述需求', 'error'); break; }
+        state.genSubmit = null;
+        closeModal();
+        if (submit) await submit(req);
+        break;
+      }
+
+      case 'gen-regen': {
+        const resolve = state.pendingGenResult;
+        state.pendingGenResult = null;
+        closeModal();
+        if (resolve) resolve('regen');
+        break;
+      }
+
+      case 'gen-apply': {
+        const resolve = state.pendingGenResult;
+        state.pendingGenResult = null;
+        const selected = genResultItems.length
+          ? genResultItems.filter((_, i) => {
+              const cb = $(`.gen-item-cb[data-i="${i}"]`);
+              return !cb || cb.checked;
+            })
+          : [];
+        state.genSelected = selected;
+        closeModal();
+        if (resolve) resolve('apply');
+        break;
+      }
 
       default:
         break;
