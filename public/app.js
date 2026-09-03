@@ -22,7 +22,7 @@ const state = {
   editorLayout: localStorage.getItem('ns_editor_layout') || 'three',
   outlineMode: localStorage.getItem('ns_outline_mode') || 'mind',
   settingsTab: 'terms',
-  aiTab: 'ai-create',
+  aiTab: 'ai',
   currentChapterId: null,
   currentTermId: null,
   currentCharacterId: null,
@@ -43,9 +43,11 @@ const state = {
   charsCache: new Map()
 };
 
-// 合并后的侧栏板块：小说设定 / AI创造板块
+// 合并后的侧栏板块：小说设定 / AI创造板块（进入作品后）
+// 初始页（未进入作品）另有顶层视图：works（我的作品）、ai-create（✨ AI 创作）、ai（AI 设置）
 const SETTINGS_VIEWS = ['plot', 'outline', 'terms', 'characters', 'memory'];
 const AI_VIEWS = ['ai-create', 'ai', 'st'];
+const HOME_AI_VIEWS = ['ai-create', 'ai'];
 
 function isSettingsView(view) {
   return view === 'settings' || SETTINGS_VIEWS.includes(view);
@@ -55,14 +57,23 @@ function isAIView(view) {
   return view === 'ai-board' || AI_VIEWS.includes(view);
 }
 
-// 统一跳转：把旧子页面视图映射到新的合并板块。
+// 统一跳转：把旧子页面视图映射到对应的板块；未进入作品时按初始页视图分流。
 function goView(view) {
   if (SETTINGS_VIEWS.includes(view)) {
     state.settingsTab = view;
     state.view = 'settings';
   } else if (AI_VIEWS.includes(view)) {
-    state.aiTab = view;
-    state.view = 'ai-board';
+    if (!state.workId) {
+      // 初始页：仅 AI 创作 / AI 设置 两个顶层视图可用（SillyTavern 依赖作品数据）
+      state.view = HOME_AI_VIEWS.includes(view) ? view : 'ai-create';
+    } else if (view === 'ai-create') {
+      // 作品内的 AI创造板块已不再包含 AI 创作，回退到 AI 设置
+      state.aiTab = 'ai';
+      state.view = 'ai-board';
+    } else {
+      state.aiTab = view;
+      state.view = 'ai-board';
+    }
   } else {
     state.view = view;
   }
@@ -176,7 +187,9 @@ function setTopbarTitle(text) {
 }
 
 function updateSidebarTitle() {
-  $('#sidebar-title').textContent = state.work ? state.work.title : '我的作品';
+  let text = state.work ? state.work.title : '我的作品';
+  if (!state.workId && (state.view === 'ai-create' || state.view === 'ai')) text = 'AI 创作';
+  $('#sidebar-title').textContent = text;
 }
 
 // ---------- data ----------
@@ -218,7 +231,8 @@ async function loadWorkData(force = false) {
 function updateNavVisibility() {
   $$('#sidebar-nav button[data-view]').forEach((b) => {
     const v = b.dataset.view;
-    if (v === 'works') {
+    if (v === 'works' || v === 'ai-create') {
+      // 「我的作品」与「✨ AI 创作」只在未进入作品时显示
       b.classList.toggle('hidden', !!state.workId);
     } else {
       b.classList.toggle('hidden', !state.workId);
@@ -232,6 +246,7 @@ function setActiveNav() {
     let active = v === state.view;
     if (v === 'settings' && (state.view === 'settings' || SETTINGS_VIEWS.includes(state.view))) active = true;
     if (v === 'ai-board' && (state.view === 'ai-board' || AI_VIEWS.includes(state.view))) active = true;
+    if (v === 'ai-create' && !state.workId && (state.view === 'ai-create' || state.view === 'ai')) active = true;
     b.classList.toggle('active', active);
   });
 }
@@ -239,11 +254,25 @@ function setActiveNav() {
 async function render() {
   const content = $('#content');
   if (!state.workId) {
-    state.view = 'works';
     setSidebar(true);
+    updateNavVisibility();
+    // 初始页：我的作品（works）与首页 AI 视图（ai-create / ai）可切换
+    if (HOME_AI_VIEWS.includes(state.view)) {
+      setActiveNav();
+      updateSidebarTitle();
+      setTopbarTitle(state.view === 'ai-create' ? '✨ AI 创作' : 'AI 设置');
+      try {
+        await ensureApiConfigs();
+        if (state.view === 'ai-create') return renderAICreateHome(content);
+        return renderAIHome(content);
+      } catch (e) {
+        content.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+        return;
+      }
+    }
+    state.view = 'works';
     updateSidebarTitle();
     setTopbarTitle('Novel Studio');
-    updateNavVisibility();
     setActiveNav();
     return renderWorks();
   }
@@ -296,7 +325,7 @@ async function renderWorks() {
         <button class="btn" data-action="new-work">＋ 新建作品</button>
       </div>
     </div>
-    ${works.length ? '' : '<div class="empty">还没有作品，可以点击右上角“新建作品”开始创作，或一键导入下方示例小说体验。</div>'}
+    ${works.length ? '' : '<div class="empty">还没有作品：可点击右上角“新建作品”手动创建，或在左侧「✨ AI 创作」用 AI 一键生成，也可导入下方示例小说体验。</div>'}
     <div class="grid cols-3">
       ${works.map((w) => `
         <div class="card work-card">
@@ -361,22 +390,22 @@ async function renderSettingsBoard(content, tab) {
   else await renderMemory(target);
 }
 
-// ---------- 合并板块：AI创造板块 ----------
+// ---------- 合并板块：AI创造板块（进入作品后） ----------
+// AI 创作已迁移到初始页（见 renderAICreateHome / renderAIHome），这里只保留 AI 设置与 SillyTavern 设置。
 const AI_TABS = [
-  ['ai-create', '✨ AI 创作'],
   ['ai', '⚙️ AI 设置'],
   ['st', '🧩 SillyTavern 设置']
 ];
 
 async function renderAIBoard(content, tab) {
-  if (!AI_VIEWS.includes(tab)) tab = 'ai-create';
+  if (tab === 'ai-create' || !['ai', 'st'].includes(tab)) tab = 'ai';
   state.aiTab = tab;
   state.view = 'ai-board';
   content.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">🤖 AI创造板块</h1>
-        <div class="page-sub">AI 创作、API 设置与 SillyTavern 角色/世界观设置已合并到这里</div>
+        <div class="page-sub">API 设置与 SillyTavern 角色/世界观设置已合并到这里</div>
       </div>
     </div>
     <div class="board-tabs">
@@ -384,9 +413,32 @@ async function renderAIBoard(content, tab) {
     </div>
     <div id="board-content" class="board-content"></div>`;
   const target = $('#board-content');
-  if (tab === 'ai-create') await renderAICreate(target);
-  else if (tab === 'ai') await renderAI(target);
+  if (tab === 'ai') await renderAI(target);
   else await renderST(target);
+}
+
+// ---------- 初始页 AI 视图（未进入作品） ----------
+// AI 创作从作品内的 AI创造板块迁移到初始页：创建全新作品不依赖任何已打开的作品。
+// 作品内 AI创造板块不再出现 AI 创作标签。
+async function ensureApiConfigs(force = false) {
+  if (force || !state.apiConfigs.length) {
+    state.apiConfigs = await api('/api_configs');
+  }
+  if (!state.activeConfigId && state.apiConfigs.length) state.activeConfigId = state.apiConfigs[0].id;
+}
+
+async function renderAICreateHome(content) {
+  await ensureApiConfigs();
+  return renderAICreate(content);
+}
+
+async function renderAIHome(content) {
+  await ensureApiConfigs();
+  await renderAI(content);
+  const actions = content.querySelector('.page-head .page-actions');
+  if (actions) {
+    actions.insertAdjacentHTML('afterbegin', `<button class="btn secondary" data-action="go-view" data-view="ai-create">← 返回 AI 创作</button>`);
+  }
 }
 
 // ---------- overview ----------
@@ -1729,6 +1781,7 @@ async function savePipelineToWork() {
       });
     }
     toast('已保存为作品', 'success');
+    await loadWorks(true);
     state.workId = work.id;
     state.loadedWorkId = null;
     state.view = 'overview';
@@ -2584,6 +2637,7 @@ async function runAICreateNovel() {
     await new Promise((r) => setTimeout(r, 200));
     setAICreateProgress(steps, 3);
     toast(`已创建《${data.title || '未命名作品'}》`, 'success');
+    await loadWorks(true);
     state.workId = data.work_id;
     state.loadedWorkId = null;
     state.view = 'overview';
@@ -3275,7 +3329,8 @@ document.addEventListener('click', async (e) => {
         if (!confirm('删除该 API 配置？')) break;
         await api(`/api_configs/${id}`, { method: 'DELETE' });
         if (state.activeConfigId === id) state.activeConfigId = null;
-        await loadWorkData(true);
+        if (state.workId) await loadWorkData(true);
+        else await ensureApiConfigs(true);
         await render();
         break;
       }
