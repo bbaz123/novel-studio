@@ -8,14 +8,35 @@
  * 一致性核对清单 / 正文写回（历史版本）/ 跨源写请求拒绝 / 非法红线拒绝。
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
+// 定位 novel-studio 仓库根：优先 NOVELSTUDIO_REPO 环境变量，
+// 否则从本文件向上找 package.json（name === 'novel-studio'），
+// 使本脚本在「工坊仓库内 harness-plugins/novel-writing/test/」与
+// 「发布镜像仓库根 test/」两种位置都能直接运行。
+function findStudioRoot() {
+  if (process.env.NOVELSTUDIO_REPO) return process.env.NOVELSTUDIO_REPO;
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i++) {
+    const pkg = join(dir, 'package.json');
+    if (existsSync(pkg)) {
+      try {
+        if (JSON.parse(readFileSync(pkg, 'utf8')).name === 'novel-studio') return dir;
+      } catch (_) { /* 继续向上 */ }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error('未找到 novel-studio 仓库：请用 NOVELSTUDIO_REPO 环境变量指定其根目录');
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, '..', '..', '..');
+const repoRoot = findStudioRoot();
 const PORT = 3900 + Math.floor(Math.random() * 400);
 const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = mkdtempSync(join(tmpdir(), 'novel-smoke-'));

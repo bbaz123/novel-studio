@@ -3,6 +3,10 @@
 这是 **Novel Studio（小说创作工坊）内置的创作插件**：不是独立分发、不依赖外部仓库，
 插件的 dsh 侧源码与工坊服务端创作内核**同仓维护、一起升级**。
 
+> **仓库关系**：本目录的规范源在 novel-studio 仓库的 `harness-plugins/novel-writing/`。
+> 若本目录同时以独立仓库（bbaz123/novel-writing-plugin）发布，则该仓库是发布镜像：
+> 两份文件内容保持一致；安装请优先使用 novel-studio 仓库内的版本。
+
 ```
 novel-studio/
 ├─ db.js / server.js / harness.js / public/app.js   ← 工坊主体（创作内核：上下文装配/红线/事件账本/记忆版本/提案确认）
@@ -22,11 +26,11 @@ novel-studio/
 ## 安装（两步）
 
 ```powershell
-# 1) 工坊本体：直接使用本仓库（创作内核已内置，无需覆盖任何补丁文件）。
+# 1) 工坊本体：直接使用 novel-studio 仓库（创作内核已内置，无需覆盖任何补丁文件）。
 #    重启：npm start（数据库启动时自动迁移新表/新列）
 
-# 2) dsh 侧：
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1
+# 2) dsh 侧（本目录；发布镜像仓库中本目录即仓库根）：
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 # 预演不落盘：… install.ps1 -DryRun    卸载：… install.ps1 -Uninstall
 ```
 
@@ -36,8 +40,9 @@ powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install
 ## 验证
 
 ```bash
-# 服务端冒烟测试（不依赖 dsh，纯 HTTP 断言）
-node harness-plugins/novel-writing/test/smoke.mjs
+# 服务端冒烟测试（不依赖 dsh，纯 HTTP 断言；需能定位到 novel-studio 仓库，
+# 或用 NOVELSTUDIO_REPO 环境变量指定其根目录）
+node test/smoke.mjs
 
 # dsh 侧工具目录
 cd <你的 deepseek-harness 目录>
