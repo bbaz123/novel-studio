@@ -1325,6 +1325,7 @@ async function renderMemory(content) {
       <div class="card-head">
         <span class="card-title">📚 故事记忆</span>
         <div class="row">
+          <button class="btn small secondary" data-action="open-proposal-confirm" title="AI 生成任务里提交的事件/记忆提案，确认后才会写入账本">📥 待确认提案</button>
           <button class="btn small secondary" data-action="ai-gen-memory" title="AI 起草/更新长期记忆">✨ AI 起草记忆</button>
           <button class="btn small secondary" data-action="compress-story-memory">🧠 自动压缩记忆</button>
           <button class="btn small" data-action="save-story-memory">保存记忆</button>
@@ -1358,6 +1359,63 @@ async function loadStoryMemory() {
     const data = await api(`/story_memory?work_id=${state.workId}`);
     el.value = data.summary || '';
   } catch (_) { /* 忽略加载失败 */ }
+  refreshProposalBadge();
+}
+
+// 更新「待确认提案」按钮上的数量角标（无提案时显示 0）。
+async function refreshProposalBadge() {
+  const btn = $('[data-action="open-proposal-confirm"]');
+  if (!btn || !state.workId) return;
+  try {
+    const data = await api(`/novel/proposals?work_id=${state.workId}`);
+    const n = (data.proposals || []).length;
+    btn.textContent = n ? `📥 待确认提案（${n}）` : '📥 待确认提案';
+  } catch (_) { /* 忽略 */ }
+}
+
+// 弹出提案确认框：逐条勾选采纳/忽略（事件、伏笔与记忆提案统一处理）。
+async function openProposalConfirm() {
+  const workId = state.workId || state.work?.id;
+  if (!workId) { toast('请先进入一部作品'); return; }
+  let list;
+  try {
+    const data = await api(`/novel/proposals?work_id=${workId}`);
+    list = data.proposals || [];
+  } catch (e) {
+    toast('读取提案失败：' + e.message, 'error');
+    return;
+  }
+  openModal({
+    title: '📥 待确认入账提案',
+    body: list.length
+      ? `<div class="muted mb-8">以下内容是 AI 生成任务中提交的事件/记忆，确认后才会写入作品账本：</div>
+         <div class="proposal-box">${list.map(proposalItemHtml).join('')}</div>`
+      : '<div class="muted">当前没有待确认的提案。AI 写作完成后的收尾入账会先出现在这里。</div>',
+    footer: list.length
+      ? `<button class="btn secondary" data-close-modal>稍后处理</button>
+         <button class="btn secondary" data-action="proposal-reject-selected">忽略所选</button>
+         <button class="btn" data-action="proposal-apply-selected">采纳所选</button>`
+      : '<button class="btn" data-close-modal>关闭</button>'
+  });
+}
+
+async function settleProposalsFromModal(action) {
+  const workId = state.workId || state.work?.id;
+  if (!workId) return;
+  const modalEl = document.querySelector('.modal');
+  const checked = [...(modalEl ? modalEl.querySelectorAll('.proposal-box [data-proposal-id]:checked') : [])]
+    .map((el) => Number(el.dataset.proposalId));
+  try {
+    const data = await api(`/novel/proposals/${action}`, { method: 'POST', body: { work_id: workId, ids: checked } });
+    closeModal();
+    const n = action === 'apply'
+      ? ((data.applied?.events || 0) + (data.applied?.memories || 0))
+      : ((data.rejected?.events || 0) + (data.rejected?.memories || 0));
+    toast(action === 'apply' ? `已采纳 ${n} 条提案` : `已忽略 ${n} 条提案`, 'success');
+    refreshProposalBadge();
+  } catch (e) {
+    toast('操作失败：' + e.message, 'error');
+  }
 }
 
 async function saveStoryMemory() {
@@ -1755,7 +1813,7 @@ async function runHarnessJob(body, stageLabel) {
     const started = await api('/harness/run', { method: 'POST', body });
     if (!started.job_id) {
       // 兼容旧服务端：直接返回同步结果（无取消通道，停止按钮不出现）
-      return { output: started.output || '', scan: started.scan || null };
+      return { output: started.output || '', scan: started.scan || null, proposals: started.proposals || null };
     }
     // D7：注册停止按钮 → 服务端杀掉 dsh 子进程，轮询循环随即结束
     progress.setCancel(() => {
@@ -1775,7 +1833,7 @@ async function runHarnessJob(body, stageLabel) {
       }
       if (cancelled) throw cancelledErr();
       progress.update(job.tail);
-      if (job.status === 'done') return { output: job.output || '', scan: job.scan || null };
+      if (job.status === 'done') return { output: job.output || '', scan: job.scan || null, proposals: job.proposals || null };
       if (job.status === 'cancelled') throw cancelledErr();
       if (job.status === 'failed' || job.status === 'timeout') {
         const err = new Error(job.error || (job.status === 'timeout' ? '任务超时' : '任务失败'));
@@ -2752,15 +2810,37 @@ function redlineScanSummaryHtml(scan) {
   return `<div class="redline-scan warn">⚠️ 红线自检命中 ${scan.total} 处反 AI 腔词句：${samples || '—'}。已提示模型规避，如需改写可在预览中手动调整。</div>`;
 }
 
+// 入账提案（headless 任务里 AI 提交的事件/记忆，未写入作品账本）渲染。
+function proposalItemHtml(p) {
+  const icon = p.type === 'memory' ? '🧠' : (p.kind === 'foreshadow' ? '🎯' : '📌');
+  const kindLabel = p.type === 'memory' ? '长期记忆' : (p.kind === 'foreshadow' ? '伏笔' : '事件');
+  const text = p.type === 'memory' ? (p.summary || p.delta || '') : p.summary || '';
+  return `<label class="proposal-item"><input type="checkbox" data-proposal-id="${Number(p.id)}" checked>
+    <span>${icon} ${kindLabel}：${esc(String(text).slice(0, 120))}</span></label>`;
+}
+
+function proposalsSummaryHtml(proposals) {
+  if (!Array.isArray(proposals) || !proposals.length) return '';
+  return `<div class="proposal-box">
+    <div class="proposal-head">📥 AI 提交了 ${proposals.length} 条入账提案（尚未写入作品账本，随正文采纳一起生效）：</div>
+    ${proposals.map(proposalItemHtml).join('')}
+    <div class="muted mt-4">取消勾选可暂时保留，稍后在「小说设定 → 长期记忆」页处理。</div>
+  </div>`;
+}
+
 // 弹窗展示最终文章，让用户选择如何应用。
-function showAIWritingResult(article, scan) {
+function showAIWritingResult(article, scan, proposals) {
   return new Promise((resolve) => {
     state.pendingAIFinal = resolve;
+    state.pendingAIProposals = Array.isArray(proposals) && proposals.length
+      ? { workId: state.workId || state.work?.id || null, proposals }
+      : null;
     openModal({
       title: 'AI 写作结果',
       body: `
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
         ${redlineScanSummaryHtml(scan)}
+        ${proposalsSummaryHtml(proposals)}
         <div class="muted mt-8">请选择如何应用到正文：</div>`,
       footer: `
         <button class="btn secondary" data-close-modal>取消</button>
@@ -2771,6 +2851,23 @@ function showAIWritingResult(article, scan) {
       large: true
     });
   });
+}
+
+// 把当前结果弹窗里勾选的提案提交为“采纳”；未勾选的保留待处理。
+async function applySelectedProposals() {
+  const info = state.pendingAIProposals;
+  if (!info || !info.workId) return;
+  state.pendingAIProposals = null;
+  const checked = [...document.querySelectorAll('.proposal-box [data-proposal-id]:checked')]
+    .map((el) => Number(el.dataset.proposalId));
+  try {
+    const data = await api('/novel/proposals/apply', { method: 'POST', body: { work_id: info.workId, ids: checked } });
+    const count = (data.applied?.events || 0) + (data.applied?.memories || 0);
+    if (count) toast(`已采纳 ${count} 条入账提案`, 'success');
+    else toast('提案已保留，可稍后在「长期记忆」页处理');
+  } catch (e) {
+    toast('提案采纳失败：' + e.message, 'error');
+  }
 }
 
 async function applyAIWritingArticle(mode, article) {
@@ -2857,7 +2954,7 @@ async function performToolbarAIWrite(requirement) {
       const parsed = parseAIWritingOutput(raw);
 
       if (parsed.finalText) {
-        const mode = await showAIWritingResult(parsed.finalText, data.scan);
+        const mode = await showAIWritingResult(parsed.finalText, data.scan, data.proposals);
         if (mode === null) return;
         if (mode === 'regenerate') {
           history.push({ role: 'assistant', content: `【成文】${parsed.finalText}` });
@@ -2881,7 +2978,7 @@ async function performToolbarAIWrite(requirement) {
       }
 
       // 兜底：按最终结果处理
-      const mode = await showAIWritingResult(raw, data.scan);
+      const mode = await showAIWritingResult(raw, data.scan, data.proposals);
       if (mode === null) return;
       if (mode === 'regenerate') {
         history.push({ role: 'assistant', content: `【成文】${raw}` });
@@ -4280,6 +4377,7 @@ document.addEventListener('click', async (e) => {
         const resolve = state.pendingAIFinal;
         state.pendingAIFinal = null;
         closeModal();
+        applySelectedProposals();
         if (resolve) resolve('insert');
         break;
       }
@@ -4288,6 +4386,7 @@ document.addEventListener('click', async (e) => {
         const resolve = state.pendingAIFinal;
         state.pendingAIFinal = null;
         closeModal();
+        applySelectedProposals();
         if (resolve) resolve('replace');
         break;
       }
@@ -4296,6 +4395,7 @@ document.addEventListener('click', async (e) => {
         const resolve = state.pendingAIFinal;
         state.pendingAIFinal = null;
         closeModal();
+        applySelectedProposals();
         if (resolve) resolve('append');
         break;
       }
@@ -4307,6 +4407,18 @@ document.addEventListener('click', async (e) => {
         if (resolve) resolve('regenerate');
         break;
       }
+
+      case 'open-proposal-confirm':
+        await openProposalConfirm();
+        break;
+
+      case 'proposal-apply-selected':
+        await settleProposalsFromModal('apply');
+        break;
+
+      case 'proposal-reject-selected':
+        await settleProposalsFromModal('reject');
+        break;
 
       case 'manual-save-chapter':
         await manualSaveChapter();

@@ -945,6 +945,36 @@ textarea { resize: vertical; }
   color: #fde68a;
 }
 
+/* ---------- 入账提案确认（novel-writing 内置插件） ---------- */
+.proposal-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, .07);
+  border: 1px solid rgba(99, 102, 241, .25);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proposal-head {
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.proposal-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1.5;
+}
+.proposal-item input[type="checkbox"] {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
 /* ---------- AI 创作分页签（D7） ---------- */
 .ai-create-section { display: block; }
 .ai-create-section[hidden] { display: none; }

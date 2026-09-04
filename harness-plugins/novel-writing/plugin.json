@@ -1,31 +1,43 @@
 {
   "name": "novel-writing",
-  "version": "0.1.0",
-  "description": "Novel Studio 小说创作插件包：定义世界观、角色、大纲、正文、审查等创作工具。",
+  "version": "0.4.0",
+  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/反 AI 腔红线/事件账本/伏笔闭环/长期记忆版本化/提案确认）。",
+  "integration": "builtin",
+  "host": "novel-studio",
+  "dshPlugin": {
+    "entry": "novel-tools.mjs",
+    "contract": {
+      "exports": ["name", "inject", "apply"],
+      "registersToolsVia": "ctx.tools.register"
+    },
+    "identityEnv": ["NOVELSTUDIO_WORK_ID", "NOVELSTUDIO_CHAPTER_ID", "NOVELSTUDIO_MODE"],
+    "proposeModeEnv": "NOVELSTUDIO_PROPOSE_MODE"
+  },
   "tools": [
-    {
-      "name": "story_architect",
-      "description": "根据创作需求生成完整世界观设定，包括力量体系、势力、地理、历史、核心冲突。"
-    },
-    {
-      "name": "character_designer",
-      "description": "根据世界观和创作需求生成主要角色卡，包含姓名、身份、外貌、性格、背景、状态、对话示例。"
-    },
-    {
-      "name": "outline_planner",
-      "description": "设计分卷结构和每章大纲，支持长篇多章节规划。"
-    },
-    {
-      "name": "chapter_writer",
-      "description": "根据大纲生成章节正文草稿，支持不同创作策略和模型路由。"
-    },
-    {
-      "name": "consistency_checker",
-      "description": "检查角色、世界观、大纲和正文之间的一致性，输出修改建议。"
-    },
-    {
-      "name": "memory_compressor",
-      "description": "把已有章节和设定压缩为长期记忆摘要，用于长篇小说上下文管理。"
-    }
+    { "name": "novel_context", "description": "写作前取 ST 式分层上下文（大纲/记忆/事件/伏笔/场景/角色卡/世界观/红线），分层预算截断。" },
+    { "name": "novel_works", "description": "列出作品，确认 work_id。" },
+    { "name": "novel_lookup", "description": "按关键词检索角色/设定词条/章节/剧情线。" },
+    { "name": "novel_foreshadows", "description": "列出未闭合（或全部）伏笔，支持按 id 回收。" },
+    { "name": "novel_consistency", "description": "成文后核对一致性：未闭合伏笔/出场角色状态/最近事件 vs 正文。" },
+    { "name": "novel_scan", "description": "确定性反 AI 腔红线扫描，可跳过引号内对话。" },
+    { "name": "novel_style_contract", "description": "读取当前写作红线清单。" },
+    { "name": "novel_event_add", "description": "事件/伏笔/状态变化入账（伏笔状态、回收关联、幂等去重；headless 先落提案）。" },
+    { "name": "novel_memory_update", "description": "长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案）。" },
+    { "name": "novel_chapter_save", "description": "成稿写回章节正文（旧稿自动存历史版本，返回红线扫描）。" }
+  ],
+  "engineEndpoints": [
+    "GET /api/novel/ping",
+    "GET /api/novel/context?work_id=&chapter_id=&mode=",
+    "GET/PUT /api/novel/redlines?work_id=",
+    "POST /api/novel/scan",
+    "GET/POST /api/novel/events",
+    "GET /api/novel/foreshadows?work_id=&status=",
+    "POST /api/novel/consistency",
+    "POST /api/novel/chapter_save",
+    "GET /api/novel/proposals?work_id=",
+    "POST /api/novel/proposals/apply|reject",
+    "PUT /api/story_memory",
+    "GET /api/story_memory/versions?work_id=",
+    "POST /api/story_memory/rollback"
   ]
 }

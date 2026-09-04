@@ -29,8 +29,9 @@ function sendJSON(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*'
+    'Cache-Control': 'no-store'
+    // 不再返回 Access-Control-Allow-Origin: *：本地工坊存有 API Key 与作品数据，
+    // 任何浏览器页面跨源读取都会被浏览器 CORS 拦截；同源 UI 与 dsh 工具（服务端 fetch）不受影响。
   });
   res.end(body);
 }
@@ -39,12 +40,36 @@ function sendError(res, status, message) {
   sendJSON(res, status, { error: message || 'Internal error' });
 }
 
+// 写请求的跨源防护：浏览器页面发起的 POST/PUT/DELETE 必须来自本机工坊页面
+// （Origin 为 localhost/127.0.0.1）；不带 Origin 的非浏览器客户端（curl/dsh 工具）放行。
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+function isLocalRequest(req) {
+  if (!MUTATING_METHODS.has(req.method || '')) return true;
+  const origin = String(req.headers.origin || '');
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    const local = (h) => h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+    return local(url.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+const MAX_BODY_BYTES = 2_000_000; // 2MB：正文保存足够，恶意超大 payload 直接拒绝。
+
 async function readBody(req) {
+  const declared = Number(req.headers['content-length'] || 0);
+  if (declared > MAX_BODY_BYTES) {
+    const err = new Error('Payload too large');
+    req.destroy();
+    throw err;
+  }
   return new Promise((resolve, reject) => {
     let data = '';
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 10_000_000) {
+      if (data.length > MAX_BODY_BYTES) {
         reject(new Error('Payload too large'));
         req.destroy();
       }
@@ -432,6 +457,11 @@ function getStoryMemory(workId) {
   return row?.summary || '';
 }
 
+// 长期记忆超过该字数时标记 needs_compression，提示创作上下文里让 AI 优先压缩。
+const MEMORY_COMPRESS_HINT = 1200;
+// 每个作品最多保留的历史版本数：超出自动剪除最旧的，防止 memory_versions 无限膨胀。
+const MEMORY_VERSION_KEEP = 200;
+
 // 保存作品的长期记忆摘要（git 式：每次变更自动写入 memory_versions 快照，可回滚）。
 // 兼容旧调用 saveStoryMemory(workId, summary)；新调用可传 { source, note }。
 function saveStoryMemory(workId, summary, opts = {}) {
@@ -453,8 +483,18 @@ function saveStoryMemory(workId, summary, opts = {}) {
       INSERT INTO memory_versions (work_id, summary, source, note)
       VALUES (?, ?, ?, ?)
     `).run(workId, summary, source, note);
+    // 版本保留策略：只留最近 MEMORY_VERSION_KEEP 个，最旧的多余版本剪除。
+    prepare(`
+      DELETE FROM memory_versions
+      WHERE work_id = ? AND id NOT IN (
+        SELECT id FROM memory_versions WHERE work_id = ? ORDER BY id DESC LIMIT ?
+      )
+    `).run(workId, workId, MEMORY_VERSION_KEEP);
     db.exec('COMMIT');
-    return { ok: true, work_id: workId, summary, version_id: Number(info.lastInsertRowid), source };
+    return {
+      ok: true, work_id: workId, summary, version_id: Number(info.lastInsertRowid), source,
+      needs_compression: summary.length > MEMORY_COMPRESS_HINT
+    };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
@@ -611,16 +651,26 @@ function listRedlines(workId) {
 }
 
 // 全量替换某一 scope 的红线（workId 为空则替换全局默认）。
+// 校验：类型白名单、模式非空、长度上限（防病态正则）、regex 可编译。
 function replaceRedlines(workId, entries) {
   if (!Array.isArray(entries)) throw new Error('entries 必须是数组');
+  const MAX_PATTERN = 500;
+  for (const e of entries) {
+    const kind = asString(e.kind, 'phrase');
+    if (!VALID_REDLINE_KINDS.has(kind)) throw new Error(`未知红线类型：${kind}`);
+    const pattern = asString(e.pattern, '');
+    if (!pattern.trim()) throw new Error('红线模式不能为空');
+    if (pattern.length > MAX_PATTERN) throw new Error(`红线模式过长（上限 ${MAX_PATTERN} 字符）`);
+    if (kind === 'regex') {
+      try { new RegExp(pattern); } catch (_) { throw new Error(`非法正则：${pattern.slice(0, 80)}`); }
+    }
+  }
   db.exec('BEGIN');
   try {
     prepare('DELETE FROM writing_redlines WHERE work_id IS ?').run(workId ?? null);
     const stmt = prepare('INSERT INTO writing_redlines (work_id, kind, pattern, note, enabled) VALUES (?, ?, ?, ?, ?)');
     for (const e of entries) {
-      const kind = asString(e.kind, 'phrase');
-      if (!VALID_REDLINE_KINDS.has(kind)) throw new Error(`未知红线类型：${kind}`);
-      stmt.run(workId ?? null, kind, asString(e.pattern, ''), asString(e.note, ''), e.enabled === false ? 0 : 1);
+      stmt.run(workId ?? null, asString(e.kind, 'phrase'), asString(e.pattern, ''), asString(e.note, ''), e.enabled === false ? 0 : 1);
     }
     db.exec('COMMIT');
   } catch (e) {
@@ -645,14 +695,19 @@ function renderStyleContract(rows) {
 }
 
 // 在文本中确定性扫描红线命中（用于生成后自查）。
-function scanAgainstRedlines(rows, text) {
+// opts.skip_dialogue=true 时先剥掉引号内对话再扫：角色台词的口语词不应按叙述标准误杀。
+function scanAgainstRedlines(rows, text, opts = {}) {
   const hits = [];
-  const clean = String(text || '');
+  const source = String(text || '');
+  if (!source) return hits;
+  const clean = opts.skip_dialogue === true
+    ? source.replace(/“[^”]*”|「[^」]*」|‘[^’]*’|『[^』]*』/g, '')
+    : source;
   if (!clean) return hits;
   for (const r of rows) {
     if (!Number(r.enabled)) continue;
     const pattern = String(r.pattern || '');
-    if (!pattern) continue;
+    if (!pattern || pattern.length > 500) continue; // 超长/异常模式跳过（防病态正则）
     let count = 0;
     let sample = '';
     try {
@@ -675,12 +730,41 @@ function scanAgainstRedlines(rows, text) {
 }
 
 // ---------- 故事事件账本 ----------
-function addStoryEvent(workId, { chapterId, kind = 'event', summary = '', payload = {} }) {
-  const info = prepare(`
-    INSERT INTO story_events (work_id, chapter_id, kind, summary, payload)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(workId, chapterId || null, asString(kind, 'event'), asString(summary, ''), JSON.stringify(payload || {}));
-  return Number(info.lastInsertRowid);
+// 入账一条事件；支持伏笔状态与回收关联、按 dedup_key 幂等去重。
+function addStoryEvent(workId, {
+  chapterId,
+  kind = 'event',
+  summary = '',
+  payload = {},
+  foreshadowStatus = '',
+  resolvesEventId = null,
+  dedupKey = ''
+}) {
+  const summaryText = asString(summary, '');
+  const key = asString(dedupKey, '');
+  if (key) {
+    const dup = prepare('SELECT id FROM story_events WHERE work_id = ? AND dedup_key = ? LIMIT 1').get(workId, key);
+    if (dup) return { id: Number(dup.id), duplicate: true };
+  }
+  db.exec('BEGIN');
+  try {
+    const info = prepare(`
+      INSERT INTO story_events (work_id, chapter_id, kind, summary, payload, foreshadow_status, resolves_event_id, dedup_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(workId, chapterId || null, asString(kind, 'event'), summaryText, JSON.stringify(payload || {}),
+      asString(foreshadowStatus, kind === 'foreshadow' ? 'open' : ''),
+      resolvesEventId ? Number(resolvesEventId) : null, key);
+    if (resolvesEventId && kind === 'event') {
+      // 回收伏笔：把被回收的伏笔标记为 resolved，并回链到本事件。
+      prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ? AND work_id = ?')
+        .run('resolved', Number(resolvesEventId), workId);
+    }
+    db.exec('COMMIT');
+    return { id: Number(info.lastInsertRowid), duplicate: false };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
 
 function listStoryEvents(workId, limit = 40) {
@@ -690,8 +774,88 @@ function listStoryEvents(workId, limit = 40) {
   `).all(workId, limit).map((e) => {
     let payload = {};
     try { payload = JSON.parse(e.payload || '{}'); } catch (_) {}
-    return { id: e.id, chapter_id: e.chapter_id, kind: e.kind, summary: e.summary, payload, created_at: e.created_at };
+    return {
+      id: e.id, chapter_id: e.chapter_id, kind: e.kind, summary: e.summary, payload,
+      foreshadow_status: e.foreshadow_status || (e.kind === 'foreshadow' ? 'open' : ''),
+      resolves_event_id: e.resolves_event_id,
+      created_at: e.created_at
+    };
   });
+}
+
+// ---------- 入账提案（headless 生成任务先提案、作者确认后入账） ----------
+function listProposals(workId) {
+  const events = prepare('SELECT * FROM story_event_proposals WHERE work_id = ? AND status = ? ORDER BY id ASC')
+    .all(workId, 'pending').map((p) => ({ type: 'event', ...p, payload: safeParseJSON(p.payload) }));
+  const memories = prepare('SELECT * FROM story_memory_proposals WHERE work_id = ? AND status = ? ORDER BY id ASC')
+    .all(workId, 'pending').map((p) => ({ type: 'memory', ...p }));
+  return [...events, ...memories];
+}
+
+function addEventProposal(workId, fields) {
+  const info = prepare(`
+    INSERT INTO story_event_proposals (work_id, chapter_id, kind, summary, payload, foreshadow_status, resolves_event_id, dedup_key, note)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(workId, fields.chapterId || null, asString(fields.kind, 'event'), asString(fields.summary, ''),
+    JSON.stringify(fields.payload || {}), asString(fields.foreshadowStatus, fields.kind === 'foreshadow' ? 'open' : ''),
+    fields.resolvesEventId ? Number(fields.resolvesEventId) : null, asString(fields.dedupKey, ''), asString(fields.note, ''));
+  return { proposed: true, proposal_id: Number(info.lastInsertRowid) };
+}
+
+function addMemoryProposal(workId, { summary, delta, note }) {
+  const info = prepare(`
+    INSERT INTO story_memory_proposals (work_id, summary, delta, note, status)
+    VALUES (?, ?, ?, ?, 'pending')
+  `).run(workId, asString(summary, ''), asString(delta, ''), asString(note, ''));
+  return { proposed: true, proposal_id: Number(info.lastInsertRowid) };
+}
+
+// 采纳/拒绝提案：ids 为空 + all=true 时处理该作品全部 pending 提案。
+function settleProposals(workId, { ids, all, action }) {
+  const mark = (table, id) => prepare(`UPDATE ${table} SET status = ? WHERE id = ? AND work_id = ? AND status = 'pending'`).run(action, id, workId);
+  const applied = { events: 0, memories: 0 };
+  const rejected = { events: 0, memories: 0 };
+  let eventRows = [];
+  let memoryRows = [];
+  if (all) {
+    eventRows = prepare(`SELECT * FROM story_event_proposals WHERE work_id = ? AND status = 'pending' ORDER BY id ASC`).all(workId);
+    memoryRows = prepare(`SELECT * FROM story_memory_proposals WHERE work_id = ? AND status = 'pending' ORDER BY id ASC`).all(workId);
+  } else {
+    const list = Array.isArray(ids) ? ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+    if (list.length) {
+      eventRows = prepare(`SELECT * FROM story_event_proposals WHERE work_id = ? AND id IN (${list.map(() => '?').join(',')})`).all(workId, ...list);
+      memoryRows = prepare(`SELECT * FROM story_memory_proposals WHERE work_id = ? AND id IN (${list.map(() => '?').join(',')})`).all(workId, ...list);
+    }
+  }
+  for (const p of eventRows) {
+    if (action === 'apply') {
+      addStoryEvent(workId, {
+        chapterId: p.chapter_id, kind: p.kind, summary: p.summary,
+        payload: safeParseJSON(p.payload), foreshadowStatus: p.foreshadow_status,
+        resolvesEventId: p.resolves_event_id, dedupKey: p.dedup_key
+      });
+      applied.events += 1;
+    } else {
+      rejected.events += 1;
+    }
+    mark('story_event_proposals', p.id);
+  }
+  for (const p of memoryRows) {
+    if (action === 'apply') {
+      let summary = p.summary || '';
+      if (!summary && p.delta) summary = mergeMemoryDraft(getStoryMemory(workId), p.delta);
+      saveStoryMemory(workId, summary, { source: 'proposal', note: p.note || '作者确认的 AI 提案' });
+      applied.memories += 1;
+    } else {
+      rejected.memories += 1;
+    }
+    mark('story_memory_proposals', p.id);
+  }
+  return { ok: true, work_id: workId, action, applied, rejected, pending: listProposals(workId).length };
+}
+
+function safeParseJSON(text) {
+  try { return JSON.parse(text || '{}'); } catch (_) { return {}; }
 }
 
 // ---------- 记忆版本 ----------
@@ -809,10 +973,16 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   const outlineText = outlineLines.join('\n');
 
   const storyMemory = getStoryMemory(workId);
-  const events = listStoryEvents(workId, 30);
+  const allEvents = listStoryEvents(workId, 200);
+  const events = allEvents.slice(0, 30);
   const eventsText = events.length
     ? events.map((e, i) => `${events.length - i}. [${e.kind}] ${e.summary.slice(0, 200)}`).join('\n')
     : '（暂无事件账本记录）';
+  // 未闭合伏笔：写作时必须照顾的“欠账”，也是 novel_consistency 的核对依据。
+  const openForeshadows = allEvents.filter((e) => e.kind === 'foreshadow' && e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped').slice(0, 20);
+  const foreshadowText = openForeshadows.length
+    ? openForeshadows.map((e) => `#${e.id} ${e.summary.slice(0, 160)}${e.resolves_event_id ? `（已被 #${e.resolves_event_id} 回收）` : ''}`).join('\n')
+    : '';
 
   // 前文尾巴：接龙模式取当前章节尾部；新章节/片段取上一章尾部。
   const currentTail = chapter ? plainText(chapter.content || '').slice(-4000) : '';
@@ -831,20 +1001,58 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   const redlines = listRedlines(workId);
   const styleContract = renderStyleContract(redlines);
 
-  const section = (label, text) => (text ? `【${label}】\n${text}` : `【${label}】\n（无）`);
+  // 分层预算：每层独立上限，超长截断并注明原文长度；红线层与角色卡保底，
+  // 整块装配结果再做一个总上限的收敛截断，避免盲切。
+  const needsCompression = storyMemory.length > MEMORY_COMPRESS_HINT;
+  const section = (label, text, cap) => {
+    const body = String(text || '');
+    if (!body) return `【${label}】\n（无）`;
+    if (cap && body.length > cap) {
+      return `【${label}】\n${body.slice(0, cap)}\n…（本层共 ${body.length} 字，已按预算截断；如需精确内容可用 novel_lookup 查证）`;
+    }
+    return `【${label}】\n${body}`;
+  };
 
-  const assembled = [
-    section('作品', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}`),
-    section('卷/剧情线/章节进度（大纲）', outlineText),
-    section('长期记忆（已发生的故事摘要）', storyMemory || '（无，可建议压缩一次）'),
-    section('最近事件（事件账本）', eventsText),
-    section('当前场景', chapter ? `第${chapter.position + 1}节 ${chapter.title}${chapter.summary ? `\n大纲摘要：${chapter.summary}` : ''}${chapter.author_note ? `\n作者注：${chapter.author_note}` : ''}` : '（未指定具体章节）'),
-    section('前文衔接', storyTail),
-    section('出场角色卡', charCardsText),
-    relationsText ? section('人物关系', relationsText) : '',
-    section('激活的世界观设定（优先级排列）', worldEntriesText),
-    section('写作风格红线', styleContract)
-  ].filter(Boolean).join('\n\n');
+  const memoryBody = storyMemory
+    ? `${storyMemory}${needsCompression ? `\n（⚠ 记忆已 ${storyMemory.length} 字，超过 ${MEMORY_COMPRESS_HINT} 字压缩提示线，收尾时请优先用 novel_memory_update 压缩合并）` : ''}`
+    : '（无，可建议压缩一次）';
+
+  const sceneBody = chapter
+    ? `第${chapter.position + 1}节 ${chapter.title}${chapter.summary ? `\n大纲摘要：${chapter.summary}` : ''}${chapter.author_note ? `\n作者注：${chapter.author_note}` : ''}`
+    : '（未指定具体章节）';
+
+  const sections = [
+    section('作品', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}`, 800),
+    section('卷/剧情线/章节进度（大纲）', outlineText, 2800),
+    section('长期记忆（已发生的故事摘要）', memoryBody, 2200),
+    section('最近事件（事件账本）', eventsText, 1800),
+    section('未闭合伏笔（写作时必须照顾）', foreshadowText, 1200),
+    section('当前场景', sceneBody, 1200),
+    section('前文衔接', storyTail, mode === 'continuation' ? 4000 : 1600),
+    section('出场角色卡', charCardsText, 4000),
+    relationsText ? section('人物关系', relationsText, 800) : '',
+    section('激活的世界观设定（优先级排列）', worldEntriesText, 3000),
+    section('写作风格红线', styleContract, 4000)
+  ].filter(Boolean);
+
+  // 总预算收敛：超限时从“前文衔接/大纲/世界观”等弹性层依次收缩，红线层不动。
+  const TOTAL_BUDGET = 26000;
+  const FLEX_ORDER = [6, 1, 9]; // sections 下标：前文衔接 → 大纲 → 世界观
+  const flexReduce = [2400, 1600, 800, 400];
+  let joined = sections.join('\n\n');
+  if (joined.length > TOTAL_BUDGET) {
+    for (const idx of FLEX_ORDER) {
+      if (joined.length <= TOTAL_BUDGET) break;
+      const label = sections[idx]?.split('\n')[0] || '';
+      for (const cap of flexReduce) {
+        if (joined.length <= TOTAL_BUDGET) break;
+        const raw = idx === 6 ? storyTail : idx === 1 ? outlineText : idx === 9 ? worldEntriesText : '';
+        sections[idx] = section(label.replace('【', '').replace('】', ''), raw, cap);
+        joined = sections.join('\n\n');
+      }
+    }
+  }
+  const assembled = joined;
 
   return {
     ok: true,
@@ -854,7 +1062,9 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     prev_chapter: prevChapter ? { id: prevChapter.id, title: prevChapter.title } : null,
     next_chapter: nextChapter ? { id: nextChapter.id, title: nextChapter.title } : null,
     story_memory: storyMemory,
+    needs_compression: needsCompression,
     events,
+    open_foreshadows: openForeshadows.map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id, resolves_event_id: e.resolves_event_id })),
     scene_characters: sceneCharacters.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status })),
     scene_character_ids: sceneIdList,
     world_entries: worldEntries.map((w) => ({ id: w.id, title: w.title, pinned: Number(w.is_pinned) === 1, priority: Number(w.priority ?? 50), keywords: w.keywords, content_preview: String(w.content || '').slice(0, 600) })),
@@ -1256,7 +1466,7 @@ async function generateNovelFromHarness(prompt, model) {
 // POST /harness/run 立即入队返回 job_id，任务在后台执行；
 // 前端轮询 GET /harness/job?id= 获取状态、耗时与最近输出。
 // D7：任务支持取消（POST /harness/cancel），杀掉 dsh 子进程树后状态置为 cancelled。
-const harnessJobs = new Map(); // jobId -> { id, status, started_at, finished_at, output, scan, error, tail }
+const harnessJobs = new Map(); // jobId -> { id, status, started_at, finished_at, output, scan, proposals, error, tail }
 function createHarnessJob(prompt, options) {
   const jobId = crypto.randomUUID();
   const job = {
@@ -1266,6 +1476,7 @@ function createHarnessJob(prompt, options) {
     finished_at: null,
     output: null,
     scan: null,
+    proposals: null,
     error: null,
     tail: '',
     abort: new AbortController(),
@@ -1290,6 +1501,8 @@ function createHarnessJob(prompt, options) {
       const redlineRows = listRedlines(Number(options.workId) || null);
       const scanHits = scanAgainstRedlines(redlineRows, output);
       job.scan = { enabled: redlineRows.length > 0, total: scanHits.reduce((s, h) => s + h.count, 0), hits: scanHits.slice(0, 50) };
+      // 提案模式收尾：把 AI 在本次任务里提交的事件/记忆提案一并带回，供作者确认。
+      if (options.workId) job.proposals = listProposals(Number(options.workId));
     } catch (e) {
       job.status = e.code === 'HARNESS_TIMEOUT' ? 'timeout'
         : (e.code === 'HARNESS_CANCELLED' || job.cancelRequested) ? 'cancelled'
@@ -1311,6 +1524,11 @@ async function handleAPI(req, res, pathname, query) {
   const segments = pathname.split('/').filter(Boolean);
   const resource = segments[1];
   const id = segments[2] ? parseId(segments[2]) : null;
+
+  // 跨源写请求一律拒绝（浏览器页面防护；同源 UI 与无 Origin 的工具调用不受影响）
+  if (!isLocalRequest(req)) {
+    return sendError(res, 403, '跨源请求被拒绝：写操作仅允许本机工坊页面发起');
+  }
 
   if (resource === 'search' && method === 'GET') {
     return sendJSON(res, 200, search(query.q || '', query.work_id ? Number(query.work_id) : null));
@@ -1394,6 +1612,15 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
+    // headless 生成任务先落提案（作者确认后写入并留版本快照）。
+    if (body.proposed === true) {
+      const result = addMemoryProposal(workId, {
+        summary: asString(body.summary, ''),
+        delta: asString(body.delta, ''),
+        note: asString(body.note, 'dsh 创作插件提案')
+      });
+      return sendJSON(res, 200, { ok: true, ...result, work_id: workId });
+    }
     // summary 直接提交；或 delta 增量：与当前摘要做安全拼接（语义压缩由调用方模型完成）。
     let summary = asString(body.summary, '');
     if (!summary && body.delta) {
@@ -1436,7 +1663,7 @@ async function handleAPI(req, res, pathname, query) {
   if (resource === 'novel' && segments[2] === 'scan' && method === 'POST') {
     const body = await readBody(req);
     const workId = Number(body.work_id) || null;
-    const hits = scanAgainstRedlines(listRedlines(workId), asString(body.text, ''));
+    const hits = scanAgainstRedlines(listRedlines(workId), asString(body.text, ''), { skip_dialogue: body.skip_dialogue === true });
     return sendJSON(res, 200, { ok: true, work_id: workId, total: hits.reduce((s, h) => s + h.count, 0), hits });
   }
   if (resource === 'novel' && segments[2] === 'events' && method === 'GET') {
@@ -1448,13 +1675,92 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
-    const id = addStoryEvent(workId, {
+    const fields = {
       chapterId: Number(body.chapter_id) || null,
       kind: asString(body.kind, 'event'),
       summary: asString(body.summary, ''),
-      payload: body.payload || {}
+      payload: body.payload || {},
+      foreshadowStatus: asString(body.foreshadow_status, ''),
+      resolvesEventId: Number(body.resolves_event_id) || null,
+      dedupKey: asString(body.dedup_key, '')
+    };
+    if (!fields.summary.trim()) return sendError(res, 400, '缺少 summary');
+    // headless 生成任务（NOVELSTUDIO_PROPOSE_MODE=1）先落提案，作者在工坊界面确认后入账。
+    if (body.proposed === true) {
+      const result = addEventProposal(workId, { ...fields, note: asString(body.note, 'dsh 创作插件提案') });
+      return sendJSON(res, 201, { ok: true, ...result, work_id: workId });
+    }
+    const result = addStoryEvent(workId, fields);
+    return sendJSON(res, 201, { ok: true, id: result.id, duplicate: result.duplicate, work_id: workId });
+  }
+  if (resource === 'novel' && segments[2] === 'foreshadows' && method === 'GET') {
+    const workId = Number(query.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    const status = asString(query.status, 'open');
+    const all = listStoryEvents(workId, 500).filter((e) => e.kind === 'foreshadow');
+    const rows = status === 'all' ? all : all.filter((e) => e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped');
+    return sendJSON(res, 200, { ok: true, work_id: workId, status, foreshadows: rows });
+  }
+  if (resource === 'novel' && segments[2] === 'proposals' && method === 'GET') {
+    const workId = Number(query.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    return sendJSON(res, 200, { ok: true, work_id: workId, proposals: listProposals(workId) });
+  }
+  if (resource === 'novel' && segments[2] === 'proposals' && method === 'POST' && (segments[3] === 'apply' || segments[3] === 'reject')) {
+    const body = await readBody(req);
+    const workId = Number(body.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    const result = settleProposals(workId, { ids: body.ids, all: body.all === true, action: segments[3] });
+    return sendJSON(res, 200, result);
+  }
+  if (resource === 'novel' && segments[2] === 'consistency' && method === 'POST') {
+    const body = await readBody(req);
+    const workId = Number(body.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
+    if (!work) return sendError(res, 404, '作品不存在');
+    const text = asString(body.text, '');
+    // 确定性装配核对清单：AI 逐项对照 text 判断，报告冲突即可。
+    const allEvents = listStoryEvents(workId, 500);
+    const openForeshadows = allEvents
+      .filter((e) => e.kind === 'foreshadow' && e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped')
+      .map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id }));
+    const presentCharacters = prepare('SELECT name, identity, status FROM characters WHERE work_id = ?').all(workId)
+      .filter((c) => c.name && text.includes(c.name))
+      .map((c) => ({ name: c.name, identity: c.identity, status: c.status }));
+    const recentEvents = allEvents.slice(0, 30).map((e) => ({ id: e.id, kind: e.kind, summary: e.summary, foreshadow_status: e.foreshadow_status }));
+    const scan = scanAgainstRedlines(listRedlines(workId), text);
+    const memory = getStoryMemory(workId);
+    return sendJSON(res, 200, {
+      ok: true, work_id: workId,
+      checklist: {
+        open_foreshadows: openForeshadows,
+        present_characters: presentCharacters,
+        recent_events: recentEvents,
+        story_memory: memory,
+        style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) }
+      }
     });
-    return sendJSON(res, 201, { ok: true, id, work_id: workId });
+  }
+  if (resource === 'novel' && segments[2] === 'chapter_save' && method === 'POST') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const content = asString(body.content, '');
+    if (!content.trim()) return sendError(res, 400, '缺少 content');
+    // 旧稿先入历史版本（可恢复），再覆盖正文；返回红线扫描供界面展示。
+    const version = saveChapterVersion(chapterId, chapter.title, chapter.summary, chapter.content);
+    const title = body.title !== undefined ? asString(body.title, chapter.title) : chapter.title;
+    const summary = body.summary !== undefined ? asString(body.summary, chapter.summary) : chapter.summary;
+    prepare('UPDATE chapters SET title = ?, summary = ?, content = ?, updated_at = ? WHERE id = ?')
+      .run(title, summary, content, now(), chapterId);
+    touchWork(chapter.work_id);
+    const hits = scanAgainstRedlines(listRedlines(chapter.work_id), plainText(content));
+    return sendJSON(res, 200, {
+      ok: true, chapter_id: chapterId, version_id: Number(version.id),
+      scan: { total: hits.reduce((s, h) => s + h.count, 0), hits: hits.slice(0, 20) }
+    });
   }
 
   // DeepSeek Harness 桥接
@@ -1473,7 +1779,12 @@ async function handleAPI(req, res, pathname, query) {
   if (resource === 'harness' && method === 'POST' && segments[2] === 'run') {
     const body = await readBody(req);
     if (!body.prompt || !String(body.prompt).trim()) return sendError(res, 400, '缺少 prompt');
-    const env = { NOVELSTUDIO_BASE_URL: `http://127.0.0.1:${PORT}` };
+    const env = {
+      NOVELSTUDIO_BASE_URL: `http://127.0.0.1:${PORT}`,
+      // 提案模式：headless 生成任务里 AI 的事件/记忆入账先落提案，
+      // 由作者在工坊界面确认后写入，避免 AI 自作主张污染真实账本。
+      NOVELSTUDIO_PROPOSE_MODE: '1'
+    };
     if (body.work_id) env.NOVELSTUDIO_WORK_ID = String(body.work_id);
     if (body.chapter_id) env.NOVELSTUDIO_CHAPTER_ID = String(body.chapter_id);
     if (body.mode) env.NOVELSTUDIO_MODE = String(body.mode);
@@ -1499,6 +1810,7 @@ async function handleAPI(req, res, pathname, query) {
       tail: job.tail.slice(-600),
       output: job.status === 'done' ? job.output : null,
       scan: job.status === 'done' ? job.scan : null,
+      proposals: job.status === 'done' ? job.proposals : null,
       error: job.error
     });
   }

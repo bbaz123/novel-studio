@@ -1,10 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dataDir = join(__dirname, 'data');
+// NOVELSTUDIO_DATA_DIR：冒烟测试/多实例部署时重定向数据库目录（默认 data/）。
+const dataDir = process.env.NOVELSTUDIO_DATA_DIR
+  ? resolve(isAbsolute(process.env.NOVELSTUDIO_DATA_DIR) ? process.env.NOVELSTUDIO_DATA_DIR : join(process.cwd(), process.env.NOVELSTUDIO_DATA_DIR))
+  : join(__dirname, 'data');
 mkdirSync(dataDir, { recursive: true });
 
 export const db = new DatabaseSync(join(dataDir, 'novel.db'));
@@ -178,6 +181,7 @@ CREATE TABLE IF NOT EXISTS chapter_save_versions (
 );
 
 -- 故事事件账本：支撑增量记忆、伏笔/状态追踪与回滚依据。
+-- foreshadow_status：伏笔状态（''=open / resolved / dropped）；resolves_event_id：回收本伏笔的事件。
 CREATE TABLE IF NOT EXISTS story_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -185,6 +189,9 @@ CREATE TABLE IF NOT EXISTS story_events (
   kind TEXT NOT NULL DEFAULT 'event',
   summary TEXT NOT NULL DEFAULT '',
   payload TEXT NOT NULL DEFAULT '{}',
+  foreshadow_status TEXT NOT NULL DEFAULT '',
+  resolves_event_id INTEGER,
+  dedup_key TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -208,6 +215,33 @@ CREATE TABLE IF NOT EXISTS writing_redlines (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 事件入账提案：headless 生成任务里 AI 记的事件先落提案，作者在工坊界面确认后入账。
+CREATE TABLE IF NOT EXISTS story_event_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL DEFAULT 'event',
+  summary TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '{}',
+  foreshadow_status TEXT NOT NULL DEFAULT '',
+  resolves_event_id INTEGER,
+  dedup_key TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 记忆更新提案：headless 生成任务里 AI 提交的长期记忆先落提案，作者确认后写入并留版本快照。
+CREATE TABLE IF NOT EXISTS story_memory_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  delta TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // 兼容旧数据库：给已存在的表补充新增列
@@ -217,6 +251,9 @@ try { db.exec(`ALTER TABLE characters ADD COLUMN mes_example TEXT NOT NULL DEFAU
 try { db.exec(`ALTER TABLE characters ADD COLUMN tags TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE characters ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DEFAULT 50`); } catch (_) {}
+try { db.exec(`ALTER TABLE story_events ADD COLUMN foreshadow_status TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE story_events ADD COLUMN resolves_event_id INTEGER`); } catch (_) {}
+try { db.exec(`ALTER TABLE story_events ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_volumes_work ON volumes(work_id);
@@ -234,6 +271,9 @@ CREATE INDEX IF NOT EXISTS idx_world_entries_work ON world_entries(work_id, posi
 CREATE INDEX IF NOT EXISTS idx_creation_tasks_work ON creation_tasks(work_id);
 CREATE INDEX IF NOT EXISTS idx_story_events_work ON story_events(work_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_story_events_chapter ON story_events(chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_story_events_dedup ON story_events(work_id, dedup_key);
 CREATE INDEX IF NOT EXISTS idx_memory_versions_work ON memory_versions(work_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_writing_redlines_work ON writing_redlines(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_proposals_work ON story_event_proposals(work_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_proposals_work ON story_memory_proposals(work_id, status, created_at DESC);
 `);

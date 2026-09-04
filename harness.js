@@ -176,11 +176,24 @@ function killChildTree(child) {
 
 /**
  * 运行一次 dsh headless 任务（带进度回调版本）。
+ *
+ * 模型切换说明：dsh 的默认模型存在全局 settings.yaml 里，本函数过去直接改写该文件，
+ * 并发任务会互相覆盖（竞态），并可能覆盖用户手改的配置。现在改为：
+ *   1) 进程内互斥串行化「改 → 跑 → 还原」三段，避免并发任务交错；
+ *   2) CAS 还原：只有文件仍等于我们写入的内容时才恢复原文，不覆盖期间发生的其它修改。
+ *
  * @param {string} prompt 给 AI 的任务描述
  * @param {{ timeout?: number, model?: string, env?: Record<string,string>, signal?: AbortSignal }} [options]
  * @param {(chunk: string) => void} [onChunk] 每次收到子进程输出时回调（用于前台进度展示）
  * @returns {Promise<string>} 任务输出
  */
+let modelSwitchTail = Promise.resolve();
+function withModelSwitch(fn) {
+  const run = modelSwitchTail.then(fn, fn);
+  modelSwitchTail = run.then(() => {}, () => {});
+  return run;
+}
+
 export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) {
   if (!isHarnessAvailable()) {
     throw new Error(`未找到 deepseek-harness：${HARNESS_DIR}`);
@@ -199,106 +212,115 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
   };
   if (signal?.aborted) throw makeCancelled();
 
-  const originalSettings = readSettings();
-  let patched = false;
-  if (options.model && originalSettings != null) {
+  return withModelSwitch(async () => {
+    const originalSettings = readSettings();
+    let patched = false;
+    let patchedContent = null;
+    if (options.model && originalSettings != null) {
+      try {
+        patchedContent = patchDefaultModel(originalSettings, options.model);
+        if (patchedContent !== originalSettings) {
+          writeSettings(patchedContent);
+          patched = true;
+        }
+      } catch (_) { /* 设置切换失败不阻塞任务 */ }
+    }
+
+    const timeoutMs = options.timeout || 10 * 60 * 1000;
+
     try {
-      writeSettings(patchDefaultModel(originalSettings, options.model));
-      patched = true;
-    } catch (_) { /* 设置切换失败不阻塞任务 */ }
-  }
+      return await new Promise((resolve, reject) => {
+        const pnpmJs = findPnpmJs();
+        const taskArgs = ['dsh', '--profile', 'headless', String(prompt || '').trim()];
+        const childEnv = { ...process.env, ...(options.env || {}) };
+        const child = pnpmJs
+          ? spawn(process.execPath, [pnpmJs, ...taskArgs], {
+              cwd: HARNESS_DIR,
+              shell: false,
+              windowsHide: true,
+              env: childEnv
+            })
+          : spawn('pnpm', taskArgs, {
+              cwd: HARNESS_DIR,
+              shell: true,
+              windowsHide: true,
+              env: childEnv
+            });
 
-  const timeoutMs = options.timeout || 10 * 60 * 1000;
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
 
-  try {
-    return await new Promise((resolve, reject) => {
-      const pnpmJs = findPnpmJs();
-      const taskArgs = ['dsh', '--profile', 'headless', String(prompt || '').trim()];
-      const childEnv = { ...process.env, ...(options.env || {}) };
-      const child = pnpmJs
-        ? spawn(process.execPath, [pnpmJs, ...taskArgs], {
-            cwd: HARNESS_DIR,
-            shell: false,
-            windowsHide: true,
-            env: childEnv
-          })
-        : spawn('pnpm', taskArgs, {
-            cwd: HARNESS_DIR,
-            shell: true,
-            windowsHide: true,
-            env: childEnv
-          });
-
-      let stdout = '';
-      let stderr = '';
-      let settled = false;
-
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill();
-        const err = new Error(`Harness 任务超时（${Math.round(timeoutMs / 1000)} 秒）后被取消，已生成的中间内容未能落盘。建议限制篇幅（如 800 字内）或使用「跳过提问」后重试。`);
-        err.code = 'HARNESS_TIMEOUT';
-        err.stdoutTail = stdout.slice(-600);
-        err.stderr = stderr;
-        reject(err);
-      }, timeoutMs);
-
-      // D7：外部取消 → 杀掉进程树并以 HARNESS_CANCELLED 结束任务
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        killChildTree(child);
-        reject(makeCancelled());
-      };
-      if (signal) {
-        if (signal.aborted) onAbort();
-        else signal.addEventListener('abort', onAbort, { once: true });
-      }
-      const cleanupSignal = () => signal?.removeEventListener('abort', onAbort);
-
-      child.stdout.on('data', (chunk) => {
-        stdout += chunk;
-        if (typeof onChunk === 'function') {
-          try { onChunk(String(chunk)); } catch (_) { /* 进度回调失败不影响任务 */ }
-        }
-      });
-      child.stderr.on('data', (chunk) => {
-        stderr += chunk;
-        if (typeof onChunk === 'function') {
-          try { onChunk(String(chunk)); } catch (_) { /* 同上 */ }
-        }
-      });
-      child.on('error', (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        cleanupSignal();
-        reject(err);
-      });
-      child.on('close', (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        cleanupSignal();
-        if (code === 0) {
-          resolve(stdout.trim());
-        } else {
-          const err = new Error(readableError(stderr, `Harness 退出码：${code}`));
-          err.code = 'HARNESS_EXIT';
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill();
+          const err = new Error(`Harness 任务超时（${Math.round(timeoutMs / 1000)} 秒）后被取消，已生成的中间内容未能落盘。建议限制篇幅（如 800 字内）或使用「跳过提问」后重试。`);
+          err.code = 'HARNESS_TIMEOUT';
+          err.stdoutTail = stdout.slice(-600);
           err.stderr = stderr;
           reject(err);
+        }, timeoutMs);
+
+        // D7：外部取消 → 杀掉进程树并以 HARNESS_CANCELLED 结束任务
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          killChildTree(child);
+          reject(makeCancelled());
+        };
+        if (signal) {
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
         }
+        const cleanupSignal = () => signal?.removeEventListener('abort', onAbort);
+
+        child.stdout.on('data', (chunk) => {
+          stdout += chunk;
+          if (typeof onChunk === 'function') {
+            try { onChunk(String(chunk)); } catch (_) { /* 进度回调失败不影响任务 */ }
+          }
+        });
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk;
+          if (typeof onChunk === 'function') {
+            try { onChunk(String(chunk)); } catch (_) { /* 同上 */ }
+          }
+        });
+        child.on('error', (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanupSignal();
+          reject(err);
+        });
+        child.on('close', (code) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanupSignal();
+          if (code === 0) {
+            resolve(stdout.trim());
+          } else {
+            const err = new Error(readableError(stderr, `Harness 退出码：${code}`));
+            err.code = 'HARNESS_EXIT';
+            err.stderr = stderr;
+            reject(err);
+          }
+        });
       });
-    });
-  } finally {
-    if (patched && originalSettings != null) {
-      try {
-        writeSettings(originalSettings);
-      } catch (_) { /* 恢复失败不阻塞 */ }
+    } finally {
+      // CAS 还原：文件仍等于我们写入的内容时才恢复，避免覆盖并发/手改内容。
+      if (patched && patchedContent != null) {
+        try {
+          if (readSettings() === patchedContent) {
+            writeSettings(originalSettings);
+          }
+        } catch (_) { /* 恢复失败不阻塞 */ }
+      }
     }
-  }
+  });
 }
 
 /**

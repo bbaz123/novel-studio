@@ -3,7 +3,7 @@
 Novel Studio 是一个本地运行的小说创作管理工具，用于管理多部作品的设定、剧情线、大纲、正文写作，并把 AI 辅助创作能力整合进一个清爽的界面。
 
 它不需要安装任何 npm 第三方依赖，使用 Node.js 内置能力与本地 SQLite 数据库即可运行。你的作品数据、API Key 默认只保存在本机。（基于dshAI生成，有任何问题，请直接询问dsh）
-专属插件地址：https://github.com/bbaz123/novel-writing-plugin
+创作插件（novel-writing）为内置组件，源码位于 `harness-plugins/novel-writing/`，与工坊同仓维护、一起升级。
 ---
 
 ## ✨ 功能亮点
@@ -53,6 +53,8 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 - **AI 自动创建小说**：输入一段描述，AI 自动完善设定并创建作品，创建成功自动进入新书
 - **AI 创作工作台 / Harness 流水线**：分阶段生成世界观、角色卡、大纲、正文草稿并做一致性审查，完成后可保存为作品
 - **小说设定 AI 生成**：剧情线 / 大纲 / 设定库 / 角色 / 长期记忆 / 作者注的 AI 生成均复用 **novel-writing-plugin**（deepseek-harness）创作内核——ST 式分层上下文（`/api/novel/context` 装配）、一次一问的澄清协议与反 AI 腔红线
+- **入账提案确认**：AI 生成任务里提交的事件/记忆先落提案（不直接写入账本），在「AI 写作结果」弹窗勾选采纳，或到「小说设定 → 长期记忆 → 📥 待确认提案」逐条处理
+- **伏笔闭环与一致性核对**：`novel_foreshadows` 查未闭合伏笔、正文回收时自动标记 resolved；成文后 `novel_consistency` 核对未闭合伏笔/角色状态/事件账本；AI 成稿可一键写回章节（旧稿自动存历史版本）
 - **任务进度与取消**：所有 Harness 慢通道任务都有悬浮进度卡（阶段文案 / 实时耗时 / 输出尾部），输出已过滤内核内部提示词，只显示人话进度；支持「停止」按钮中途取消（会杀掉 dsh 进程树，已生成内容不落库）
 - **SillyTavern 设置**：管理角色卡、世界观词条、作者注，用于丰富 AI 上下文（需进入作品后使用）
 
@@ -64,7 +66,20 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 
 ---
 
-## 🛠️ 最近更新（2026-09 · 真人体验测试修复版）
+## 🛠️ 最近更新（2026-09 · 内置创作插件升级版）
+
+- **创作插件完全内置**：novel-writing 插件源码收进 `harness-plugins/novel-writing/`（工具/人设/安装脚本/清单/冒烟测试），与工坊同仓维护；`install.ps1` 改为区块合并安装（升级不再覆盖你 handless profile 里的其它 patch，旧版区块自动识别移除，支持 `-DryRun`/`-Uninstall`）
+- **入账提案确认**：headless 生成任务里 AI 的事件/记忆入账先落提案，作者在「AI 写作结果」弹窗或「长期记忆 → 📥 待确认提案」确认后才会写入作品账本，杜绝 AI 自作主张污染账本
+- **伏笔闭环**：事件账本支持伏笔状态与回收关联（`novel_foreshadows` / `novel_event_add(resolves_event_id)`），上下文自动携带【未闭合伏笔】层
+- **一致性核对**：新增 `novel_consistency` 工具与 `/api/novel/consistency` 端点，成文后核对未闭合伏笔/出场角色状态/最近事件 vs 正文
+- **正文写回**：新增 `novel_chapter_save` 工具与 `/api/novel/chapter_save` 端点，成稿写回章节（旧稿自动存历史版本，返回红线扫描）
+- **上下文分层预算**：`buildNovelContext` 每层独立上限、红线/角色卡保底、总量收敛截断；超长记忆标注压缩提示；记忆版本每作品保留最近 200 个自动剪除
+- **红线扫描升级**：支持跳过引号内对话（`skip_dialogue`）、红线模式长度/正则校验、事件按 `dedup_key` 幂等去重
+- **模型切换竞态修复**：harness 模型切换改为互斥 + CAS 还原，并发任务不再互相覆盖全局 settings.yaml
+- **本地安全加固**：服务端不再返回 `Access-Control-Allow-Origin: *`（跨源页面读不到本地 API Key 与作品数据）；浏览器跨源写请求一律 403；请求体上限 2MB
+- **冒烟测试**：`node harness-plugins/novel-writing/test/smoke.mjs` 一键自检 10 组核心链路（不依赖 dsh/模型/API Key）
+
+## 🛠️ 之前更新（2026-09 · 真人体验测试修复版）
 
 基于真实浏览器逐页操作 + 一次真实付费 AI 生成的体验测试，本轮修复了以下问题：
 
@@ -173,11 +188,18 @@ novel-studio/
 │   ├── index.html      # 页面骨架与侧边栏
 │   ├── styles.css      # 样式与深色主题
 │   └── app.js          # 前端交互逻辑
-├── db.js               # SQLite 初始化与建表
-├── server.js           # HTTP 服务与 API 路由
-├── harness.js          # DeepSeek Harness 桥接层
+├── db.js               # SQLite 初始化与建表（含事件账本/记忆版本/红线/入账提案表）
+├── server.js           # HTTP 服务与 API 路由（含 /api/novel/* 创作内核）
+├── harness.js          # DeepSeek Harness 桥接层（模型切换互斥 + CAS 还原）
 ├── demo-data.json      # 示例小说《雾都缝匠》演示数据（“我的作品”页一键导入，可选）
-├── harness-plugins/    # Harness 创作插件（可选）
+├── harness-plugins/novel-writing/   # 内置创作插件（dsh 侧唯一来源）
+│   ├── novel-tools.mjs              # novel_* 工具集（headless 与 GUI preset 同源）
+│   ├── agent.cordis.yml / preset.yml# GUI 会话 preset
+│   ├── headless-cordis.patch.yml    # headless profile 注入区块（合并式安装）
+│   ├── install.ps1                  # 安装/升级/卸载（-DryRun/-Uninstall）
+│   ├── plugin.json                  # 清单：工具/端点/契约
+│   ├── test/smoke.mjs               # 端到端冒烟测试（node:test 风格断言）
+│   ├── ENGINE.md / NATIVE_PLUGIN_GUIDE.md / README.md
 ├── package.json
 ├── start-novel-studio.cmd
 ├── create-desktop-shortcut.ps1
