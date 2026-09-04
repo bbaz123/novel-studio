@@ -13,6 +13,9 @@ data/*.sqlite3
 data/*.sqlite3-shm
 data/*.sqlite3-wal
 
+# Local database backups (full DB copies, same sensitivity as novel.db)
+data/backup-*/
+
 # IDE / editor
 .vs/
 .idea/

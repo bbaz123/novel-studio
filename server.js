@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, HARNESS_DIR } from './harness.js';
+import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress, HARNESS_DIR } from './harness.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -108,7 +108,7 @@ const RESOURCE_CONFIG = {
   plotline_characters: { table: 'plotline_characters', order: 'id ASC', fields: ['work_id', 'plotline_id', 'character_id', 'status', 'notes'], defaults: { status: '', notes: '' } },
   world_entries: { table: 'world_entries', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'content', 'keywords', 'is_pinned', 'priority', 'position'], defaults: { content: '', keywords: '', is_pinned: 0, priority: 50, position: 0 } },
   creation_tasks: { table: 'creation_tasks', order: 'id DESC', fields: ['work_id', 'prompt', 'status', 'stages_json', 'result_json', 'error'], defaults: { prompt: '', status: 'running', stages_json: '{}', result_json: '{}', error: '' } },
-  api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', model: 'deepseek-chat', temperature: 0.8, max_tokens: 4096 } }
+  api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-v4-pro', temperature: 0.8, max_tokens: 4096 } }
 };
 
 const NUMERIC_FIELDS = new Set([
@@ -149,6 +149,10 @@ function normalizeValue(resource, field, value) {
 function insertRow(resource, data) {
   const cfg = RESOURCE_CONFIG[resource];
   if (!cfg) return null;
+  // D4：作品名称必填（后端兜底，前端同样拦截）
+  if (resource === 'works' && !String(data.title ?? '').trim()) {
+    throw new Error('作品名称不能为空');
+  }
   const values = cfg.fields.map((f) => normalizeValue(resource, f, data[f]));
   const sql = `INSERT INTO ${cfg.table} (${cfg.fields.join(',')}) VALUES (${cfg.fields.map(() => '?').join(',')})`;
   const info = prepare(sql).run(...values);
@@ -158,6 +162,10 @@ function insertRow(resource, data) {
 function updateRow(resource, id, data) {
   const cfg = RESOURCE_CONFIG[resource];
   if (!cfg) return null;
+  // D4：编辑作品时也不允许把标题清空
+  if (resource === 'works' && data.title !== undefined && !String(data.title ?? '').trim()) {
+    throw new Error('作品名称不能为空');
+  }
   const present = cfg.fields.filter((f) => data[f] !== undefined);
   if (present.length === 0) return false;
   const sql = `UPDATE ${cfg.table} SET ${present.map((f) => `${f} = ?`).join(', ')} WHERE id = ?`;
@@ -173,6 +181,18 @@ function deleteRow(resource, id) {
 }
 
 // ---------- search ----------
+// 从纯文本中截取一段包含查询词的片段（D2：搜索结果不再裸露 HTML 标签）。
+function snippetAround(text, q) {
+  const plain = plainText(text);
+  if (!plain) return '';
+  const idx = plain.indexOf(q);
+  const len = 80;
+  if (idx < 0) return plain.slice(0, len);
+  const start = Math.max(0, idx - 20);
+  const seg = plain.slice(start, start + len);
+  return (start > 0 ? '…' : '') + seg + (start + len < plain.length ? '…' : '');
+}
+
 function search(q, workId) {
   if (!q) return { terms: [], chapters: [], characters: [], plotlines: [] };
   const like = `%${q}%`;
@@ -182,7 +202,7 @@ function search(q, workId) {
     WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?
     ${workId ? 'AND work_id = ?' : ''}
     ORDER BY title LIMIT 20
-  `).all(...params);
+  `).all(...params).map((t) => ({ ...t, snippet: snippetAround(t.content, q) }));
 
   const cparams = workId ? [like, like, like, workId] : [like, like, like];
   const chapters = prepare(`
@@ -190,7 +210,7 @@ function search(q, workId) {
     WHERE title LIKE ? OR summary LIKE ? OR content LIKE ?
     ${workId ? 'AND work_id = ?' : ''}
     ORDER BY updated_at DESC LIMIT 20
-  `).all(...cparams);
+  `).all(...cparams).map((c) => ({ ...c, snippet: snippetAround(c.summary || c.content, q) }));
 
   const chparams = workId ? [like, like, like, like, like, workId] : [like, like, like, like, like];
   const characters = prepare(`
@@ -312,18 +332,35 @@ function getConfigFromBody(body) {
   return {
     base_url: body.base_url || 'https://api.deepseek.com',
     api_key: body.api_key || '',
-    model: body.model || 'deepseek-chat',
+    model: body.model || 'deepseek-v4-pro',
     temperature: body.temperature ?? 0.8,
     max_tokens: body.max_tokens ?? 4096
   };
 }
 
 // ---------- AI error history ----------
+// D3/D16：message 只保留一行可读错误；同 action + 同 message 在 30 分钟窗口内去重，避免报错墙堆叠重复。
+function readableErrorMessage(error) {
+  const text = String(error?.message || error || 'Unknown error');
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l && !/^\s*at\s+/.test(l)) || text.split(/\r?\n/)[0].trim();
+  return firstLine.slice(0, 300);
+}
+
 function logAIError(action, error, endpoint = '') {
   try {
-    const message = String(error?.message || error || 'Unknown error').slice(0, 2000);
+    const message = readableErrorMessage(error);
     const code = String(error?.status || error?.detail?.error?.code || error?.code || '').slice(0, 200);
-    const stack = String(error?.stack || '').slice(0, 4000);
+    const stack = String(error?.stderr || error?.stack || '').slice(0, 4000);
+    // 30 分钟窗口内相同的 action+message 视为重复错误，不重复插入。
+    const recent = prepare(`
+      SELECT id FROM ai_error_logs
+      WHERE action = ? AND message = ? AND created_at >= ?
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `).get(action || 'unknown', message, new Date(Date.now() - 30 * 60 * 1000).toISOString());
+    if (recent) return;
     prepare(`
       INSERT INTO ai_error_logs (action, message, error_code, stack, endpoint)
       VALUES (?, ?, ?, ?, ?)
@@ -899,7 +936,11 @@ function installDemo(force) {
       idMap.volume.set(v.title, insertRow('volumes', { work_id: workId, title: asString(v.title, `卷${i + 1}`), summary: asString(v.summary), position: i }));
     });
     (data.plotlines || []).forEach((p, i) => {
-      idMap.plotline.set(p.title, insertRow('plotlines', { work_id: workId, title: asString(p.title, `线${i + 1}`), kind: p.kind === 'side' ? 'side' : 'main', summary: asString(p.summary), position: i }));
+      const rawTitle = asString(p.title, `线${i + 1}`);
+      const title = stripPlotlinePrefix(rawTitle);
+      const id = insertRow('plotlines', { work_id: workId, title, kind: p.kind === 'side' ? 'side' : 'main', summary: asString(p.summary), position: i });
+      idMap.plotline.set(rawTitle, id);
+      idMap.plotline.set(title, id);
     });
     (data.categories || []).forEach((c, i) => {
       idMap.category.set(c.name, insertRow('categories', { work_id: workId, name: asString(c.name, `分类${i + 1}`), color: asString(c.color, '#6366f1'), position: i }));
@@ -990,6 +1031,11 @@ function asString(v, fallback = '') {
   return v === undefined || v === null ? fallback : String(v).trim();
 }
 
+// D5：剧情线标题前缀剥离（“主线：/支线：”由界面按 kind 显示，存储时不带前缀，避免“主线：主线：…”）
+function stripPlotlinePrefix(title) {
+  return String(title || '').replace(/^(?:主线|支线)\s*[:：]\s*/, '').trim();
+}
+
 function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
@@ -1050,10 +1096,24 @@ async function generateNovelFromPrompt(prompt, config) {
   return createNovelFromData(data);
 }
 
+// 把 AI 产出的简介整理成适合卡片展示的短摘要（D4：避免整篇 Markdown 存入 description）。
+function shortDescription(text = '') {
+  const plain = String(text)
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_`~]/g, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const first = plain.find((p) => p.length > 0) || '';
+  return first.length > 160 ? first.slice(0, 160) + '…' : first;
+}
+
 // 把 AI 返回的小说设定 JSON 写入数据库。
 function createNovelFromData(data) {
   const title = asString(data.title, '未命名作品');
-  const description = asString(data.description, '');
+  const description = shortDescription(asString(data.description, ''));
 
   db.exec('BEGIN');
   try {
@@ -1088,7 +1148,7 @@ function createNovelFromData(data) {
     plotlines.forEach((p, i) => {
       const name = asString(p.title, `剧情线${i + 1}`);
       const kind = asString(p.kind) === 'side' ? 'side' : 'main';
-      const id = insertRow('plotlines', { work_id: workId, title: name, kind, summary: asString(p.summary), position: i });
+      const id = insertRow('plotlines', { work_id: workId, title: stripPlotlinePrefix(name), kind, summary: asString(p.summary), position: i });
       plotlineIdByName.set(name, id);
       plotlineNames.push(name);
     });
@@ -1190,6 +1250,58 @@ async function generateNovelFromHarness(prompt, model) {
   const output = await runHarnessTask(task, { timeout: 10 * 60 * 1000, model: model || undefined });
   const data = extractJSON(output);
   return createNovelFromData(data);
+}
+
+// ---------- Harness 任务队列（D1：AI 任务进度） ----------
+// POST /harness/run 立即入队返回 job_id，任务在后台执行；
+// 前端轮询 GET /harness/job?id= 获取状态、耗时与最近输出。
+// D7：任务支持取消（POST /harness/cancel），杀掉 dsh 子进程树后状态置为 cancelled。
+const harnessJobs = new Map(); // jobId -> { id, status, started_at, finished_at, output, scan, error, tail }
+function createHarnessJob(prompt, options) {
+  const jobId = crypto.randomUUID();
+  const job = {
+    id: jobId,
+    status: 'queued',
+    started_at: null,
+    finished_at: null,
+    output: null,
+    scan: null,
+    error: null,
+    tail: '',
+    abort: new AbortController(),
+    cancelRequested: false
+  };
+  harnessJobs.set(jobId, job);
+  // 清理：只保留最近 30 个任务，防止长时间运行内存增长。
+  if (harnessJobs.size > 30) {
+    const oldest = harnessJobs.keys().next().value;
+    harnessJobs.delete(oldest);
+  }
+  (async () => {
+    job.status = 'running';
+    job.started_at = Date.now();
+    try {
+      const output = await runHarnessTaskWithProgress(prompt, { ...options, signal: job.abort.signal }, (chunk) => {
+        job.tail = (job.tail + chunk).slice(-2000);
+      });
+      job.status = 'done';
+      job.output = output;
+      // 生成后确定性红线扫描（反 AI 腔自检），随结果一起返回，不阻塞正文。
+      const redlineRows = listRedlines(Number(options.workId) || null);
+      const scanHits = scanAgainstRedlines(redlineRows, output);
+      job.scan = { enabled: redlineRows.length > 0, total: scanHits.reduce((s, h) => s + h.count, 0), hits: scanHits.slice(0, 50) };
+    } catch (e) {
+      job.status = e.code === 'HARNESS_TIMEOUT' ? 'timeout'
+        : (e.code === 'HARNESS_CANCELLED' || job.cancelRequested) ? 'cancelled'
+        : 'failed';
+      job.error = job.status === 'cancelled' ? '任务已取消' : readableErrorMessage(e);
+      job.tail = (job.tail + (e.stdoutTail || '')).slice(-2000);
+      if (job.status !== 'cancelled') logAIError(options.action || 'harness', e, '/api/harness/run');
+    } finally {
+      job.finished_at = Date.now();
+    }
+  })().catch(() => { /* 后台任务异常不影响 HTTP 层 */ });
+  return job;
 }
 
 // ---------- 路由入口 ----------
@@ -1354,28 +1466,54 @@ async function handleAPI(req, res, pathname, query) {
       dir: HARNESS_DIR
     });
   }
+
+  // D1：AI 任务进度。POST /harness/run 立即返回 job_id，任务在后台执行；
+  // 前端通过 GET /harness/job?id= 轮询状态（阶段/耗时/最近输出），解决「界面静止 10 分钟」的问题。
+
   if (resource === 'harness' && method === 'POST' && segments[2] === 'run') {
     const body = await readBody(req);
     if (!body.prompt || !String(body.prompt).trim()) return sendError(res, 400, '缺少 prompt');
-    try {
-      const env = { NOVELSTUDIO_BASE_URL: `http://127.0.0.1:${PORT}` };
-      if (body.work_id) env.NOVELSTUDIO_WORK_ID = String(body.work_id);
-      if (body.chapter_id) env.NOVELSTUDIO_CHAPTER_ID = String(body.chapter_id);
-      if (body.mode) env.NOVELSTUDIO_MODE = String(body.mode);
-      const output = await runHarnessTask(body.prompt, {
-        timeout: body.timeout || undefined,
-        model: body.model || undefined,
-        env
-      });
-      // 生成后确定性红线扫描（反 AI 腔自检），随结果一起返回，不阻塞正文。
-      const redlineRows = listRedlines(Number(body.work_id) || null);
-      const scanHits = scanAgainstRedlines(redlineRows, output);
-      const scan = { enabled: redlineRows.length > 0, total: scanHits.reduce((s, h) => s + h.count, 0), hits: scanHits.slice(0, 50) };
-      return sendJSON(res, 200, { ok: true, output, scan });
-    } catch (e) {
-      logAIError(body.action || 'harness', e, '/api/harness/run');
-      return sendError(res, 502, e.message);
+    const env = { NOVELSTUDIO_BASE_URL: `http://127.0.0.1:${PORT}` };
+    if (body.work_id) env.NOVELSTUDIO_WORK_ID = String(body.work_id);
+    if (body.chapter_id) env.NOVELSTUDIO_CHAPTER_ID = String(body.chapter_id);
+    if (body.mode) env.NOVELSTUDIO_MODE = String(body.mode);
+    const job = createHarnessJob(String(body.prompt).trim(), {
+      timeout: Number(body.timeout) || 10 * 60 * 1000,
+      model: body.model || undefined,
+      env,
+      action: body.action || 'harness',
+      workId: Number(body.work_id) || null
+    });
+    return sendJSON(res, 202, { ok: true, job_id: job.id, status: job.status });
+  }
+
+  if (resource === 'harness' && method === 'GET' && segments[2] === 'job') {
+    const jobId = query.id || segments[3];
+    const job = harnessJobs.get(String(jobId));
+    if (!job) return sendError(res, 404, '任务不存在或已过期（服务重启后旧任务会丢失）');
+    return sendJSON(res, 200, {
+      ok: true,
+      id: job.id,
+      status: job.status,
+      elapsed_ms: job.started_at ? (job.finished_at || Date.now()) - job.started_at : 0,
+      tail: job.tail.slice(-600),
+      output: job.status === 'done' ? job.output : null,
+      scan: job.status === 'done' ? job.scan : null,
+      error: job.error
+    });
+  }
+
+  // D7：取消正在运行的 harness 任务（杀掉 dsh 子进程树，状态置为 cancelled）
+  if (resource === 'harness' && method === 'POST' && segments[2] === 'cancel') {
+    const body = await readBody(req);
+    const job = harnessJobs.get(String(body.job_id || ''));
+    if (!job) return sendError(res, 404, '任务不存在或已结束');
+    if (job.status === 'queued' || job.status === 'running') {
+      job.cancelRequested = true;
+      try { job.abort?.abort(); } catch (_) { /* 忽略 */ }
+      return sendJSON(res, 200, { ok: true, id: job.id, status: 'cancelling' });
     }
+    return sendJSON(res, 200, { ok: true, id: job.id, status: job.status });
   }
   if (resource === 'harness' && method === 'POST' && segments[2] === 'generate_novel') {
     const body = await readBody(req);
@@ -1458,6 +1596,8 @@ async function handleAPI(req, res, pathname, query) {
     try {
       const config = getConfigFromBody(body);
       if (!config.api_key) return sendError(res, 400, '请先填写 API Key');
+      // 允许请求级覆盖模型（工作台阶段等需要按策略选择 flash/pro）
+      if (body.model) config.model = normalizeModel(body.model);
       if (action === 'generate_novel') {
         const result = await generateNovelFromPrompt(body.prompt, config);
         return sendJSON(res, 200, { ok: true, ...result });
@@ -1471,7 +1611,7 @@ async function handleAPI(req, res, pathname, query) {
       }
       const messages = body.messages;
       if (!Array.isArray(messages) || messages.length === 0) return sendError(res, 400, '缺少 messages');
-      if (action === 'write' || action === 'personality' || action === 'outline' || action === 'chat' || action === 'polish' || action === 'expand') {
+      if (action === 'write' || action === 'personality' || action === 'outline' || action === 'chat' || action === 'polish' || action === 'expand' || action === 'pipeline') {
         const data = await callAI(config, messages, { temperature: body.temperature, max_tokens: body.max_tokens });
         return sendJSON(res, 200, { ok: true, reply: data?.choices?.[0]?.message?.content || '', raw: data });
       }

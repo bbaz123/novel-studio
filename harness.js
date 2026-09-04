@@ -8,8 +8,22 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// dsh 仓库路径，可通过环境变量 DSH_HOME 覆盖
-export const HARNESS_DIR = process.env.DSH_HOME || 'C:\\Users\\a1941\\Desktop\\deepseek-harness';
+// dsh 仓库路径解析（修复 DSH_HOME 语义冲突：dsh 官方语义中 DSH_HOME 是 profile 目录，
+// 而本应用需要的是仓库路径。优先使用专属变量 NOVELSTUDIO_DSH_REPO；
+// DSH_HOME 只有在确实包含 package.json（即它指向仓库）时才采用）。
+function resolveHarnessDir() {
+  const candidates = [
+    process.env.NOVELSTUDIO_DSH_REPO,
+    process.env.DSH_HOME,
+    'C:\\Users\\a1941\\Desktop\\deepseek-harness'
+  ].filter(Boolean);
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+  }
+  // 都不存在时保留第一个候选，便于报错信息指出实际检查的路径。
+  return candidates[0] || 'C:\\Users\\a1941\\Desktop\\deepseek-harness';
+}
+export const HARNESS_DIR = resolveHarnessDir();
 export const HARNESS_PACKAGE = path.join(HARNESS_DIR, 'package.json');
 
 // dsh 全局设置文件，用于临时切换默认模型
@@ -132,13 +146,42 @@ function patchDefaultModel(yaml, model) {
   return lines.join('\n');
 }
 
+// 把一段 stderr/堆栈整理成「一行可读错误」：取第一行非空文本，截断到合理长度。
+// 完整内容由调用方（如 logAIError）单独记录，避免把整段堆栈塞进 toast/列表。
+function readableError(raw, fallback) {
+  const text = String(raw || '').trim();
+  if (!text) return fallback || '未知错误';
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l && !/^\s*at\s+/.test(l)) || text.split(/\r?\n/)[0].trim();
+  const short = firstLine.length > 400 ? firstLine.slice(0, 400) + '…' : firstLine;
+  return short || fallback || '未知错误';
+}
+
+// 强杀进程树：Windows 下用 taskkill /T 确保 pnpm → dsh 子进程一并结束（D7 取消任务）。
+function killChildTree(child) {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        shell: false,
+        windowsHide: true,
+        stdio: 'ignore'
+      });
+    } catch (_) { /* taskkill 失败时退回 child.kill */ }
+  }
+  try { child.kill(); } catch (_) { /* 进程可能已退出 */ }
+}
+
 /**
- * 运行一次 dsh headless 任务。
+ * 运行一次 dsh headless 任务（带进度回调版本）。
  * @param {string} prompt 给 AI 的任务描述
- * @param {{ timeout?: number, model?: string, env?: Record<string,string> }} [options]
+ * @param {{ timeout?: number, model?: string, env?: Record<string,string>, signal?: AbortSignal }} [options]
+ * @param {(chunk: string) => void} [onChunk] 每次收到子进程输出时回调（用于前台进度展示）
  * @returns {Promise<string>} 任务输出
  */
-export async function runHarnessTask(prompt, options = {}) {
+export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) {
   if (!isHarnessAvailable()) {
     throw new Error(`未找到 deepseek-harness：${HARNESS_DIR}`);
   }
@@ -147,6 +190,14 @@ export async function runHarnessTask(prompt, options = {}) {
   if (!isHarnessBuilt()) {
     await buildHarness();
   }
+
+  const signal = options.signal;
+  const makeCancelled = () => {
+    const err = new Error('Harness 任务已取消');
+    err.code = 'HARNESS_CANCELLED';
+    return err;
+  };
+  if (signal?.aborted) throw makeCancelled();
 
   const originalSettings = readSettings();
   let patched = false;
@@ -186,29 +237,58 @@ export async function runHarnessTask(prompt, options = {}) {
         if (settled) return;
         settled = true;
         child.kill();
-        reject(new Error(`Harness 任务超时（${Math.round(timeoutMs / 1000)} 秒）`));
+        const err = new Error(`Harness 任务超时（${Math.round(timeoutMs / 1000)} 秒）后被取消，已生成的中间内容未能落盘。建议限制篇幅（如 800 字内）或使用「跳过提问」后重试。`);
+        err.code = 'HARNESS_TIMEOUT';
+        err.stdoutTail = stdout.slice(-600);
+        err.stderr = stderr;
+        reject(err);
       }, timeoutMs);
+
+      // D7：外部取消 → 杀掉进程树并以 HARNESS_CANCELLED 结束任务
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        killChildTree(child);
+        reject(makeCancelled());
+      };
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
+      const cleanupSignal = () => signal?.removeEventListener('abort', onAbort);
 
       child.stdout.on('data', (chunk) => {
         stdout += chunk;
+        if (typeof onChunk === 'function') {
+          try { onChunk(String(chunk)); } catch (_) { /* 进度回调失败不影响任务 */ }
+        }
       });
       child.stderr.on('data', (chunk) => {
         stderr += chunk;
+        if (typeof onChunk === 'function') {
+          try { onChunk(String(chunk)); } catch (_) { /* 同上 */ }
+        }
       });
       child.on('error', (err) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        cleanupSignal();
         reject(err);
       });
       child.on('close', (code) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        cleanupSignal();
         if (code === 0) {
           resolve(stdout.trim());
         } else {
-          reject(new Error(stderr.trim() || `Harness 退出码：${code}`));
+          const err = new Error(readableError(stderr, `Harness 退出码：${code}`));
+          err.code = 'HARNESS_EXIT';
+          err.stderr = stderr;
+          reject(err);
         }
       });
     });
@@ -219,4 +299,14 @@ export async function runHarnessTask(prompt, options = {}) {
       } catch (_) { /* 恢复失败不阻塞 */ }
     }
   }
+}
+
+/**
+ * 运行一次 dsh headless 任务。
+ * @param {string} prompt 给 AI 的任务描述
+ * @param {{ timeout?: number, model?: string, env?: Record<string,string> }} [options]
+ * @returns {Promise<string>} 任务输出
+ */
+export async function runHarnessTask(prompt, options = {}) {
+  return runHarnessTaskWithProgress(prompt, options);
 }

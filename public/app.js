@@ -19,10 +19,15 @@ const state = {
   worldEntries: [],
   apiConfigs: [],
   activeConfigId: Number(localStorage.getItem('ns_active_config')) || null,
-  editorLayout: localStorage.getItem('ns_editor_layout') || 'three',
+  // 专项 A：默认两栏（编辑器更宽、参考面板收起，需要时再切三栏）
+  editorLayout: localStorage.getItem('ns_editor_layout') || 'two',
+  // 参考面板：当前页签 + 词条预览默认折叠为标题（专项 A）
+  refTab: 'terms',
+  refPreview: localStorage.getItem('ns_ref_preview') === '1',
   outlineMode: localStorage.getItem('ns_outline_mode') || 'mind',
   settingsTab: 'terms',
   aiTab: 'ai',
+  aiCreateHomeTab: localStorage.getItem('ns_ai_create_tab') || 'auto',
   currentChapterId: null,
   currentTermId: null,
   currentCharacterId: null,
@@ -104,12 +109,23 @@ function esc(str = '') {
     .replace(/'/g, '&#39;');
 }
 
+// D5：剧情线标题展示时剥离与 kind 重复的“主线：/支线：”前缀（兼容旧数据里已带前缀的标题）
+function plotlineDisplayTitle(p) {
+  return String(p?.title || '').replace(/^(?:主线|支线)\s*[:：]\s*/, '').trim() || '未命名';
+}
+
 function toast(message, type = '') {
+  // D6/D14：压缩空白、限制长度，避免多行堆栈/超长文案直接糊到用户脸上；
+  // 时长随内容长度缩放（最少 3 秒、最多 9 秒），完整内容放 title 悬停查看。
+  const full = String(message ?? '').replace(/\s+/g, ' ').trim();
+  const short = full.length > 240 ? full.slice(0, 240) + '…' : full;
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.textContent = message;
+  el.textContent = short;
+  if (short !== full) el.title = full;
   $('#toast-root').appendChild(el);
-  setTimeout(() => el.remove(), 2600);
+  const ms = Math.min(9000, 3000 + full.length * 40);
+  setTimeout(() => el.remove(), ms);
 }
 
 // 小说设定各实体弹窗的保存动作 → AI 生成回填类型映射。
@@ -179,6 +195,11 @@ function closeModal() {
     state.pendingGenResult = null;
     resolve(null);
   }
+  if (state.pendingToolbarAIWrite) {
+    const resolve = state.pendingToolbarAIWrite;
+    state.pendingToolbarAIWrite = null;
+    resolve(null);
+  }
   $('#modal-root').innerHTML = '';
 }
 
@@ -213,12 +234,15 @@ function upsertState(key, row) {
   else list.push(row);
 }
 
+// 字数统计统一按“纯文本”口径：HTML 先剥标签再统计，与保存提示的 editor.innerText 一致（D1）。
+// 避免正文含格式（加粗/H2/引用）时出现“保存说 298、加载变 431”的跳变。
 function wordCount(text = '') {
-  return text.replace(/\s/g, '').length;
+  return stripHtml(text).replace(/\s/g, '').length;
 }
 
 function setSidebar(show) {
   $('#sidebar').classList.toggle('hidden', !show);
+  updateSidebarToggleIcon();
 }
 
 function setTopbarTitle(text) {
@@ -290,7 +314,7 @@ function setActiveNav() {
   });
 }
 
-async function render() {
+async function renderView() {
   const content = $('#content');
   if (!state.workId) {
     setSidebar(true);
@@ -343,8 +367,57 @@ async function render() {
       default: return renderOverview(content);
     }
   } catch (e) {
+    // D13：会话记忆里的作品可能已被删除——回到初始页而不是停留在报错页。
+    if (state.workId && (e.message === 'Not found' || /不存在/.test(e.message))) {
+      state.workId = null;
+      state.loadedWorkId = null;
+      state.view = 'works';
+      persistSession();
+      return renderWorks();
+    }
     content.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
   }
+}
+
+// D13：把当前会话位置（作品/页面/当前章节等）写入 sessionStorage，刷新后自动恢复，
+// 避免“写作中误刷新直接退回初始页”。
+function persistSession() {
+  try {
+    sessionStorage.setItem('ns_session', JSON.stringify({
+      workId: state.workId,
+      view: state.view,
+      settingsTab: state.settingsTab,
+      aiTab: state.aiTab,
+      aiCreateHomeTab: state.aiCreateHomeTab,
+      currentChapterId: state.currentChapterId,
+      currentPlotlineId: state.currentPlotlineId,
+      currentTermId: state.currentTermId,
+      currentCharacterId: state.currentCharacterId
+    }));
+  } catch (_) { /* 存储不可用时静默 */ }
+}
+
+function restoreSession() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('ns_session') || 'null');
+    if (!saved || !Number(saved.workId)) return;
+    state.workId = Number(saved.workId);
+    state.loadedWorkId = null;
+    // 初始页视图在作品内没有意义，恢复为总览
+    state.view = HOME_AI_VIEWS.includes(saved.view) || saved.view === 'works' ? 'overview' : (saved.view || 'overview');
+    state.settingsTab = SETTINGS_VIEWS.includes(saved.settingsTab) ? saved.settingsTab : 'terms';
+    state.aiTab = ['ai', 'st'].includes(saved.aiTab) ? saved.aiTab : 'ai';
+    state.aiCreateHomeTab = ['auto', 'pipeline', 'history'].includes(saved.aiCreateHomeTab) ? saved.aiCreateHomeTab : 'auto';
+    state.currentChapterId = Number(saved.currentChapterId) || null;
+    state.currentPlotlineId = Number(saved.currentPlotlineId) || null;
+    state.currentTermId = Number(saved.currentTermId) || null;
+    state.currentCharacterId = Number(saved.currentCharacterId) || null;
+  } catch (_) { /* 解析失败按全新会话处理 */ }
+}
+
+async function render() {
+  await renderView();
+  persistSession();
 }
 
 async function renderWorks() {
@@ -354,6 +427,9 @@ async function renderWorks() {
   let demo = null;
   try { demo = await api('/demo/status'); } catch (_) { /* 旧服务端无此接口时静默 */ }
   const demoExists = !!(demo && demo.exists);
+  // D9：示例小说已在下方「🧪 示例小说」区块展示，作品列表里排除它，避免同一本书出现两次。
+  const demoWorkId = demoExists && demo.work_id ? demo.work_id : null;
+  const visibleWorks = demoWorkId ? works.filter((w) => w.id !== demoWorkId) : works;
   content.innerHTML = `
     <div class="page-head">
       <div>
@@ -364,9 +440,11 @@ async function renderWorks() {
         <button class="btn" data-action="new-work">＋ 新建作品</button>
       </div>
     </div>
-    ${works.length ? '' : '<div class="empty">还没有作品：可点击右上角“新建作品”手动创建，或在左侧「✨ AI 创作」用 AI 一键生成，也可导入下方示例小说体验。</div>'}
+    ${visibleWorks.length ? '' : demoWorkId
+      ? '<div class="empty">还没有你自己的作品：《雾都缝匠》是下方示例数据，可直接打开体验；点击右上角“新建作品”或在左侧「✨ AI 创作」用 AI 一键生成，开始你自己的创作。</div>'
+      : '<div class="empty">还没有作品：可点击右上角“新建作品”手动创建，或在左侧「✨ AI 创作」用 AI 一键生成，也可导入下方示例小说体验。</div>'}
     <div class="grid cols-3">
-      ${works.map((w) => `
+      ${visibleWorks.map((w) => `
         <div class="card work-card">
           <div class="work-card-main" data-action="open-work" data-id="${w.id}">
             <div class="card-title">${esc(w.title)}</div>
@@ -508,8 +586,8 @@ async function renderOverview(content) {
     <div class="grid cols-2">
       <div class="card">
         <div class="card-head"><span class="card-title">剧情线</span><button class="btn small secondary" data-action="go-view" data-view="plot">管理</button></div>
-        <div class="muted">主线：${mainPlotlines.map((p) => esc(p.title)).join('、') || '未设置'}</div>
-        <div class="muted mt-8">支线：${sidePlotlines.map((p) => esc(p.title)).join('、') || '未设置'}</div>
+        <div class="muted">主线：${mainPlotlines.map((p) => esc(plotlineDisplayTitle(p))).join('、') || '未设置'}</div>
+        <div class="muted mt-8">支线：${sidePlotlines.map((p) => esc(plotlineDisplayTitle(p))).join('、') || '未设置'}</div>
       </div>
       <div class="card">
         <div class="card-head"><span class="card-title">最近更新</span><button class="btn small secondary" data-action="go-view" data-view="writing">去写作</button></div>
@@ -538,7 +616,7 @@ async function renderPlot(content) {
           <div class="card plotline-card ${selected && selected.id === p.id ? 'active' : ''} mb-8" data-action="select-plotline" data-id="${p.id}">
             <div class="row">
               <span class="chip ${p.kind === 'side' ? 'warn' : ''}">${p.kind === 'main' ? '主线' : '支线'}</span>
-              <b class="grow">${esc(p.title)}</b>
+              <b class="grow">${esc(plotlineDisplayTitle(p))}</b>
             </div>
             <div class="muted" style="font-size:12px">${esc(p.summary || '暂无简介')}</div>
             <div class="row mt-8">
@@ -546,18 +624,18 @@ async function renderPlot(content) {
               <button class="btn small danger" data-action="delete-plotline" data-id="${p.id}">删除</button>
             </div>
           </div>
-        `).join('') : '<div class="empty">还没有剧情线</div>'}
+        `).join('') : '<div class="empty">还没有剧情线：点击本列表右上角的 ＋ 新建第一条剧情线</div>'}
       </div>
       <div class="plot-main">
         <div class="card mb-12">
           <div class="row">
-            <h3 style="margin:0">${selected ? esc(selected.title) : '全局预览'}</h3>
+            <h3 style="margin:0">${selected ? esc(plotlineDisplayTitle(selected)) : '全局预览'}</h3>
             <div class="grow"></div>
             <button class="btn small secondary" data-action="new-chapter-with-plot" data-id="${selected ? selected.id : ''}">在此线新增章节</button>
           </div>
-          <div class="muted mt-8">${selected ? esc(selected.summary || '暂无剧情简介') : '选择左侧剧情线查看节点'}</div>
+          <div class="muted mt-8">${selected ? esc(selected.summary || '暂无剧情简介') : (plotlines.length ? '选择左侧剧情线查看节点' : '新建剧情线后，这里会展示该线的章节节点')}</div>
         </div>
-        ${!selected ? '<div class="empty">请选择一条剧情线</div>' : nodes.length ? `
+        ${!selected ? (plotlines.length ? '<div class="empty">请选择一条剧情线</div>' : '<div class="empty">还没有剧情线：点击左侧「剧情线」列表右上角的 ＋ 新建第一条剧情线</div>') : nodes.length ? `
           <div class="timeline">
             ${nodes.map((c, i) => `
               <div class="card timeline-node ${selected.kind === 'side' ? 'side' : ''}" data-action="open-chapter" data-id="${c.id}">
@@ -768,19 +846,28 @@ async function renderWriting(content) {
       <div class="panel panel-outline">${treeHTML}</div>
       <div class="panel panel-editor">
         <div class="editor-toolbar">
-          <button class="btn secondary small" data-action="format" data-format="bold"><b>B</b></button>
-          <button class="btn secondary small" data-action="format" data-format="italic"><i>I</i></button>
-          <button class="btn secondary small" data-action="format" data-format="underline"><u>U</u></button>
-          <button class="btn secondary small" data-action="format" data-format="formatBlock" data-value="h2">H2</button>
-          <button class="btn secondary small" data-action="format" data-format="formatBlock" data-value="blockquote">引用</button>
-          <button class="btn secondary small" data-action="format" data-format="insertUnorderedList">列表</button>
-          <button class="btn secondary small" data-action="format" data-format="insertOrderedList">编号</button>
-          <button class="btn small" data-action="toolbar-ai-write">✍️ AI 写作</button>
-          <button class="btn small secondary" data-action="toolbar-ai-polish">✨ 润色</button>
-          <button class="btn small secondary" data-action="toolbar-ai-expand">📖 扩写</button>
-          <button class="btn small" data-action="manual-save-chapter">💾 手动保存</button>
-          <button class="btn small secondary" data-action="open-save-history">🕘 历史版本</button>
-          <button class="btn small" data-action="link-term-modal">🔗 关联设定</button>
+          <div class="toolbar-group" title="格式">
+            <button class="btn secondary small" data-action="format" data-format="bold"><b>B</b></button>
+            <button class="btn secondary small" data-action="format" data-format="italic"><i>I</i></button>
+            <button class="btn secondary small" data-action="format" data-format="underline"><u>U</u></button>
+            <button class="btn secondary small" data-action="format" data-format="formatBlock" data-value="h2">H2</button>
+            <button class="btn secondary small" data-action="format" data-format="formatBlock" data-value="blockquote">引用</button>
+            <button class="btn secondary small" data-action="format" data-format="insertUnorderedList">列表</button>
+            <button class="btn secondary small" data-action="format" data-format="insertOrderedList">编号</button>
+          </div>
+          <span class="toolbar-sep"></span>
+          <div class="toolbar-group" title="AI 生成">
+            <button class="btn small" data-action="toolbar-ai-write">✍️ AI 写作</button>
+            <button class="btn small secondary" data-action="toolbar-ai-polish">✨ 润色</button>
+            <button class="btn small secondary" data-action="toolbar-ai-expand">📖 扩写</button>
+          </div>
+          <span class="toolbar-sep"></span>
+          <div class="toolbar-group" title="文档操作">
+            <button class="btn small" data-action="manual-save-chapter">💾 手动保存</button>
+            <button class="btn small secondary" data-action="open-save-history">🕘 历史版本</button>
+            <button class="btn small" data-action="link-term-modal">🔗 关联设定</button>
+            ${state.editorLayout === 'single' ? `<select id="chapter-switcher" title="单栏布局下目录被隐藏，用这里切换章节" style="max-width:200px">${chapters.map((c) => `<option value="${c.id}" ${c.id === current.id ? 'selected' : ''}>${esc(c.title)}</option>`).join('')}</select>` : ''}
+          </div>
         </div>
         <div class="editor-meta">
           <input id="editor-title" value="${esc(current.title)}" placeholder="章节/场景标题">
@@ -793,6 +880,8 @@ async function renderWriting(content) {
           <button class="active" data-action="ref-tab" data-tab="terms">设定</button>
           <button data-action="ref-tab" data-tab="characters">角色</button>
           <button data-action="ref-tab" data-tab="ai">AI</button>
+          <span class="grow"></span>
+          <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
         </div>
         <div class="reference-list" id="reference-list"></div>
       </div>
@@ -830,14 +919,16 @@ function bindEditorEvents() {
 function renderReference(tab = 'terms') {
   const list = $('#reference-list');
   if (!list) return;
-  $$('.reference-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  state.refTab = tab;
+  $$('.reference-tabs button[data-action="ref-tab"]').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'terms') {
+    // 专项 A：词条默认折叠为标题（一行一条），需要预览时点右上角「展开预览」
     list.innerHTML = `
       <div class="muted" style="padding:4px 2px">点击词条查看详情；写作时可选中文字后点“关联设定”</div>
       ${state.terms.slice(0, 50).map((t) => `
         <div class="reference-item" data-action="open-term" data-id="${t.id}">
           <div class="ref-title">${esc(t.title)}</div>
-          <div class="ref-desc">${esc((t.content || '').slice(0, 60))}</div>
+          ${state.refPreview ? `<div class="ref-desc">${esc((t.content || '').slice(0, 60))}</div>` : ''}
         </div>
       `).join('') || '<div class="muted">暂无设定词条</div>'}`;
   } else if (tab === 'characters') {
@@ -1404,7 +1495,7 @@ async function renderAI(content) {
           </div>
           <div class="muted mt-8">Base URL：${esc(c.base_url)}</div>
           <div class="muted">模型：${esc(c.model)}</div>
-          <div class="muted">温度：${c.temperature} · 最大 token：${c.max_tokens}</div>
+          <div class="muted" title="最大 token 是单次生成的字数上限（1 token ≈ 0.6 个汉字），普通写作保持默认即可">温度：${c.temperature} · 最大 token：${c.max_tokens}（单次输出上限）</div>
           <div class="muted">API Key：${c.api_key ? '••••••' + esc(String(c.api_key).slice(-4)) : '未填写'}</div>
           <div class="row mt-8">
             <button class="btn small secondary" data-action="test-api-config" data-id="${c.id}">测试连接</button>
@@ -1415,15 +1506,15 @@ async function renderAI(content) {
       `).join('') || '<div class="empty">还没有 API 配置</div>'}
     </div>
     <div class="card mt-12">
+      <div class="card-title">提示</div>
+      <div class="muted">DeepSeek 默认 Base URL：https://api.deepseek.com；兼容 OpenAI Chat Completions 格式。若使用其他服务商，可填写对应的 OpenAI 兼容地址。AI 写作/润色等任务现在优先走直连通道（秒级响应），只有需要调用创作内核（角色卡/世界观/红线）的任务才会经过 Harness。</div>
+    </div>
+    <div class="card mt-12">
       <div class="card-head">
-        <span class="card-title">AI 报错历史</span>
+        <span class="card-title">AI 报错历史（仅记录最近 5 条，重复错误自动合并）</span>
         <button class="btn small secondary" data-action="refresh-ai-errors">刷新</button>
       </div>
       <div id="ai-error-history" class="ai-error-history"><span class="muted">加载中...</span></div>
-    </div>
-    <div class="card mt-12">
-      <div class="card-title">提示</div>
-      <div class="muted">DeepSeek 默认 Base URL：https://api.deepseek.com；兼容 OpenAI Chat Completions 格式。若使用其他服务商，可填写对应的 OpenAI 兼容地址。</div>
     </div>`;
   loadAIErrors();
 }
@@ -1443,6 +1534,7 @@ const AI_ACTION_LABELS = {
 };
 
 // 拉取最近 AI 报错并渲染到 AI 设置页。
+// D3：只显示一行可读错误，堆栈折叠在 details 里；同 action+message 的重复记录前端再兜底去重。
 async function loadAIErrors() {
   const box = $('#ai-error-history');
   if (!box) return;
@@ -1452,7 +1544,15 @@ async function loadAIErrors() {
       box.innerHTML = '<div class="empty">暂无 AI 报错记录</div>';
       return;
     }
-    box.innerHTML = errors.map((e) => `
+    const seen = new Set();
+    const rows = [];
+    for (const e of errors) {
+      const key = `${e.action}|${e.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(e);
+    }
+    box.innerHTML = rows.map((e) => `
       <div class="error-item">
         <div class="row">
           <span class="chip">${esc(AI_ACTION_LABELS[e.action] || e.action || '未知')}</span>
@@ -1470,72 +1570,85 @@ async function loadAIErrors() {
 
 async function renderAICreate(content) {
   const config = state.apiConfigs.find((c) => c.id === state.activeConfigId) || state.apiConfigs[0] || null;
+  const tab = state.aiCreateHomeTab;
+  const sectionHidden = (key) => (key === tab ? '' : 'hidden');
   content.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">✨ AI 创作</h1>
-        <div class="page-sub">输入一段描述，AI 自动完善设定并创建一本新小说</div>
+        <div class="page-sub">输入一段描述，AI 自动完善设定并创建一本新小说；也可以进入工作台分阶段深度创作</div>
       </div>
       <div class="page-actions">
         <button class="btn secondary" data-action="go-view" data-view="ai">🤖 AI 设置</button>
       </div>
     </div>
-    <div class="card mb-12">
-      <div class="mb-8"><b>输入一段关于小说的描述</b></div>
-      <textarea id="ai-create-prompt" rows="8" placeholder="例如：主角穿越到修仙世界，天生没有灵根，却意外觉醒了可以吞噬万物天赋。他从一个小家族开始，一步步走向巅峰……"></textarea>
-      <div class="row mt-8">
-        <span class="muted">当前 AI 配置：${config ? esc(config.name) : '未配置'}</span>
-        <div class="grow"></div>
-        <button class="btn" data-action="ai-create-submit" id="ai-create-submit">✨ AI 自动创建小说</button>
-      </div>
+    <div class="board-tabs">
+      <button class="board-tab ${tab === 'auto' ? 'active' : ''}" data-action="ai-create-tab" data-tab="auto">✨ 自动创建小说</button>
+      <button class="board-tab ${tab === 'pipeline' ? 'active' : ''}" data-action="ai-create-tab" data-tab="pipeline">🚀 创作工作台</button>
+      <button class="board-tab ${tab === 'history' ? 'active' : ''}" data-action="ai-create-tab" data-tab="history">📜 任务历史</button>
     </div>
-    <div class="card">
-      <div class="card-title mb-8">生成进度</div>
-      <div id="ai-create-progress" class="muted">等待开始...</div>
-    </div>
-    <div class="card mt-12">
-      <div class="card-head">
-        <span class="card-title">🚀 AI 创作工作台</span>
-        <div class="row">
-          <button class="btn secondary" data-action="pipeline-save">💾 保存为作品</button>
-          <button class="btn secondary" data-action="pipeline-pause-toggle">⏸ 暂停</button>
-          <button class="btn danger small" data-action="pipeline-stop">⏹ 停止</button>
-          <button class="btn" data-action="harness-pipeline-start">开始深度创作</button>
+    <div class="ai-create-section" data-section="auto" ${sectionHidden('auto')}>
+      <div class="card mb-12">
+        <div class="mb-8"><b>输入一段关于小说的描述</b></div>
+        <textarea id="ai-create-prompt" rows="8" placeholder="例如：主角穿越到修仙世界，天生没有灵根，却意外觉醒了可以吞噬万物天赋。他从一个小家族开始，一步步走向巅峰……"></textarea>
+        <div class="row mt-8">
+          <span class="muted">当前 AI 配置：${config ? esc(config.name) : '未配置'}</span>
+          <div class="grow"></div>
+          <button class="btn" data-action="ai-create-submit" id="ai-create-submit">✨ AI 自动创建小说</button>
         </div>
       </div>
-      <div class="field mb-8"><label>创作需求</label><textarea id="pipeline-prompt" rows="4" placeholder="例如：主角穿越到修仙世界，天生没有灵根，却意外觉醒了可以吞噬万物的天赋，从一个小家族开始走向巅峰。"></textarea></div>
-      <div class="row mb-8">
-        <label class="muted">创作策略</label>
-        <select id="pipeline-mode">
-          <option value="fast">⚡ 快速</option>
-          <option value="balanced" selected>⚖️ 均衡</option>
-          <option value="deep">🔥 深度精修</option>
-        </select>
-      </div>
-      <div id="pipeline-stages" class="pipeline-stages">
-        ${[
-          ['worldview', '🌍 世界观'],
-          ['characters', '👥 角色卡'],
-          ['outline', '📋 分卷/章节大纲'],
-          ['chapters', '📄 正文草稿'],
-          ['review', '🔍 一致性审查']
-        ].map(([key, label], i) => `
-          <div class="pipeline-stage" data-stage="${key}">
-            <div class="row">
-              <b>${i + 1}. ${label}</b>
-              <span class="pipeline-status muted">等待</span>
-              <span class="grow"></span>
-              <button class="btn small secondary" data-action="pipeline-restart-stage" data-stage="${key}">从此重跑</button>
-              <button class="btn small secondary" data-action="pipeline-copy" data-stage="${key}">复制</button>
-            </div>
-            <textarea class="pipeline-output" data-stage-output="${key}" rows="4" placeholder="生成结果会出现在这里，可手动修改"></textarea>
-          </div>
-        `).join('')}
+      <div class="card">
+        <div class="card-title mb-8">生成进度</div>
+        <div id="ai-create-progress" class="muted">等待开始...</div>
       </div>
     </div>
-    <div class="card mt-12">
-      <div class="card-head"><span class="card-title">📜 创作任务历史</span><button class="btn small secondary" data-action="refresh-creation-tasks">刷新</button></div>
-      <div id="creation-task-list" class="muted">加载中...</div>
+    <div class="ai-create-section" data-section="pipeline" ${sectionHidden('pipeline')}>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">🚀 AI 创作工作台</span>
+          <div class="row">
+            <button class="btn secondary" data-action="pipeline-save">💾 保存为作品</button>
+            <button class="btn secondary" data-action="pipeline-pause-toggle">⏸ 暂停</button>
+            <button class="btn danger small" data-action="pipeline-stop">⏹ 停止</button>
+            <button class="btn" data-action="harness-pipeline-start">开始深度创作</button>
+          </div>
+        </div>
+        <div class="field mb-8"><label>创作需求</label><textarea id="pipeline-prompt" rows="4" placeholder="例如：主角穿越到修仙世界，天生没有灵根，却意外觉醒了可以吞噬万物的天赋，从一个小家族开始走向巅峰。"></textarea></div>
+        <div class="row mb-8">
+          <label class="muted">创作策略</label>
+          <select id="pipeline-mode">
+            <option value="fast">⚡ 快速</option>
+            <option value="balanced" selected>⚖️ 均衡</option>
+            <option value="deep">🔥 深度精修</option>
+          </select>
+        </div>
+        <div id="pipeline-stages" class="pipeline-stages">
+          ${[
+            ['worldview', '🌍 世界观'],
+            ['characters', '👥 角色卡'],
+            ['outline', '📋 分卷/章节大纲'],
+            ['chapters', '📄 正文草稿'],
+            ['review', '🔍 一致性审查']
+          ].map(([key, label], i) => `
+            <div class="pipeline-stage" data-stage="${key}">
+              <div class="row">
+                <b>${i + 1}. ${label}</b>
+                <span class="pipeline-status muted">等待</span>
+                <span class="grow"></span>
+                <button class="btn small secondary" data-action="pipeline-restart-stage" data-stage="${key}">从此重跑</button>
+                <button class="btn small secondary" data-action="pipeline-copy" data-stage="${key}">复制</button>
+              </div>
+              <textarea class="pipeline-output" data-stage-output="${key}" rows="4" placeholder="生成结果会出现在这里，可手动修改"></textarea>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="ai-create-section" data-section="history" ${sectionHidden('history')}>
+      <div class="card">
+        <div class="card-head"><span class="card-title">📜 创作任务历史</span><button class="btn small secondary" data-action="refresh-creation-tasks">刷新</button></div>
+        <div id="creation-task-list" class="muted">加载中...</div>
+      </div>
     </div>`;
   loadCreationTasks();
 }
@@ -1550,21 +1663,177 @@ function setAICreateProgress(steps, activeIndex, error = '') {
   }).join('') + (error ? `<div class="ai-step error">✖ ${esc(error)}</div>` : '');
 }
 
-// 把 OpenAI 风格 messages 转换成 Harness headless 的单段任务文本，并执行。
+// 在进度框上追加实时耗时（D1：自动创建小说是同步长任务，至少让用户看到时间在走）
+function startElapsedTicker(el, prefix = '已用时') {
+  if (!el) return () => {};
+  const start = Date.now();
+  const span = document.createElement('span');
+  span.className = 'ai-elapsed muted';
+  const timer = setInterval(() => {
+    const s = Math.floor((Date.now() - start) / 1000);
+    span.textContent = `${prefix} ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 1000);
+  el.appendChild(span);
+  return () => { clearInterval(timer); span.remove(); };
+}
+
+// ---------- AI 任务进度（D1） ----------
+// harness 任务可能要跑几分钟到十几分钟：启动时弹出一张悬浮进度卡，
+// 显示阶段文案、实时耗时与任务最近输出，任务结束后自动收起。
+// D6：内核 stdout 先清洗再展示（过滤协议/红线等内部提示词）。
+// D7：提供「停止」按钮，可中止正在运行的 harness 任务。
+let aiTaskSeq = 0;
+let activeAITask = null; // { seq, cancel } —— 当前进度卡对应的中止回调
+
+// 把 dsh 内核原始输出行清洗成人话：去 ANSI 转义、盒线字符，过滤协议片段与内部提示词（D6）。
+function sanitizeAITailLine(raw) {
+  const line = String(raw)
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/[│├└─]/g, '')
+    .trim();
+  if (!line) return '';
+  if (/[【】]/.test(line)) return ''; // 【提问】【成文】【写作风格红线】等协议/内部文本
+  if (/(红线|反AI腔|redline)/i.test(line)) return '';
+  return line;
+}
+
+function showAITaskProgress(stageLabel) {
+  const box = $('#ai-task-progress');
+  if (!box) return { update() {}, close() {}, setCancel() {}, note() {} };
+  const seq = ++aiTaskSeq;
+  if (activeAITask && activeAITask.seq !== seq) activeAITask = null;
+  box.innerHTML = `
+    <div class="ai-progress-head"><span class="spinner"></span><b>${esc(stageLabel)}</b><span class="ai-progress-time">0:00</span><button class="btn small danger ai-progress-stop" data-action="ai-task-cancel" hidden>停止</button></div>
+    <div class="ai-progress-tail muted">正在启动 AI 引擎（首次运行可能需要 15–30 秒）…</div>`;
+  box.hidden = false;
+  const start = Date.now();
+  const timeEl = box.querySelector('.ai-progress-time');
+  const labelEl = box.querySelector('b');
+  const tailEl = box.querySelector('.ai-progress-tail');
+  const stopBtn = box.querySelector('.ai-progress-stop');
+  const timer = setInterval(() => {
+    const s = Math.floor((Date.now() - start) / 1000);
+    if (timeEl) timeEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 1000);
+  return {
+    seq,
+    update(tail, extraLabel) {
+      if (aiTaskSeq !== seq) return; // 已被更新任务卡替换，旧任务不再写屏
+      if (extraLabel && labelEl) labelEl.textContent = extraLabel;
+      if (!tail || !tailEl) return;
+      const lastLine = String(tail).split(/\r?\n/).map(sanitizeAITailLine).filter(Boolean).slice(-1)[0];
+      if (lastLine) tailEl.textContent = lastLine.length > 160 ? lastLine.slice(0, 160) + '…' : lastLine;
+    },
+    note(msg) {
+      if (aiTaskSeq === seq && tailEl) tailEl.textContent = msg;
+    },
+    setCancel(fn) {
+      if (aiTaskSeq === seq) activeAITask = fn ? { seq, cancel: fn } : null;
+      if (stopBtn) stopBtn.hidden = !fn;
+    },
+    close() {
+      clearInterval(timer);
+      if (activeAITask && activeAITask.seq === seq) activeAITask = null;
+      if (aiTaskSeq === seq && box) {
+        box.hidden = true;
+        box.innerHTML = ''; // 隐藏的同时清空内容，避免残留旧任务文案
+      }
+    }
+  };
+}
+
+// 提交 harness 任务并轮询状态直到结束。返回 { output, scan }。
+async function runHarnessJob(body, stageLabel) {
+  const progress = showAITaskProgress(stageLabel);
+  let cancelled = false;
+  const cancelledErr = () => {
+    const err = new Error('任务已取消');
+    err.cancelled = true;
+    return err;
+  };
+  try {
+    const started = await api('/harness/run', { method: 'POST', body });
+    if (!started.job_id) {
+      // 兼容旧服务端：直接返回同步结果（无取消通道，停止按钮不出现）
+      return { output: started.output || '', scan: started.scan || null };
+    }
+    // D7：注册停止按钮 → 服务端杀掉 dsh 子进程，轮询循环随即结束
+    progress.setCancel(() => {
+      cancelled = true;
+      progress.note('正在取消任务…');
+      api('/harness/cancel', { method: 'POST', body: { job_id: started.job_id } }).catch(() => { /* 服务端取消失败时轮询仍会读到终态 */ });
+    });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
+      let job;
+      try {
+        job = await api(`/harness/job?id=${encodeURIComponent(started.job_id)}`);
+      } catch (e) {
+        if (cancelled) throw cancelledErr();
+        throw new Error(`任务状态查询失败：${e.message}`);
+      }
+      if (cancelled) throw cancelledErr();
+      progress.update(job.tail);
+      if (job.status === 'done') return { output: job.output || '', scan: job.scan || null };
+      if (job.status === 'cancelled') throw cancelledErr();
+      if (job.status === 'failed' || job.status === 'timeout') {
+        const err = new Error(job.error || (job.status === 'timeout' ? '任务超时' : '任务失败'));
+        if (job.tail) err.tail = job.tail;
+        throw err;
+      }
+    }
+  } finally {
+    progress.close();
+  }
+}
+
+// 单轮短任务可直接走直连通道（<1s 级），不必为润色 62 个字等 60 秒。
+const DIRECT_AI_ACTIONS = new Set(['polish', 'expand', 'personality', 'outline', 'chat', 'write']);
+
+// 把 OpenAI 风格 messages 提交给 AI：优先直连通道（毫秒级），
+// 没有可用 API 配置或直连失败时回退 Harness 慢通道（D9）。
 async function runHarnessFromMessages(messages, options = {}) {
+  const action = options.action || 'harness';
+  if (DIRECT_AI_ACTIONS.has(action)) {
+    if (!state.apiConfigs.length) {
+      try { await ensureApiConfigs(true); } catch (_) { /* 取不到配置就回退 harness */ }
+    }
+    const config = state.apiConfigs.find((c) => c.id === state.activeConfigId) || state.apiConfigs[0] || null;
+    if (config && config.api_key) {
+      try {
+        const data = await api(`/ai/${action}`, {
+          method: 'POST',
+          body: {
+            config_id: config.id,
+            messages,
+            temperature: config.temperature,
+            max_tokens: config.max_tokens
+          }
+        });
+        const reply = (data.reply || '').trim();
+        if (reply) return reply;
+        // 思考型模型偶发“长思考但 content 为空”，视为失败并回退 harness
+        console.warn('[AI] 直连通道返回空内容，回退 harness');
+      } catch (e) {
+        // 直连失败（Key 无效/网络异常等）自动回退 harness，保证功能可用
+        console.warn(`[AI] 直连通道失败，回退 harness：${e.message}`);
+      }
+    }
+  }
   const prompt = (messages || []).map((m) => {
     const role = m.role === 'system' ? '【系统设定】' : '【用户请求】';
     return `${role}\n${m.content}`;
   }).join('\n\n');
-  const data = await api('/harness/run', {
-    method: 'POST',
-    body: {
-      prompt, timeout: options.timeout || 600000, model: options.model || undefined, action: options.action || 'harness',
-      work_id: state.workId || state.work?.id || undefined,
-      chapter_id: state.currentChapterId || undefined,
-      mode: options.mode || undefined
-    }
-  });
+  // 超时按任务类型分级：整章写作（write）保留 10 分钟；单轮短任务 3 分钟即可，
+  // 避免回退 harness 时让用户为一次润色白白等满 10 分钟。
+  const tieredTimeout = options.timeout || (action === 'write' ? 600000 : 180000);
+  const data = await runHarnessJob({
+    prompt, timeout: tieredTimeout, model: options.model || undefined, action,
+    work_id: state.workId || state.work?.id || undefined,
+    chapter_id: state.currentChapterId || undefined,
+    mode: options.mode || undefined
+  }, `${AI_ACTION_LABELS[action] || 'AI 任务'}执行中…`);
   return data.output || '';
 }
 
@@ -1615,17 +1884,17 @@ const PIPELINE_STAGES = [
   {
     key: 'outline',
     label: '分卷/章节大纲',
-    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位小说大纲策划师。请根据以下世界观和角色，设计分卷结构和每章大纲，建议 3-5 卷、每卷 3-6 章。\n\n${prev}`
+    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位小说大纲策划师。请根据以下世界观和角色，设计分卷结构与每章大纲：3 卷、每卷 2-4 章（共不超过 12 章），每章用一句话（20 字内）写清核心情节。只输出大纲，不要展开正文。\n\n${prev}`
   },
   {
     key: 'chapters',
     label: '正文草稿',
-    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位中文网络小说作家。请根据以下大纲，生成前三章的完整正文草稿，每章 800-1500 字，语言流畅有网文节奏。\n\n${prev}`
+    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位中文网络小说作家。请根据以下大纲，生成前两章的正文草稿，每章 600-1000 字，语言流畅有网文节奏。直接输出正文，不要解释。\n\n${prev}`
   },
   {
     key: 'review',
     label: '一致性审查',
-    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位严格的小说编辑。请检查以上世界观、角色、大纲和正文之间是否存在矛盾，列出问题并给出修改后的最终版本。\n\n${prev}`
+    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位严格的小说编辑。请检查以上世界观、角色、大纲和正文之间是否存在矛盾，只列出问题清单与修改建议（每条一行），不要重写全文。\n\n${prev}`
   }
 ];
 
@@ -1641,6 +1910,59 @@ function setPipelineStatus(key, text) {
 function setPipelineOutput(key, text) {
   const el = $(`[data-stage-output="${key}"]`);
   if (el) el.value = text;
+}
+
+// 工作台单阶段任务：自包含的单轮文本生成（不依赖 novel 工具），优先直连通道（秒级）；
+// 无可用 API 配置或直连失败/返回空内容时回退 harness，回退后若超时再自动降级重试一次精简版（D1/D9）。
+// 注意：flash 等思考型模型偶发“长思考但 content 为空”，必须把空回复视为失败而不是完成。
+const PIPELINE_SYSTEM = { role: 'system', content: '你是小说创作执行助手：直接输出用户要求的最终内容，不要输出思考过程、解释或开场白。' };
+
+async function runPipelineStage(prompt, { model, stageLabel, timeout = 600000 }) {
+  if (!state.apiConfigs.length) {
+    try { await ensureApiConfigs(true); } catch (_) { /* 取不到配置就回退 harness */ }
+  }
+  const config = state.apiConfigs.find((c) => c.id === state.activeConfigId) || state.apiConfigs[0] || null;
+  if (config && config.api_key) {
+    const tryDirect = async (userContent) => {
+      const data = await api('/ai/pipeline', {
+        method: 'POST',
+        body: {
+          config_id: config.id,
+          model,
+          messages: [PIPELINE_SYSTEM, { role: 'user', content: userContent }],
+          max_tokens: 16384
+        }
+      });
+      return (data.reply || '').trim();
+    };
+    let reply = '';
+    try { reply = await tryDirect(prompt); } catch (e) { console.warn(`[AI] 工作台直连失败：${e.message}`); }
+    if (!reply) {
+      // 空回复（思考型模型偶发）：追加“直接输出”指令重试一次
+      try { reply = await tryDirect(prompt + '\n\n（请直接输出最终结果内容，不要任何思考与解释。）'); }
+      catch (e) { console.warn(`[AI] 工作台直连重试失败：${e.message}`); }
+    }
+    if (reply) return reply;
+    console.warn('[AI] 工作台直连返回空内容，回退 harness');
+  }
+  try {
+    const data = await runHarnessJob({ prompt, timeout, model, action: 'pipeline' }, stageLabel);
+    const output = (data.output || '').trim();
+    if (!output) throw new Error('AI 未返回内容');
+    return output;
+  } catch (e) {
+    // 超时降级：换用压缩篇幅的精简版指令重试一次，避免整个流水线卡死在一个阶段
+    if (/超时/.test(e.message || '')) {
+      const data = await runHarnessJob({
+        prompt: `${prompt}\n\n（重要：上一轮因超时未完成。请直接输出精简版结果，篇幅压缩到一半以内，不要遗漏要点。）`,
+        timeout, model, action: 'pipeline'
+      }, `${stageLabel}（超时重试 · 精简版）`);
+      const output = (data.output || '').trim();
+      if (!output) throw new Error('AI 未返回内容');
+      return output;
+    }
+    throw e;
+  }
 }
 
 // 按阶段依次调用 Harness，自动推进完整创作流水线。
@@ -1708,16 +2030,10 @@ async function runHarnessPipeline(startIndex = 0) {
       if (state.pipelineStopped) break;
       const stage = PIPELINE_STAGES[i];
       setPipelineStatus(stage.key, '运行中...');
-      const data = await api('/harness/run', {
-        method: 'POST',
-        body: {
-          prompt: stage.build(input, previous, mode),
-          timeout: 600000,
-          model: PIPELINE_MODEL_BY_MODE[mode]?.[stage.key] || undefined,
-          action: 'pipeline'
-        }
+      const output = await runPipelineStage(stage.build(input, previous, mode), {
+        model: PIPELINE_MODEL_BY_MODE[mode]?.[stage.key] || undefined,
+        stageLabel: `创作工作台 · ${stage.label}（${i + 1}/${PIPELINE_STAGES.length}）`
       });
-      const output = data.output || '';
       setPipelineOutput(stage.key, output);
       setPipelineStatus(stage.key, state.pipelineStopped ? '已停止' : (state.pipelinePaused ? '已暂停' : '完成 ✔'));
       stages[stage.key] = output;
@@ -1743,7 +2059,7 @@ async function runHarnessPipeline(startIndex = 0) {
     if (state.pipelineStopped) toast('已停止', 'success');
     else toast('深度创作完成', 'success');
   } catch (e) {
-    toast('创作失败：' + e.message, 'error');
+    toast(e.cancelled ? '已取消创作任务' : '创作失败：' + e.message, e.cancelled ? 'success' : 'error');
     if (taskId) {
       try {
         await api(`/creation_tasks/${taskId}`, {
@@ -1806,9 +2122,28 @@ async function savePipelineToWork() {
     toast('请先生成创作内容再保存', 'error');
     return;
   }
-  const firstLine = (outline || chapters || '').split('\n').map((s) => s.trim()).find(Boolean) || '';
-  const title = (firstLine || prompt || '未命名作品').slice(0, 30);
-  const description = (worldview || chapters || '').slice(0, 500);
+  // 作品标题：取大纲/正文第一行，剥离 markdown 标记与“卷X：/第X章：”前缀（复测发现标题会泄漏 “### 卷一：哑沙回声”）
+  const cleanTitleLine = (s) => String(s)
+    .replace(/^#+\s*/, '')
+    .replace(/[*_`~]/g, '')
+    .trim();
+  let firstLine = (outline || chapters || '').split('\n').map(cleanTitleLine).find((s) => s.length > 1) || '';
+  firstLine = firstLine.replace(/^(?:第[一二三四五六七八九十百0-9]+[卷部章节]|[卷章])[：:]\s*/, '');
+  const title = (firstLine || prompt.slice(0, 12) || '工作台创作成果').slice(0, 30);
+  // D4：简介取“可读摘要”（剥 Markdown 标记，取第一个非空段落），不要把整篇世界观原文塞进作品简介。
+  const markdownSnippet = (text = '') => {
+    const plain = String(text || '')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/[*_`~]/g, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^>\s?/gm, '')
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const first = plain.find((p) => p.length > 0) || '';
+    return first.length > 160 ? first.slice(0, 160) + '…' : first;
+  };
+  const description = markdownSnippet(worldview || chapters || '');
   try {
     const work = await api('/works', { method: 'POST', body: { title, description } });
     if (outline) {
@@ -1869,7 +2204,7 @@ function openPlotlineModal(plotline = null) {
     title: plotline ? '编辑剧情线' : '新建剧情线',
     body: `
       <div class="form-grid">
-        <div class="field full"><label>名称</label><input name="title" value="${esc(plotline?.title || '')}" placeholder="主线：少年觉醒"></div>
+        <div class="field full"><label>名称</label><input name="title" value="${esc(plotline?.title || '')}" placeholder="例如：少年觉醒（无需输入“主线/支线”前缀）"></div>
         <div class="field"><label>类型</label>
           <select name="kind">
             <option value="main" ${plotline?.kind === 'main' ? 'selected' : ''}>主线</option>
@@ -1901,7 +2236,7 @@ function openChapterModal(chapter = null, defaults = {}) {
         <div class="field"><label>剧情线</label>
           <select name="plotline_id">
             <option value="">不关联</option>
-            ${plotlines.map((p) => `<option value="${p.id}" ${String(chapter?.plotline_id ?? defaults.plotline_id ?? '') === String(p.id) ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}
+            ${plotlines.map((p) => `<option value="${p.id}" ${String(chapter?.plotline_id ?? defaults.plotline_id ?? '') === String(p.id) ? 'selected' : ''}>${esc(plotlineDisplayTitle(p))}</option>`).join('')}
           </select>
         </div>
         <div class="field full"><label>大纲摘要</label><textarea name="summary" rows="4">${esc(chapter?.summary || '')}</textarea></div>
@@ -2005,6 +2340,28 @@ function openPlotlineCharModal(characterId, plotlineId) {
   });
 }
 
+// 模型选择下拉：提供 DeepSeek 全部已知模型，默认推荐 deepseek-v4-pro；
+// 若配置里存的是列表外的自定义模型（其他 OpenAI 兼容服务商），额外显示为“当前使用”选项。
+const KNOWN_AI_MODELS = [
+  ['deepseek-v4-pro', 'deepseek-v4-pro（推荐 · 质量最高）'],
+  ['deepseek-v4-flash', 'deepseek-v4-flash（快速 · 成本低）'],
+  ['deepseek-v4-flash-vision-exp', 'deepseek-v4-flash-vision-exp（视觉实验版）'],
+  ['deepseek-chat', 'deepseek-chat（V3 通用对话）'],
+  ['deepseek-reasoner', 'deepseek-reasoner（R 深度推理）']
+];
+
+function modelSelectHtml(currentModel) {
+  const cur = String(currentModel || '').trim().toLowerCase();
+  const hasCustom = cur && !KNOWN_AI_MODELS.some(([v]) => v === cur);
+  const options = KNOWN_AI_MODELS
+    .map(([v, label]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`)
+    .join('');
+  const custom = hasCustom
+    ? `<option value="${esc(currentModel)}" selected>${esc(currentModel)}（当前使用 · 自定义）</option>`
+    : '';
+  return `<select name="model">${custom}${options}</select>`;
+}
+
 function openApiConfigModal(config = null) {
   openModal({
     title: config ? '编辑 API 配置' : '新建 API 配置',
@@ -2013,9 +2370,9 @@ function openApiConfigModal(config = null) {
         <div class="field full"><label>配置名称</label><input name="name" value="${esc(config?.name || '')}" placeholder="例如：DeepSeek 主账号"></div>
         <div class="field full"><label>Base URL</label><input name="base_url" value="${esc(config?.base_url || 'https://api.deepseek.com')}" placeholder="https://api.deepseek.com"></div>
         <div class="field"><label>API Key</label><input name="api_key" value="${esc(config?.api_key || '')}" placeholder="sk-..."></div>
-        <div class="field"><label>模型</label><input name="model" value="${esc(config?.model || 'deepseek-chat')}" placeholder="deepseek-chat"></div>
+        <div class="field"><label>模型</label>${modelSelectHtml(config?.model || 'deepseek-v4-pro')}</div>
         <div class="field"><label>温度</label><input name="temperature" type="number" step="0.1" min="0" max="2" value="${config?.temperature ?? 0.8}"></div>
-        <div class="field"><label>最大 Token</label><input name="max_tokens" type="number" min="1" value="${config?.max_tokens ?? 4096}"></div>
+        <div class="field"><label>最大 Token（单次输出字数上限，1 token ≈ 0.6 个汉字）</label><input name="max_tokens" type="number" min="1" value="${config?.max_tokens ?? 4096}"></div>
       </div>`,
     footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="save-api-config" data-id="${config?.id || ''}">保存</button>`
   });
@@ -2325,7 +2682,7 @@ function buildAIWritingDialoguePrompt(initial, history) {
   return lines.join('\n');
 }
 
-function buildAIWritingInitialRequest() {
+function buildAIWritingInitialRequest(requirement = '') {
   const editor = $('#editor-content');
   const title = $('#editor-title');
   const chapterId = state.currentChapterId;
@@ -2334,12 +2691,13 @@ function buildAIWritingInitialRequest() {
   const sel = getEditorSelection(editor);
   const selected = sel?.text?.trim() || '';
   const panelPrompt = $('#ai-prompt')?.value?.trim() || '';
+  const reqText = String(requirement || '').trim();
   return `
 当前作品：${state.work?.title || ''}
 当前章节/场景：${title?.value || chapter.title || ''}
 大纲摘要：${chapter.summary || '无'}
 ${selected ? `你希望围绕的选中内容：\n${selected}\n` : plain ? `当前正文末尾：\n${plain.slice(-1200)}\n` : ''}
-${panelPrompt ? `用户补充需求：${panelPrompt}` : '请通过提问了解我真正想要的写作方向、风格、长度和内容。'}
+${reqText ? `用户写作需求：${reqText}` : panelPrompt ? `用户补充需求：${panelPrompt}` : '请通过提问了解我真正想要的写作方向、风格、长度和内容。'}
 `.trim();
 }
 
@@ -2383,14 +2741,26 @@ function askAIWritingQuestion(question) {
   });
 }
 
+// D17：红线自检结果可视化——让“反 AI 腔”卖点可感知。
+function redlineScanSummaryHtml(scan) {
+  if (!scan || !scan.enabled) return '';
+  if (!scan.total) {
+    return '<div class="redline-scan ok">✅ 红线自检通过：本次成文未命中反 AI 腔词句</div>';
+  }
+  const samples = (scan.hits || []).slice(0, 3)
+    .map((h) => `<span class="chip warn">${esc(h.pattern)} ×${h.count}</span>`).join(' ');
+  return `<div class="redline-scan warn">⚠️ 红线自检命中 ${scan.total} 处反 AI 腔词句：${samples || '—'}。已提示模型规避，如需改写可在预览中手动调整。</div>`;
+}
+
 // 弹窗展示最终文章，让用户选择如何应用。
-function showAIWritingResult(article) {
+function showAIWritingResult(article, scan) {
   return new Promise((resolve) => {
     state.pendingAIFinal = resolve;
     openModal({
       title: 'AI 写作结果',
       body: `
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
+        ${redlineScanSummaryHtml(scan)}
         <div class="muted mt-8">请选择如何应用到正文：</div>`,
       footer: `
         <button class="btn secondary" data-close-modal>取消</button>
@@ -2421,36 +2791,73 @@ async function applyAIWritingArticle(mode, article) {
   }
 }
 
+// D5：正文「✍️ AI 写作」先弹需求确认框，用户确认后才发起付费调用；
+// 「直接开始」走默认“先提问澄清”流程，与设定类 AI 生成的体验保持一致。
+function askToolbarAIWriteRequirement() {
+  return new Promise((resolve) => {
+    state.pendingToolbarAIWrite = resolve;
+    openModal({
+      title: '✍️ AI 写作 · 写点什么？',
+      body: `
+        <div class="muted">AI 会结合当前章节与设定先向你提问澄清，确认需求后开始生成（此过程会消耗 AI 调用额度）。</div>
+        <div class="field mt-12">
+          <label>你的写作需求（可留空，AI 会先提问了解）</label>
+          <textarea id="toolbar-ai-write-req" rows="4" placeholder="例如：续写 800 字，主角发现电台接到一通来自 14 年前的电话…"></textarea>
+        </div>`,
+      footer: `
+        <button class="btn secondary" data-close-modal>取消</button>
+        <button class="btn secondary" data-action="toolbar-ai-write-direct">直接开始</button>
+        <button class="btn" data-action="toolbar-ai-write-confirm">✨ 开始生成</button>`
+    });
+    const input = $('#toolbar-ai-write-req');
+    if (input) input.focus();
+  });
+}
+
 async function runToolbarAIWrite() {
+  const editor = $('#editor-content');
+  if (!editor) return;
+  const req = await askToolbarAIWriteRequirement();
+  if (req === null) return; // 用户取消
+  await performToolbarAIWrite(String(req || '').trim() || null);
+}
+
+async function performToolbarAIWrite(requirement) {
   const editor = $('#editor-content');
   if (!editor) return;
   await loadAIContext();
   const btn = $('[data-action="toolbar-ai-write"]');
   if (btn) btn.disabled = true;
   try {
-    const initial = buildAIWritingInitialRequest();
+    const initial = buildAIWritingInitialRequest(requirement || '');
     const history = [];
     let maxTurns = 10;
 
     while (maxTurns-- > 0) {
-      const data = await api('/harness/run', {
-        method: 'POST',
-        body: {
-          prompt: buildAIWritingDialoguePrompt(initial, history),
-          timeout: 600000,
-          model: 'deepseek-v4-flash',
-          action: 'write',
-          work_id: state.workId || state.work?.id || undefined,
-          chapter_id: state.currentChapterId || undefined,
-          mode: 'continuation'
-        }
-      });
+      // D1：每轮给用户一个明确的阶段文案 + 实时耗时/输出进度
+      const lastMsg = history.length ? history[history.length - 1] : null;
+      const stageLabel = !history.length
+        ? 'AI 写作 · 正在阅读章节与设定，准备提问…'
+        : (lastMsg?.content || '').includes('【提问】')
+          ? 'AI 写作 · 已收到回答，正在继续推进…'
+          : (lastMsg?.content || '').includes('【成文】')
+            ? 'AI 写作 · 正在按反馈重新成文…'
+            : 'AI 写作 · 正在成文（这一步最慢，通常 2–6 分钟）…';
+      const data = await runHarnessJob({
+        prompt: buildAIWritingDialoguePrompt(initial, history),
+        timeout: 600000,
+        model: 'deepseek-v4-flash',
+        action: 'write',
+        work_id: state.workId || state.work?.id || undefined,
+        chapter_id: state.currentChapterId || undefined,
+        mode: 'continuation'
+      }, stageLabel);
       const raw = data.output || '';
       if (!raw.trim()) throw new Error('AI 没有返回内容');
       const parsed = parseAIWritingOutput(raw);
 
       if (parsed.finalText) {
-        const mode = await showAIWritingResult(parsed.finalText);
+        const mode = await showAIWritingResult(parsed.finalText, data.scan);
         if (mode === null) return;
         if (mode === 'regenerate') {
           history.push({ role: 'assistant', content: `【成文】${parsed.finalText}` });
@@ -2474,7 +2881,7 @@ async function runToolbarAIWrite() {
       }
 
       // 兜底：按最终结果处理
-      const mode = await showAIWritingResult(raw);
+      const mode = await showAIWritingResult(raw, data.scan);
       if (mode === null) return;
       if (mode === 'regenerate') {
         history.push({ role: 'assistant', content: `【成文】${raw}` });
@@ -2487,7 +2894,8 @@ async function runToolbarAIWrite() {
 
     toast('AI 追问次数已达上限，请重试', 'error');
   } catch (e) {
-    toast('AI 写作失败：' + e.message, 'error');
+    if (e.cancelled) toast('已取消 AI 写作', 'success');
+    else toast('AI 写作失败：' + e.message + (e.tail ? '（查看报错历史可了解细节）' : ''), 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2513,7 +2921,8 @@ async function runToolbarAIPolish() {
     const range = sel?.range || null;
     showAIApplyPreview('润色结果', reply, () => applyAIReply(editor, reply, range));
   } catch (e) {
-    toast('AI 润色失败：' + e.message, 'error');
+    if (e.cancelled) toast('已取消 AI 润色', 'success');
+    else toast('AI 润色失败：' + e.message, 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2539,7 +2948,8 @@ async function runToolbarAIExpand() {
     const range = sel?.range || null;
     showAIApplyPreview('扩写结果', reply, () => applyAIReply(editor, reply, range));
   } catch (e) {
-    toast('AI 扩写失败：' + e.message, 'error');
+    if (e.cancelled) toast('已取消 AI 扩写', 'success');
+    else toast('AI 扩写失败：' + e.message, 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2830,18 +3240,15 @@ async function runGenAskLoop({ system, initial }) {
   const context = await genWorkContextBlock();
   let turns = 10;
   while (turns-- > 0) {
-    const data = await api('/harness/run', {
-      method: 'POST',
-      body: {
-        prompt: genDialoguePrompt(system, context, initial, history),
-        timeout: 600000,
-        model: 'deepseek-v4-pro',
-        action: 'settings-gen',
-        work_id: state.workId,
-        chapter_id: state.currentChapterId || undefined,
-        mode: 'full'
-      }
-    });
+    const data = await runHarnessJob({
+      prompt: genDialoguePrompt(system, context, initial, history),
+      timeout: 600000,
+      model: 'deepseek-v4-pro',
+      action: 'settings-gen',
+      work_id: state.workId,
+      chapter_id: state.currentChapterId || undefined,
+      mode: 'full'
+    }, '小说设定 AI 生成 · 正在分析作品与需求…');
     const parsed = parseAIWritingOutput(data.output || '');
     if (parsed.finalText) return parsed.finalText;
     if (parsed.question) {
@@ -2867,6 +3274,11 @@ function genSplitItems(text) {
     .filter(Boolean);
 }
 
+// D3：清理 AI 输出字段的脏前后缀（多余的全角/半角冒号、首尾空白），入库/回填前统一调用。
+function cleanGenField(v) {
+  return String(v ?? '').replace(/^[\s:：]+/, '').replace(/[\s:：]+$/, '').trim();
+}
+
 // 按“字段名：值”逐行解析一块文本为对象。
 function genParseOne(text, spec) {
   const obj = {};
@@ -2885,7 +3297,11 @@ function genParseOne(text, spec) {
     }
     if (hit) {
       cur = hit.key;
-      const clean = line.replace(new RegExp('^' + hit.als.map((a) => escRe(a)).join('|') + '\\s*[:：]'), '').trim();
+      const clean = line
+        .replace(new RegExp('^' + hit.als.map((a) => escRe(a)).join('|') + '\\s*[:：]'), '')
+        // D3：AI 偶发输出“字段名：：值”，把残留的第二个冒号一并剥掉
+        .replace(/^[\s:：]+/, '')
+        .trim();
       obj[cur] = ((obj[cur] || '') + ' ' + clean).trim();
     } else if (cur) {
       obj[cur] = (obj[cur] || '') + '\n' + line;
@@ -2942,7 +3358,7 @@ async function genDialog(cfg) {
     try {
       text = await runGenAskLoop({ system: buildGenSystem(cfg.label, !!cfg.plural, cfg.extra), initial });
     } catch (e) {
-      toast('AI 生成失败：' + e.message, 'error');
+      toast(e.cancelled ? '已取消' : 'AI 生成失败：' + e.message, e.cancelled ? 'success' : 'error');
       return false;
     }
     if (text === null) return false;
@@ -2975,7 +3391,7 @@ async function genTextDialog(cfg) {
     try {
       text = await runGenAskLoop({ system: cfg.system, initial });
     } catch (e) {
-      toast('AI 生成失败：' + e.message, 'error');
+      toast(e.cancelled ? '已取消' : 'AI 生成失败：' + e.message, e.cancelled ? 'success' : 'error');
       return false;
     }
     if (text === null) return false;
@@ -3160,9 +3576,10 @@ function genQuickCharacters() {
         onApply: async (items) => {
           let n = 0;
           for (const it of items) {
-            const name = String(it.name || '').trim();
+            // D3：入库前逐字段清洗，防止“：周屿”这类脏前缀落库
+            const name = cleanGenField(it.name);
             if (!name) continue;
-            await api('/characters', { method: 'POST', body: { work_id: state.workId, name, identity: it.identity || '', appearance: it.appearance || '', personality: it.personality || '', background: it.background || '', status: it.status || '', avatar_color: pickColor(), mes_example: it.mes_example || '', tags: cleanCsv(it.tags), system_prompt: it.system_prompt || '' } });
+            await api('/characters', { method: 'POST', body: { work_id: state.workId, name, identity: cleanGenField(it.identity), appearance: cleanGenField(it.appearance), personality: cleanGenField(it.personality), background: cleanGenField(it.background), status: cleanGenField(it.status), avatar_color: pickColor(), mes_example: cleanGenField(it.mes_example), tags: cleanCsv(it.tags), system_prompt: cleanGenField(it.system_prompt) } });
             n++;
           }
           toast(n ? `已新建 ${n} 个角色` : '没有可导入的角色', n ? 'success' : 'error');
@@ -3355,13 +3772,16 @@ async function runAICreateNovel() {
   const btn = $('#ai-create-submit');
   if (btn) btn.disabled = true;
   setAICreateProgress(steps, 0);
+  let stopTick = null;
   try {
     setAICreateProgress(steps, 1);
     await new Promise((r) => setTimeout(r, 100));
+    stopTick = startElapsedTicker($('#ai-create-progress'), '生成中，已用时');
     const data = await api('/harness/generate_novel', {
       method: 'POST',
       body: { prompt, model: 'deepseek-v4-pro' }
     });
+    if (stopTick) stopTick();
     setAICreateProgress(steps, 2);
     await new Promise((r) => setTimeout(r, 200));
     setAICreateProgress(steps, 3);
@@ -3376,6 +3796,7 @@ async function runAICreateNovel() {
     setAICreateProgress(steps, -1, e.message);
     toast(e.message, 'error');
   } finally {
+    if (stopTick) stopTick();
     if (btn) btn.disabled = false;
   }
 }
@@ -3520,6 +3941,16 @@ document.addEventListener('click', async (e) => {
         break;
       }
 
+      // D7：AI 创作页分页签（自动创建 / 工作台 / 历史），切换时只切换区块显隐，保留工作台内容
+      case 'ai-create-tab': {
+        state.aiCreateHomeTab = actionEl.dataset.tab;
+        try { localStorage.setItem('ns_ai_create_tab', state.aiCreateHomeTab); } catch (_) {}
+        $$('.board-tabs .board-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.aiCreateHomeTab));
+        $$('.ai-create-section').forEach((s) => { s.hidden = s.dataset.section !== state.aiCreateHomeTab; });
+        if (state.aiCreateHomeTab === 'history') await loadCreationTasks();
+        break;
+      }
+
       case 'new-work':
         openWorkModal();
         break;
@@ -3542,6 +3973,13 @@ document.addEventListener('click', async (e) => {
       case 'save-work': {
         const modal = $('.modal');
         const data = collectModalData(modal);
+        // D4：作品名称必填（前端拦截 + 服务端兜底）
+        if (!String(data.title || '').trim()) {
+          toast('作品名称不能为空', 'error');
+          const titleInput = modal.querySelector('input[name="title"]');
+          if (titleInput) titleInput.focus();
+          break;
+        }
         const id = actionEl.dataset.id;
         if (id) {
           await api(`/works/${id}`, { method: 'PUT', body: data });
@@ -3681,6 +4119,9 @@ document.addEventListener('click', async (e) => {
       case 'save-plotline': {
         const modal = $('.modal');
         const data = collectModalData(modal);
+        // D5：用户手动输入“主线：/支线：”前缀时存储前剥离，显示层按 kind 统一加前缀
+        if (data.title) data.title = data.title.replace(/^(?:主线|支线)\s*[:：]\s*/, '').trim();
+        if (!data.title) { toast('剧情线名称不能为空', 'error'); break; }
         const id = actionEl.dataset.id;
         const saved = id
           ? await api(`/plotlines/${id}`, { method: 'PUT', body: data })
@@ -3764,6 +4205,34 @@ document.addEventListener('click', async (e) => {
       case 'toolbar-ai-write':
         await runToolbarAIWrite();
         break;
+
+      // D5：AI 写作需求确认框的两个按钮
+      case 'toolbar-ai-write-confirm': {
+        const resolve = state.pendingToolbarAIWrite;
+        const req = $('#toolbar-ai-write-req')?.value?.trim() || '';
+        state.pendingToolbarAIWrite = null;
+        closeModal();
+        if (resolve) resolve(req);
+        break;
+      }
+
+      case 'toolbar-ai-write-direct': {
+        const resolve = state.pendingToolbarAIWrite;
+        state.pendingToolbarAIWrite = null;
+        closeModal();
+        if (resolve) resolve('');
+        break;
+      }
+
+      // D7：取消当前正在运行的 AI 任务（harness 慢通道）
+      case 'ai-task-cancel': {
+        const task = activeAITask;
+        if (task && task.cancel) {
+          if (actionEl) { actionEl.disabled = true; actionEl.textContent = '停止中…'; }
+          task.cancel();
+        }
+        break;
+      }
 
       case 'toolbar-ai-polish':
         await runToolbarAIPolish();
@@ -3887,6 +4356,15 @@ document.addEventListener('click', async (e) => {
       case 'ref-tab':
         renderReference(actionEl.dataset.tab);
         break;
+
+      // 专项 A：词条预览展开/收起（默认折叠为标题）
+      case 'ref-preview-toggle': {
+        state.refPreview = !state.refPreview;
+        try { localStorage.setItem('ns_ref_preview', state.refPreview ? '1' : '0'); } catch (_) { /* 存储不可用时仅本次会话生效 */ }
+        actionEl.textContent = state.refPreview ? '收起预览' : '展开预览';
+        renderReference(state.refTab);
+        break;
+      }
 
       case 'new-category':
         openCategoryModal();
@@ -4323,20 +4801,26 @@ const debouncedSearch = debounce(async () => {
     const group = (label, items, fn) => items.length ? `
       <div class="search-group-title">${label}</div>
       ${items.map(fn).join('')}` : '';
-    box.innerHTML = group('设定词条', data.terms, (t) => `<div class="search-item" data-action="search-go" data-type="term" data-id="${t.id}"><div class="title">${esc(t.title)}</div><div class="snippet">${esc((t.content || '').slice(0, 60))}</div></div>`)
-      + group('章节/正文', data.chapters, (c) => `<div class="search-item" data-action="search-go" data-type="chapter" data-id="${c.id}"><div class="title">${esc(c.title)}</div><div class="snippet">${esc((c.summary || c.content || '').slice(0, 60))}</div></div>`)
-      + group('角色', data.characters, (c) => `<div class="search-item" data-action="search-go" data-type="character" data-id="${c.id}"><div class="title">${esc(c.name)}</div><div class="snippet">${esc(c.identity || '')}</div></div>`)
-      + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}"><div class="title">${esc(p.title)}</div><div class="snippet">${esc(p.summary || '')}</div></div>`);
+    box.innerHTML = group('设定词条', data.terms, (t) => `<div class="search-item" data-action="search-go" data-type="term" data-id="${t.id}" data-work-id="${t.work_id || ''}"><div class="title">${esc(t.title)}</div><div class="snippet">${esc(t.snippet || stripHtml(t.content || '').slice(0, 60))}</div></div>`)
+      + group('章节/正文', data.chapters, (c) => `<div class="search-item" data-action="search-go" data-type="chapter" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${esc(c.title)}</div><div class="snippet">${esc(c.snippet || stripHtml(c.summary || c.content || '').slice(0, 60))}</div></div>`)
+      + group('角色', data.characters, (c) => `<div class="search-item" data-action="search-go" data-type="character" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${esc(c.name)}</div><div class="snippet">${esc(c.identity || '')}</div></div>`)
+      + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}" data-work-id="${p.work_id || ''}"><div class="title">${esc(plotlineDisplayTitle(p))}</div><div class="snippet">${esc(p.summary || '')}</div></div>`);
     box.hidden = !box.innerHTML;
   } catch (_) {
     box.hidden = true;
   }
 }, 300);
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
   if (e.target.id === 'st-chapter-select') {
     state.currentChapterId = Number(e.target.value);
     render();
+  }
+  // D15：单栏布局下的章节切换器
+  if (e.target.id === 'chapter-switcher') {
+    state.currentChapterId = Number(e.target.value);
+    await render();
+    persistSession();
   }
 });
 
@@ -4376,14 +4860,26 @@ document.addEventListener('input', (e) => {
 });
 
 // search result click
+// D2：初始页点击跨作品搜索结果时，自动进入对应作品再定位，不再静默丢弃用户意图。
 document.addEventListener('click', async (e) => {
   const go = e.target.closest('[data-action="search-go"]');
   if (!go) return;
   e.preventDefault();
   const type = go.dataset.type;
   const id = Number(go.dataset.id);
+  const workId = Number(go.dataset.workId) || null;
   $('#global-search').value = '';
   $('#search-results').hidden = true;
+  const crossing = workId && workId !== state.workId;
+  if (crossing) {
+    // 跨作品跳转：先进入目标作品
+    state.workId = workId;
+    state.loadedWorkId = null;
+    state.currentChapterId = null;
+    state.currentPlotlineId = null;
+    state.currentTermId = null;
+    state.currentCharacterId = null;
+  }
   if (type === 'term') {
     goView('terms');
     state.currentTermId = id;
@@ -4401,6 +4897,7 @@ document.addEventListener('click', async (e) => {
     state.currentPlotlineId = id;
     await render();
   }
+  if (crossing) toast('已进入对应作品并定位到搜索结果', 'success');
 });
 
 // tooltip
@@ -4432,6 +4929,7 @@ document.addEventListener('mouseover', (e) => {
 document.addEventListener('click', (e) => {
   if (e.target.closest('#sidebar-toggle')) {
     $('#sidebar').classList.toggle('hidden');
+    updateSidebarToggleIcon();
   }
 });
 
@@ -4453,6 +4951,12 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- init ----------
+// D11：侧栏折叠按钮图标随状态切换（◀=可收起 / ▶=可展开），不再用误导性的 ☰
+function updateSidebarToggleIcon() {
+  const icon = $('#sidebar-toggle');
+  if (icon) icon.textContent = $('#sidebar').classList.contains('hidden') ? '▶' : '◀';
+}
+
 async function init() {
   $('#global-search').addEventListener('focus', () => {
     const q = $('#global-search').value.trim();
@@ -4465,7 +4969,23 @@ async function init() {
   if (topbarRight) {
     topbarRight.innerHTML = `<button class="btn small danger" data-action="shutdown-server" title="关闭服务并释放端口">⏻ 关闭</button>`;
   }
-  state.view = 'works';
+  updateSidebarToggleIcon();
+  // D13：恢复上次会话位置；作品已被删除时安全回退到初始页
+  restoreSession();
+  if (state.workId) {
+    try {
+      await loadWorks(true);
+      if (!state.works.some((w) => w.id === state.workId)) {
+        state.workId = null;
+        state.loadedWorkId = null;
+        state.view = 'works';
+      }
+    } catch (_) {
+      state.workId = null;
+      state.view = 'works';
+    }
+  }
+  if (!state.workId) state.view = 'works';
   await render();
 }
 
