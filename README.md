@@ -2,7 +2,7 @@
 
 Novel Studio 是一个本地运行的小说创作管理工具，用于管理多部作品的设定、剧情线、大纲、正文写作，并把 AI 辅助创作能力整合进一个清爽的界面。
 
-它不需要安装任何 npm 第三方依赖，使用 Node.js 内置能力与本地 SQLite 数据库即可运行。你的作品数据、API Key 默认只保存在本机。（基于dshAI生成，有任何问题，请直接询问dsh）
+它不需要安装任何 npm 第三方依赖，使用 Node.js 内置能力与本地 SQLite 数据库即可运行。你的作品数据、API Key 默认只保存在本机。
 创作插件（novel-writing）为内置组件，源码位于 `harness-plugins/novel-writing/`，与工坊同仓维护、一起升级。
 ---
 
@@ -222,3 +222,6 @@ novel-studio/
 - 请勿将 `data/novel.db` 直接分享或上传，其中可能包含你的 API Key 与作品内容
 - AI 请求会发送到你配置的模型服务商；如使用云端服务，请注意敏感信息
 - 若修改了 `server.js` 或 `db.js`，重启服务后生效
+- 基于dshAI生成，有任何问题，请直接询问dsh
+- 专属插件地址：https://github.com/bbaz123/novel-writing-plugin
+- 借鉴开源项目：SillyTavern，利用其世界观等特色加深AI写作能力
