@@ -1,7 +1,7 @@
 {
   "name": "novel-writing",
-  "version": "0.4.0",
-  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/反 AI 腔红线/事件账本/伏笔闭环/长期记忆版本化/提案确认）。",
+  "version": "0.5.0",
+  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/章节蓝图/目标字数/反 AI 腔红线/事件账本/伏笔闭环/长期记忆版本化/提案确认）。",
   "integration": "builtin",
   "host": "novel-studio",
   "dshPlugin": {
@@ -23,6 +23,7 @@
     { "name": "novel_style_contract", "description": "读取当前写作红线清单。" },
     { "name": "novel_event_add", "description": "事件/伏笔/状态变化入账（伏笔状态、回收关联、幂等去重；headless 先落提案）。" },
     { "name": "novel_memory_update", "description": "长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案）。" },
+    { "name": "novel_blueprint", "description": "保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），落库后随上下文带入并作为一致性核对锚点。" },
     { "name": "novel_chapter_save", "description": "成稿写回章节正文（旧稿自动存历史版本，返回红线扫描）。" }
   ],
   "engineEndpoints": [
@@ -33,6 +34,7 @@
     "GET/POST /api/novel/events",
     "GET /api/novel/foreshadows?work_id=&status=",
     "POST /api/novel/consistency",
+    "PUT /api/novel/chapter_blueprint",
     "POST /api/novel/chapter_save",
     "GET /api/novel/proposals?work_id=",
     "POST /api/novel/proposals/apply|reject",

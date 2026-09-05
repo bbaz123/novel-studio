@@ -975,6 +975,21 @@ textarea { resize: vertical; }
   accent-color: var(--accent);
 }
 
+/* ---------- 全局搜索高亮（检索增强） ---------- */
+mark.search-hit {
+  background: rgba(251, 191, 36, .28);
+  color: #fde68a;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.search-group-title {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 10px 2px;
+  letter-spacing: .03em;
+}
+.search-empty { padding: 10px 12px; }
+
 /* ---------- AI 创作分页签（D7） ---------- */
 .ai-create-section { display: block; }
 .ai-create-section[hidden] { display: none; }

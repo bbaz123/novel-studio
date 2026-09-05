@@ -48,26 +48,34 @@ node test/smoke.mjs
 cd <你的 deepseek-harness 目录>
 pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名称，用逗号分隔"
 # 期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract,
-#           novel_event_add, novel_memory_update, novel_foreshadows, novel_consistency, novel_chapter_save
+#           novel_event_add, novel_memory_update, novel_foreshadows, novel_consistency,
+#           novel_blueprint, novel_chapter_save
 ```
 
 ## 工具一览
 
 | 工具 | 作用 |
 | --- | --- |
-| `novel_context` | 取作品/章节分层上下文（大纲/记忆/事件/未闭合伏笔/前后章衔接/角色卡/激活世界观/红线），分层预算截断 |
+| `novel_context` | 取作品/章节分层上下文（大纲/记忆/事件/未闭合伏笔/本章蓝图/目标字数/前后章衔接/角色卡/激活世界观/红线），分层预算截断 |
 | `novel_works` | 列出作品（确认 work_id） |
 | `novel_lookup` | 关键词检索角色/词条/章节/剧情线（写前查证设定） |
 | `novel_foreshadows` | 列出未闭合（或全部）伏笔 |
-| `novel_consistency` | 成文后一致性核对：未闭合伏笔/出场角色状态/最近事件 vs 正文 |
+| `novel_consistency` | 成文后一致性核对：未闭合伏笔/出场角色状态/最近事件 vs 正文（蓝图为核对锚点） |
 | `novel_scan` | 确定性反 AI 腔红线扫描（可跳过引号内对话） |
 | `novel_style_contract` | 读取写作红线清单 |
 | `novel_event_add` | 事件/伏笔/状态变化入账（伏笔状态与回收、幂等去重；headless 先落提案） |
 | `novel_memory_update` | 长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案） |
+| `novel_blueprint` | 保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），作者确认后落库 |
 | `novel_chapter_save` | 成稿写回章节正文（旧稿自动存历史版本，返回红线扫描） |
 
 ## 关键机制
 
+- **章节蓝图（写前规划）**：AI 写作流程先出蓝图（场景目标/情节点/冲突与转折/角色状态变化/钩子/参考设定）
+  → 弹窗确认可修改 → 落库（`chapters.blueprint_json`）→ 按蓝图成文；蓝图随上下文带入并作为
+  `novel_consistency` 的核对锚点；生成失败自动降级为直接成文，不阻塞。
+- **每章目标字数控制**：作品级默认（`works.default_chapter_words`，默认 2000，可 3000/5000/自定义）
+  + 章节级覆盖（`chapters.target_words`）；成文不足目标时工坊自动续写补足（≤2 轮拼稿），
+  结果弹窗按目标对比提示；作品还可配置总章数/故事结构/叙事视角参与大纲与蓝图生成。
 - **提案确认（headless 防污染）**：novel-studio 网页启动的任务带 `NOVELSTUDIO_PROPOSE_MODE=1`，
   AI 的事件/记忆入账先落提案表，任务结束随结果返回；作者在「AI 写作结果」弹窗勾选采纳，
   或稍后在「小说设定 → 长期记忆 → 📥 待确认提案」里处理。GUI dsh 会话里作者在场，直接入账。
@@ -75,6 +83,8 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
   自动把旧伏笔标记 resolved；`novel_context` 里始终带【未闭合伏笔】层。
 - **分层上下文预算**：每层独立上限、红线/角色卡保底、总量收敛截断，超长记忆标注压缩提示，
   不再一刀切盲截。
+- **多关键词加权检索**：`/api/search` 支持多关键词 AND 匹配、名称/标题加权排序、片段定位；
+  前端高亮命中关键词并按类型分组展示。
 - **红线扫描**：默认 28 条反 AI 腔红线，作品级可覆盖（`PUT /api/novel/redlines`）；
   扫描支持 `skip_dialogue`（引号内台词不计），正则模式有长度上限与编译校验。
 - **幂等与保留**：事件按 `dedup_key` 去重；记忆版本每作品保留最近 200 个，超限自动剪除；

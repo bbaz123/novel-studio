@@ -2232,12 +2232,22 @@ async function savePipelineToWork() {
 
 // ---------- modals / forms ----------
 function openWorkModal(work = null) {
+  const structOpts = ['', '三幕结构', '起承转合', '英雄之旅', '网文式升级流'];
+  const povOpts = ['', '第一人称', '第三人称有限视角', '第三人称全知视角', '多视角切换'];
   openModal({
     title: work ? '编辑作品' : '新建作品',
     body: `
       <div class="form-grid">
         <div class="field full"><label>作品名称</label><input name="title" value="${esc(work?.title || '')}" placeholder="例如：我的第一本小说"></div>
         <div class="field full"><label>简介</label><textarea name="description" rows="4" placeholder="作品简介、核心卖点等">${esc(work?.description || '')}</textarea></div>
+        <div class="field"><label>每章目标字数</label><input name="default_chapter_words" type="number" min="500" max="20000" step="100" value="${Number(work?.default_chapter_words) || 2000}" title="AI 写作按此字数生成整章，成文不足会自动续写补足"></div>
+        <div class="field"><label>总章数（0=未规划）</label><input name="total_chapters" type="number" min="0" max="5000" value="${Number(work?.total_chapters) || 0}" title="供大纲与蓝图生成参考"></div>
+        <div class="field"><label>故事结构</label>
+          <select name="story_structure">${structOpts.map((s) => `<option value="${esc(s)}" ${(work?.story_structure || '') === s ? 'selected' : ''}>${esc(s || '（未设置）')}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>叙事视角</label>
+          <select name="narrative_pov">${povOpts.map((s) => `<option value="${esc(s)}" ${(work?.narrative_pov || '') === s ? 'selected' : ''}>${esc(s || '（未设置）')}</option>`).join('')}</select>
+        </div>
       </div>`,
     footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="save-work" data-id="${work?.id || ''}">保存</button>`
   });
@@ -2462,7 +2472,13 @@ function renderAIContextPreview() {
     ? ctx.world_entries.map((w) => `<div>【${esc(w.title)}】${esc((w.content || '').slice(0, 80))}</div>`).join('')
     : '<span class="muted">无</span>';
   const notes = [ctx.work_author_note, ctx.chapter_author_note].filter(Boolean).map((n) => `<div>${esc(n.slice(0, 120))}</div>`).join('') || '<span class="muted">无</span>';
+  const bp = ctx.chapter?.blueprint && Object.keys(ctx.chapter.blueprint).length
+    ? `<div>【场景目标】${esc(ctx.chapter.blueprint.scene_goal || '—').slice(0, 120)}</div>
+       <div>【情节点】${esc((ctx.chapter.blueprint.plot_points || '—').slice(0, 160))}</div>
+       <div>【钩子】${esc((ctx.chapter.blueprint.hook || '—').slice(0, 120))}</div>`
+    : '<span class="muted">无（AI 写作时自动生成）</span>';
   return `
+    <div class="ai-context-section"><b>本章蓝图 · 目标 ${ctx.chapter?.target_words || ctx.work?.default_chapter_words || 2000} 字</b><div>${bp}</div></div>
     <div class="ai-context-section"><b>角色卡</b><div>${chars}</div></div>
     <div class="ai-context-section"><b>世界观</b><div>${worlds}</div></div>
     <div class="ai-context-section"><b>作者注</b><div>${notes}</div></div>`;
@@ -2505,6 +2521,22 @@ function aiContextBlock() {
   }
   const notes = [ctx.work_author_note, ctx.chapter_author_note].filter(Boolean).join('\n');
   if (notes) parts.push(`作者注：\n${notes}`);
+  // 本章蓝图与目标字数（写作的常驻锚点）
+  const bp = ctx.chapter?.blueprint;
+  if (bp && Object.keys(bp).length) {
+    const bpText = [
+      bp.scene_goal && `场景目标：${bp.scene_goal}`,
+      bp.plot_points && `情节点：${bp.plot_points}`,
+      bp.conflicts && `冲突与转折：${bp.conflicts}`,
+      bp.character_changes && `出场角色状态变化：${bp.character_changes}`,
+      bp.hook && `下一章钩子：${bp.hook}`,
+      bp.references && `参考设定：${bp.references}`
+    ].filter(Boolean).join('\n');
+    if (bpText) parts.push(`【本章蓝图 · 写作必须遵守】\n${bpText}`);
+  }
+  parts.push(`每章目标字数：${ctx.chapter?.target_words || ctx.work?.default_chapter_words || 2000} 字（成文不足时请主动写满，不要输出残章）`);
+  if (ctx.work?.story_structure) parts.push(`故事结构：${ctx.work.story_structure}`);
+  if (ctx.work?.narrative_pov) parts.push(`叙事视角：${ctx.work.narrative_pov}`);
   // 创作内核注入：前文衔接 + 最近事件 + 反 AI 腔红线（若服务端已提供）
   if (ctx.story_tail) parts.push(`前文衔接（上一节/当前节尾部）：\n${ctx.story_tail.slice(0, 1500)}`);
   if (ctx.recent_events?.length) {
@@ -2712,20 +2744,25 @@ const AI_WRITING_CLARIFY_PROMPT = `请你在回答前先向我提问
 完全理解我的真实需求和目标时
 再给出最终方案。`;
 
-function buildAIWritingDialoguePrompt(initial, history) {
+function buildAIWritingBlueprintPrompt(initial, history, targetWords) {
   const lines = [];
   lines.push(`你是资深中文网络小说创作助手。你熟悉网文爽点、节奏、人物塑造和世界观设定。`);
   lines.push(AI_WRITING_CLARIFY_PROMPT);
   lines.push(``);
   lines.push(`对话输出规则：
 - 如果还需要了解我的需求，第一行必须严格是【提问】，随后只输出一个问题，不要输出其他内容。
-- 如果已经达到 95% 信心，第一行必须严格是【成文】，随后直接输出完整的中文小说整章正文，不要解释。
+- 如果已经达到 95% 信心，第一行必须严格是【蓝图】，随后只输出一个 JSON 对象（不要 Markdown 代码块、不要解释），字段如下：
+{
+  "scene_goal": "本场景目标（一句话）",
+  "plot_points": "情节点，3-8 条，每条一行，足以撑起整章篇幅",
+  "conflicts": "冲突与转折",
+  "character_changes": "出场角色状态变化",
+  "hook": "下一章钩子（收尾悬念）",
+  "references": "需要回扣的既有设定/伏笔（没有就留空字符串）"
+}
 - 每轮最多只能问一个问题。`);
   lines.push(``);
-  lines.push(`篇幅要求（重要）：
-- 除非我明确要求短篇/片段，【成文】必须输出“整章正文”，以纯文本计不少于 2000 字（上限建议 3000 字左右）。
-- 把场景写足：环境、动作、心理、对话、转折都要展开；宁可写满一整章，也不要交出 1000 字以下的残章。
-- 篇幅不足时补细节与节奏、推进情节，而不是用“字数不够”搪塞或提前收尾。`);
+  lines.push(`蓝图容量要求：本章目标字数 ${targetWords} 字，蓝图的情节点与冲突要足以展开到这个篇幅，同时只覆盖“一章”的容量，不要规划成多章内容。`);
   lines.push(``);
   lines.push(`【当前小说上下文】`);
   lines.push(aiContextBlock() || '无');
@@ -2741,8 +2778,55 @@ function buildAIWritingDialoguePrompt(initial, history) {
     });
   }
   lines.push(``);
-  lines.push(`请根据以上内容决定下一步：若需澄清，先输出【提问】并只问一个问题；若已理解需求，先输出【成文】并给出正文。`);
+  lines.push(`请根据以上内容决定下一步：若需澄清，先输出【提问】并只问一个问题；若已理解需求，先输出【蓝图】并给出 JSON。`);
   return lines.join('\n');
+}
+
+// 按确认后的蓝图生成整章正文。
+function buildAIWritingProsePrompt(initial, blueprint, targetWords) {
+  const bpText = blueprint
+    ? [
+        blueprint.scene_goal && `场景目标：${blueprint.scene_goal}`,
+        blueprint.plot_points && `情节点：\n${blueprint.plot_points}`,
+        blueprint.conflicts && `冲突与转折：${blueprint.conflicts}`,
+        blueprint.character_changes && `出场角色状态变化：${blueprint.character_changes}`,
+        blueprint.hook && `下一章钩子：${blueprint.hook}`,
+        blueprint.references && `需要回扣的设定/伏笔：${blueprint.references}`
+      ].filter(Boolean).join('\n')
+    : '';
+  return [
+    `你是资深中文网络小说创作助手。请根据已确认的章节蓝图，输出本章完整正文。`,
+    `【本章蓝图 · 写作必须遵守】`,
+    bpText || '（未提供蓝图，按用户需求自由成文）',
+    ``,
+    `【篇幅要求（重要）】整章正文以纯文本计不少于 ${targetWords} 字（上限 ${targetWords + 1000} 字左右）；把蓝图里的每个情节点写足，环境、动作、心理、对话、转折都要展开；篇幅不足时补细节与节奏、推进情节，不要提前收尾，也不要注水。`,
+    ``,
+    `【当前小说上下文】`,
+    aiContextBlock() || '无',
+    ``,
+    `【用户最初请求】`,
+    initial,
+    ``,
+    `请直接输出完整正文（不要输出【成文】等前缀，不要解释）。`
+  ].join('\n');
+}
+
+// 成文不足目标字数时续写补足。
+function buildAIWritingContinuationPrompt(article, targetWords) {
+  const have = plainLength(article);
+  const remain = Math.max(0, targetWords - have);
+  return [
+    `继续写本章正文。前面已写 ${have} 字（目标 ${targetWords} 字，还差约 ${remain} 字）。`,
+    `请接着已写内容往下写，自然衔接，补齐剩余情节点，直到整章达到目标字数；不要重复已写内容。`,
+    ``,
+    `【已写内容末尾】`,
+    String(article).slice(-1500),
+    ``,
+    `【当前小说上下文】`,
+    aiContextBlock() || '无',
+    ``,
+    `直接输出续写正文（不要输出任何前缀、标题或解释）。`
+  ].join('\n');
 }
 
 function buildAIWritingInitialRequest(requirement = '') {
@@ -2760,12 +2844,40 @@ function buildAIWritingInitialRequest(requirement = '') {
 当前章节/场景：${title?.value || chapter.title || ''}
 大纲摘要：${chapter.summary || '无'}
 ${selected ? `你希望围绕的选中内容：\n${selected}\n` : plain ? `当前正文末尾：\n${plain.slice(-1200)}\n` : ''}
-${reqText ? `用户写作需求：${reqText}` : panelPrompt ? `用户补充需求：${panelPrompt}` : '请通过提问了解我真正想要的写作方向、风格和内容（长度未指定时，默认按整章 2000 字以上成文）。'}
+${reqText ? `用户写作需求：${reqText}` : panelPrompt ? `用户补充需求：${panelPrompt}` : '请通过提问了解我真正想要的写作方向、风格和内容（长度未指定时按作品配置的每章目标字数成文，默认 2000 字以上）。'}
 `.trim();
+}
+
+// 从混杂文本里提取第一个 {...} JSON 对象（蓝图解析用）；失败返回 null。
+function extractJSONFromText(text) {
+  const s = String(text || '');
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try { return JSON.parse(s.slice(start, end + 1)); } catch (_) { return null; }
+}
+
+// 纯文本字数（去空白）。
+function plainLength(text) {
+  return String(text || '').replace(/\s/g, '').length;
+}
+
+// 当前章节生效的目标字数：章节覆盖 > 作品默认 > 2000。
+function resolveTargetWords() {
+  const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
+  return Number(chapter.target_words) > 0 ? Number(chapter.target_words)
+    : Number(state.work?.default_chapter_words) > 0 ? Number(state.work.default_chapter_words)
+    : 2000;
 }
 
 function parseAIWritingOutput(raw) {
   const text = String(raw || '').trim();
+  const blueprintHead = text.match(/^【蓝图】\s*([\s\S]*)$/);
+  if (blueprintHead) {
+    const bp = extractJSONFromText(blueprintHead[1]);
+    if (bp) return { blueprint: bp };
+    return { finalText: text }; // 蓝图 JSON 解析失败：按原文兜底
+  }
   const finalHead = text.match(/^【成文】\s*([\s\S]*)$/);
   if (finalHead) return { finalText: finalHead[1].trim() };
   const questionHead = text.match(/^【提问】\s*([\s\S]*)$/);
@@ -2833,20 +2945,22 @@ function proposalsSummaryHtml(proposals) {
   </div>`;
 }
 
-// 成文长度提示：整章目标 2000 字以上，低于阈值时在结果弹窗里给出可执行的补救建议。
-function articleLengthHint(article) {
-  const n = String(article || '').replace(/\s/g, '').length;
-  if (n >= 2000) {
-    return `<div class="redline-scan ok">📏 成文 ${n} 字，达到整章 2000+ 字目标</div>`;
+// 成文长度提示：与目标字数对比（不足时给出可执行的补救建议）。
+function articleLengthHint(article, targetWords) {
+  const n = plainLength(article);
+  const target = Number(targetWords) || 2000;
+  if (n >= target) {
+    return `<div class="redline-scan ok">📏 成文 ${n} 字，达到目标 ${target} 字${n > target + 1000 ? '（略超，可自行精简）' : ''}</div>`;
   }
-  if (n >= 1000) {
-    return `<div class="redline-scan warn">📏 成文 ${n} 字，低于 2000 字目标：可直接应用后继续用「AI 写作」续写补足，或点「重新生成」。</div>`;
+  const gap = target - n;
+  if (gap <= 300) {
+    return `<div class="redline-scan warn">📏 成文 ${n} 字，距目标 ${target} 字还差 ${gap} 字：可直接应用后继续「AI 写作」续写，或点「重新生成」。</div>`;
   }
-  return `<div class="redline-scan warn">⚠️ 成文仅 ${n} 字（目标整章 2000 字以上）。建议点「重新生成」，并在需求里注明“整章 2000 字以上”；也可应用后再分段续写补足。</div>`;
+  return `<div class="redline-scan warn">⚠️ 成文 ${n} 字，距目标 ${target} 字还差 ${gap} 字。已尝试自动续写补足；仍不足时建议点「重新生成」，或在需求里强调篇幅。</div>`;
 }
 
 // 弹窗展示最终文章，让用户选择如何应用。
-function showAIWritingResult(article, scan, proposals) {
+function showAIWritingResult(article, scan, proposals, targetWords) {
   return new Promise((resolve) => {
     state.pendingAIFinal = resolve;
     state.pendingAIProposals = Array.isArray(proposals) && proposals.length
@@ -2856,7 +2970,7 @@ function showAIWritingResult(article, scan, proposals) {
       title: 'AI 写作结果',
       body: `
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
-        ${articleLengthHint(article)}
+        ${articleLengthHint(article, targetWords)}
         ${redlineScanSummaryHtml(scan)}
         ${proposalsSummaryHtml(proposals)}
         <div class="muted mt-8">请选择如何应用到正文：</div>`,
@@ -2917,7 +3031,7 @@ function askToolbarAIWriteRequirement() {
         <div class="muted">AI 会结合当前章节与设定先向你提问澄清，确认需求后开始生成（此过程会消耗 AI 调用额度）。</div>
         <div class="field mt-12">
           <label>你的写作需求（可留空，AI 会先提问了解）</label>
-          <textarea id="toolbar-ai-write-req" rows="4" placeholder="例如：续写 800 字，主角发现电台接到一通来自 14 年前的电话…"></textarea>
+          <textarea id="toolbar-ai-write-req" rows="4" placeholder="例如：续写本章，主角发现电台接到一通来自 14 年前的电话…（未指定长度时按作品配置的每章目标字数成文）"></textarea>
         </div>`,
       footer: `
         <button class="btn secondary" data-close-modal>取消</button>
@@ -2937,48 +3051,113 @@ async function runToolbarAIWrite() {
   await performToolbarAIWrite(String(req || '').trim() || null);
 }
 
+// 蓝图确认弹窗：字段可编辑；resolve 蓝图对象 / {skip:true}（跳过蓝图直接成文）/ null（取消）。
+function showBlueprintConfirm(blueprint) {
+  return new Promise((resolve) => {
+    state.pendingBlueprint = resolve;
+    const b = blueprint || {};
+    openModal({
+      title: '📐 章节蓝图 · 请确认或修改',
+      body: `
+        <div class="muted mb-8">AI 根据本章需求生成了蓝图，写作将严格围绕它展开；可修改后再「按此蓝图成文」，蓝图会保存到章节并参与后续上下文与一致性核对。</div>
+        <div class="form-grid">
+          <div class="field full"><label>场景目标</label><input id="bp-scene-goal" value="${esc(b.scene_goal || '')}" placeholder="本场景要达成什么"></div>
+          <div class="field full"><label>情节点（每行一条，3-8 条）</label><textarea id="bp-plot-points" rows="5">${esc(b.plot_points || '')}</textarea></div>
+          <div class="field full"><label>冲突与转折</label><textarea id="bp-conflicts" rows="3">${esc(b.conflicts || '')}</textarea></div>
+          <div class="field full"><label>出场角色状态变化</label><textarea id="bp-char-changes" rows="3">${esc(b.character_changes || '')}</textarea></div>
+          <div class="field full"><label>下一章钩子</label><textarea id="bp-hook" rows="2">${esc(b.hook || '')}</textarea></div>
+          <div class="field full"><label>参考设定（需要回扣的设定/伏笔）</label><textarea id="bp-references" rows="2">${esc(b.references || '')}</textarea></div>
+          <div class="field"><label>目标字数</label><input id="bp-target-words" type="number" min="500" max="20000" step="100" value="${Number(b.target_words) || resolveTargetWords()}"></div>
+        </div>`,
+      footer: `
+        <button class="btn secondary" data-close-modal>取消</button>
+        <button class="btn secondary" data-action="blueprint-skip-prose">跳过蓝图直接成文</button>
+        <button class="btn" data-action="blueprint-confirm">按此蓝图成文</button>`,
+      large: true
+    });
+  });
+}
+
 async function performToolbarAIWrite(requirement) {
   const editor = $('#editor-content');
   if (!editor) return;
   await loadAIContext();
   const btn = $('[data-action="toolbar-ai-write"]');
   if (btn) btn.disabled = true;
+  const jobBase = {
+    timeout: 600000,
+    model: 'deepseek-v4-flash',
+    action: 'write',
+    work_id: state.workId || state.work?.id || undefined,
+    chapter_id: state.currentChapterId || undefined,
+    mode: 'continuation'
+  };
   try {
     const initial = buildAIWritingInitialRequest(requirement || '');
     const history = [];
+    const targetWords = resolveTargetWords();
     let maxTurns = 10;
 
+    // 阶段 A：澄清 → 章节蓝图
     while (maxTurns-- > 0) {
-      // D1：每轮给用户一个明确的阶段文案 + 实时耗时/输出进度
       const lastMsg = history.length ? history[history.length - 1] : null;
       const stageLabel = !history.length
         ? 'AI 写作 · 正在阅读章节与设定，准备提问…'
         : (lastMsg?.content || '').includes('【提问】')
-          ? 'AI 写作 · 已收到回答，正在继续推进…'
-          : (lastMsg?.content || '').includes('【成文】')
-            ? 'AI 写作 · 正在按反馈重新成文…'
-            : 'AI 写作 · 正在成文（这一步最慢，通常 2–6 分钟）…';
-      const data = await runHarnessJob({
-        prompt: buildAIWritingDialoguePrompt(initial, history),
-        timeout: 600000,
-        model: 'deepseek-v4-flash',
-        action: 'write',
-        work_id: state.workId || state.work?.id || undefined,
-        chapter_id: state.currentChapterId || undefined,
-        mode: 'continuation'
-      }, stageLabel);
+          ? 'AI 写作 · 已收到回答，正在生成章节蓝图…'
+          : 'AI 写作 · 正在按反馈重新规划蓝图…';
+      const data = await runHarnessJob({ ...jobBase, prompt: buildAIWritingBlueprintPrompt(initial, history, targetWords) }, stageLabel);
       const raw = data.output || '';
       if (!raw.trim()) throw new Error('AI 没有返回内容');
       const parsed = parseAIWritingOutput(raw);
 
-      if (parsed.finalText) {
-        const mode = await showAIWritingResult(parsed.finalText, data.scan, data.proposals);
-        if (mode === null) return;
-        if (mode === 'regenerate') {
-          history.push({ role: 'assistant', content: `【成文】${parsed.finalText}` });
-          history.push({ role: 'user', content: '请根据上一版重新生成一版更符合我需求的完整文章。' });
-          continue;
+      if (parsed.blueprint) {
+        parsed.blueprint.target_words = targetWords;
+        const confirmed = await showBlueprintConfirm(parsed.blueprint);
+        if (confirmed === null) return; // 作者取消
+        if (!confirmed.skip && state.currentChapterId) {
+          try {
+            await api('/novel/chapter_blueprint', {
+              method: 'PUT',
+              body: { chapter_id: state.currentChapterId, blueprint: confirmed, target_words: Number(confirmed.target_words) || 0 }
+            });
+            toast('章节蓝图已保存', 'success');
+          } catch (e) {
+            toast('蓝图保存失败：' + e.message, 'error');
+          }
         }
+        const target = Number(confirmed.target_words) || targetWords;
+        // 阶段 B：按蓝图成文
+        const proseData = await runHarnessJob(
+          { ...jobBase, prompt: buildAIWritingProsePrompt(initial, confirmed.skip ? null : confirmed, target) },
+          'AI 写作 · 正在按蓝图成文（这一步最慢，通常 2–6 分钟）…'
+        );
+        let article = parseAIWritingOutput(proseData.output || '').finalText || '';
+        if (!article.trim()) throw new Error('AI 没有返回正文内容');
+        // 阶段 C：篇幅不足自动续写补足（最多 2 轮，拼稿后一并交付）
+        let rounds = 0;
+        while (plainLength(article) < target && rounds < 2) {
+          rounds += 1;
+          const cont = await runHarnessJob(
+            { ...jobBase, prompt: buildAIWritingContinuationPrompt(article, target) },
+            `AI 写作 · 篇幅不足，正在续写补足（${rounds}/2）…`
+          );
+          const more = parseAIWritingOutput(cont.output || '').finalText || '';
+          if (!more.trim()) break;
+          article = `${article}\n\n${more}`;
+        }
+        const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target);
+        if (mode === null) return;
+        if (mode === 'regenerate') return performToolbarAIWrite(requirement);
+        await applyAIWritingArticle(mode, article);
+        return;
+      }
+
+      if (parsed.finalText) {
+        // 模型跳过蓝图直接给了正文（降级路径，兼容旧行为）
+        const mode = await showAIWritingResult(parsed.finalText, data.scan, data.proposals, targetWords);
+        if (mode === null) return;
+        if (mode === 'regenerate') return performToolbarAIWrite(requirement);
         await applyAIWritingArticle(mode, parsed.finalText);
         return;
       }
@@ -2987,7 +3166,7 @@ async function performToolbarAIWrite(requirement) {
         const answer = await askAIWritingQuestion(parsed.question);
         if (answer === null) return;
         if (answer.type === 'skip') {
-          history.push({ role: 'user', content: '请不要再提问，直接给出最终文章。' });
+          history.push({ role: 'user', content: '请不要再提问，直接给出章节蓝图。' });
           continue;
         }
         history.push({ role: 'assistant', content: `【提问】${parsed.question}` });
@@ -2996,13 +3175,9 @@ async function performToolbarAIWrite(requirement) {
       }
 
       // 兜底：按最终结果处理
-      const mode = await showAIWritingResult(raw, data.scan, data.proposals);
+      const mode = await showAIWritingResult(raw, data.scan, data.proposals, targetWords);
       if (mode === null) return;
-      if (mode === 'regenerate') {
-        history.push({ role: 'assistant', content: `【成文】${raw}` });
-        history.push({ role: 'user', content: '请根据上一版重新生成一版更符合我需求的完整文章。' });
-        continue;
-      }
+      if (mode === 'regenerate') return performToolbarAIWrite(requirement);
       await applyAIWritingArticle(mode, raw);
       return;
     }
@@ -4426,6 +4601,30 @@ document.addEventListener('click', async (e) => {
         break;
       }
 
+      case 'blueprint-confirm': {
+        const resolve = state.pendingBlueprint;
+        state.pendingBlueprint = null;
+        closeModal();
+        if (resolve) resolve({
+          scene_goal: $('#bp-scene-goal')?.value?.trim() || '',
+          plot_points: $('#bp-plot-points')?.value?.trim() || '',
+          conflicts: $('#bp-conflicts')?.value?.trim() || '',
+          character_changes: $('#bp-char-changes')?.value?.trim() || '',
+          hook: $('#bp-hook')?.value?.trim() || '',
+          references: $('#bp-references')?.value?.trim() || '',
+          target_words: Number($('#bp-target-words')?.value) || resolveTargetWords()
+        });
+        break;
+      }
+
+      case 'blueprint-skip-prose': {
+        const resolve = state.pendingBlueprint;
+        state.pendingBlueprint = null;
+        closeModal();
+        if (resolve) resolve({ skip: true });
+        break;
+      }
+
       case 'open-proposal-confirm':
         await openProposalConfirm();
         break;
@@ -4922,6 +5121,16 @@ document.addEventListener('click', async (e) => {
 });
 
 // ---------- global input events ----------
+// 搜索关键词高亮：先转义 HTML，再把查询词（按空白拆分）包进 <mark>。
+function highlightTerms(text, q) {
+  const safe = esc(String(text || ''));
+  const kws = String(q || '').trim().split(/\s+/).filter(Boolean).slice(0, 5)
+    .map((k) => esc(k).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!kws.length) return safe;
+  const re = new RegExp(`(${kws.join('|')})`, 'gi');
+  return safe.replace(re, '<mark class="search-hit">$1</mark>');
+}
+
 const debouncedSearch = debounce(async () => {
   const q = $('#global-search').value.trim();
   const box = $('#search-results');
@@ -4929,13 +5138,14 @@ const debouncedSearch = debounce(async () => {
   try {
     const data = await api(`/search?q=${encodeURIComponent(q)}${state.workId ? `&work_id=${state.workId}` : ''}`);
     const group = (label, items, fn) => items.length ? `
-      <div class="search-group-title">${label}</div>
+      <div class="search-group-title">${label}（${items.length}）</div>
       ${items.map(fn).join('')}` : '';
-    box.innerHTML = group('设定词条', data.terms, (t) => `<div class="search-item" data-action="search-go" data-type="term" data-id="${t.id}" data-work-id="${t.work_id || ''}"><div class="title">${esc(t.title)}</div><div class="snippet">${esc(t.snippet || stripHtml(t.content || '').slice(0, 60))}</div></div>`)
-      + group('章节/正文', data.chapters, (c) => `<div class="search-item" data-action="search-go" data-type="chapter" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${esc(c.title)}</div><div class="snippet">${esc(c.snippet || stripHtml(c.summary || c.content || '').slice(0, 60))}</div></div>`)
-      + group('角色', data.characters, (c) => `<div class="search-item" data-action="search-go" data-type="character" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${esc(c.name)}</div><div class="snippet">${esc(c.identity || '')}</div></div>`)
-      + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}" data-work-id="${p.work_id || ''}"><div class="title">${esc(plotlineDisplayTitle(p))}</div><div class="snippet">${esc(p.summary || '')}</div></div>`);
-    box.hidden = !box.innerHTML;
+    box.innerHTML = group('设定词条', data.terms, (t) => `<div class="search-item" data-action="search-go" data-type="term" data-id="${t.id}" data-work-id="${t.work_id || ''}"><div class="title">${highlightTerms(t.title, q)}</div><div class="snippet">${highlightTerms(t.snippet || stripHtml(t.content || '').slice(0, 60), q)}</div></div>`)
+      + group('章节/正文', data.chapters, (c) => `<div class="search-item" data-action="search-go" data-type="chapter" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${highlightTerms(c.title, q)}</div><div class="snippet">${highlightTerms(c.snippet || stripHtml(c.summary || c.content || '').slice(0, 60), q)}</div></div>`)
+      + group('角色', data.characters, (c) => `<div class="search-item" data-action="search-go" data-type="character" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${highlightTerms(c.name, q)}</div><div class="snippet">${highlightTerms(c.identity || '', q)}</div></div>`)
+      + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}" data-work-id="${p.work_id || ''}"><div class="title">${highlightTerms(plotlineDisplayTitle(p), q)}</div><div class="snippet">${highlightTerms(p.snippet || p.summary || '', q)}</div></div>`);
+    if (!box.innerHTML) box.innerHTML = '<div class="muted search-empty">未找到与「' + esc(q) + '」相关的内容</div>';
+    box.hidden = false;
   } catch (_) {
     box.hidden = true;
   }

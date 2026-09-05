@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS works (
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   author_note TEXT NOT NULL DEFAULT '',
+  default_chapter_words INTEGER NOT NULL DEFAULT 2000,
+  total_chapters INTEGER NOT NULL DEFAULT 0,
+  story_structure TEXT NOT NULL DEFAULT '',
+  narrative_pov TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -56,6 +60,8 @@ CREATE TABLE IF NOT EXISTS chapters (
   summary TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL DEFAULT '',
   author_note TEXT NOT NULL DEFAULT '',
+  blueprint_json TEXT NOT NULL DEFAULT '',
+  target_words INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -254,6 +260,12 @@ try { db.exec(`ALTER TABLE world_entries ADD COLUMN priority INTEGER NOT NULL DE
 try { db.exec(`ALTER TABLE story_events ADD COLUMN foreshadow_status TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE story_events ADD COLUMN resolves_event_id INTEGER`); } catch (_) {}
 try { db.exec(`ALTER TABLE story_events ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE works ADD COLUMN default_chapter_words INTEGER NOT NULL DEFAULT 2000`); } catch (_) {}
+try { db.exec(`ALTER TABLE works ADD COLUMN total_chapters INTEGER NOT NULL DEFAULT 0`); } catch (_) {}
+try { db.exec(`ALTER TABLE works ADD COLUMN story_structure TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE works ADD COLUMN narrative_pov TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE chapters ADD COLUMN blueprint_json TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE chapters ADD COLUMN target_words INTEGER NOT NULL DEFAULT 0`); } catch (_) {}
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_volumes_work ON volumes(work_id);

@@ -27,7 +27,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.4.0'
+export const PLUGIN_VERSION = '0.5.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -347,6 +347,42 @@ export function apply(ctx, config) {
     if (data.summary === '') return '记忆更新为空（与旧摘要相同则自动跳过）'
     const hint = data.needs_compression ? '｜⚠ 当前摘要已超压缩提示线，建议下次优先压缩合并' : ''
     return `长期记忆已更新${extra}${hint}，当前摘要（前 ${120} 字）：${String(data.summary || '').slice(0, 120)}`
+  })
+
+  register('novel_blueprint', [
+    '把“本章写作蓝图”保存到章节（写前规划，落库后随上下文带入、一致性核对以其为锚点）。',
+    '用法：先把蓝图草稿发给作者确认（场景目标/情节点/冲突与转折/角色状态变化/钩子/需回扣的设定），作者同意后再调用本工具保存。',
+    'target_words 可选：本章目标字数，不传则用作品默认（每章目标字数）。',
+    '蓝图应只覆盖“一章”的容量：情节点 3-8 条，能撑起整章篇幅但不越章。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（必填）' },
+    scene_goal: { type: 'string', description: '本场景目标（一句话）' },
+    plot_points: { type: 'string', description: '情节点，3-8 条，每条一行' },
+    conflicts: { type: 'string', description: '冲突与转折' },
+    character_changes: { type: 'string', description: '出场角色状态变化' },
+    hook: { type: 'string', description: '下一章钩子' },
+    references: { type: 'string', description: '需要回扣的既有设定/伏笔' },
+    target_words: { type: 'number', description: '本章目标字数（可选，缺省用作品默认）' },
+  }, async (args) => {
+    const workId = envId(args, 'work_id')
+    const chapterId = envId(args, 'chapter_id')
+    if (chapterId === undefined) throw new Error('缺少 chapter_id：请先用 novel_context/novel_works 确认章节')
+    const blueprint = {
+      scene_goal: String(args.scene_goal || ''),
+      plot_points: String(args.plot_points || ''),
+      conflicts: String(args.conflicts || ''),
+      character_changes: String(args.character_changes || ''),
+      hook: String(args.hook || ''),
+      references: String(args.references || '')
+    }
+    if (!Object.values(blueprint).some((v) => v.trim())) throw new Error('蓝图内容不能为空')
+    const data = await jfetch('/api/novel/chapter_blueprint', {
+      method: 'PUT',
+      body: { work_id: workId, chapter_id: chapterId, blueprint, target_words: Number(args.target_words) || 0 },
+      timeout: 30000
+    })
+    return `章节蓝图已保存（章节 #${data.chapter_id}，目标 ${data.target_words} 字）：场景目标=${blueprint.scene_goal.slice(0, 60) || '—'}。成文时严格按蓝图执行。`
   })
 
   register('novel_chapter_save', [

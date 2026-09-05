@@ -212,6 +212,70 @@ try {
     ok('一致性核对清单装配');
   }
 
+  // 8b. 作品写作配置（每章目标字数/总章数/结构/视角）
+  {
+    const up = await jfetch(`/api/works/${workId}`, {
+      method: 'PUT',
+      body: { default_chapter_words: 3000, total_chapters: 36, story_structure: '三幕结构', narrative_pov: '第三人称有限视角' }
+    });
+    assert.equal(up.data.default_chapter_words, 3000);
+    assert.equal(up.data.total_chapters, 36);
+    assert.equal(up.data.story_structure, '三幕结构');
+    const ctx = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chapterId}`);
+    assert.ok(ctx.data.assembled.includes('每章目标字数：3000 字'), '上下文应携带目标字数');
+    assert.ok(ctx.data.assembled.includes('三幕结构'), '上下文应携带故事结构');
+    ok('作品写作配置（字数/总章数/结构/视角）');
+  }
+
+  // 8c. 章节蓝图：保存 → 上下文带入 → 空蓝图拒绝
+  {
+    const bp = {
+      scene_goal: '主角在档案室找到钥匙的下落',
+      plot_points: '1. 潜入档案室\n2. 与守夜人周旋\n3. 发现钥匙指向城南钟楼',
+      conflicts: '守夜人认出主角',
+      character_changes: '主角：右手受伤',
+      hook: '钟楼里传来第十四声钟响',
+      references: '柜子第三层的钥匙'
+    };
+    const saved = await jfetch('/api/novel/chapter_blueprint', {
+      method: 'PUT',
+      body: { chapter_id: chapterId, blueprint: bp, target_words: 3200 }
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.data.target_words, 3200);
+    const ctx = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chapterId}`);
+    assert.ok(ctx.data.assembled.includes('本章蓝图（写作必须遵守）'), '上下文应包含蓝图层');
+    assert.ok(ctx.data.assembled.includes('潜入档案室'), '蓝图内容应进入上下文');
+    assert.ok(ctx.data.assembled.includes('每章目标字数：3200 字'), '章节级目标字数应覆盖作品默认');
+    const empty = await jfetch('/api/novel/chapter_blueprint', {
+      method: 'PUT',
+      body: { chapter_id: chapterId, blueprint: { scene_goal: '' } }
+    });
+    assert.equal(empty.status, 400, '空蓝图应被拒绝');
+    ok('章节蓝图（保存/上下文带入/章节级字数覆盖/空蓝图拒绝）');
+  }
+
+  // 8d. 多关键词检索：AND 匹配 + 分组 + 排序
+  {
+    const term = await jfetch('/api/terms', {
+      method: 'POST',
+      body: { work_id: workId, title: '雾城档案管理局', content: '负责城市记忆存档与修复的机构，档案室位于旧城区。' }
+    });
+    assert.ok(term.data.id > 0);
+    const ch2 = await jfetch('/api/chapters', {
+      method: 'POST',
+      body: { work_id: workId, title: '档案室之夜', summary: '主角夜探档案室寻找钥匙。' }
+    });
+    const r1 = await jfetch(`/api/search?q=${encodeURIComponent('档案')}&work_id=${workId}`);
+    assert.ok(r1.data.terms.some((t) => t.title === '雾城档案管理局'), '词条标题命中');
+    assert.ok(r1.data.chapters.some((c) => c.title === '档案室之夜'), '章节标题命中');
+    const r2 = await jfetch(`/api/search?q=${encodeURIComponent('档案 钥匙')}&work_id=${workId}`);
+    assert.ok(r2.data.chapters.some((c) => c.id === ch2.data.id), '多关键词 AND 应命中同时含两词的章节');
+    const r3 = await jfetch(`/api/search?q=${encodeURIComponent('不存在的词xyz')}&work_id=${workId}`);
+    assert.equal(r3.data.terms.length + r3.data.chapters.length + r3.data.characters.length + r3.data.plotlines.length, 0);
+    ok('多关键词检索（AND/分组/空结果）');
+  }
+
   // 9. 正文写回（旧稿历史版本 + 扫描返回）
   {
     const first = await jfetch('/api/novel/chapter_save', {

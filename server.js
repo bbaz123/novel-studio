@@ -122,10 +122,10 @@ function touchWork(workId) {
 // ---------- 通用 CRUD ----------
 // 集中管理各资源的表名、字段、排序和默认值，避免多个地方重复定义。
 const RESOURCE_CONFIG = {
-  works: { table: 'works', order: 'id DESC', fields: ['title', 'description', 'author_note'], defaults: { description: '', author_note: '' } },
+  works: { table: 'works', order: 'id DESC', fields: ['title', 'description', 'author_note', 'default_chapter_words', 'total_chapters', 'story_structure', 'narrative_pov'], defaults: { description: '', author_note: '', default_chapter_words: 2000, total_chapters: 0, story_structure: '', narrative_pov: '' } },
   volumes: { table: 'volumes', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'summary', 'position'], defaults: { summary: '', position: 0 } },
   plotlines: { table: 'plotlines', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'kind', 'summary', 'position'], defaults: { summary: '', position: 0 } },
-  chapters: { table: 'chapters', order: 'position ASC, id ASC', fields: ['work_id', 'volume_id', 'plotline_id', 'parent_id', 'title', 'summary', 'content', 'author_note', 'position'], defaults: { summary: '', content: '', author_note: '', position: 0 } },
+  chapters: { table: 'chapters', order: 'position ASC, id ASC', fields: ['work_id', 'volume_id', 'plotline_id', 'parent_id', 'title', 'summary', 'content', 'author_note', 'blueprint_json', 'target_words', 'position'], defaults: { summary: '', content: '', author_note: '', blueprint_json: '', target_words: 0, position: 0 } },
   categories: { table: 'categories', order: 'position ASC, id ASC', fields: ['work_id', 'name', 'color', 'position'], defaults: { color: '#6366f1', position: 0 } },
   terms: { table: 'terms', order: 'updated_at DESC, id DESC', fields: ['work_id', 'category_id', 'title', 'content', 'tags'], defaults: { content: '', tags: '' } },
   characters: { table: 'characters', order: 'name ASC', fields: ['work_id', 'name', 'identity', 'appearance', 'personality', 'background', 'status', 'avatar_color', 'mes_example', 'tags', 'system_prompt'], defaults: { identity: '', appearance: '', personality: '', background: '', status: '', avatar_color: '#8b5cf6', mes_example: '', tags: '', system_prompt: '' } },
@@ -139,7 +139,8 @@ const RESOURCE_CONFIG = {
 const NUMERIC_FIELDS = new Set([
   'work_id', 'volume_id', 'plotline_id', 'parent_id', 'category_id',
   'from_character_id', 'to_character_id', 'character_id', 'position',
-  'is_pinned', 'priority', 'temperature', 'max_tokens'
+  'is_pinned', 'priority', 'temperature', 'max_tokens',
+  'default_chapter_words', 'total_chapters', 'target_words'
 ]);
 
 function getList(resource, where) {
@@ -206,52 +207,78 @@ function deleteRow(resource, id) {
 }
 
 // ---------- search ----------
-// 从纯文本中截取一段包含查询词的片段（D2：搜索结果不再裸露 HTML 标签）。
-function snippetAround(text, q) {
-  const plain = plainText(text);
-  if (!plain) return '';
-  const idx = plain.indexOf(q);
-  const len = 80;
-  if (idx < 0) return plain.slice(0, len);
-  const start = Math.max(0, idx - 20);
-  const seg = plain.slice(start, start + len);
-  return (start > 0 ? '…' : '') + seg + (start + len < plain.length ? '…' : '');
-}
-
+// 多关键词检索：全部关键词 AND 匹配；标题/名称命中权重最高（×3），标签/身份次之（×2），
+// 内容命中兜底；按得分排序取前 20，片段围绕最早命中的关键词截取。
 function search(q, workId) {
-  if (!q) return { terms: [], chapters: [], characters: [], plotlines: [] };
-  const like = `%${q}%`;
-  const params = workId ? [like, like, like, workId] : [like, like, like];
-  const terms = prepare(`
-    SELECT id, work_id, title, content, tags, 'term' AS type FROM terms
-    WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?
-    ${workId ? 'AND work_id = ?' : ''}
-    ORDER BY title LIMIT 20
-  `).all(...params).map((t) => ({ ...t, snippet: snippetAround(t.content, q) }));
+  const empty = { terms: [], chapters: [], characters: [], plotlines: [] };
+  if (!q) return empty;
+  const keywords = String(q).toLowerCase().split(/\s+/).map((k) => k.trim()).filter(Boolean).slice(0, 5);
+  if (!keywords.length) return empty;
 
-  const cparams = workId ? [like, like, like, workId] : [like, like, like];
-  const chapters = prepare(`
-    SELECT id, work_id, title, summary, content, 'chapter' AS type FROM chapters
-    WHERE title LIKE ? OR summary LIKE ? OR content LIKE ?
-    ${workId ? 'AND work_id = ?' : ''}
-    ORDER BY updated_at DESC LIMIT 20
-  `).all(...cparams).map((c) => ({ ...c, snippet: snippetAround(c.summary || c.content, q) }));
+  const queryRows = (table, fields, extra = '') => {
+    const conds = keywords.map((k) => `(${fields.map((f) => `${f} LIKE ?`).join(' OR ')})`).join(' AND ');
+    const params = keywords.flatMap((k) => fields.map(() => `%${k}%`));
+    if (workId) params.push(workId);
+    const sql = `SELECT * FROM ${table} WHERE ${conds}${workId ? ` AND work_id = ?` : ''}${extra} LIMIT 200`;
+    return prepare(sql).all(...params);
+  };
 
-  const chparams = workId ? [like, like, like, like, like, workId] : [like, like, like, like, like];
-  const characters = prepare(`
-    SELECT id, work_id, name, identity, personality, background, status, 'character' AS type FROM characters
-    WHERE name LIKE ? OR identity LIKE ? OR personality LIKE ? OR background LIKE ? OR status LIKE ?
-    ${workId ? 'AND work_id = ?' : ''}
-    ORDER BY name LIMIT 20
-  `).all(...chparams);
+  // 字段权重：名称/标题 ×3，标签/身份 ×2，其它 ×1；全词相等 > 前缀 > 包含。
+  const scoreRow = (row, fields) => {
+    let score = 0;
+    for (const k of keywords) {
+      for (const f of fields) {
+        const v = String(row[f] || '').toLowerCase();
+        if (!v) continue;
+        if (v === k) score += 100 * (f === fields[0] ? 3 : 1);
+        else if (v.startsWith(k)) score += 50 * (f === fields[0] ? 3 : 1);
+        else if (v.includes(k)) score += 10 * (f === fields[0] ? 3 : 1);
+      }
+    }
+    return score;
+  };
 
-  const pparams = workId ? [like, like, workId] : [like, like];
-  const plotlines = prepare(`
-    SELECT id, work_id, title, summary, kind, 'plotline' AS type FROM plotlines
-    WHERE title LIKE ? OR summary LIKE ?
-    ${workId ? 'AND work_id = ?' : ''}
-    ORDER BY title LIMIT 20
-  `).all(...pparams);
+  // 在纯文本里找所有关键词中最早出现的位置，围绕它截片段（多关键词时能定位到最相关的词）。
+  const snippetAny = (text, fallback = '') => {
+    const plain = plainText(text);
+    if (!plain) return fallback ? plainText(fallback).slice(0, 60) : '';
+    let best = -1; let bestLen = 0;
+    for (const k of keywords) {
+      const idx = plain.toLowerCase().indexOf(k);
+      if (idx >= 0 && (best < 0 || idx < best)) { best = idx; bestLen = k.length; }
+    }
+    if (best < 0) return plain.slice(0, 60);
+    const start = Math.max(0, best - 30);
+    const len = Math.min(80, Math.max(30, bestLen + 40));
+    return (start > 0 ? '…' : '') + plain.slice(start, start + len) + (start + len < plain.length ? '…' : '');
+  };
+
+  const rank = (rows, fields, sortKey) => rows
+    .map((r) => ({ row: r, score: scoreRow(r, fields) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || String(a.row[sortKey] || '').localeCompare(String(b.row[sortKey] || ''), 'zh'))
+    .slice(0, 20)
+    .map((x) => x.row);
+
+  const terms = rank(
+    queryRows('terms', ['title', 'tags', 'content']).map((t) => ({ ...t, type: 'term' })),
+    ['title', 'tags', 'content'], 'title'
+  ).map((t) => ({ ...t, snippet: snippetAny(t.content) }));
+
+  const chapters = rank(
+    queryRows('chapters', ['title', 'summary', 'content']).map((c) => ({ ...c, type: 'chapter' })),
+    ['title', 'summary', 'content'], 'title'
+  ).map((c) => ({ ...c, snippet: snippetAny(c.content, c.summary) }));
+
+  const characters = rank(
+    queryRows('characters', ['name', 'identity', 'personality', 'background', 'status']).map((c) => ({ ...c, type: 'character' })),
+    ['name', 'identity', 'personality', 'background', 'status'], 'name'
+  );
+
+  const plotlines = rank(
+    queryRows('plotlines', ['title', 'summary']).map((p) => ({ ...p, type: 'plotline' })),
+    ['title', 'summary'], 'title'
+  ).map((p) => ({ ...p, snippet: snippetAny(p.summary) }));
 
   return { terms, chapters, characters, plotlines };
 }
@@ -569,10 +596,20 @@ function buildAIContext(chapterId) {
   if (!storyTail) storyTail = plainText(chapter.content || '').slice(-1200);
   const recentEvents = listStoryEvents(work.id, 12);
   const redlineRows = listRedlines(work.id);
+  let blueprint = null;
+  try { blueprint = JSON.parse(chapter.blueprint_json || '{}'); } catch (_) { blueprint = null; }
+  const targetWords = (Number(chapter.target_words) > 0 ? Number(chapter.target_words) : 0)
+    || Number(work.default_chapter_words) || 2000;
 
   return {
-    work: { id: work.id, title: work.title },
-    chapter: { id: chapter.id, title: chapter.title, summary: chapter.summary },
+    work: {
+      id: work.id, title: work.title,
+      default_chapter_words: Number(work.default_chapter_words) || 2000,
+      total_chapters: Number(work.total_chapters) || 0,
+      story_structure: work.story_structure || '',
+      narrative_pov: work.narrative_pov || ''
+    },
+    chapter: { id: chapter.id, title: chapter.title, summary: chapter.summary, blueprint, target_words: targetWords },
     prev_chapter: prevChapRow ? { id: prevChapRow.id, title: prevChapRow.title } : null,
     characters,
     world_entries: worldEntries,
@@ -877,7 +914,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
 
-  const allChapters = prepare('SELECT id, work_id, volume_id, plotline_id, parent_id, title, summary, position, created_at, updated_at FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const allChapters = prepare('SELECT id, work_id, volume_id, plotline_id, parent_id, title, summary, author_note, blueprint_json, target_words, position, created_at, updated_at FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const volumes = prepare('SELECT * FROM volumes WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const plotlines = prepare('SELECT * FROM plotlines WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const allCharacters = prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
@@ -1021,13 +1058,38 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     ? `第${chapter.position + 1}节 ${chapter.title}${chapter.summary ? `\n大纲摘要：${chapter.summary}` : ''}${chapter.author_note ? `\n作者注：${chapter.author_note}` : ''}`
     : '（未指定具体章节）';
 
+  // 本章蓝图（章节写作的常驻锚点）与目标字数：蓝图落库后随上下文带入，生成与核对都以其为准。
+  let blueprint = null;
+  try { blueprint = JSON.parse(chapter?.blueprint_json || '{}'); } catch (_) { blueprint = null; }
+  const BLUEPRINT_LABELS = [
+    ['scene_goal', '场景目标'], ['plot_points', '情节点'], ['conflicts', '冲突与转折'],
+    ['character_changes', '出场角色状态变化'], ['hook', '下一章钩子'], ['references', '参考设定']
+  ];
+  const blueprintText = blueprint && Object.keys(blueprint).length
+    ? BLUEPRINT_LABELS
+        .map(([key, label]) => [label, String(blueprint[key] || '')])
+        .filter(([, v]) => v.trim())
+        .map(([label, v]) => `${label}：${v.slice(0, 600)}`).join('\n')
+    : '';
+  const targetWords = (Number(chapter?.target_words) > 0 ? Number(chapter.target_words) : 0)
+    || Number(work.default_chapter_words) || 2000;
+
+  // 作品级写作配置：总章数/故事结构/叙事视角（有配置时进入上下文，约束大纲与蓝图生成）。
+  const workConfigText = [
+    Number(work.total_chapters) > 0 ? `总章数：${Number(work.total_chapters)}` : '',
+    work.story_structure ? `故事结构：${work.story_structure}` : '',
+    work.narrative_pov ? `叙事视角：${work.narrative_pov}` : '',
+    `每章目标字数：${targetWords} 字`
+  ].filter(Boolean).join('｜');
+
   const sections = [
-    section('作品', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}`, 800),
+    section('作品', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, 900),
     section('卷/剧情线/章节进度（大纲）', outlineText, 2800),
     section('长期记忆（已发生的故事摘要）', memoryBody, 2200),
     section('最近事件（事件账本）', eventsText, 1800),
     section('未闭合伏笔（写作时必须照顾）', foreshadowText, 1200),
     section('当前场景', sceneBody, 1200),
+    section('本章蓝图（写作必须遵守）', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', 1500),
     section('前文衔接', storyTail, mode === 'continuation' ? 4000 : 1600),
     section('出场角色卡', charCardsText, 4000),
     relationsText ? section('人物关系', relationsText, 800) : '',
@@ -1037,7 +1099,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
 
   // 总预算收敛：超限时从“前文衔接/大纲/世界观”等弹性层依次收缩，红线层不动。
   const TOTAL_BUDGET = 26000;
-  const FLEX_ORDER = [6, 1, 9]; // sections 下标：前文衔接 → 大纲 → 世界观
+  const FLEX_ORDER = [7, 1, 10]; // sections 下标：前文衔接 → 大纲 → 世界观
   const flexReduce = [2400, 1600, 800, 400];
   let joined = sections.join('\n\n');
   if (joined.length > TOTAL_BUDGET) {
@@ -1046,7 +1108,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
       const label = sections[idx]?.split('\n')[0] || '';
       for (const cap of flexReduce) {
         if (joined.length <= TOTAL_BUDGET) break;
-        const raw = idx === 6 ? storyTail : idx === 1 ? outlineText : idx === 9 ? worldEntriesText : '';
+        const raw = idx === 7 ? storyTail : idx === 1 ? outlineText : idx === 10 ? worldEntriesText : '';
         sections[idx] = section(label.replace('【', '').replace('】', ''), raw, cap);
         joined = sections.join('\n\n');
       }
@@ -1057,8 +1119,8 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   return {
     ok: true,
     mode,
-    work: { id: work.id, title: work.title },
-    chapter: chapter ? { id: chapter.id, title: chapter.title, summary: chapter.summary, position: chapter.position, volume_id: chapter.volume_id, plotline_id: chapter.plotline_id } : null,
+    work: { id: work.id, title: work.title, default_chapter_words: Number(work.default_chapter_words) || 2000, total_chapters: Number(work.total_chapters) || 0, story_structure: work.story_structure, narrative_pov: work.narrative_pov },
+    chapter: chapter ? { id: chapter.id, title: chapter.title, summary: chapter.summary, position: chapter.position, volume_id: chapter.volume_id, plotline_id: chapter.plotline_id, blueprint, target_words: targetWords } : null,
     prev_chapter: prevChapter ? { id: prevChapter.id, title: prevChapter.title } : null,
     next_chapter: nextChapter ? { id: nextChapter.id, title: nextChapter.title } : null,
     story_memory: storyMemory,
@@ -1741,6 +1803,27 @@ async function handleAPI(req, res, pathname, query) {
         style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) }
       }
     });
+  }
+  // 章节蓝图保存（写作前规划 → 落库 → 随上下文带入 → 一致性核对锚点）。
+  if (resource === 'novel' && segments[2] === 'chapter_blueprint' && method === 'PUT') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const raw = body.blueprint && typeof body.blueprint === 'object' ? body.blueprint : {};
+    const BLUEPRINT_KEYS = ['scene_goal', 'plot_points', 'conflicts', 'character_changes', 'hook', 'references'];
+    const blueprint = {};
+    for (const key of BLUEPRINT_KEYS) {
+      blueprint[key] = asString(raw[key], '').slice(0, 2000);
+    }
+    if (!Object.values(blueprint).some((v) => v)) return sendError(res, 400, '蓝图内容不能为空');
+    const targetWords = Number(body.target_words) || 0;
+    prepare('UPDATE chapters SET blueprint_json = ?, target_words = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(blueprint), targetWords > 0 ? Math.min(Math.max(1, Math.floor(targetWords)), 20000) : 0, now(), chapterId);
+    touchWork(chapter.work_id);
+    const work = prepare('SELECT default_chapter_words FROM works WHERE id = ?').get(chapter.work_id);
+    const effective = targetWords > 0 ? targetWords : (Number(work?.default_chapter_words) || 2000);
+    return sendJSON(res, 200, { ok: true, chapter_id: chapterId, blueprint, target_words: effective });
   }
   if (resource === 'novel' && segments[2] === 'chapter_save' && method === 'POST') {
     const body = await readBody(req);

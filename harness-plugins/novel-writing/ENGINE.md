@@ -9,16 +9,18 @@
 ```
 novel-studio（数据真相源）
   ├─ 数据表：story_events（伏笔状态/回收/去重）、memory_versions（记忆快照/回滚）、
-  │          writing_redlines（红线）、story_event_proposals / story_memory_proposals（入账提案）
-  ├─ 创作内核：buildNovelContext（ST 式分层装配 + 分层预算）、scanAgainstRedlines（含对话豁免）、
-  │          saveStoryMemory（版本快照 + 保留策略 + 压缩提示）、提案确认（apply/reject）
-  ├─ 端点：/api/novel/*、/api/story_memory 版本与回滚、/api/novel/proposals
+  │          writing_redlines（红线）、story_event_proposals / story_memory_proposals（入账提案）、
+  │          works.*（每章目标字数/总章数/故事结构/叙事视角）、chapters.blueprint_json / target_words
+  ├─ 创作内核：buildNovelContext（ST 式分层装配 + 分层预算 + 蓝图层 + 目标字数）、
+  │          scanAgainstRedlines（含对话豁免）、saveStoryMemory（版本快照 + 保留策略 + 压缩提示）、
+  │          提案确认（apply/reject）、多关键词加权检索
+  ├─ 端点：/api/novel/*、/api/story_memory 版本与回滚、/api/novel/proposals、/api/search
   └─ /api/harness/run：注入 NOVELSTUDIO_WORK_ID/CHAPTER_ID/MODE + NOVELSTUDIO_PROPOSE_MODE=1
         │ spawn（携带身份 env）
         ▼
 dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writing/）
-  ├─（确定性层）上下文/红线在 prompt 侧已装配 → 生成即守设定、不 AI 腔
-  ├─（agent 层）novel_* 工具：上下文按需拉取、设定查证、伏笔闭环、一致性核对、
+  ├─（确定性层）上下文/蓝图/目标字数/红线在 prompt 侧已装配 → 生成即守设定、不 AI 腔
+  ├─（agent 层）novel_* 工具：上下文按需拉取、设定查证、伏笔闭环、蓝图保存、一致性核对、
   │   产出自检、事件/记忆提案（headless）或直接入账（GUI）、正文写回
   └─（收尾层）红线扫描结果随 /harness/run 响应返回；事件/记忆提案由作者在界面确认
 ```
@@ -45,10 +47,27 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 
 ### 3. 分层上下文预算
 
-`buildNovelContext` 每层独立上限（作品 800 / 大纲 2800 / 记忆 2200 / 事件 1800 / 伏笔 1200 /
-场景 1200 / 前文衔接 1600–4000 / 角色卡 4000 / 关系 800 / 世界观 3000 / 红线 4000），
+`buildNovelContext` 每层独立上限（作品 900 / 大纲 2800 / 记忆 2200 / 事件 1800 / 伏笔 1200 /
+场景 1200 / **蓝图 1500** / 前文衔接 1600–4000 / 角色卡 4000 / 关系 800 / 世界观 3000 / 红线 4000），
 整块结果再按 26000 字总预算收敛（弹性层依次收缩，红线层不动）；
 记忆超过 1200 字压缩提示线时在上下文里标注，提醒模型优先压缩。
+
+### 3b. 章节蓝图与目标字数（写前规划 → 落库 → 常驻锚点）
+
+- 蓝图字段：`scene_goal`（场景目标）/ `plot_points`（情节点 3-8 条）/ `conflicts`（冲突与转折）/
+  `character_changes`（出场角色状态变化）/ `hook`（下一章钩子）/ `references`（需回扣的设定/伏笔）；
+- 工坊内 AI 写作流程：澄清需求 → 模型输出【蓝图】JSON → 弹窗可编辑确认 → `PUT /api/novel/chapter_blueprint`
+  落库（`chapters.blueprint_json`，同时可设章节级 `target_words`）→ 按蓝图成文；
+- 落库后蓝图随 `/api/novel/context` 与 `/api/ai_context` 进入写作上下文，`novel_consistency`
+  以其为核对锚点；dsh GUI 会话可用 `novel_blueprint` 工具保存；
+- 目标字数优先级：章节 `target_words` > 作品 `default_chapter_words`（默认 2000）> 兜底 2000；
+  成文不足时工坊自动续写补足（≤2 轮拼稿），结果弹窗按目标字数对比提示。
+
+### 4. 多关键词加权检索（/api/search）
+
+查询词按空白拆分为多个关键词（≤5 个），全部 AND 匹配；名称/标题命中 ×3 权重、标签/身份 ×2、
+内容 ×1，全词相等 > 前缀 > 包含；按得分排序取前 20，片段围绕最早命中的关键词截取；
+前端对标题与片段做关键词高亮（`<mark class="search-hit">`）。
 
 ### 4. 模型切换竞态修复（harness.js）
 
@@ -66,13 +85,15 @@ dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并�
 | 端点 | 说明 |
 | --- | --- |
 | `GET /api/novel/ping` | 服务探活 |
-| `GET /api/novel/context?work_id=&chapter_id=&mode=` | ST 式分层上下文（full/continuation/fragment，分层预算） |
+| `GET /api/novel/context?work_id=&chapter_id=&mode=` | ST 式分层上下文（full/continuation/fragment，分层预算 + 蓝图层 + 目标字数） |
 | `GET/PUT /api/novel/redlines?work_id=` | 读取/全量替换红线清单（校验类型/长度/正则） |
 | `POST /api/novel/scan` | 正文红线扫描 `{work_id,text,skip_dialogue}` → hits |
 | `GET/POST /api/novel/events` | 事件账本读取/追加（伏笔状态/回收/dedup/proposed） |
 | `GET /api/novel/foreshadows?work_id=&status=` | 未闭合（open）或全部（all）伏笔 |
 | `POST /api/novel/consistency` | 一致性核对清单装配 `{work_id,chapter_id,text}` |
+| `PUT /api/novel/chapter_blueprint` | 保存章节蓝图 `{chapter_id, blueprint{6字段}, target_words}` |
 | `POST /api/novel/chapter_save` | 成稿写回章节（旧稿存历史版本，返回红线扫描） |
+| `GET /api/search?q=&work_id=` | 多关键词加权检索（AND 匹配/标题加权/片段定位） |
 | `GET /api/novel/proposals?work_id=` | 待确认入账提案 |
 | `POST /api/novel/proposals/apply` / `reject` | 采纳/忽略提案 `{work_id, ids|all}` |
 | `PUT /api/story_memory` | 提交记忆（summary/delta、proposed；返回 needs_compression） |
