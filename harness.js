@@ -255,7 +255,7 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           if (settled) return;
           settled = true;
           child.kill();
-          const err = new Error(`Harness 任务超时（${Math.round(timeoutMs / 1000)} 秒）后被取消，已生成的中间内容未能落盘。建议限制篇幅（如 800 字内）或使用「跳过提问」后重试。`);
+          const err = new Error(`Harness 任务超时（${Math.round(timeoutMs / 1000)} 秒）后被取消，已生成的中间内容未能落盘。建议将本章拆成两段分别生成（先生成前半、再续写后半），或使用「跳过提问」后重试。`);
           err.code = 'HARNESS_TIMEOUT';
           err.stdoutTail = stdout.slice(-600);
           err.stderr = stderr;

@@ -1947,7 +1947,7 @@ const PIPELINE_STAGES = [
   {
     key: 'chapters',
     label: '正文草稿',
-    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位中文网络小说作家。请根据以下大纲，生成前两章的正文草稿，每章 600-1000 字，语言流畅有网文节奏。直接输出正文，不要解释。\n\n${prev}`
+    build: (input, prev, mode) => `${PIPELINE_MODE_HINTS[mode] || PIPELINE_MODE_HINTS.balanced}\n\n你是一位中文网络小说作家。请根据以下大纲，生成前两章的正文草稿，每章 2000-3000 字，语言流畅有网文节奏，场景、动作、心理、对话都要写足。直接输出正文，不要解释。\n\n${prev}`
   },
   {
     key: 'review',
@@ -2685,7 +2685,7 @@ ${text.slice(0, 6000)}
 
 function buildAIExpandMessages(text, instruction = '') {
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
-  const system = '你是资深中文网络小说扩写助手。请在保留原有内容的基础上，合理扩充细节、动作、心理、环境描写，让情节更丰满。只输出扩写后的完整正文，不要输出解释。';
+  const system = '你是资深中文网络小说扩写助手。请在保留原有内容的基础上，合理扩充细节、动作、心理、环境描写，让情节更丰满。只输出扩写后的完整正文，不要输出解释。扩写后整体正文建议不少于 2000 字（若原文已超过则保持自然增长即可）。';
   const user = `
 当前作品：${state.work?.title || ''}
 当前章节：${chapter.title || ''}
@@ -2719,8 +2719,13 @@ function buildAIWritingDialoguePrompt(initial, history) {
   lines.push(``);
   lines.push(`对话输出规则：
 - 如果还需要了解我的需求，第一行必须严格是【提问】，随后只输出一个问题，不要输出其他内容。
-- 如果已经达到 95% 信心，第一行必须严格是【成文】，随后直接输出完整的中文小说正文，不要解释。
+- 如果已经达到 95% 信心，第一行必须严格是【成文】，随后直接输出完整的中文小说整章正文，不要解释。
 - 每轮最多只能问一个问题。`);
+  lines.push(``);
+  lines.push(`篇幅要求（重要）：
+- 除非我明确要求短篇/片段，【成文】必须输出“整章正文”，以纯文本计不少于 2000 字（上限建议 3000 字左右）。
+- 把场景写足：环境、动作、心理、对话、转折都要展开；宁可写满一整章，也不要交出 1000 字以下的残章。
+- 篇幅不足时补细节与节奏、推进情节，而不是用“字数不够”搪塞或提前收尾。`);
   lines.push(``);
   lines.push(`【当前小说上下文】`);
   lines.push(aiContextBlock() || '无');
@@ -2755,7 +2760,7 @@ function buildAIWritingInitialRequest(requirement = '') {
 当前章节/场景：${title?.value || chapter.title || ''}
 大纲摘要：${chapter.summary || '无'}
 ${selected ? `你希望围绕的选中内容：\n${selected}\n` : plain ? `当前正文末尾：\n${plain.slice(-1200)}\n` : ''}
-${reqText ? `用户写作需求：${reqText}` : panelPrompt ? `用户补充需求：${panelPrompt}` : '请通过提问了解我真正想要的写作方向、风格、长度和内容。'}
+${reqText ? `用户写作需求：${reqText}` : panelPrompt ? `用户补充需求：${panelPrompt}` : '请通过提问了解我真正想要的写作方向、风格和内容（长度未指定时，默认按整章 2000 字以上成文）。'}
 `.trim();
 }
 
@@ -2828,6 +2833,18 @@ function proposalsSummaryHtml(proposals) {
   </div>`;
 }
 
+// 成文长度提示：整章目标 2000 字以上，低于阈值时在结果弹窗里给出可执行的补救建议。
+function articleLengthHint(article) {
+  const n = String(article || '').replace(/\s/g, '').length;
+  if (n >= 2000) {
+    return `<div class="redline-scan ok">📏 成文 ${n} 字，达到整章 2000+ 字目标</div>`;
+  }
+  if (n >= 1000) {
+    return `<div class="redline-scan warn">📏 成文 ${n} 字，低于 2000 字目标：可直接应用后继续用「AI 写作」续写补足，或点「重新生成」。</div>`;
+  }
+  return `<div class="redline-scan warn">⚠️ 成文仅 ${n} 字（目标整章 2000 字以上）。建议点「重新生成」，并在需求里注明“整章 2000 字以上”；也可应用后再分段续写补足。</div>`;
+}
+
 // 弹窗展示最终文章，让用户选择如何应用。
 function showAIWritingResult(article, scan, proposals) {
   return new Promise((resolve) => {
@@ -2839,6 +2856,7 @@ function showAIWritingResult(article, scan, proposals) {
       title: 'AI 写作结果',
       body: `
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
+        ${articleLengthHint(article)}
         ${redlineScanSummaryHtml(scan)}
         ${proposalsSummaryHtml(proposals)}
         <div class="muted mt-8">请选择如何应用到正文：</div>`,

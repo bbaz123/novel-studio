@@ -101,3 +101,4 @@ powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install
 - Windows（安装脚本为 PowerShell；模块为纯 ESM JS，无第三方依赖）
 - Node.js 22.5+（novel-studio 本体）+ 已构建的 deepseek-harness（dsh）仓库 + headless profile
 - novel-studio 本地服务（http://127.0.0.1:3737，`PORT` 可覆盖；dsh 工具通过 `NOVELSTUDIO_BASE_URL` 自动定位）
+- 应用本体：https://github.com/bbaz123/novel-studio
