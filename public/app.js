@@ -886,6 +886,7 @@ async function renderWriting(content) {
           <button class="active" data-action="ref-tab" data-tab="terms">设定</button>
           <button data-action="ref-tab" data-tab="characters">角色</button>
           <button data-action="ref-tab" data-tab="foreshadows">伏笔</button>
+          <button data-action="ref-tab" data-tab="redlines">红线</button>
           <button data-action="ref-tab" data-tab="ai">AI</button>
           <span class="grow"></span>
           <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
@@ -949,6 +950,8 @@ function renderReference(tab = 'terms') {
       `).join('') || '<div class="muted">暂无角色</div>'}`;
   } else if (tab === 'foreshadows') {
     renderForeshadowTab(list);
+  } else if (tab === 'redlines') {
+    renderRedlineTab(list);
   } else if (tab === 'ai') {
     list.innerHTML = `
       <div class="ai-panel">
@@ -1012,6 +1015,98 @@ async function renderForeshadowTab(list) {
     }
   }
   list.innerHTML = html;
+}
+
+// 参考面板「红线」页签：当前生效的风格契约 + 管理入口。
+async function renderRedlineTab(list) {
+  list.innerHTML = '<div class="muted" style="padding:4px 2px">加载中…</div>';
+  let rows = [];
+  try {
+    const data = await api(`/novel/redlines?work_id=${state.workId}`);
+    rows = data.redlines || [];
+  } catch (e) {
+    list.innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+    return;
+  }
+  let html = '<div class="muted" style="padding:4px 2px">写作时必须避开的词句（反 AI 腔）</div>';
+  if (!rows.length) html += '<div class="muted" style="padding:2px 4px">当前未启用任何红线规则</div>';
+  for (const r of rows) {
+    const kindName = r.kind === 'regex' ? '句式模式' : r.kind === 'word' ? '慎用词' : '慎用句式';
+    const exceptions = (r.exceptions || []).length
+      ? `<div class="ref-desc muted">豁免：${esc((r.exceptions || []).join('、'))}</div>`
+      : '';
+    html += `
+      <div class="reference-item">
+        <div class="ref-title">[${kindName}] ${esc(r.pattern)}${r.note ? `（${esc(r.note)}）` : ''}</div>
+        ${exceptions}
+      </div>`;
+  }
+  html += `<div class="row mt-8"><button class="btn small grow" data-action="redline-manage">⚙️ 管理红线</button></div>`;
+  list.innerHTML = html;
+}
+
+// 红线管理弹窗：编辑当前生效清单（保存为本作品级红线，覆盖全局默认）。
+function redlineRowHtml(r = {}) {
+  const kindOpts = ['word', 'phrase', 'regex'].map((k) =>
+    `<option value="${k}" ${(r.kind || 'phrase') === k ? 'selected' : ''}>${k === 'word' ? '慎用词' : k === 'phrase' ? '慎用句式' : '句式模式'}</option>`).join('');
+  return `
+    <div class="redline-row" data-redline-row>
+      <div class="row">
+        <select data-r-kind>${kindOpts}</select>
+        <label class="muted nowrap"><input type="checkbox" data-r-enabled ${r.enabled === false ? '' : 'checked'}> 启用</label>
+        <button class="btn small secondary" data-action="redline-del-row">删除</button>
+      </div>
+      <input data-r-pattern placeholder="词 / 句式 / 正则模式" value="${esc(r.pattern || '')}">
+      <input data-r-note placeholder="说明（可选）" value="${esc(r.note || '')}">
+      <input data-r-exceptions placeholder="豁免词（逗号分隔，如：眼眸,回眸,眸色）" value="${esc((r.exceptions || []).join(','))}">
+    </div>`;
+}
+
+async function openRedlineManager() {
+  const workId = state.workId || state.work?.id;
+  if (!workId) { toast('请先进入一部作品'); return; }
+  let rows = [];
+  try {
+    const data = await api(`/novel/redlines?work_id=${workId}`);
+    rows = data.redlines || [];
+  } catch (e) {
+    toast('读取红线失败：' + e.message, 'error');
+    return;
+  }
+  openModal({
+    title: '⚙️ 写作红线管理',
+    body: `
+      <div class="muted mb-8">反 AI 腔扫描按此清单执行；豁免词用于「单字慎用词」的整词放行（如 眸 → 豁免 眼眸/回眸/眸色）。保存后成为本作品的红线清单（覆盖全局默认）。</div>
+      <div id="redline-rows">${rows.map((r) => redlineRowHtml(r)).join('') || '<div class="muted" id="redline-empty">暂无红线，点下方按钮添加</div>'}</div>
+      <div class="row mt-8"><button class="btn small secondary" data-action="redline-add-row">＋ 添加一条</button></div>`,
+    footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="redline-save">保存清单</button>`,
+    large: true
+  });
+}
+
+function collectRedlineRows() {
+  const box = $('#redline-rows');
+  if (!box) return [];
+  return [...box.querySelectorAll('[data-redline-row]')].map((row) => ({
+    kind: row.querySelector('[data-r-kind]').value,
+    pattern: row.querySelector('[data-r-pattern]').value.trim(),
+    note: row.querySelector('[data-r-note]').value.trim(),
+    exceptions: row.querySelector('[data-r-exceptions]').value.split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean),
+    enabled: row.querySelector('[data-r-enabled]').checked
+  })).filter((r) => r.pattern);
+}
+
+async function saveRedlines() {
+  const workId = state.workId || state.work?.id;
+  if (!workId) return;
+  try {
+    await api('/novel/redlines', { method: 'PUT', body: { work_id: workId, entries: collectRedlineRows() } });
+    closeModal();
+    toast('红线清单已保存', 'success');
+    if (state.refTab === 'redlines') renderReference('redlines');
+  } catch (e) {
+    toast('保存失败：' + e.message, 'error');
+  }
 }
 
 async function saveCurrentChapter() {
@@ -1377,6 +1472,7 @@ async function renderMemory(content) {
           <button class="btn small secondary" data-action="open-proposal-confirm" title="AI 生成任务里提交的事件/记忆提案，确认后才会写入账本">📥 待确认提案</button>
           <button class="btn small secondary" data-action="ai-gen-memory" title="AI 起草/更新长期记忆">✨ AI 起草记忆</button>
           <button class="btn small secondary" data-action="compress-story-memory">🧠 自动压缩记忆</button>
+          <button class="btn small secondary" data-action="open-memory-versions" title="每次保存记忆都会留版本快照，可回滚/对比">🕘 历史版本</button>
           <button class="btn small" data-action="save-story-memory">保存记忆</button>
         </div>
       </div>
@@ -1496,6 +1592,118 @@ async function compressStoryMemory() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// 记忆版本历史：列表 / 回滚 / 与当前摘要的差异预览。
+async function openMemoryVersions() {
+  const workId = state.workId || state.work?.id;
+  if (!workId) { toast('请先进入一部作品'); return; }
+  let versions = [];
+  try {
+    const data = await api(`/story_memory/versions?work_id=${workId}`);
+    versions = data.versions || [];
+  } catch (e) {
+    toast('读取版本失败：' + e.message, 'error');
+    return;
+  }
+  openModal({
+    title: '🕘 记忆版本历史',
+    body: versions.length
+      ? `<div class="muted mb-8">每次保存/回滚都会留一份快照；回滚会把该版本写回当前记忆（并自动再记一条回滚快照）。</div>
+         <div class="proposal-box">${versions.map((v) => `
+           <div class="review-item">
+             <div class="ref-title">版本 #${v.id} · ${esc(v.source || 'manual')}${v.note ? `（${esc(v.note)}）` : ''}</div>
+             <div class="ref-desc muted">${esc(v.created_at || '')} · ${(v.summary || '').length} 字</div>
+             <div class="ref-desc">${esc(String(v.summary || '').slice(0, 80))}${(v.summary || '').length > 80 ? '…' : ''}</div>
+             <div class="row mt-4">
+               <button class="btn small secondary" data-action="memory-version-diff" data-id="${v.id}">对比当前</button>
+               <button class="btn small" data-action="memory-version-rollback" data-id="${v.id}">回滚到此版本</button>
+             </div>
+           </div>`).join('')}</div>`
+      : '<div class="muted">还没有记忆版本。保存一次记忆后会自动留快照。</div>',
+    footer: '<button class="btn" data-close-modal>关闭</button>',
+    large: true
+  });
+}
+
+async function rollbackMemoryVersion(id) {
+  const workId = state.workId || state.work?.id;
+  if (!workId) return;
+  if (!confirm(`确定回滚到记忆版本 #${id} 吗？当前记忆会自动备份为一条新的历史版本。`)) return;
+  try {
+    const data = await api('/story_memory/rollback', { method: 'POST', body: { version_id: id } });
+    toast(`已回滚（新版本 #${data.version_id}）`, 'success');
+    closeModal();
+    await loadStoryMemory();
+  } catch (e) {
+    toast('回滚失败：' + e.message, 'error');
+  }
+}
+
+// 句子级差异（记忆摘要通常是一整段，按句末标点切分后做 LCS）。
+function diffSentences(oldText, newText) {
+  const split = (s) => String(s || '').match(/[^。！？!?…\n]*[。！？!?…\n]|[^。！？!?…\n]+$/g)
+    ?.map((x) => x.trim()).filter(Boolean) || [];
+  const a = split(oldText), b = split(newText);
+  const n = a.length, m = b.length;
+  if (!n && !m) return [];
+  if (n * m > 60000) {
+    const out = [];
+    for (let i = 0; i < Math.max(n, m); i++) {
+      if (i < n && i < m) {
+        out.push(a[i] === b[i] ? { t: 'same', x: a[i] } : { t: 'del', x: a[i] }, { t: 'add', x: b[i] });
+      } else if (i < n) out.push({ t: 'del', x: a[i] });
+      else out.push({ t: 'add', x: b[i] });
+    }
+    return out;
+  }
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push({ t: 'same', x: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ t: 'del', x: a[i] }); i++; }
+    else { ops.push({ t: 'add', x: b[j] }); j++; }
+  }
+  while (i < n) { ops.push({ t: 'del', x: a[i] }); i++; }
+  while (j < m) { ops.push({ t: 'add', x: b[j] }); j++; }
+  return ops;
+}
+
+async function showMemoryVersionDiff(id) {
+  const workId = state.workId || state.work?.id;
+  if (!workId) return;
+  let versions = [];
+  let current = '';
+  try {
+    const data = await api(`/story_memory/versions?work_id=${workId}`);
+    versions = data.versions || [];
+    const cur = await api(`/story_memory?work_id=${workId}`);
+    current = cur.summary || '';
+  } catch (e) {
+    toast('读取失败：' + e.message, 'error');
+    return;
+  }
+  const v = versions.find((x) => x.id === Number(id));
+  if (!v) { toast('版本不存在', 'error'); return; }
+  const ops = diffSentences(v.summary, current);
+  const body = ops.map((op) => {
+    if (op.t === 'same') return `<div class="diff-p">${esc(op.x)}</div>`;
+    if (op.t === 'del') return `<div class="diff-p diff-del">${esc(op.x)}</div>`;
+    return `<div class="diff-p diff-add">${esc(op.x)}</div>`;
+  }).join('');
+  openModal({
+    title: `🆚 记忆差异 · 版本 #${v.id} → 当前`,
+    body: `<div class="muted mb-8"><span class="diff-add-inline">绿色</span>=当前新增，<span class="diff-del-inline">红色</span>=该版本有而当前没有。确认要恢复请关闭后点「回滚到此版本」。</div>
+      <div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`,
+    footer: '<button class="btn" data-close-modal>关闭</button>',
+    large: true
+  });
 }
 
 async function saveSTWorkNote() {
@@ -2297,6 +2505,7 @@ function openWorkModal(work = null) {
         <div class="field"><label>叙事视角</label>
           <select name="narrative_pov">${povOpts.map((s) => `<option value="${esc(s)}" ${(work?.narrative_pov || '') === s ? 'selected' : ''}>${esc(s || '（未设置）')}</option>`).join('')}</select>
         </div>
+        <div class="field full"><label>正向风格要求（可选）</label><textarea name="style_positive" rows="3" placeholder="例如：白描克制、长镜头感、对话留白——会随写作红线一起进入 AI 写作上下文">${esc(work?.style_positive || '')}</textarea></div>
       </div>`,
     footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="save-work" data-id="${work?.id || ''}">保存</button>`
   });
@@ -5393,6 +5602,48 @@ document.addEventListener('click', async (e) => {
       case 'compress-story-memory':
         await compressStoryMemory();
         break;
+
+      case 'open-memory-versions':
+        await openMemoryVersions();
+        break;
+
+      case 'memory-version-rollback':
+        await rollbackMemoryVersion(Number(actionEl.dataset.id));
+        break;
+
+      case 'memory-version-diff':
+        await showMemoryVersionDiff(Number(actionEl.dataset.id));
+        break;
+
+      case 'redline-manage':
+        await openRedlineManager();
+        break;
+
+      case 'redline-save':
+        await saveRedlines();
+        break;
+
+      case 'redline-add-row': {
+        const box = $('#redline-rows');
+        if (box) {
+          const empty = $('#redline-empty');
+          if (empty) empty.remove();
+          box.insertAdjacentHTML('beforeend', redlineRowHtml());
+        }
+        break;
+      }
+
+      case 'redline-del-row': {
+        const row = actionEl.closest('[data-redline-row]');
+        if (row) {
+          row.remove();
+          const box = $('#redline-rows');
+          if (box && !box.querySelector('[data-redline-row]')) {
+            box.innerHTML = '<div class="muted" id="redline-empty">暂无红线，点下方按钮添加</div>';
+          }
+        }
+        break;
+      }
 
       case 'save-st-work-note':
         await saveSTWorkNote();

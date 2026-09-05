@@ -9,6 +9,7 @@
  *  - novel_context        写作前取“ST 式分层上下文”（大纲/记忆/事件/伏笔/场景/角色卡/世界观/红线）
  *  - novel_lookup         按关键词检索角色/词条/章节/剧情线
  *  - novel_foreshadows    列出未闭合（或全部）伏笔
+ *  - novel_foreshadow_update 标记伏笔状态（resolved/dropped/open，可回链回收事件）
  *  - novel_consistency    生成后核对：未闭合伏笔/出场角色状态/最近事件 vs 本章正文
  *  - novel_scan           对一段正文做确定性“反 AI 腔”红线扫描（可跳过引号内对话）
  *  - novel_style_contract 读取当前写作红线清单（风格契约）
@@ -27,7 +28,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.6.0'
+export const PLUGIN_VERSION = '0.7.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -136,7 +137,8 @@ export function apply(ctx, config) {
     if (!ctx.ok) throw new Error('novel-studio 返回异常')
     const head = `作品：${ctx.work.title}${ctx.chapter ? `｜当前章节：第${ctx.chapter.position + 1}节 ${ctx.chapter.title}` : ''}（mode=${ctx.mode}）`
     const body = ctx.assembled || JSON.stringify(ctx)
-    return `${head}\n\n${body}`.slice(0, 32000)
+    // 服务端已做分层预算收敛（总预算 26000 字），这里不再盲截断，避免砍掉末尾的红线/角色卡层。
+    return `${head}\n\n${body}`
   })
 
   register('novel_lookup', [
@@ -191,6 +193,28 @@ export function apply(ctx, config) {
     return `【${status === 'all' ? '全部伏笔' : '未闭合伏笔'}】\n` + rows.map((f) =>
       `#${f.id} ${f.summary}${f.foreshadow_status === 'resolved' ? '（已回收）' : f.foreshadow_status === 'dropped' ? '（已废弃）' : '（未闭合）'}${f.resolves_event_id ? ` → 回收事件 #${f.resolves_event_id}` : ''}`
     ).join('\n')
+  })
+
+  register('novel_foreshadow_update', [
+    '标记某条伏笔的状态：resolved=已回收（可同时用 resolves_event_id 回链回收事件）、dropped=废弃不再回收、open=恢复未闭合。',
+    '伏笔 id 见 novel_foreshadows 的 #id；正文确认废弃/回收某伏笔后调用，让账本与正文一致。',
+    '注意：正文回收伏笔时更推荐用 novel_event_add（kind=event + resolves_event_id），它会把“回收这件事”也记进事件账本；',
+    '本工具用于作者明确要求直接改状态（如废弃、恢复）的场景。',
+  ].join('\n'), {
+    id: { type: 'number', description: '伏笔 id（见 novel_foreshadows 返回的 #id）' },
+    status: { type: 'string', description: 'open | resolved | dropped（必填）' },
+    resolves_event_id: { type: 'number', description: '可选：回收该伏笔的事件 id（status=resolved 时回链）' },
+  }, async (args) => {
+    const id = Number(args.id)
+    if (!id) throw new Error('缺少 id：伏笔 id 见 novel_foreshadows 返回的 #id')
+    const status = String(args.status || '')
+    if (!['open', 'resolved', 'dropped'].includes(status)) throw new Error('status 必须是 open/resolved/dropped')
+    const data = await jfetch(`/api/novel/foreshadows/${id}/status`, {
+      method: 'POST',
+      body: { status, resolves_event_id: Number(args.resolves_event_id) || null }
+    })
+    const label = status === 'resolved' ? '已回收' : status === 'dropped' ? '已废弃' : '恢复为未闭合'
+    return `伏笔 #${data.id} 已标记为「${label}」。`
   })
 
   register('novel_consistency', [

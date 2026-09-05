@@ -48,8 +48,8 @@ node test/smoke.mjs
 cd <你的 deepseek-harness 目录>
 pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名称，用逗号分隔"
 # 期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract,
-#           novel_event_add, novel_memory_update, novel_foreshadows, novel_consistency,
-#           novel_blueprint, novel_review, novel_chapter_save
+#           novel_event_add, novel_memory_update, novel_foreshadows, novel_foreshadow_update,
+#           novel_consistency, novel_blueprint, novel_review, novel_chapter_save
 ```
 
 ## 工具一览
@@ -60,6 +60,7 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 | `novel_works` | 列出作品（确认 work_id） |
 | `novel_lookup` | 关键词检索角色/词条/章节/剧情线（写前查证设定） |
 | `novel_foreshadows` | 列出未闭合（或全部）伏笔 |
+| `novel_foreshadow_update` | 标记伏笔状态（resolved/dropped/open，可回链回收事件） |
 | `novel_consistency` | 成文后一致性核对：未闭合伏笔/出场角色状态/最近事件 vs 正文（蓝图为核对锚点） |
 | `novel_scan` | 确定性反 AI 腔红线扫描（可跳过引号内对话） |
 | `novel_style_contract` | 读取写作红线清单 |
@@ -89,13 +90,18 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
   AI 的事件/记忆入账先落提案表，任务结束随结果返回；作者在「AI 写作结果」弹窗勾选采纳，
   或稍后在「小说设定 → 长期记忆 → 📥 待确认提案」里处理。GUI dsh 会话里作者在场，直接入账。
 - **伏笔闭环**：`novel_foreshadows` 查欠账 → 正文显式呼应 → `novel_event_add(resolves_event_id=…)`
-  自动把旧伏笔标记 resolved；`novel_context` 里始终带【未闭合伏笔】层。
+  自动把旧伏笔标记 resolved；作者确认废弃/恢复时用 `novel_foreshadow_update` 直接改状态；
+  `novel_context` 里始终带【未闭合伏笔】层。
 - **分层上下文预算**：每层独立上限、红线/角色卡保底、总量收敛截断，超长记忆标注压缩提示，
   不再一刀切盲截。
 - **多关键词加权检索**：`/api/search` 支持多关键词 AND 匹配、名称/标题加权排序、片段定位；
   前端高亮命中关键词并按类型分组展示。
-- **红线扫描**：默认 28 条反 AI 腔红线，作品级可覆盖（`PUT /api/novel/redlines`）；
-  扫描支持 `skip_dialogue`（引号内台词不计），正则模式有长度上限与编译校验。
+- **红线扫描与风格契约**：默认 28 条反 AI 腔红线，作品级可覆盖（`PUT /api/novel/redlines`）；
+  扫描支持 `skip_dialogue`（引号内台词不计）与**整词豁免**（每条红线可配豁免词，
+  如「眸 → 豁免 眼眸/回眸/眸色」）；作品可配置**正向风格要求**随红线一起进入写作上下文；
+  写作页参考面板「红线」页签可查看清单并**界面化管理**（增删改/启用/豁免词）。
+- **记忆版本管理**：长期记忆每次保存/回滚自动留版本快照；「长期记忆 → 🕘 历史版本」
+  可查看列表、**一键回滚**、**与当前摘要做差异预览**（红色=旧有、绿色=新增）。
 - **幂等与保留**：事件按 `dedup_key` 去重；记忆版本每作品保留最近 200 个，超限自动剪除；
   正文写回前自动存章节历史版本；审稿报告每章节保留最近 10 份。
 
@@ -103,7 +109,8 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 
 - 服务端不再返回 `Access-Control-Allow-Origin: *`：跨源页面无法读取本地 API Key 与作品数据；
   浏览器跨源写请求（POST/PUT/DELETE）一律 403。
-- 请求体上限 2MB；红线正则长度上限 500；非法 JSON/非 JSON 响应显式报错。
+- 请求体上限 32MB（EPUB 导入用）；红线正则长度上限 500、豁免词单个上限 100；非法 JSON/非 JSON 响应显式报错。
+- 蓝图/审稿/正文写回等写类端点校验 `work_id` 与章节归属，防止串作品误写。
 
 ## 卸载 / 回退
 

@@ -3,9 +3,10 @@
  *
  * 用法：node harness-plugins/novel-writing/test/smoke.mjs
  *
- * 覆盖：ping / 作品与章节 CRUD / 分层上下文 / 红线扫描（含对话豁免）/
+ * 覆盖：ping / 作品与章节 CRUD / 分层上下文 / 红线扫描（含对话豁免、整词豁免与正向风格契约）/
  * 伏笔闭环与事件幂等 / 提案确认流 / 记忆版本与回滚与压缩提示 /
- * 一致性核对清单 / 正文写回（历史版本）/ 跨源写请求拒绝 / 非法红线拒绝。
+ * 一致性核对清单 / 正文写回（历史版本）/ 写类端点归属校验（防串作品）/
+ * 跨源写请求拒绝 / 非法红线拒绝。
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -469,6 +470,56 @@ try {
     });
     assert.equal(bad.status, 400, '非法正则红线应被拒绝');
     ok('跨源写拒绝 / 无 CORS 通配 / 非法红线拒绝');
+  }
+
+  // 11. 红线豁免词（整词放行）+ 正向风格契约进入上下文
+  {
+    const put = await jfetch('/api/novel/redlines', {
+      method: 'PUT',
+      body: {
+        work_id: workId,
+        entries: [{ kind: 'word', pattern: '眸', note: '单字慎用词', exceptions: ['眼眸', '回眸'], enabled: true }]
+      }
+    });
+    assert.equal(put.status, 200);
+    const mine = put.data.redlines.find((r) => r.pattern === '眸');
+    assert.ok(mine, '作品级红线应覆盖全局同键默认');
+    assert.equal(mine.exceptions.length, 2, '清单应返回解析后的豁免词');
+    const scan = await jfetch('/api/novel/scan', {
+      method: 'POST',
+      body: { work_id: workId, text: '她的眼眸明亮。他回眸一笑。那人眸色深沉。' }
+    });
+    assert.equal(scan.data.total, 1, '眼眸/回眸应被豁免，仅“眸色”命中 1 处');
+    assert.equal(scan.data.hits.length, 1);
+    assert.equal(scan.data.hits[0].count, 1);
+    await jfetch(`/api/works/${workId}`, { method: 'PUT', body: { style_positive: '白描克制、对话留白' } });
+    const ctx = await jfetch(`/api/novel/context?work_id=${workId}`);
+    assert.ok(ctx.data.style_contract.includes('【正向风格要求】'), '正向风格要求应进入风格契约');
+    assert.ok(ctx.data.style_contract.includes('白描克制'));
+    assert.equal(ctx.data.work.style_positive, '白描克制、对话留白');
+    ok('红线豁免词（整词放行）+ 正向风格契约');
+  }
+
+  // 12. 写类端点的 work_id 归属校验（防串作品）
+  {
+    const otherWork = await jfetch('/api/works', { method: 'POST', body: { title: '另一部作品' } });
+    const wrongId = otherWork.data.id;
+    const bp = await jfetch('/api/novel/chapter_blueprint', {
+      method: 'PUT',
+      body: { work_id: wrongId, chapter_id: chapterId, blueprint: { scene_goal: '越权测试' } }
+    });
+    assert.equal(bp.status, 400, '蓝图保存到其它作品的章节应被拒绝');
+    const rv = await jfetch('/api/novel/review', {
+      method: 'PUT',
+      body: { work_id: wrongId, chapter_id: chapterId, report: { summary: '越权审稿' } }
+    });
+    assert.equal(rv.status, 400, '审稿保存到其它作品的章节应被拒绝');
+    const cs = await jfetch('/api/novel/chapter_save', {
+      method: 'POST',
+      body: { work_id: wrongId, chapter_id: chapterId, content: '<p>越权写回</p>' }
+    });
+    assert.equal(cs.status, 400, '正文写回到其它作品的章节应被拒绝');
+    ok('写类端点 work_id 归属校验（防串作品）');
   }
 
   console.log(`\n✅ 全部 ${passed} 组断言通过。`);

@@ -123,7 +123,7 @@ function touchWork(workId) {
 // ---------- 通用 CRUD ----------
 // 集中管理各资源的表名、字段、排序和默认值，避免多个地方重复定义。
 const RESOURCE_CONFIG = {
-  works: { table: 'works', order: 'id DESC', fields: ['title', 'description', 'author_note', 'default_chapter_words', 'total_chapters', 'story_structure', 'narrative_pov'], defaults: { description: '', author_note: '', default_chapter_words: 2000, total_chapters: 0, story_structure: '', narrative_pov: '' } },
+  works: { table: 'works', order: 'id DESC', fields: ['title', 'description', 'author_note', 'default_chapter_words', 'total_chapters', 'story_structure', 'narrative_pov', 'style_positive'], defaults: { description: '', author_note: '', default_chapter_words: 2000, total_chapters: 0, story_structure: '', narrative_pov: '', style_positive: '' } },
   volumes: { table: 'volumes', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'summary', 'position'], defaults: { summary: '', position: 0 } },
   plotlines: { table: 'plotlines', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'kind', 'summary', 'position'], defaults: { summary: '', position: 0 } },
   chapters: { table: 'chapters', order: 'position ASC, id ASC', fields: ['work_id', 'volume_id', 'plotline_id', 'parent_id', 'title', 'summary', 'content', 'author_note', 'blueprint_json', 'target_words', 'position'], defaults: { summary: '', content: '', author_note: '', blueprint_json: '', target_words: 0, position: 0 } },
@@ -608,7 +608,8 @@ function buildAIContext(chapterId) {
       default_chapter_words: Number(work.default_chapter_words) || 2000,
       total_chapters: Number(work.total_chapters) || 0,
       story_structure: work.story_structure || '',
-      narrative_pov: work.narrative_pov || ''
+      narrative_pov: work.narrative_pov || '',
+      style_positive: work.style_positive || ''
     },
     chapter: { id: chapter.id, title: chapter.title, summary: chapter.summary, blueprint, target_words: targetWords },
     prev_chapter: prevChapRow ? { id: prevChapRow.id, title: prevChapRow.title } : null,
@@ -617,8 +618,8 @@ function buildAIContext(chapterId) {
     story_memory: getStoryMemory(work.id),
     story_tail: storyTail,
     recent_events: recentEvents.map((e) => ({ kind: e.kind, summary: e.summary, chapter_id: e.chapter_id, created_at: e.created_at })),
-    redlines: redlineRows.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note })),
-    style_contract: renderStyleContract(redlineRows),
+    redlines: redlineRows.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note, exceptions: Array.isArray(r.exceptions) ? r.exceptions : [] })),
+    style_contract: renderStyleContract(redlineRows, work.style_positive || ''),
     work_author_note: replaceVars(work.author_note || ''),
     chapter_author_note: replaceVars(chapter.author_note || '')
   };
@@ -676,6 +677,14 @@ function seedRedlinesIfEmpty() {
 }
 
 // 读取红线：全局默认 + 作品级覆盖（作品级存在时优先于同名全局项）。
+// 解析红线条目的豁免词清单（JSON 数组字符串 → 字符串数组）。
+function parseRedlineExceptions(row) {
+  try {
+    const arr = JSON.parse(String(row.exceptions || '[]'));
+    return Array.isArray(arr) ? arr.map((s) => String(s).trim()).filter(Boolean).slice(0, 20) : [];
+  } catch (_) { return []; }
+}
+
 function listRedlines(workId) {
   const globalRows = prepare('SELECT * FROM writing_redlines WHERE work_id IS NULL ORDER BY id ASC').all();
   const workRows = workId ? prepare('SELECT * FROM writing_redlines WHERE work_id = ? ORDER BY id ASC').all(workId) : [];
@@ -685,7 +694,7 @@ function listRedlines(workId) {
     if (Number(r.enabled)) byKey.set(key, r);
     else byKey.delete(key);
   }
-  return [...byKey.values()];
+  return [...byKey.values()].map((r) => ({ ...r, exceptions: parseRedlineExceptions(r) }));
 }
 
 // 全量替换某一 scope 的红线（workId 为空则替换全局默认）。
@@ -702,13 +711,20 @@ function replaceRedlines(workId, entries) {
     if (kind === 'regex') {
       try { new RegExp(pattern); } catch (_) { throw new Error(`非法正则：${pattern.slice(0, 80)}`); }
     }
+    const exceptions = Array.isArray(e.exceptions)
+      ? e.exceptions.map((s) => asString(s, '').trim()).filter(Boolean).slice(0, 20)
+      : [];
+    if (exceptions.some((s) => s.length > 100)) throw new Error('豁免词过长（单个上限 100 字符）');
   }
   db.exec('BEGIN');
   try {
     prepare('DELETE FROM writing_redlines WHERE work_id IS ?').run(workId ?? null);
-    const stmt = prepare('INSERT INTO writing_redlines (work_id, kind, pattern, note, enabled) VALUES (?, ?, ?, ?, ?)');
+    const stmt = prepare('INSERT INTO writing_redlines (work_id, kind, pattern, note, exceptions, enabled) VALUES (?, ?, ?, ?, ?, ?)');
     for (const e of entries) {
-      stmt.run(workId ?? null, asString(e.kind, 'phrase'), asString(e.pattern, ''), asString(e.note, ''), e.enabled === false ? 0 : 1);
+      const exceptions = Array.isArray(e.exceptions)
+        ? e.exceptions.map((s) => asString(s, '').trim()).filter(Boolean).slice(0, 20)
+        : [];
+      stmt.run(workId ?? null, asString(e.kind, 'phrase'), asString(e.pattern, ''), asString(e.note, ''), JSON.stringify(exceptions), e.enabled === false ? 0 : 1);
     }
     db.exec('COMMIT');
   } catch (e) {
@@ -718,18 +734,26 @@ function replaceRedlines(workId, entries) {
   return listRedlines(workId);
 }
 
-// 把红线渲染成给模型看的“写作风格契约”文本。
-function renderStyleContract(rows) {
+// 把红线渲染成给模型看的“写作风格契约”文本；stylePositive 为作品级正向风格要求。
+function renderStyleContract(rows, stylePositive = '') {
   const enabled = rows.filter((r) => Number(r.enabled));
-  if (!enabled.length) return '（未启用任何红线规则）';
   const lines = enabled.map((r) => {
     const kindName = r.kind === 'regex' ? '句式模式' : (r.kind === 'word' ? '慎用词' : '慎用句式');
-    return `- [${kindName}] ${r.pattern}${r.note ? `（${r.note}）` : ''}`;
+    const exceptions = Array.isArray(r.exceptions) && r.exceptions.length ? `（豁免：${r.exceptions.join('、')}）` : '';
+    return `- [${kindName}] ${r.pattern}${exceptions}${r.note ? `（${r.note}）` : ''}`;
   });
-  return [
-    '【写作风格红线 · 反 AI 腔】请在写作时主动避免以下词句；若确需使用，每次出现前先问自己是否有更具体、更有画面感的写法：',
-    ...lines
-  ].join('\n');
+  const parts = [];
+  if (lines.length) {
+    parts.push([
+      '【写作风格红线 · 反 AI 腔】请在写作时主动避免以下词句；若确需使用，每次出现前先问自己是否有更具体、更有画面感的写法：',
+      ...lines
+    ].join('\n'));
+  }
+  const positive = String(stylePositive || '').trim();
+  if (positive) {
+    parts.push(`【正向风格要求】本作品的风格追求（请主动体现，而非仅仅避免红线）：\n${positive}`);
+  }
+  return parts.length ? parts.join('\n\n') : '（未启用任何红线规则）';
 }
 
 // 在文本中确定性扫描红线命中（用于生成后自查）。
@@ -746,17 +770,25 @@ function scanAgainstRedlines(rows, text, opts = {}) {
     if (!Number(r.enabled)) continue;
     const pattern = String(r.pattern || '');
     if (!pattern || pattern.length > 500) continue; // 超长/异常模式跳过（防病态正则）
+    const exceptions = Array.isArray(r.exceptions) ? r.exceptions.filter((s) => String(s || '').length <= 100) : [];
     let count = 0;
     let sample = '';
     try {
       if (r.kind === 'regex') {
         const re = new RegExp(pattern, 'g');
-        const found = clean.match(re) || [];
+        const found = (clean.match(re) || []).filter((m) => !exceptions.some((e) => m.includes(e)));
         count = found.length;
         sample = found[0] || '';
       } else {
         let idx = -1;
         while ((idx = clean.indexOf(pattern, idx + 1)) !== -1) {
+          // 豁免：命中位置与某个豁免词重叠时跳过（“眸 → 眼眸/回眸/眸色”这类整词豁免）。
+          const exempt = exceptions.some((e) => {
+            const start = Math.max(0, idx - e.length + 1);
+            const end = Math.min(clean.length, idx + pattern.length + e.length - 1);
+            return clean.slice(start, end).includes(e);
+          });
+          if (exempt) continue;
           count += 1;
           if (!sample) sample = clean.slice(Math.max(0, idx - 14), idx + pattern.length + 14);
         }
@@ -1037,7 +1069,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   if (!storyTail) storyTail = prevTailText || (chapter ? plainText(chapter.content || '').slice(-800) : '');
 
   const redlines = listRedlines(workId);
-  const styleContract = renderStyleContract(redlines);
+  const styleContract = renderStyleContract(redlines, work.style_positive || '');
 
   // 分层预算：每层独立上限，超长截断并注明原文长度；红线层与角色卡保底，
   // 整块装配结果再做一个总上限的收敛截断，避免盲切。
@@ -1120,7 +1152,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   return {
     ok: true,
     mode,
-    work: { id: work.id, title: work.title, default_chapter_words: Number(work.default_chapter_words) || 2000, total_chapters: Number(work.total_chapters) || 0, story_structure: work.story_structure, narrative_pov: work.narrative_pov },
+    work: { id: work.id, title: work.title, default_chapter_words: Number(work.default_chapter_words) || 2000, total_chapters: Number(work.total_chapters) || 0, story_structure: work.story_structure, narrative_pov: work.narrative_pov, style_positive: work.style_positive || '' },
     chapter: chapter ? { id: chapter.id, title: chapter.title, summary: chapter.summary, position: chapter.position, volume_id: chapter.volume_id, plotline_id: chapter.plotline_id, blueprint, target_words: targetWords } : null,
     prev_chapter: prevChapter ? { id: prevChapter.id, title: prevChapter.title } : null,
     next_chapter: nextChapter ? { id: nextChapter.id, title: nextChapter.title } : null,
@@ -2076,6 +2108,7 @@ async function handleAPI(req, res, pathname, query) {
     const chapterId = Number(body.chapter_id);
     const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
     if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const raw = body.blueprint && typeof body.blueprint === 'object' ? body.blueprint : {};
     const BLUEPRINT_KEYS = ['scene_goal', 'plot_points', 'conflicts', 'character_changes', 'hook', 'references'];
     const blueprint = {};
@@ -2097,6 +2130,7 @@ async function handleAPI(req, res, pathname, query) {
     const chapterId = Number(body.chapter_id);
     const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
     if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const report = body.report && typeof body.report === 'object' ? body.report : {};
     if (!asString(report.summary, '').trim() && !asArray(report.issues).length) return sendError(res, 400, '审稿报告不能为空');
     const reviewId = saveReview(chapter.work_id, chapterId, report);
@@ -2132,6 +2166,7 @@ async function handleAPI(req, res, pathname, query) {
     const chapterId = Number(body.chapter_id);
     const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
     if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const content = asString(body.content, '');
     if (!content.trim()) return sendError(res, 400, '缺少 content');
     // 旧稿先入历史版本（可恢复），再覆盖正文；返回红线扫描供界面展示。

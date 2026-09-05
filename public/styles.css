@@ -1041,6 +1041,24 @@ mark.search-hit {
 }
 .diff-add-inline { color: #a7f3d0; font-weight: 600; }
 .diff-del-inline { color: #fca5a5; font-weight: 600; text-decoration: line-through; }
+/* 红线管理弹窗：每条红线一个编辑块 */
+.redline-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 10px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: rgba(0, 0, 0, .15);
+}
+.redline-row input,
+.redline-row select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.redline-row .nowrap { white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.redline-row label.nowrap input { width: auto; }
 .ref-group-title {
   font-size: 12px;
   color: var(--accent);

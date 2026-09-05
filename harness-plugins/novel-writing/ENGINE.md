@@ -9,10 +9,10 @@
 ```
 novel-studio（数据真相源）
   ├─ 数据表：story_events（伏笔状态/回收/去重）、memory_versions（记忆快照/回滚）、
-  │          writing_redlines（红线）、story_event_proposals / story_memory_proposals（入账提案）、
-  │          works.*（每章目标字数/总章数/故事结构/叙事视角）、chapters.blueprint_json / target_words
-  ├─ 创作内核：buildNovelContext（ST 式分层装配 + 分层预算 + 蓝图层 + 目标字数）、
-  │          scanAgainstRedlines（含对话豁免）、saveStoryMemory（版本快照 + 保留策略 + 压缩提示）、
+  │          writing_redlines（红线 + 豁免词）、story_event_proposals / story_memory_proposals（入账提案）、
+  │          works.*（每章目标字数/总章数/故事结构/叙事视角/正向风格要求）、chapters.blueprint_json / target_words
+  ├─ 创作内核：buildNovelContext（ST 式分层装配 + 分层预算 + 蓝图层 + 目标字数 + 正向契约）、
+  │          scanAgainstRedlines（对话豁免 + 整词豁免）、saveStoryMemory（版本快照 + 保留策略 + 压缩提示）、
   │          提案确认（apply/reject）、多关键词加权检索
   ├─ 端点：/api/novel/*、/api/story_memory 版本与回滚、/api/novel/proposals、/api/search
   └─ /api/harness/run：注入 NOVELSTUDIO_WORK_ID/CHAPTER_ID/MODE + NOVELSTUDIO_PROPOSE_MODE=1
@@ -43,6 +43,8 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 - `story_events` 增加 `foreshadow_status`（''/open、resolved、dropped）与 `resolves_event_id`；
 - 新埋伏笔：`kind=foreshadow`（默认 open）；回收：`kind=event` + `resolves_event_id=#伏笔id`，
   服务端自动把该伏笔置 resolved；
+- 作者确认废弃/恢复时：`novel_foreshadow_update`（dsh）或伏笔面板按钮（UI），
+  共用 `POST /api/novel/foreshadows/:id/status`；
 - `novel_context` 的【未闭合伏笔】层与 `novel_foreshadows`、`novel_consistency` 共用这一状态。
 
 ### 3. 分层上下文预算
@@ -87,6 +89,17 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
   `zip-reader.mjs`，支持 stored/deflate），新建作品自动写入；
 - 导出：整书 TXT（含卷/章标题）、整书 Markdown（#/##/###）、单章 TXT，浏览器直接下载。
 
+### 4d. 红线豁免词 / 正向风格契约 / 记忆版本界面（v0.7.0）
+
+- 红线豁免词：每条红线可配 `exceptions`（如「眸 → 眼眸/回眸/眸色」），扫描时命中位置与豁免词
+  重叠的整词放行；`PUT /api/novel/redlines` 校验豁免词数量（≤20）与单个长度（≤100）；
+- 正向风格契约：作品新增 `works.style_positive`（作品编辑弹窗配置），`renderStyleContract`
+  在【写作风格红线】之后追加【正向风格要求】段，随 `/api/novel/context` 与 `/api/ai_context` 进入写作上下文；
+- 红线界面化管理：写作页参考面板新增「红线」页签——查看当前生效清单（含豁免词），
+  「⚙️ 管理红线」弹窗逐条增删改（类型/模式/说明/豁免词/启用），保存为作品级清单（覆盖全局默认）；
+- 记忆版本界面：长期记忆页「🕘 历史版本」——版本列表、一键回滚（自动再记回滚快照）、
+  「对比当前」句子级差异预览（红=旧有、绿=新增）。
+
 ### 5. 模型切换竞态修复（harness.js）
 
 dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并发任务互相覆盖；
@@ -96,7 +109,8 @@ dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并�
 
 - 服务端不再返回 `Access-Control-Allow-Origin: *`：跨源页面无法读取 API Key 与作品数据；
 - 浏览器跨源写请求（Origin 非 localhost/127.0.0.1）一律 403；
-- 请求体上限 32MB（供 EPUB 导入；写请求有本机 Origin 校验兜底）；红线模式长度上限 500、regex 编译校验。
+- 请求体上限 32MB（供 EPUB 导入；写请求有本机 Origin 校验兜底）；红线模式长度上限 500、regex 编译校验；
+- 蓝图/审稿/正文写回等写类端点校验 `work_id` 与章节归属（chapter_blueprint/review/chapter_save），防止串作品误写。
 
 ## 三、端点一览
 
@@ -104,18 +118,18 @@ dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并�
 | --- | --- |
 | `GET /api/novel/ping` | 服务探活 |
 | `GET /api/novel/context?work_id=&chapter_id=&mode=` | ST 式分层上下文（full/continuation/fragment，分层预算 + 蓝图层 + 目标字数） |
-| `GET/PUT /api/novel/redlines?work_id=` | 读取/全量替换红线清单（校验类型/长度/正则） |
-| `POST /api/novel/scan` | 正文红线扫描 `{work_id,text,skip_dialogue}` → hits |
+| `GET/PUT /api/novel/redlines?work_id=` | 读取/全量替换红线清单（校验类型/长度/正则/豁免词；返回解析后的 exceptions） |
+| `POST /api/novel/scan` | 正文红线扫描 `{work_id,text,skip_dialogue}` → hits（对话豁免 + 整词豁免） |
 | `GET/POST /api/novel/events` | 事件账本读取/追加（伏笔状态/回收/dedup/proposed） |
 | `GET /api/novel/foreshadows?work_id=&status=` | 未闭合（open）或全部（all）伏笔 |
 | `POST /api/novel/consistency` | 一致性核对清单装配 `{work_id,chapter_id,text}` |
-| `PUT /api/novel/chapter_blueprint` | 保存章节蓝图 `{chapter_id, blueprint{6字段}, target_words}` |
-| `PUT /api/novel/review` | 保存审稿报告 `{chapter_id, report:{summary,issues,strengths}}` |
+| `PUT /api/novel/chapter_blueprint` | 保存章节蓝图 `{work_id?, chapter_id, blueprint{6字段}, target_words}`（校验 work_id 归属） |
+| `PUT /api/novel/review` | 保存审稿报告 `{work_id?, chapter_id, report:{summary,issues,strengths}}`（校验 work_id 归属） |
 | `GET /api/novel/review?chapter_id=` | 读取章节最新审稿（含确认清单） |
 | `PUT /api/novel/review/checklist` | 提交确认清单 `{review_id, checklist:{idx:confirmed|ignored}}` |
 | `GET /api/novel/empty_chapters?work_id=` | 尚无正文的顶层章节（批量生成选章依据） |
-| `POST /api/novel/foreshadows/:id/status` | 伏笔状态流转 `{status:open|resolved|dropped}` |
-| `POST /api/novel/chapter_save` | 成稿写回章节（旧稿存历史版本，返回红线扫描） |
+| `POST /api/novel/foreshadows/:id/status` | 伏笔状态流转 `{status:open|resolved|dropped, resolves_event_id?}` |
+| `POST /api/novel/chapter_save` | 成稿写回章节（校验 work_id 归属；旧稿存历史版本，返回红线扫描） |
 | `GET /api/search?q=&work_id=` | 多关键词加权检索（AND 匹配/标题加权/片段定位） |
 | `POST /api/import` | 导入 `{title, text|base64}`：TXT/Markdown 按章节标题拆章，EPUB 按 spine 拆章，新建作品 |
 | `GET /api/export/txt|md?work_id=|chapter_id=` | 导出整书 TXT/Markdown 或单章 TXT（浏览器下载） |

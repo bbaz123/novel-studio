@@ -8,20 +8,25 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// dsh 仓库路径解析（修复 DSH_HOME 语义冲突：dsh 官方语义中 DSH_HOME 是 profile 目录，
-// 而本应用需要的是仓库路径。优先使用专属变量 NOVELSTUDIO_DSH_REPO；
-// DSH_HOME 只有在确实包含 package.json（即它指向仓库）时才采用）。
+// dsh 仓库路径解析。注意 DSH_HOME 的官方语义是 harness home 根目录
+// （settings.yaml、profiles、credentials 都在其下），并不是 dsh 源码仓库路径；
+// 本应用需要的是仓库路径，因此优先使用专属变量 NOVELSTUDIO_DSH_REPO；
+// DSH_HOME 只有在确实包含 package.json（即恰好指向仓库）时才采用；
+// 其次探测工坊仓库同级的 deepseek-harness 目录（移动仓库后无需改配置）。
 function resolveHarnessDir() {
+  const sibling = path.join(__dirname, '..', 'deepseek-harness');
   const candidates = [
     process.env.NOVELSTUDIO_DSH_REPO,
     process.env.DSH_HOME,
+    sibling,
+    'C:\\Users\\a1941\\Desktop\\DeepSeek\\deepseek-harness',
     'C:\\Users\\a1941\\Desktop\\deepseek-harness'
   ].filter(Boolean);
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
   }
   // 都不存在时保留第一个候选，便于报错信息指出实际检查的路径。
-  return candidates[0] || 'C:\\Users\\a1941\\Desktop\\deepseek-harness';
+  return candidates[0] || sibling;
 }
 export const HARNESS_DIR = resolveHarnessDir();
 export const HARNESS_PACKAGE = path.join(HARNESS_DIR, 'package.json');

@@ -10,7 +10,7 @@
 ```js
 export const name = 'novel-tools'        // 插件名（行 id 用）
 export const inject = ['tools']          // 依赖 dsh 的 tools 注册表服务
-export const PLUGIN_VERSION = '0.4.0'    // 与 plugin.json 的 version 保持一致
+export const PLUGIN_VERSION = '0.7.0'    // 与 plugin.json 的 version 保持一致
 
 export function apply(ctx, config) {
   // config 来自行配置（agent.cordis.yml / headless patch 里的 config 字段）

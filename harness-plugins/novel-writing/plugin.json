@@ -1,7 +1,7 @@
 {
   "name": "novel-writing",
-  "version": "0.6.0",
-  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线/事件账本/长期记忆版本化/提案确认/批量生成/导入导出）。",
+  "version": "0.7.0",
+  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出）。",
   "integration": "builtin",
   "host": "novel-studio",
   "dshPlugin": {
@@ -18,6 +18,7 @@
     { "name": "novel_works", "description": "列出作品，确认 work_id。" },
     { "name": "novel_lookup", "description": "按关键词检索角色/设定词条/章节/剧情线。" },
     { "name": "novel_foreshadows", "description": "列出未闭合（或全部）伏笔，支持按 id 回收。" },
+    { "name": "novel_foreshadow_update", "description": "标记伏笔状态（resolved/dropped/open，可回链回收事件）。" },
     { "name": "novel_consistency", "description": "成文后核对一致性：未闭合伏笔/出场角色状态/最近事件 vs 正文。" },
     { "name": "novel_scan", "description": "确定性反 AI 腔红线扫描，可跳过引号内对话。" },
     { "name": "novel_style_contract", "description": "读取当前写作红线清单。" },

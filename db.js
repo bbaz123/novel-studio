@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS works (
   total_chapters INTEGER NOT NULL DEFAULT 0,
   story_structure TEXT NOT NULL DEFAULT '',
   narrative_pov TEXT NOT NULL DEFAULT '',
+  style_positive TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -218,6 +219,7 @@ CREATE TABLE IF NOT EXISTS writing_redlines (
   kind TEXT NOT NULL DEFAULT 'phrase',
   pattern TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
+  exceptions TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -277,6 +279,8 @@ try { db.exec(`ALTER TABLE works ADD COLUMN story_structure TEXT NOT NULL DEFAUL
 try { db.exec(`ALTER TABLE works ADD COLUMN narrative_pov TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE chapters ADD COLUMN blueprint_json TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE chapters ADD COLUMN target_words INTEGER NOT NULL DEFAULT 0`); } catch (_) {}
+try { db.exec(`ALTER TABLE works ADD COLUMN style_positive TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE writing_redlines ADD COLUMN exceptions TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_volumes_work ON volumes(work_id);

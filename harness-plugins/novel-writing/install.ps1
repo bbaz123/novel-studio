@@ -22,7 +22,7 @@ $presetDest = Join-Path $dshHome '.agent-presets\novel-writing'
 $headlessDir = Join-Path $dshHome 'profiles\headless'
 
 # 与 harness-plugins/novel-writing/plugin.json 的 version 保持一致。
-$script:Version = '0.6.0'
+$script:Version = '0.7.0'
 
 $srcTools = Join-Path $root 'novel-tools.mjs'
 $srcAgent = Join-Path $root 'agent.cordis.yml'
@@ -152,6 +152,9 @@ if (-not $DryRun) {
   Copy-Item $srcAgent (Join-Path $presetDest 'agent.cordis.yml') -Force
   Copy-Item $srcPreset (Join-Path $presetDest 'preset.yml') -Force
   Copy-Item $srcTools (Join-Path $presetDest 'novel-tools.mjs') -Force
+  # 清理旧版（v0.x 上游 preset）残留文件：本 preset 目录只应包含本仓库维护的文件。
+  $legacyReadme = Join-Path $presetDest 'README.md'
+  if (Test-Path $legacyReadme) { Remove-Item $legacyReadme -Force; Say '    已清理旧版 preset 残留 README.md' }
   Say "    preset 已安装：$presetDest"
 } else {
   Say "    [DryRun] preset 文件将复制到 $presetDest"
@@ -177,4 +180,4 @@ Say '✔ 完成。'
 Say '  1) 若升级了 novel-studio 服务端文件（db.js/server.js/harness.js），请重启：npm start'
 Say '  2) 打开 novel-studio 使用 AI 创作即可，无需在 dsh 里手动选 preset。'
 Say '  3) 验证：cd <你的 deepseek-harness 目录>; pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名称，用逗号分隔"'
-Say '     期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract, novel_event_add, novel_memory_update, novel_foreshadows, novel_consistency, novel_chapter_save'
+Say '     期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract, novel_event_add, novel_memory_update, novel_foreshadows, novel_foreshadow_update, novel_consistency, novel_blueprint, novel_review, novel_chapter_save'

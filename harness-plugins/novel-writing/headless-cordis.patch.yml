@@ -20,7 +20,8 @@
       再用 novel_scan 自检红线（任务响应已附 scan 报告时不必重复扫描），
       命中多则主动改写。
       4) 正文确认采纳后，用 novel_event_add 记录关键剧情/伏笔/状态变化
-      （新埋伏笔 kind=foreshadow，回收旧伏笔传 resolves_event_id），
+      （新埋伏笔 kind=foreshadow，回收旧伏笔传 resolves_event_id；作者确认废弃/恢复
+      伏笔时用 novel_foreshadow_update 改状态），
       再用 novel_memory_update 把进展并入长期记忆。
       5) 本任务的事件/记忆入账会先成为提案、由作者在工坊界面确认后生效——
       这是正常流程，每次调用一次即可，不要重复提交。
