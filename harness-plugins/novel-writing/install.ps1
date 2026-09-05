@@ -22,7 +22,7 @@ $presetDest = Join-Path $dshHome '.agent-presets\novel-writing'
 $headlessDir = Join-Path $dshHome 'profiles\headless'
 
 # 与 harness-plugins/novel-writing/plugin.json 的 version 保持一致。
-$script:Version = '0.5.0'
+$script:Version = '0.6.0'
 
 $srcTools = Join-Path $root 'novel-tools.mjs'
 $srcAgent = Join-Path $root 'agent.cordis.yml'

@@ -69,16 +69,34 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 内容 ×1，全词相等 > 前缀 > 包含；按得分排序取前 20，片段围绕最早命中的关键词截取；
 前端对标题与片段做关键词高亮（`<mark class="search-hit">`）。
 
-### 4. 模型切换竞态修复（harness.js）
+### 4b. 审稿→修稿闭环
+
+- 成文后可在「AI 写作结果」弹窗点「🔍 先审稿再应用」：自动生成审稿报告（总评/问题逐条/优点）
+  → 报告弹窗逐条勾选「确认/忽略」→ 按确认清单修稿 → 段落级差异预览（新增绿/删改红）
+  → 合并到正文（旧稿自动存历史版本）；
+- 报告落库 `chapter_reviews`（每章节保留最近 10 份），dsh GUI 会话可用 `novel_review` 保存；
+- 差异对比为前端 LCS 段落级 diff（零依赖）。
+
+### 4c. 批量章节生成 / 伏笔面板 / 导入导出
+
+- 批量生成：从第一个无正文的顶层章节开始顺序生成 N 章（≤10），每章自动蓝图→成文→字数补足→写回；
+  暂停/取消/失败即停（已完成章节保留）；事件/记忆走提案模式，结束统一提示确认；
+- 伏笔面板：写作页右侧参考面板「伏笔」页签——未闭合/已回收/已废弃分组、跳转埋设章节、
+  标记回收/废弃/恢复（`POST /api/novel/foreshadows/:id/status`）；
+- 导入：TXT/Markdown 按章节标题正则拆章、EPUB 按 spine 拆章（零依赖 zip 读取器
+  `zip-reader.mjs`，支持 stored/deflate），新建作品自动写入；
+- 导出：整书 TXT（含卷/章标题）、整书 Markdown（#/##/###）、单章 TXT，浏览器直接下载。
+
+### 5. 模型切换竞态修复（harness.js）
 
 dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并发任务互相覆盖；
 现改为：进程内互斥串行化「改 → 跑 → 还原」+ CAS 还原（文件仍等于我们写入的内容才恢复）。
 
-### 5. 本地安全
+### 6. 本地安全
 
 - 服务端不再返回 `Access-Control-Allow-Origin: *`：跨源页面无法读取 API Key 与作品数据；
 - 浏览器跨源写请求（Origin 非 localhost/127.0.0.1）一律 403；
-- 请求体上限 2MB；红线模式长度上限 500、regex 编译校验。
+- 请求体上限 32MB（供 EPUB 导入；写请求有本机 Origin 校验兜底）；红线模式长度上限 500、regex 编译校验。
 
 ## 三、端点一览
 
@@ -92,8 +110,15 @@ dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并�
 | `GET /api/novel/foreshadows?work_id=&status=` | 未闭合（open）或全部（all）伏笔 |
 | `POST /api/novel/consistency` | 一致性核对清单装配 `{work_id,chapter_id,text}` |
 | `PUT /api/novel/chapter_blueprint` | 保存章节蓝图 `{chapter_id, blueprint{6字段}, target_words}` |
+| `PUT /api/novel/review` | 保存审稿报告 `{chapter_id, report:{summary,issues,strengths}}` |
+| `GET /api/novel/review?chapter_id=` | 读取章节最新审稿（含确认清单） |
+| `PUT /api/novel/review/checklist` | 提交确认清单 `{review_id, checklist:{idx:confirmed|ignored}}` |
+| `GET /api/novel/empty_chapters?work_id=` | 尚无正文的顶层章节（批量生成选章依据） |
+| `POST /api/novel/foreshadows/:id/status` | 伏笔状态流转 `{status:open|resolved|dropped}` |
 | `POST /api/novel/chapter_save` | 成稿写回章节（旧稿存历史版本，返回红线扫描） |
 | `GET /api/search?q=&work_id=` | 多关键词加权检索（AND 匹配/标题加权/片段定位） |
+| `POST /api/import` | 导入 `{title, text|base64}`：TXT/Markdown 按章节标题拆章，EPUB 按 spine 拆章，新建作品 |
+| `GET /api/export/txt|md?work_id=|chapter_id=` | 导出整书 TXT/Markdown 或单章 TXT（浏览器下载） |
 | `GET /api/novel/proposals?work_id=` | 待确认入账提案 |
 | `POST /api/novel/proposals/apply` / `reject` | 采纳/忽略提案 `{work_id, ids|all}` |
 | `PUT /api/story_memory` | 提交记忆（summary/delta、proposed；返回 needs_compression） |

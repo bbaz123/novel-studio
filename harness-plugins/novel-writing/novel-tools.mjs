@@ -27,7 +27,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.5.0'
+export const PLUGIN_VERSION = '0.6.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -347,6 +347,35 @@ export function apply(ctx, config) {
     if (data.summary === '') return '记忆更新为空（与旧摘要相同则自动跳过）'
     const hint = data.needs_compression ? '｜⚠ 当前摘要已超压缩提示线，建议下次优先压缩合并' : ''
     return `长期记忆已更新${extra}${hint}，当前摘要（前 ${120} 字）：${String(data.summary || '').slice(0, 120)}`
+  })
+
+  register('novel_review', [
+    '把成文的审稿报告保存到章节（审稿→确认清单→修稿→差异合并闭环的记录锚点）。',
+    '用法：作者要求审稿时，先对照上下文输出审稿报告给作者（总评 + 问题逐条 + 优点），作者确认后调用本工具保存。',
+    'report 参数：{ summary: "总评", issues: ["问题描述1", ...], strengths: ["优点1", ...] }。',
+    '保存后作者可在 novel-studio 界面逐条确认/忽略并按清单修稿。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（必填）' },
+    summary: { type: 'string', description: '审稿总评（两三句）' },
+    issues: { type: 'string', description: '问题清单，每条一行' },
+    strengths: { type: 'string', description: '优点，每条一行（可选）' },
+  }, async (args) => {
+    const workId = envId(args, 'work_id')
+    const chapterId = envId(args, 'chapter_id')
+    if (chapterId === undefined) throw new Error('缺少 chapter_id')
+    const report = {
+      summary: String(args.summary || ''),
+      issues: String(args.issues || '').split(/\n+/).map((s) => s.trim()).filter(Boolean),
+      strengths: String(args.strengths || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)
+    }
+    if (!report.summary.trim() && !report.issues.length) throw new Error('审稿报告不能为空')
+    const data = await jfetch('/api/novel/review', {
+      method: 'PUT',
+      body: { work_id: workId, chapter_id: chapterId, report },
+      timeout: 30000
+    })
+    return `审稿报告已保存（review #${data.review_id}）：${report.issues.length} 条问题，作者可在工坊界面确认清单并修稿。`
   })
 
   register('novel_blueprint', [

@@ -49,7 +49,7 @@ cd <你的 deepseek-harness 目录>
 pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名称，用逗号分隔"
 # 期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract,
 #           novel_event_add, novel_memory_update, novel_foreshadows, novel_consistency,
-#           novel_blueprint, novel_chapter_save
+#           novel_blueprint, novel_review, novel_chapter_save
 ```
 
 ## 工具一览
@@ -66,6 +66,7 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 | `novel_event_add` | 事件/伏笔/状态变化入账（伏笔状态与回收、幂等去重；headless 先落提案） |
 | `novel_memory_update` | 长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案） |
 | `novel_blueprint` | 保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），作者确认后落库 |
+| `novel_review` | 保存成文的审稿报告（总评/问题清单/优点），作者在工坊界面确认清单并按清单修稿 |
 | `novel_chapter_save` | 成稿写回章节正文（旧稿自动存历史版本，返回红线扫描） |
 
 ## 关键机制
@@ -76,6 +77,14 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 - **每章目标字数控制**：作品级默认（`works.default_chapter_words`，默认 2000，可 3000/5000/自定义）
   + 章节级覆盖（`chapters.target_words`）；成文不足目标时工坊自动续写补足（≤2 轮拼稿），
   结果弹窗按目标对比提示；作品还可配置总章数/故事结构/叙事视角参与大纲与蓝图生成。
+- **审稿→修稿闭环**：成文后可「先审稿再应用」——审稿报告（总评/问题/优点）→ 逐条确认/忽略
+  → 按确认清单修稿 → 段落级差异预览（新增绿/删改红）→ 合并到正文（旧稿存历史版本）。
+- **批量章节生成**：从第一个无正文章节顺序生成 N 章（≤10），每章自动蓝图→成文→字数补足→写回；
+  可随时停止，失败即停（已完成章节保留）。
+- **伏笔/叙事线索面板**：写作页右侧参考面板「伏笔」页签——分组展示、跳转埋设章节、
+  标记回收/废弃/恢复，与事件账本共用状态。
+- **导入导出**：TXT/Markdown/EPUB 导入（自动拆章、新建作品，EPUB 零依赖 zip 解析）；
+  整书 TXT/Markdown 与单章 TXT 导出。
 - **提案确认（headless 防污染）**：novel-studio 网页启动的任务带 `NOVELSTUDIO_PROPOSE_MODE=1`，
   AI 的事件/记忆入账先落提案表，任务结束随结果返回；作者在「AI 写作结果」弹窗勾选采纳，
   或稍后在「小说设定 → 长期记忆 → 📥 待确认提案」里处理。GUI dsh 会话里作者在场，直接入账。
@@ -88,7 +97,7 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 - **红线扫描**：默认 28 条反 AI 腔红线，作品级可覆盖（`PUT /api/novel/redlines`）；
   扫描支持 `skip_dialogue`（引号内台词不计），正则模式有长度上限与编译校验。
 - **幂等与保留**：事件按 `dedup_key` 去重；记忆版本每作品保留最近 200 个，超限自动剪除；
-  正文写回前自动存章节历史版本。
+  正文写回前自动存章节历史版本；审稿报告每章节保留最近 10 份。
 
 ## 安全（本地工具也要防）
 

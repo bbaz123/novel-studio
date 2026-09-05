@@ -990,6 +990,65 @@ mark.search-hit {
 }
 .search-empty { padding: 10px 12px; }
 
+/* ---------- 审稿/修稿差异预览与伏笔页签（backlog） ---------- */
+.review-summary {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, .08);
+  border: 1px solid rgba(99, 102, 241, .25);
+  margin-bottom: 10px;
+  line-height: 1.6;
+}
+.review-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  margin: 4px 0;
+  font-size: 13px;
+  line-height: 1.55;
+  cursor: pointer;
+}
+.review-item.issue { background: rgba(251, 191, 36, .06); }
+.review-item.strength { background: rgba(52, 211, 153, .07); color: #a7f3d0; }
+.review-item input[type="checkbox"] { margin-top: 3px; accent-color: var(--accent); }
+.diff-view {
+  max-height: 60vh;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(0, 0, 0, .15);
+}
+.diff-p {
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.diff-p.diff-del {
+  background: rgba(248, 113, 113, .16);
+  color: #fca5a5;
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 113, 113, .6);
+}
+.diff-p.diff-add {
+  background: rgba(52, 211, 153, .14);
+  color: #a7f3d0;
+}
+.diff-add-inline { color: #a7f3d0; font-weight: 600; }
+.diff-del-inline { color: #fca5a5; font-weight: 600; text-decoration: line-through; }
+.ref-group-title {
+  font-size: 12px;
+  color: var(--accent);
+  padding: 8px 2px 2px;
+  letter-spacing: .03em;
+}
+.foreshadow-item { flex-direction: column; align-items: stretch; }
+
 /* ---------- AI 创作分页签（D7） ---------- */
 .ai-create-section { display: block; }
 .ai-create-section[hidden] { display: none; }

@@ -437,8 +437,10 @@ async function renderWorks() {
         <div class="page-sub">管理你的所有小说项目</div>
       </div>
       <div class="page-actions">
+        <button class="btn secondary" data-action="import-work">📥 导入作品</button>
         <button class="btn" data-action="new-work">＋ 新建作品</button>
       </div>
+      <input type="file" id="import-file" accept=".txt,.md,.epub" hidden>
     </div>
     ${visibleWorks.length ? '' : demoWorkId
       ? '<div class="empty">还没有你自己的作品：《雾都缝匠》是下方示例数据，可直接打开体验；点击右上角“新建作品”或在左侧「✨ AI 创作」用 AI 一键生成，开始你自己的创作。</div>'
@@ -572,6 +574,9 @@ async function renderOverview(content) {
         <div class="page-sub">${esc(state.work.description || '暂无简介')}</div>
       </div>
       <div class="page-actions">
+        <button class="btn secondary" data-action="export-work-txt" title="整书导出为 TXT">📤 TXT</button>
+        <button class="btn secondary" data-action="export-work-md" title="整书导出为 Markdown">📤 MD</button>
+        <button class="btn secondary" data-action="batch-generate">⚡ 批量生成</button>
         <button class="btn secondary" data-action="edit-work" data-id="${workId}">编辑信息</button>
         <button class="btn danger" data-action="delete-work" data-id="${workId}">删除作品</button>
         <button class="btn" data-action="new-chapter">＋ 新建章节</button>
@@ -866,6 +871,7 @@ async function renderWriting(content) {
             <button class="btn small" data-action="manual-save-chapter">💾 手动保存</button>
             <button class="btn small secondary" data-action="open-save-history">🕘 历史版本</button>
             <button class="btn small" data-action="link-term-modal">🔗 关联设定</button>
+            <button class="btn small secondary" data-action="export-chapter-txt" data-id="${current.id}" title="导出本章为 TXT">📤 本章</button>
             ${state.editorLayout === 'single' ? `<select id="chapter-switcher" title="单栏布局下目录被隐藏，用这里切换章节" style="max-width:200px">${chapters.map((c) => `<option value="${c.id}" ${c.id === current.id ? 'selected' : ''}>${esc(c.title)}</option>`).join('')}</select>` : ''}
           </div>
         </div>
@@ -879,6 +885,7 @@ async function renderWriting(content) {
         <div class="reference-tabs">
           <button class="active" data-action="ref-tab" data-tab="terms">设定</button>
           <button data-action="ref-tab" data-tab="characters">角色</button>
+          <button data-action="ref-tab" data-tab="foreshadows">伏笔</button>
           <button data-action="ref-tab" data-tab="ai">AI</button>
           <span class="grow"></span>
           <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
@@ -940,6 +947,8 @@ function renderReference(tab = 'terms') {
           <div class="ref-desc">${esc(c.identity || c.personality || '暂无简介')}</div>
         </div>
       `).join('') || '<div class="muted">暂无角色</div>'}`;
+  } else if (tab === 'foreshadows') {
+    renderForeshadowTab(list);
   } else if (tab === 'ai') {
     list.innerHTML = `
       <div class="ai-panel">
@@ -963,6 +972,46 @@ function scheduleSave() {
   state.editorSaveTimer = setTimeout(saveCurrentChapter, 800);
   const status = $('#editor-status');
   if (status) status.innerHTML = '<span>编辑中...</span>';
+}
+
+// 参考面板「伏笔」页签：未闭合/已回收/已废弃分组，可跳转章节、标记状态。
+async function renderForeshadowTab(list) {
+  list.innerHTML = '<div class="muted" style="padding:4px 2px">加载中…</div>';
+  let rows = [];
+  try {
+    const data = await api(`/novel/foreshadows?work_id=${state.workId}&status=all`);
+    rows = data.foreshadows || [];
+  } catch (e) {
+    list.innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+    return;
+  }
+  const chName = (id) => state.chapters.find((c) => c.id === Number(id))?.title || '';
+  const groups = [
+    { label: '未闭合', items: rows.filter((f) => f.foreshadow_status !== 'resolved' && f.foreshadow_status !== 'dropped'), cls: 'open' },
+    { label: '已回收', items: rows.filter((f) => f.foreshadow_status === 'resolved'), cls: 'resolved' },
+    { label: '已废弃', items: rows.filter((f) => f.foreshadow_status === 'dropped'), cls: 'dropped' }
+  ];
+  let html = '<div class="muted" style="padding:4px 2px">伏笔账本：写作时必须照顾的“欠账”</div>';
+  for (const g of groups) {
+    html += `<div class="ref-group-title">${g.label}（${g.items.length}）</div>`;
+    if (!g.items.length) { html += '<div class="muted" style="padding:2px 4px">无</div>'; continue; }
+    for (const f of g.items) {
+      const buttons = g.cls === 'open'
+        ? `<button class="btn small" data-action="foreshadow-status" data-id="${f.id}" data-status="resolved">已回收</button>
+           <button class="btn small secondary" data-action="foreshadow-status" data-id="${f.id}" data-status="dropped">废弃</button>`
+        : `<button class="btn small secondary" data-action="foreshadow-status" data-id="${f.id}" data-status="open">恢复未闭合</button>`;
+      const goto = f.chapter_id
+        ? `<button class="btn small secondary" data-action="foreshadow-goto" data-id="${f.chapter_id}">跳转</button>`
+        : '';
+      html += `
+        <div class="reference-item foreshadow-item">
+          <div class="ref-title">${esc(f.summary || '（无描述）')}</div>
+          <div class="ref-desc muted">埋设：${esc(chName(f.chapter_id) || '未知章节')}${f.resolves_event_id ? ' · 回收事件 #' + f.resolves_event_id : ''}</div>
+          <div class="row mt-4">${goto}${buttons}</div>
+        </div>`;
+    }
+  }
+  list.innerHTML = html;
 }
 
 async function saveCurrentChapter() {
@@ -2744,14 +2793,18 @@ const AI_WRITING_CLARIFY_PROMPT = `请你在回答前先向我提问
 完全理解我的真实需求和目标时
 再给出最终方案。`;
 
-function buildAIWritingBlueprintPrompt(initial, history, targetWords) {
+function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = false) {
   const lines = [];
   lines.push(`你是资深中文网络小说创作助手。你熟悉网文爽点、节奏、人物塑造和世界观设定。`);
-  lines.push(AI_WRITING_CLARIFY_PROMPT);
+  if (auto) {
+    lines.push(`批量自动模式：不要提问，直接输出【蓝图】。`);
+  } else {
+    lines.push(AI_WRITING_CLARIFY_PROMPT);
+  }
   lines.push(``);
   lines.push(`对话输出规则：
-- 如果还需要了解我的需求，第一行必须严格是【提问】，随后只输出一个问题，不要输出其他内容。
-- 如果已经达到 95% 信心，第一行必须严格是【蓝图】，随后只输出一个 JSON 对象（不要 Markdown 代码块、不要解释），字段如下：
+- ${auto ? '直接输出，不需要提问。' : '如果还需要了解我的需求，第一行必须严格是【提问】，随后只输出一个问题，不要输出其他内容。'}
+- 第一行必须严格是【蓝图】，随后只输出一个 JSON 对象（不要 Markdown 代码块、不要解释），字段如下：
 {
   "scene_goal": "本场景目标（一句话）",
   "plot_points": "情节点，3-8 条，每条一行，足以撑起整章篇幅",
@@ -2760,7 +2813,7 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords) {
   "hook": "下一章钩子（收尾悬念）",
   "references": "需要回扣的既有设定/伏笔（没有就留空字符串）"
 }
-- 每轮最多只能问一个问题。`);
+- ${auto ? '直接输出【蓝图】。' : '每轮最多只能问一个问题。'}`);
   lines.push(``);
   lines.push(`蓝图容量要求：本章目标字数 ${targetWords} 字，蓝图的情节点与冲突要足以展开到这个篇幅，同时只覆盖“一章”的容量，不要规划成多章内容。`);
   lines.push(``);
@@ -2778,7 +2831,9 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords) {
     });
   }
   lines.push(``);
-  lines.push(`请根据以上内容决定下一步：若需澄清，先输出【提问】并只问一个问题；若已理解需求，先输出【蓝图】并给出 JSON。`);
+  lines.push(auto
+    ? '请直接输出【蓝图】并给出 JSON。'
+    : '请根据以上内容决定下一步：若需澄清，先输出【提问】并只问一个问题；若已理解需求，先输出【蓝图】并给出 JSON。');
   return lines.join('\n');
 }
 
@@ -2963,6 +3018,7 @@ function articleLengthHint(article, targetWords) {
 function showAIWritingResult(article, scan, proposals, targetWords) {
   return new Promise((resolve) => {
     state.pendingAIFinal = resolve;
+    state.pendingAIArticle = { article, scan, proposals, targetWords };
     state.pendingAIProposals = Array.isArray(proposals) && proposals.length
       ? { workId: state.workId || state.work?.id || null, proposals }
       : null;
@@ -2976,6 +3032,7 @@ function showAIWritingResult(article, scan, proposals, targetWords) {
         <div class="muted mt-8">请选择如何应用到正文：</div>`,
       footer: `
         <button class="btn secondary" data-close-modal>取消</button>
+        <button class="btn secondary" data-action="ai-writing-review">🔍 先审稿再应用</button>
         <button class="btn secondary" data-action="ai-writing-regenerate">重新生成</button>
         <button class="btn secondary" data-action="ai-writing-replace">替换当前正文/选中</button>
         <button class="btn secondary" data-action="ai-writing-append">追加到文末</button>
@@ -2999,6 +3056,248 @@ async function applySelectedProposals() {
     else toast('提案已保留，可稍后在「长期记忆」页处理');
   } catch (e) {
     toast('提案采纳失败：' + e.message, 'error');
+  }
+}
+
+// ---------- 审稿 → 确认清单 → 修稿 → 差异合并 ----------
+function buildAIReviewPrompt(article) {
+  return [
+    '你是严格的中文网络小说审稿编辑。请审读下面这篇章节正文，并对照小说上下文，输出 JSON 对象（不要 Markdown 代码块）：',
+    '{"summary":"总评（两三句）","issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"strengths":[{"text":"写得好的地方"}]}',
+    'issues 覆盖：剧情逻辑/与既有设定冲突/人物言行一致/AI 腔与模板句/节奏与钩子/篇幅；strengths 1-3 条。',
+    '',
+    '【当前小说上下文】',
+    aiContextBlock() || '无',
+    '',
+    '【待审正文】',
+    String(article || '').slice(0, 12000),
+    '',
+    '只输出 JSON。'
+  ].join('\n');
+}
+
+function buildAIRevisionPrompt(article, issues) {
+  const list = (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）';
+  return [
+    '你是资深中文网络小说修稿编辑。请按下面的“作者确认的问题清单”逐条修改正文；清单之外的内容尽量保持原样，不要擅自大改。',
+    '',
+    '【作者确认的问题清单】',
+    list,
+    '',
+    '【当前小说上下文】',
+    aiContextBlock() || '无',
+    '',
+    '【待修正文】',
+    String(article || '').slice(0, 12000),
+    '',
+    '请直接输出修改后的完整正文（不要解释、不要输出前缀）。'
+  ].join('\n');
+}
+
+// 段落级 diff（LCS）：返回 [{t:'same'|'del'|'add', x}]，供差异预览渲染。
+function diffParagraphs(oldText, newText) {
+  const a = String(oldText || '').split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+  const b = String(newText || '').split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+  const n = a.length, m = b.length;
+  if (!n && !m) return [];
+  if (n * m > 60000) {
+    // 超大文本退化为逐段对齐（前 n 段按位置比较）
+    const out = [];
+    for (let i = 0; i < Math.max(n, m); i++) {
+      if (i < n && i < m) {
+        out.push(a[i] === b[i] ? { t: 'same', x: a[i] } : { t: 'del', x: a[i] }, { t: 'add', x: b[i] });
+      } else if (i < n) out.push({ t: 'del', x: a[i] });
+      else out.push({ t: 'add', x: b[i] });
+    }
+    return out;
+  }
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push({ t: 'same', x: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ t: 'del', x: a[i] }); i++; }
+    else { ops.push({ t: 'add', x: b[j] }); j++; }
+  }
+  while (i < n) { ops.push({ t: 'del', x: a[i] }); i++; }
+  while (j < m) { ops.push({ t: 'add', x: b[j] }); j++; }
+  return ops;
+}
+
+// 审稿主流程：审稿报告 → 确认清单 → 修稿 → 差异预览 → 合并。
+async function runArticleReview(info) {
+  const jobBase = {
+    timeout: 600000,
+    model: 'deepseek-v4-pro',
+    action: 'write',
+    work_id: state.workId || state.work?.id || undefined,
+    chapter_id: state.currentChapterId || undefined,
+    mode: 'full'
+  };
+  try {
+    const reviewData = await runHarnessJob({ ...jobBase, prompt: buildAIReviewPrompt(info.article) }, 'AI 审稿 · 正在通读全文并生成审稿报告…');
+    let review = extractJSONFromText(reviewData.output || '');
+    if (!review) review = extractJSONFromText(parseAIWritingOutput(reviewData.output || '').finalText || '');
+    if (!review) throw new Error('审稿报告解析失败，请重试');
+    review.summary = String(review.summary || '');
+    review.issues = Array.isArray(review.issues) ? review.issues.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [];
+    review.strengths = Array.isArray(review.strengths) ? review.strengths.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [];
+    if (state.currentChapterId) {
+      try {
+        const saved = await api('/novel/review', { method: 'PUT', body: { chapter_id: state.currentChapterId, report: review } });
+        review.review_id = saved.review_id;
+      } catch (_) { /* 保存失败不阻塞审稿流程 */ }
+    }
+    state.pendingReview = { info, review };
+    showReviewReport(review);
+  } catch (e) {
+    if (!e.cancelled) toast('审稿失败：' + e.message, 'error');
+  }
+}
+
+function showReviewReport(review) {
+  const issues = review.issues || [];
+  openModal({
+    title: '🔍 AI 审稿报告',
+    body: `
+      <div class="review-summary">${esc(review.summary || '（无总评）')}</div>
+      ${(review.strengths || []).length ? `<div class="ref-group-title">优点</div>${review.strengths.map((s) => `<div class="review-item strength">✓ ${esc(s)}</div>`).join('')}` : ''}
+      <div class="ref-group-title">问题（勾选 = 确认修稿；取消勾选 = 忽略）</div>
+      ${issues.length ? issues.map((x, i) => `
+        <label class="review-item issue"><input type="checkbox" data-review-issue="${i}" checked>
+          <span>${i + 1}. ${esc(x)}</span></label>`).join('')
+        : '<div class="muted">未发现问题</div>'}`,
+    footer: `
+      <button class="btn secondary" data-close-modal>取消</button>
+      <button class="btn" data-action="review-confirm">按确认清单修稿</button>`,
+    large: true
+  });
+}
+
+async function refineByChecklist() {
+  const { info, review } = state.pendingReview || {};
+  state.pendingReview = null;
+  if (!info || !review) return;
+  const confirmed = [];
+  document.querySelectorAll('[data-review-issue]:checked').forEach((el) => {
+    confirmed.push((review.issues || [])[Number(el.dataset.reviewIssue)]);
+  });
+  closeModal();
+  const jobBase = {
+    timeout: 600000,
+    model: 'deepseek-v4-pro',
+    action: 'write',
+    work_id: state.workId || state.work?.id || undefined,
+    chapter_id: state.currentChapterId || undefined,
+    mode: 'full'
+  };
+  try {
+    const refinedData = await runHarnessJob({ ...jobBase, prompt: buildAIRevisionPrompt(info.article, confirmed) }, 'AI 修稿 · 正在按确认清单修改…');
+    const revised = parseAIWritingOutput(refinedData.output || '').finalText || '';
+    if (!revised.trim()) throw new Error('修稿结果为空');
+    showReviewDiff(info.article, revised, confirmed.length);
+  } catch (e) {
+    if (!e.cancelled) toast('修稿失败：' + e.message, 'error');
+  }
+}
+
+function showReviewDiff(oldText, newText, confirmedCount) {
+  state.pendingReviewDiff = { newText };
+  const ops = diffParagraphs(oldText, newText);
+  const body = ops.map((op) => {
+    if (op.t === 'same') return `<div class="diff-p">${esc(op.x)}</div>`;
+    if (op.t === 'del') return `<div class="diff-p diff-del">${esc(op.x)}</div>`;
+    return `<div class="diff-p diff-add">${esc(op.x)}</div>`;
+  }).join('');
+  openModal({
+    title: `🆚 修稿差异预览（按 ${confirmedCount} 条清单修改）`,
+    body: `
+      <div class="muted mb-8"><span class="diff-add-inline">绿色</span>=修稿新增/改写，<span class="diff-del-inline">红色</span>=旧稿被删改。确认无误后合并到正文。</div>
+      <div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`,
+    footer: `
+      <button class="btn secondary" data-close-modal>放弃修改</button>
+      <button class="btn" data-action="diff-merge">合并到正文</button>`,
+    large: true
+  });
+}
+
+async function mergeReviewDiff() {
+  const { newText } = state.pendingReviewDiff || {};
+  state.pendingReviewDiff = null;
+  if (!newText || !state.currentChapterId) return;
+  try {
+    await api('/novel/chapter_save', {
+      method: 'POST',
+      body: { chapter_id: state.currentChapterId, content: textToParagraphsHtml(newText) }
+    });
+    applySelectedProposals();
+    closeModal();
+    toast('审稿修稿已合并到正文（旧稿已存历史版本）', 'success');
+    await loadWorkData(true);
+    await render();
+  } catch (e) {
+    toast('合并失败：' + e.message, 'error');
+  }
+}
+
+// ---------- 导出 ----------
+async function downloadExport(path, fallbackName) {
+  try {
+    const res = await fetch('/api' + path);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text.slice(0, 200));
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fallbackName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  } catch (e) {
+    toast('导出失败：' + e.message, 'error');
+  }
+}
+
+// ---------- 导入（TXT/Markdown/EPUB → 新建作品自动拆章） ----------
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+async function handleImportFile(file) {
+  if (!file) return;
+  const isEpub = /\.epub$/i.test(file.name);
+  const title = file.name.replace(/\.(txt|md|markdown|epub)$/i, '').trim();
+  try {
+    let body = { title };
+    if (isEpub) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      body.base64 = bytesToBase64(buf);
+      toast('正在导入 EPUB…', 'success');
+    } else {
+      body.text = await file.text();
+    }
+    const r = await api('/import', { method: 'POST', body });
+    toast(`已导入《${r.title}》：${r.chapters} 章`, 'success');
+    await loadWorks(true);
+    await render();
+  } catch (e) {
+    toast('导入失败：' + e.message, 'error');
+  } finally {
+    const input = $('#import-file');
+    if (input) input.value = '';
   }
 }
 
@@ -3189,6 +3488,95 @@ async function performToolbarAIWrite(requirement) {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// ---------- 批量章节生成 ----------
+// 从第一个无正文的章节开始顺序生成 N 章：每章自动蓝图 → 成文 → 字数补足 → 写回；
+// 暂停/取消/失败即停（已完成的章节保留）。事件/记忆入账走提案模式，结束统一提示确认。
+function askBatchGenerate() {
+  return new Promise((resolve) => {
+    state.pendingBatchCount = resolve;
+    openModal({
+      title: '⚡ 批量生成章节',
+      body: `
+        <div class="muted mb-8">从第一个还没有正文的章节开始，依次自动生成（每章先出蓝图再成文，按作品配置的目标字数补足）。已有正文的章节会跳过；随时可点进度卡上的「停止」。</div>
+        <div class="field"><label>生成章节数（1-10）</label><input id="batch-count" type="number" min="1" max="10" value="3"></div>`,
+      footer: `
+        <button class="btn secondary" data-close-modal>取消</button>
+        <button class="btn" data-action="batch-start">开始批量生成</button>`
+    });
+  });
+}
+
+async function batchGenerateChapters(count) {
+  count = Math.min(10, Math.max(1, Number(count) || 3));
+  if (!state.workId) return toast('请先进入一部作品', 'error');
+  let empty;
+  try {
+    empty = await api(`/novel/empty_chapters?work_id=${state.workId}`);
+  } catch (e) {
+    return toast('查询空章节失败：' + e.message, 'error');
+  }
+  const targets = (empty.chapters || []).slice(0, count);
+  if (!targets.length) return toast('没有空章节可生成（可先在正文写作页新建章节）', 'error');
+  const jobBase = {
+    timeout: 600000,
+    model: 'deepseek-v4-flash',
+    action: 'write',
+    work_id: state.workId,
+    mode: 'full'
+  };
+  let done = 0;
+  for (const ch of targets) {
+    done += 1;
+    const label = `批量生成 · 第 ${done}/${targets.length} 章（${ch.title}）`;
+    try {
+      // 切到该章上下文（AI 上下文/角色卡/世界观）
+      state.currentChapterId = ch.id;
+      await loadAIContext();
+      const target = resolveTargetWords();
+      const initial = buildAIWritingInitialRequest(`根据作品大纲与剧情推进，撰写本章完整正文（不需要提问，直接按蓝图成文）`);
+      // 1) 自动蓝图（不弹确认，直接落库）
+      const bpData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingBlueprintPrompt(initial, [], target, true) }, `${label} · 蓝图`);
+      let bp = parseAIWritingOutput(bpData.output || '').blueprint || null;
+      if (bp && Object.keys(bp).length) {
+        try {
+          await api('/novel/chapter_blueprint', { method: 'PUT', body: { chapter_id: ch.id, blueprint: bp, target_words: 0 } });
+        } catch (_) { /* 蓝图保存失败不阻塞 */ }
+      }
+      // 2) 成文
+      const proseData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingProsePrompt(initial, bp, target) }, `${label} · 成文`);
+      let article = parseAIWritingOutput(proseData.output || '').finalText || '';
+      if (!article.trim()) throw new Error('AI 没有返回正文内容');
+      // 3) 字数补足
+      let rounds = 0;
+      while (plainLength(article) < target && rounds < 2) {
+        rounds += 1;
+        const cont = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingContinuationPrompt(article, target) }, `${label} · 补足（${rounds}/2）`);
+        const more = parseAIWritingOutput(cont.output || '').finalText || '';
+        if (!more.trim()) break;
+        article = `${article}\n\n${more}`;
+      }
+      // 4) 写回章节（旧稿自动存历史版本）
+      await api('/novel/chapter_save', {
+        method: 'POST',
+        body: { chapter_id: ch.id, content: textToParagraphsHtml(article), summary: (bp?.scene_goal || '').slice(0, 200) }
+      });
+      toast(`第 ${done}/${targets.length} 章已写入：${ch.title}`, 'success');
+    } catch (e) {
+      if (e.cancelled) {
+        toast(`批量生成已停止：完成 ${done - 1}/${targets.length} 章（已完成的章节保留）`, 'success');
+      } else {
+        toast(`批量生成在第 ${done} 章失败：${e.message}（已完成章节保留）`, 'error');
+      }
+      await loadWorkData(true);
+      await render();
+      return;
+    }
+  }
+  toast(`批量生成完成：${done} 章已写入正文。AI 提交的事件/记忆提案可在「长期记忆 → 待确认提案」处理`, 'success');
+  await loadWorkData(true);
+  await render();
 }
 
 async function runToolbarAIPolish() {
@@ -4245,6 +4633,43 @@ document.addEventListener('click', async (e) => {
         openWorkModal();
         break;
 
+      case 'import-work': {
+        const input = $('#import-file');
+        if (input) input.click();
+        break;
+      }
+
+      case 'batch-generate':
+        askBatchGenerate();
+        break;
+
+      case 'batch-start': {
+        const resolve = state.pendingBatchCount;
+        if (resolve) {
+          const n = Number($('#batch-count')?.value) || 3;
+          state.pendingBatchCount = null;
+          closeModal();
+          resolve(n);
+          batchGenerateChapters(n);
+        }
+        break;
+      }
+
+      case 'export-work-txt':
+        if (state.workId) downloadExport(`/export/txt?work_id=${state.workId}`, `${state.work?.title || 'novel'}.txt`);
+        break;
+
+      case 'export-work-md':
+        if (state.workId) downloadExport(`/export/md?work_id=${state.workId}`, `${state.work?.title || 'novel'}.md`);
+        break;
+
+      case 'export-chapter-txt': {
+        const id = Number(actionEl.dataset.id);
+        const ch = state.chapters.find((c) => c.id === id);
+        if (id) downloadExport(`/export/txt?chapter_id=${id}`, `${ch?.title || 'chapter'}.txt`);
+        break;
+      }
+
       case 'open-work': {
         state.workId = Number(actionEl.dataset.id);
         state.loadedWorkId = null;
@@ -4601,6 +5026,23 @@ document.addEventListener('click', async (e) => {
         break;
       }
 
+      case 'ai-writing-review': {
+        const info = state.pendingAIArticle;
+        state.pendingAIFinal = null;
+        state.pendingAIArticle = null;
+        closeModal();
+        if (info) runArticleReview(info);
+        break;
+      }
+
+      case 'review-confirm':
+        await refineByChecklist();
+        break;
+
+      case 'diff-merge':
+        await mergeReviewDiff();
+        break;
+
       case 'blueprint-confirm': {
         const resolve = state.pendingBlueprint;
         state.pendingBlueprint = null;
@@ -4685,6 +5127,25 @@ document.addEventListener('click', async (e) => {
       case 'ref-tab':
         renderReference(actionEl.dataset.tab);
         break;
+
+      case 'foreshadow-goto': {
+        state.currentChapterId = Number(actionEl.dataset.id);
+        await render();
+        break;
+      }
+
+      case 'foreshadow-status': {
+        const id = Number(actionEl.dataset.id);
+        const status = actionEl.dataset.status;
+        try {
+          await api(`/novel/foreshadows/${id}/status`, { method: 'POST', body: { status } });
+          toast(status === 'resolved' ? '已标记为回收' : status === 'dropped' ? '已标记为废弃' : '已恢复未闭合', 'success');
+          renderReference('foreshadows');
+        } catch (e) {
+          toast('操作失败：' + e.message, 'error');
+        }
+        break;
+      }
 
       // 专项 A：词条预览展开/收起（默认折叠为标题）
       case 'ref-preview-toggle': {
@@ -5152,6 +5613,10 @@ const debouncedSearch = debounce(async () => {
 }, 300);
 
 document.addEventListener('change', async (e) => {
+  if (e.target.id === 'import-file') {
+    handleImportFile(e.target.files?.[0]);
+    return;
+  }
   if (e.target.id === 'st-chapter-select') {
     state.currentChapterId = Number(e.target.value);
     render();

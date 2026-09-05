@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress, HARNESS_DIR } from './harness.js';
+import { readZip } from './zip-reader.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -56,7 +57,7 @@ function isLocalRequest(req) {
   }
 }
 
-const MAX_BODY_BYTES = 2_000_000; // 2MB：正文保存足够，恶意超大 payload 直接拒绝。
+const MAX_BODY_BYTES = 32_000_000; // 32MB：EPUB 导入用（base64 后约 1.33 倍）；写请求有本机 Origin 校验兜底。
 
 async function readBody(req) {
   const declared = Number(req.headers['content-length'] || 0);
@@ -1148,6 +1149,195 @@ function mergeMemoryDraft(prevSummary, deltaEventsText) {
   return `${delta}\n\n【此前进度】${base}`;
 }
 
+// ---------- 章节审稿（审稿→确认清单→修稿→差异合并） ----------
+function saveReview(workId, chapterId, report) {
+  const json = JSON.stringify(report && typeof report === 'object' ? report : {});
+  const info = prepare(`
+    INSERT INTO chapter_reviews (work_id, chapter_id, report_json, checklist_json, status)
+    VALUES (?, ?, ?, '{}', 'pending')
+  `).run(workId, chapterId, json);
+  // 每个章节只保留最近 10 份审稿
+  prepare(`
+    DELETE FROM chapter_reviews WHERE chapter_id = ? AND id NOT IN (
+      SELECT id FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 10
+    )
+  `).run(chapterId, chapterId);
+  return Number(info.lastInsertRowid);
+}
+
+function getLatestReview(chapterId) {
+  const row = prepare('SELECT * FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 1').get(chapterId);
+  if (!row) return null;
+  let report = {}; let checklist = {};
+  try { report = JSON.parse(row.report_json || '{}'); } catch (_) {}
+  try { checklist = JSON.parse(row.checklist_json || '{}'); } catch (_) {}
+  return { id: row.id, chapter_id: row.chapter_id, report, checklist, status: row.status, created_at: row.created_at };
+}
+
+function setReviewChecklist(reviewId, checklist) {
+  const row = prepare('SELECT * FROM chapter_reviews WHERE id = ?').get(reviewId);
+  if (!row) return null;
+  const json = JSON.stringify(checklist && typeof checklist === 'object' ? checklist : {});
+  prepare('UPDATE chapter_reviews SET checklist_json = ?, status = ? WHERE id = ?').run(json, 'confirmed', reviewId);
+  return Number(reviewId);
+}
+
+// ---------- 导入：TXT/Markdown/EPUB → 新建作品自动拆章 ----------
+const CHAPTER_HEAD_RE = /^\s*(?:第\s*[0-9一二三四五六七八九十百千零两]+\s*[章回节卷部集]|(?:Chapter|CHAPTER)\s+\d+|序章|楔子|尾声|终章|番外)(?:[：:、\s]+.*)?$/;
+
+function splitTextIntoCapters(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const chapters = [];
+  let current = null;
+  let preamble = [];
+  const flush = () => { if (current) chapters.push(current); };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && trimmed.length <= 60 && CHAPTER_HEAD_RE.test(trimmed)) {
+      flush();
+      current = { title: trimmed, content: '' };
+    } else if (current) {
+      current.content += (current.content ? '\n' : '') + line;
+    } else {
+      preamble.push(line);
+    }
+  }
+  flush();
+  const pre = preamble.join('\n').trim();
+  if (pre) {
+    if (chapters.length) chapters[0].content = pre + '\n' + chapters[0].content;
+    else chapters.push({ title: '第一章', content: pre });
+  }
+  return chapters.map((c) => ({ title: c.title, content: c.content.trim() })).filter((c) => c.content || c.title);
+}
+
+// HTML → 纯文本（段落换行保留，实体解码）。
+function htmlToPlain(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<\/(p|div|h[1-6]|li|blockquote|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// 纯文本 → 编辑器 HTML（段落 <p>）。
+function textToHtml(text) {
+  return String(text || '')
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p>${p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</p>`)
+    .join('');
+}
+
+// EPUB → { title, chapters: [{title, content}] }（零依赖 zip 读取）。
+function parseEpub(buffer) {
+  const entries = readZip(buffer);
+  const containerText = entries.get('META-INF/container.xml')?.toString('utf8');
+  if (!containerText) throw new Error('EPUB 缺少 META-INF/container.xml');
+  const rootPath = containerText.match(/full-path=["']([^"']+)["']/)?.[1];
+  if (!rootPath) throw new Error('EPUB 无法定位 opf 文件');
+  const opf = entries.get(rootPath)?.toString('utf8');
+  if (!opf) throw new Error('EPUB 缺少 opf 文件');
+  const title = (opf.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/)?.[1] || '')
+    .replace(/<[^>]*>/g, '').trim() || '导入的 EPUB';
+  const manifest = {};
+  for (const m of opf.matchAll(/<item[^>]*\bid=["']([^"']+)["'][^>]*\bhref=["']([^"']+)["'][^>]*\/?>/g)) {
+    manifest[m[1]] = m[2];
+  }
+  const spine = [...opf.matchAll(/<itemref[^>]*\bidref=["']([^"']+)["'][^>]*\/?>/g)]
+    .map((m) => manifest[m[1]]).filter(Boolean);
+  if (!spine.length) throw new Error('EPUB spine 为空');
+  const opfDir = rootPath.includes('/') ? rootPath.slice(0, rootPath.lastIndexOf('/') + 1) : '';
+  const chapters = [];
+  for (const href of spine) {
+    let full = opfDir + href;
+    try { full = decodeURIComponent(full); } catch (_) { /* 保留原样 */ }
+    full = full.replace(/^\.\//, '');
+    const html = entries.get(full)?.toString('utf8');
+    if (!html) continue;
+    const text = htmlToPlain(html);
+    if (!text) continue;
+    const head = (html.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/)?.[1] || '').replace(/<[^>]*>/g, '').trim();
+    chapters.push({ title: head || `第 ${chapters.length + 1} 节`, content: text });
+  }
+  if (!chapters.length) throw new Error('EPUB 未解析出任何章节内容');
+  return { title, chapters };
+}
+
+function importWorkFromChapters(title, chapters, description = '') {
+  db.exec('BEGIN');
+  try {
+    const workId = insertRow('works', { title: title.trim() || '导入的作品', description });
+    chapters.forEach((ch, i) => {
+      insertRow('chapters', {
+        work_id: workId,
+        title: String(ch.title || `第 ${i + 1} 章`).slice(0, 80),
+        summary: '',
+        content: textToHtml(ch.content),
+        position: i
+      });
+    });
+    db.exec('COMMIT');
+    return workId;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+// ---------- 导出：整书 TXT / 整书 Markdown / 单章 TXT ----------
+function buildWorkExport(workId, fmt) {
+  const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
+  if (!work) return null;
+  const volumes = prepare('SELECT * FROM volumes WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const chapters = prepare('SELECT * FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const volName = (id) => volumes.find((v) => v.id === id)?.title || '';
+  const lines = [];
+  if (fmt === 'md') {
+    lines.push(`# ${work.title}`, '');
+    if (work.description) lines.push(`> ${work.description}`, '');
+    let lastVol = null;
+    for (const c of chapters) {
+      const v = volName(c.volume_id);
+      if (v && v !== lastVol) { lines.push('', `## ${v}`, ''); lastVol = v; }
+      lines.push(`### ${c.title}`, '');
+      if (c.summary) lines.push(`> ${c.summary}`, '');
+      const plain = plainText(c.content || '');
+      if (plain) lines.push(plain, '');
+    }
+  } else {
+    lines.push(`${work.title}`, work.description ? `简介：${work.description}` : '', '');
+    let lastVol = null;
+    for (const c of chapters) {
+      const v = volName(c.volume_id);
+      if (v && v !== lastVol) { lines.push('', `【卷】${v}`, ''); lastVol = v; }
+      lines.push(`【${c.title}】`, '');
+      if (c.summary) lines.push(`（摘要：${c.summary}）`, '');
+      const plain = plainText(c.content || '');
+      if (plain) lines.push(plain, '');
+    }
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+
+function buildChapterExport(chapterId) {
+  const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
+  if (!chapter) return null;
+  const work = prepare('SELECT title FROM works WHERE id = ?').get(chapter.work_id);
+  const lines = [`${work?.title || ''} · ${chapter.title}`, ''];
+  if (chapter.summary) lines.push(`（摘要：${chapter.summary}）`, '');
+  lines.push(plainText(chapter.content || ''));
+  return lines.join('\n').trim() + '\n';
+}
+
 // ---------- 示例小说一键导入（演示数据 demo-data.json） ----------
 // 与脚本版 demo/seed-demo.js 等价，走数据库直写；UI 入口在“我的作品”页。
 const DEMO_TITLE = '雾都缝匠';
@@ -1630,6 +1820,68 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, { ok: true, removed });
   }
 
+  // 导入：TXT/Markdown 文本 或 EPUB（base64），新建作品并自动拆章。
+  if (resource === 'import' && method === 'POST') {
+    const body = await readBody(req);
+    let title = asString(body.title, '');
+    let chapters = [];
+    try {
+      if (body.base64) {
+        const bin = Buffer.from(String(body.base64), 'base64');
+        if (bin.length > 24 * 1024 * 1024) return sendError(res, 413, 'EPUB 文件过大（上限 24MB）');
+        const epub = parseEpub(bin);
+        title = title || epub.title;
+        chapters = epub.chapters;
+      } else if (body.text !== undefined) {
+        const text = String(body.text);
+        if (!text.trim()) return sendError(res, 400, '导入内容为空');
+        chapters = splitTextIntoCapters(text);
+      } else {
+        return sendError(res, 400, '缺少 text 或 base64');
+      }
+    } catch (e) {
+      return sendError(res, 400, `解析失败：${e.message}`);
+    }
+    if (!chapters.length) return sendError(res, 400, '未能从文件中解析出章节内容');
+    try {
+      const workId = importWorkFromChapters(title, chapters, '由导入文件创建');
+      return sendJSON(res, 201, { ok: true, work_id: workId, title: title || '导入的作品', chapters: chapters.length });
+    } catch (e) {
+      return sendError(res, 500, `写入失败：${e.message}`);
+    }
+  }
+
+  // 导出：整书 TXT / 整书 Markdown / 单章 TXT（浏览器直接下载）。
+  if (resource === 'export' && method === 'GET') {
+    const fmt = segments[2];
+    const workId = Number(query.work_id) || null;
+    const chapterId = Number(query.chapter_id) || null;
+    let text = null;
+    let fileName = 'novel.txt';
+    if (fmt === 'txt' && workId) {
+      text = buildWorkExport(workId, 'txt');
+      const work = prepare('SELECT title FROM works WHERE id = ?').get(workId);
+      if (work) fileName = `${work.title || 'novel'}.txt`;
+    } else if (fmt === 'md' && workId) {
+      text = buildWorkExport(workId, 'md');
+      const work = prepare('SELECT title FROM works WHERE id = ?').get(workId);
+      if (work) fileName = `${work.title || 'novel'}.md`;
+    } else if (fmt === 'txt' && chapterId) {
+      text = buildChapterExport(chapterId);
+      const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
+      if (chapter) fileName = `${chapter.title || 'chapter'}.txt`;
+    }
+    if (text === null) return sendError(res, 404, '导出对象不存在或格式不支持');
+    const encoded = encodeURIComponent(fileName).replace(/['()]/g, (c) => '%' + c.charCodeAt(0).toString(16));
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encoded}`,
+      'Cache-Control': 'no-store'
+    });
+    res.end(text);
+    return;
+  }
+
   // AI 上下文：角色卡 / 世界观 / 作者注
   if (resource === 'ai_context' && method === 'GET') {
     const chapterId = Number(query.chapter_id);
@@ -1763,6 +2015,20 @@ async function handleAPI(req, res, pathname, query) {
     const rows = status === 'all' ? all : all.filter((e) => e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped');
     return sendJSON(res, 200, { ok: true, work_id: workId, status, foreshadows: rows });
   }
+  if (resource === 'novel' && segments[2] === 'foreshadows' && segments[3] && segments[4] === 'status' && method === 'POST') {
+    const body = await readBody(req);
+    const id = Number(segments[3]);
+    const status = asString(body.status, '');
+    if (!['open', 'resolved', 'dropped'].includes(status)) return sendError(res, 400, 'status 必须是 open/resolved/dropped');
+    const row = prepare('SELECT * FROM story_events WHERE id = ? AND kind = ?').get(id, 'foreshadow');
+    if (!row) return sendError(res, 404, '伏笔不存在');
+    prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ?').run(status, id);
+    if (status === 'resolved' && body.resolves_event_id) {
+      prepare('UPDATE story_events SET resolves_event_id = ? WHERE id = ?').run(Number(body.resolves_event_id) || null, id);
+    }
+    touchWork(row.work_id);
+    return sendJSON(res, 200, { ok: true, id, foreshadow_status: status });
+  }
   if (resource === 'novel' && segments[2] === 'proposals' && method === 'GET') {
     const workId = Number(query.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
@@ -1824,6 +2090,42 @@ async function handleAPI(req, res, pathname, query) {
     const work = prepare('SELECT default_chapter_words FROM works WHERE id = ?').get(chapter.work_id);
     const effective = targetWords > 0 ? targetWords : (Number(work?.default_chapter_words) || 2000);
     return sendJSON(res, 200, { ok: true, chapter_id: chapterId, blueprint, target_words: effective });
+  }
+  // 章节审稿：保存报告 / 读取最新 / 提交确认清单
+  if (resource === 'novel' && segments[2] === 'review' && method === 'PUT' && !segments[3]) {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const report = body.report && typeof body.report === 'object' ? body.report : {};
+    if (!asString(report.summary, '').trim() && !asArray(report.issues).length) return sendError(res, 400, '审稿报告不能为空');
+    const reviewId = saveReview(chapter.work_id, chapterId, report);
+    return sendJSON(res, 201, { ok: true, review_id: reviewId });
+  }
+  if (resource === 'novel' && segments[2] === 'review' && method === 'GET') {
+    const chapterId = Number(query.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const review = getLatestReview(chapterId);
+    return sendJSON(res, 200, { ok: true, review });
+  }
+  if (resource === 'novel' && segments[2] === 'review' && segments[3] === 'checklist' && method === 'PUT') {
+    const body = await readBody(req);
+    const reviewId = Number(body.review_id);
+    if (!reviewId) return sendError(res, 400, '缺少 review_id');
+    const id = setReviewChecklist(reviewId, body.checklist || {});
+    if (id === null) return sendError(res, 404, '审稿不存在');
+    return sendJSON(res, 200, { ok: true, review_id: id });
+  }
+  // 批量生成辅助：列出尚无正文的顶层章节（按顺序）
+  if (resource === 'novel' && segments[2] === 'empty_chapters' && method === 'GET') {
+    const workId = Number(query.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    const rows = prepare(`
+      SELECT id, title, summary, position FROM chapters
+      WHERE work_id = ? AND (content IS NULL OR content = '') AND parent_id IS NULL
+      ORDER BY position ASC, id ASC
+    `).all(workId);
+    return sendJSON(res, 200, { ok: true, work_id: workId, chapters: rows });
   }
   if (resource === 'novel' && segments[2] === 'chapter_save' && method === 'POST') {
     const body = await readBody(req);

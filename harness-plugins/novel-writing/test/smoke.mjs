@@ -11,8 +11,44 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { deflateRawSync } from 'node:zlib';
 import assert from 'node:assert/strict';
+
+// 极简 ZIP 打包器（构造 EPUB 测试样本；stored=0 / deflate=8）。
+function makeZip(files) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const comp = f.method === 8 ? deflateRawSync(f.data) : f.data;
+    const nameB = Buffer.from(f.name, 'utf8');
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0, 6);
+    lh.writeUInt16LE(f.method, 8); lh.writeUInt16LE(0, 10); lh.writeUInt16LE(0, 12);
+    lh.writeUInt32LE(0, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(f.data.length, 22);
+    lh.writeUInt16LE(nameB.length, 26); lh.writeUInt16LE(0, 28);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6);
+    ch.writeUInt16LE(0, 8); ch.writeUInt16LE(f.method, 10); ch.writeUInt16LE(0, 12); ch.writeUInt16LE(0, 14);
+    ch.writeUInt32LE(0, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(f.data.length, 24);
+    ch.writeUInt16LE(nameB.length, 28); ch.writeUInt16LE(0, 30); ch.writeUInt16LE(0, 32);
+    ch.writeUInt16LE(0, 34); ch.writeUInt16LE(0, 36); ch.writeUInt32LE(0, 38);
+    ch.writeUInt32LE(offset, 42);
+    parts.push(lh, nameB, comp);
+    central.push(ch, nameB);
+    offset += 30 + nameB.length + comp.length;
+  }
+  const centralBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4); eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+  return Buffer.concat([...parts, centralBuf, eocd]);
+}
 
 // 定位 novel-studio 仓库根：优先 NOVELSTUDIO_REPO 环境变量，
 // 否则从本文件向上找 package.json（name === 'novel-studio'），
@@ -37,12 +73,17 @@ function findStudioRoot() {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findStudioRoot();
+// zip 读取器在 novel-studio 仓库根（发布镜像仓库不含服务端文件），按定位到的仓库根动态加载。
+const { readZip } = await import(pathToFileURL(join(repoRoot, 'zip-reader.mjs')).href);
 const PORT = 3900 + Math.floor(Math.random() * 400);
 const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = mkdtempSync(join(tmpdir(), 'novel-smoke-'));
 
 let passed = 0;
 function ok(label) { passed += 1; console.log(`  ✔ ${label}`); }
+function stripHtml(html = '') {
+  return String(html).replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+}
 async function jfetch(path, options = {}) {
   const res = await fetch(BASE + path, {
     method: options.method || 'GET',
@@ -274,6 +315,124 @@ try {
     const r3 = await jfetch(`/api/search?q=${encodeURIComponent('不存在的词xyz')}&work_id=${workId}`);
     assert.equal(r3.data.terms.length + r3.data.chapters.length + r3.data.characters.length + r3.data.plotlines.length, 0);
     ok('多关键词检索（AND/分组/空结果）');
+  }
+
+  // 8e. 章节审稿：保存报告 → 读取 → 确认清单 → 空报告拒绝
+  {
+    const saved = await jfetch('/api/novel/review', {
+      method: 'PUT',
+      body: {
+        chapter_id: chapterId,
+        report: { summary: '节奏尚可，中段冲突略弱。', issues: ['中段冲突铺垫不足', '开头两句 AI 腔'], strengths: ['钩子有力'] }
+      }
+    });
+    assert.equal(saved.status, 201);
+    assert.ok(saved.data.review_id > 0);
+    const got = await jfetch(`/api/novel/review?chapter_id=${chapterId}`);
+    assert.equal(got.data.review.report.issues.length, 2);
+    const ck = await jfetch('/api/novel/review/checklist', {
+      method: 'PUT',
+      body: { review_id: saved.data.review_id, checklist: { 0: 'confirmed', 1: 'ignored' } }
+    });
+    assert.equal(ck.data.ok, true);
+    const got2 = await jfetch(`/api/novel/review?chapter_id=${chapterId}`);
+    assert.equal(got2.data.review.status, 'confirmed');
+    assert.equal(got2.data.review.checklist['1'], 'ignored');
+    const emptyReport = await jfetch('/api/novel/review', {
+      method: 'PUT',
+      body: { chapter_id: chapterId, report: { summary: '', issues: [] } }
+    });
+    assert.equal(emptyReport.status, 400, '空审稿报告应被拒绝');
+    ok('章节审稿（保存/读取/确认清单/空报告拒绝）');
+  }
+
+  // 8f. 伏笔状态流转（面板操作对应的端点）
+  {
+    const f = await jfetch('/api/novel/events', {
+      method: 'POST',
+      body: { work_id: workId, kind: 'foreshadow', summary: '钟楼第十四声钟响' }
+    });
+    const fid = f.data.id;
+    const st1 = await jfetch(`/api/novel/foreshadows/${fid}/status`, { method: 'POST', body: { status: 'resolved' } });
+    assert.equal(st1.data.foreshadow_status, 'resolved');
+    const open = await jfetch(`/api/novel/foreshadows?work_id=${workId}&status=open`);
+    assert.ok(!open.data.foreshadows.some((x) => x.id === fid), '已回收不应出现在未闭合列表');
+    const st2 = await jfetch(`/api/novel/foreshadows/${fid}/status`, { method: 'POST', body: { status: 'open' } });
+    assert.equal(st2.data.foreshadow_status, 'open');
+    const bad = await jfetch(`/api/novel/foreshadows/${fid}/status`, { method: 'POST', body: { status: 'whatever' } });
+    assert.equal(bad.status, 400, '非法状态应被拒绝');
+    ok('伏笔状态流转（resolved/open/非法拒绝）');
+  }
+
+  // 8g. 空章节查询（批量生成选章依据）
+  {
+    const empty1 = await jfetch('/api/chapters', { method: 'POST', body: { work_id: workId, title: '待生成一' } });
+    const empty2 = await jfetch('/api/chapters', { method: 'POST', body: { work_id: workId, title: '待生成二' } });
+    const list = await jfetch(`/api/novel/empty_chapters?work_id=${workId}`);
+    assert.ok(list.data.chapters.some((c) => c.id === empty1.data.id));
+    assert.ok(list.data.chapters.some((c) => c.id === empty2.data.id));
+    // 写回空章节一，再查应消失
+    await jfetch('/api/novel/chapter_save', { method: 'POST', body: { chapter_id: empty1.data.id, content: '<p>有内容了</p>' } });
+    const list2 = await jfetch(`/api/novel/empty_chapters?work_id=${workId}`);
+    assert.ok(!list2.data.chapters.some((c) => c.id === empty1.data.id), '写入正文后应从空章节列表消失');
+    assert.ok(list2.data.chapters.some((c) => c.id === empty2.data.id));
+    ok('空章节查询（批量生成选章依据）');
+  }
+
+  // 8h. 导入拆章（TXT 文本）+ 导出 TXT/MD/单章
+  {
+    const text = '楔子\n一切的开始。\n\n第一章 初入雾城\n主角抵达雾城。\n\n第二章 档案室\n夜探档案室。\n\n第三章 钟声\n第十四声钟响。';
+    const imp = await jfetch('/api/import', { method: 'POST', body: { title: '导入测试书', text } });
+    assert.equal(imp.status, 201);
+    assert.equal(imp.data.chapters, 4, '应按章节标题拆成 4 章');
+    const newWorkId = imp.data.work_id;
+    const chs = await jfetch(`/api/chapters?work_id=${newWorkId}`);
+    assert.equal(chs.data.length, 4);
+    assert.equal(chs.data[0].title, '楔子');
+    const txt = await jfetch(`/api/export/txt?work_id=${newWorkId}`);
+    assert.equal(txt.status, 200);
+    const txtRaw = txt.data.raw || '';
+    assert.ok(txtRaw.includes('第一章 初入雾城'));
+    assert.ok(txtRaw.includes('第十四声钟响'));
+    assert.match(txt.headers.get('content-disposition') || '', /attachment/);
+    const md = await jfetch(`/api/export/md?work_id=${newWorkId}`);
+    const mdRaw = md.data.raw || '';
+    assert.ok(mdRaw.includes('# 导入测试书'));
+    assert.ok(mdRaw.includes('### 第一章 初入雾城'));
+    const single = await jfetch(`/api/export/txt?chapter_id=${chs.data[1].id}`);
+    const singleRaw = single.data.raw || '';
+    assert.ok(singleRaw.includes('主角抵达雾城'));
+    assert.ok(!singleRaw.includes('第二章'), '单章导出不应包含其它章');
+    ok('导入拆章（TXT）+ 导出（整书 TXT/MD、单章 TXT）');
+  }
+
+  // 8i. EPUB 导入（零依赖 zip 读取 + spine 拆章）
+  {
+    const opf = `<?xml version="1.0"?><package><metadata><dc:title>雾城 EPUB</dc:title></metadata>
+      <manifest><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/></manifest>
+      <spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>`;
+    const container = `<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`;
+    const epub = makeZip([
+      { name: 'mimetype', data: Buffer.from('application/epub+zip'), method: 0 },
+      { name: 'META-INF/container.xml', data: Buffer.from(container), method: 8 },
+      { name: 'OEBPS/content.opf', data: Buffer.from(opf), method: 8 },
+      { name: 'OEBPS/ch1.xhtml', data: Buffer.from('<html><body><h1>第一章</h1><p>雾城第一段。</p><p>第二段。</p></body></html>'), method: 8 },
+      { name: 'OEBPS/ch2.xhtml', data: Buffer.from('<html><body><h2>第二章</h2><p>钟声响了。</p></body></html>'), method: 8 }
+    ]);
+    // 直接单测 zip 读取器（stored + deflate 混用）
+    const entries = readZip(epub);
+    assert.equal(entries.get('mimetype').toString(), 'application/epub+zip');
+    assert.ok(entries.get('OEBPS/ch2.xhtml').toString().includes('钟声响了'));
+    const imp = await jfetch('/api/import', { method: 'POST', body: { title: '', base64: epub.toString('base64') } });
+    assert.equal(imp.status, 201);
+    assert.equal(imp.data.title, '雾城 EPUB', '标题应取自 EPUB 元数据');
+    assert.equal(imp.data.chapters, 2);
+    const chs = await jfetch(`/api/chapters?work_id=${imp.data.work_id}`);
+    assert.equal(chs.data[0].title, '第一章');
+    assert.ok(stripHtml(chs.data[0].content).includes('雾城第一段'));
+    const bad = await jfetch('/api/import', { method: 'POST', body: { base64: Buffer.from('not a zip').toString('base64') } });
+    assert.equal(bad.status, 400, '非 ZIP 内容应被拒绝');
+    ok('EPUB 导入（zip 读取/spine 拆章/标题提取/坏文件拒绝）');
   }
 
   // 9. 正文写回（旧稿历史版本 + 扫描返回）

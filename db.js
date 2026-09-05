@@ -248,6 +248,17 @@ CREATE TABLE IF NOT EXISTS story_memory_proposals (
   status TEXT NOT NULL DEFAULT 'pending',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 章节审稿：AI 审稿报告 + 作者确认清单（逐条 confirmed/ignored），修稿以确认清单为准。
+CREATE TABLE IF NOT EXISTS chapter_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  report_json TEXT NOT NULL DEFAULT '{}',
+  checklist_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // 兼容旧数据库：给已存在的表补充新增列
@@ -288,4 +299,5 @@ CREATE INDEX IF NOT EXISTS idx_memory_versions_work ON memory_versions(work_id, 
 CREATE INDEX IF NOT EXISTS idx_writing_redlines_work ON writing_redlines(work_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_event_proposals_work ON story_event_proposals(work_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_proposals_work ON story_memory_proposals(work_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chapter_reviews_chapter ON chapter_reviews(chapter_id, created_at DESC);
 `);
