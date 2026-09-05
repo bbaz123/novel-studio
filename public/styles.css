@@ -1067,6 +1067,32 @@ mark.search-hit {
 }
 .foreshadow-item { flex-direction: column; align-items: stretch; }
 
+/* ---------- 上下文预览页签（v0.8.0） ---------- */
+.context-char-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+.context-char-row { cursor: pointer; }
+.context-char-row input { width: auto; margin: 0; }
+.context-preview {
+  max-height: 430px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.55;
+  background: rgba(0, 0, 0, .25);
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
+  font-family: var(--mono);
+}
+
 /* ---------- AI 创作分页签（D7） ---------- */
 .ai-create-section { display: block; }
 .ai-create-section[hidden] { display: none; }

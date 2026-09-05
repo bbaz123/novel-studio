@@ -6,7 +6,8 @@
  * 覆盖：ping / 作品与章节 CRUD / 分层上下文 / 红线扫描（含对话豁免、整词豁免与正向风格契约）/
  * 伏笔闭环与事件幂等 / 提案确认流 / 记忆版本与回滚与压缩提示 /
  * 一致性核对清单 / 正文写回（历史版本）/ 写类端点归属校验（防串作品）/
- * 跨源写请求拒绝 / 非法红线拒绝。
+ * 跨源写请求拒绝 / 非法红线拒绝 /
+ * 出场角色评分制（别名命中/蓝图提及/单字防误命中/角色卡核心保底/兜底/强制带入/角色相关事件）。
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -77,7 +78,10 @@ const repoRoot = findStudioRoot();
 // zip 读取器在 novel-studio 仓库根（发布镜像仓库不含服务端文件），按定位到的仓库根动态加载。
 const { readZip } = await import(pathToFileURL(join(repoRoot, 'zip-reader.mjs')).href);
 const PORT = 3900 + Math.floor(Math.random() * 400);
-const BASE = `http://127.0.0.1:${PORT}`;
+// SMOKE_TARGET_BASE：指向已在外部启动的 novel-studio 服务时，本脚本不再自行 spawn
+// （适用于 CI 或受限沙箱环境，服务与数据目录由外部管理）。
+const EXTERNAL_BASE = process.env.SMOKE_TARGET_BASE || '';
+const BASE = EXTERNAL_BASE || `http://127.0.0.1:${PORT}`;
 const dataDir = mkdtempSync(join(tmpdir(), 'novel-smoke-'));
 
 let passed = 0;
@@ -97,14 +101,16 @@ async function jfetch(path, options = {}) {
   return { status: res.status, data, headers: res.headers };
 }
 
-const server = spawn(process.execPath, ['server.js'], {
+const server = EXTERNAL_BASE ? null : spawn(process.execPath, ['server.js'], {
   cwd: repoRoot,
   env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: dataDir },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
-server.stdout.on('data', (c) => { serverLog += c; });
-server.stderr.on('data', (c) => { serverLog += c; });
+if (server) {
+  server.stdout.on('data', (c) => { serverLog += c; });
+  server.stderr.on('data', (c) => { serverLog += c; });
+}
 
 async function waitForServer() {
   for (let i = 0; i < 60; i++) {
@@ -119,7 +125,7 @@ async function waitForServer() {
 
 try {
   await waitForServer();
-  console.log(`novel-writing 冒烟测试（服务端口 ${PORT}）`);
+  console.log(`novel-writing 冒烟测试（服务 ${BASE}）`);
 
   // 1. ping
   {
@@ -380,6 +386,64 @@ try {
     ok('空章节查询（批量生成选章依据）');
   }
 
+  // 8j. 出场角色评分制（v0.8.0）：别名命中 / 蓝图提及 / 单字防误命中 / 角色卡核心保底 / 兜底
+  {
+    const addChar = (name, fields = {}) => jfetch('/api/characters', {
+      method: 'POST', body: { work_id: workId, name, ...fields }
+    });
+    const liId = (await addChar('李云', { aliases: '云仔、李队', identity: '档案管理员', personality: '谨慎', status: '右手受伤' })).data.id;
+    await addChar('王明', { identity: '守夜人', background: '长背景'.repeat(120) });
+    const yunId = (await addChar('云', { identity: '单字陷阱角色' })).data.id;
+    // 名字序兜底池：零分角色按名字序排在“云”之前，用于验证单字防误命中。
+    for (const n of ['阿大', '阿二', '阿三', '阿四', '阿五', '阿六']) await addChar(n, {});
+    const chNew = await jfetch('/api/chapters', { method: 'POST', body: { work_id: workId, title: '别名命中章', summary: '云仔夜探档案室。' } });
+    await jfetch('/api/novel/chapter_blueprint', {
+      method: 'PUT',
+      body: { chapter_id: chNew.data.id, blueprint: { scene_goal: '王明追查失踪档案', plot_points: '1. 王明登场\n2. 对峙' } }
+    });
+    const ctx = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chNew.data.id}`);
+    assert.equal(ctx.status, 200);
+    const names = ctx.data.scene_characters.map((c) => c.name);
+    assert.ok(names.includes('李云'), '别名“云仔”应命中主角李云');
+    assert.ok(names.includes('王明'), '蓝图提及的王明应被带入');
+    assert.ok(!names.includes('云'), '单字角色“云”不应被“李云/云仔”内的“云”子串误命中');
+    for (const c of ctx.data.scene_characters) {
+      assert.ok(ctx.data.assembled.includes(`【${c.name}】`), `角色 ${c.name} 的卡片必须完整出现在上下文里（不被整层盲截）`);
+    }
+    assert.ok(ctx.data.assembled.includes('当前状态：右手受伤'), '核心字段（当前状态）必须保底带入');
+    // 兜底：新作品无任何命中信号时也应带回角色（最近出场/名字序兜底）。
+    const w2 = await jfetch('/api/works', { method: 'POST', body: { title: '兜底作品' } });
+    await jfetch('/api/characters', { method: 'POST', body: { work_id: w2.data.id, name: '独行侠' } });
+    const ctx2 = await jfetch(`/api/novel/context?work_id=${w2.data.id}`);
+    assert.equal(ctx2.data.scene_characters.length, 1, '新作品唯一角色应被兜底带入');
+    // 强制带入（章节级覆盖，v0.8.0）：把单字角色“云”强制带入本章，应出现在名单且 forced=true。
+    const chPut = await jfetch(`/api/chapters/${chNew.data.id}`, { method: 'PUT', body: { context_character_ids: String(yunId) } });
+    assert.equal(chPut.data.context_character_ids, String(yunId), '章节应保存 context_character_ids');
+    const ctxForced = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chNew.data.id}`);
+    const forcedNames = ctxForced.data.scene_characters.filter((c) => c.forced).map((c) => c.name);
+    assert.ok(forcedNames.includes('云'), '强制带入的角色必须出现在出场名单且标记 forced');
+    // 一致性核对（v0.8.0）：出场角色带 id 与相关事件；别名命中、单字防误命中同样生效。
+    const con = await jfetch('/api/novel/consistency', {
+      method: 'POST',
+      body: { work_id: workId, chapter_id: chNew.data.id, text: '云仔和云一起进入档案室。' }
+    });
+    const chars = con.data.checklist.present_characters || [];
+    assert.ok(chars.some((c) => c.name === '李云'), '别名“云仔”应在核对清单里命中李云');
+    assert.ok(!chars.some((c) => c.name === '云'), '单字“云”不应因“云仔”子串被误命中');
+    assert.ok(chars.every((c) => Number.isInteger(c.id) && Array.isArray(c.related_events)), '每个出场角色应带 id 与 related_events');
+    await jfetch('/api/novel/events', {
+      method: 'POST',
+      body: { work_id: workId, chapter_id: chNew.data.id, kind: 'character', summary: '李云右手伤势恶化', payload: { character_id: liId } }
+    });
+    const con2 = await jfetch('/api/novel/consistency', {
+      method: 'POST',
+      body: { work_id: workId, chapter_id: chNew.data.id, text: '云仔咬紧牙关继续前进。' }
+    });
+    const li = con2.data.checklist.present_characters.find((c) => c.name === '李云');
+    assert.ok(li && li.related_events.some((e) => e.summary.includes('右手伤势恶化')), '角色相关事件应出现在核对清单里');
+    ok('出场角色评分制（别名命中/蓝图提及/单字防误命中/角色卡核心保底/兜底/强制带入/角色相关事件）');
+  }
+
   // 8h. 导入拆章（TXT 文本）+ 导出 TXT/MD/单章
   {
     const text = '楔子\n一切的开始。\n\n第一章 初入雾城\n主角抵达雾城。\n\n第二章 档案室\n夜探档案室。\n\n第三章 钟声\n第十四声钟响。';
@@ -522,6 +586,37 @@ try {
     ok('写类端点 work_id 归属校验（防串作品）');
   }
 
+  // 13. 大作品上下文性能基线 + 缓存失效正确性（v0.8.0）
+  {
+    const bigText = Array.from({ length: 120 }, (_, i) =>
+      `第${i + 1}章\n这一段是第${i + 1}章的正文，讲述主角在雾城中的行动。\n第二段继续推进剧情，人物对话与场景描写齐备。`
+    ).join('\n\n');
+    const imp = await jfetch('/api/import', { method: 'POST', body: { title: '大作品性能测试', text: bigText } });
+    assert.equal(imp.data.chapters, 120, '应拆出 120 章');
+    const bigWorkId = imp.data.work_id;
+    for (let i = 0; i < 50; i++) {
+      await jfetch('/api/characters', {
+        method: 'POST',
+        body: { work_id: bigWorkId, name: `角色${String(i + 1).padStart(2, '0')}`, background: `背景介绍${i}。`.repeat(40) }
+      });
+    }
+    const t0 = performance.now();
+    const bigCtx = await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
+    const t1 = performance.now();
+    assert.equal(bigCtx.status, 200);
+    assert.ok(bigCtx.data.assembled.includes('【写作风格红线】'), '大作品装配结果应包含红线层');
+    assert.ok(bigCtx.data.scene_characters.length > 0, '大作品应带出兜底角色');
+    await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
+    const t2 = performance.now();
+    assert.ok(t1 - t0 < 8000, `首次装配应在 8s 内（实际 ${Math.round(t1 - t0)}ms）`);
+    console.log(`    （大作品上下文装配：首次 ${Math.round(t1 - t0)}ms，缓存命中 ${Math.round(t2 - t1)}ms）`);
+    // 缓存失效正确性：任何写操作后必须返回新数据（缓存不得吐陈旧结果）。
+    await jfetch(`/api/works/${bigWorkId}`, { method: 'PUT', body: { title: '大作品性能测试·改名' } });
+    const after = await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
+    assert.ok(after.data.assembled.includes('大作品性能测试·改名'), '写操作后缓存必须失效，返回新数据');
+    ok('大作品上下文性能基线（装配耗时 + 缓存失效正确性）');
+  }
+
   console.log(`\n✅ 全部 ${passed} 组断言通过。`);
   process.exitCode = 0;
 } catch (e) {
@@ -529,8 +624,10 @@ try {
   console.error(serverLog.slice(-3000));
   process.exitCode = 1;
 } finally {
-  server.kill();
-  setTimeout(() => {
-    try { rmSync(dataDir, { recursive: true, force: true }); } catch (_) { /* 忽略清理失败 */ }
-  }, 400);
+  if (server) {
+    server.kill();
+    setTimeout(() => {
+      try { rmSync(dataDir, { recursive: true, force: true }); } catch (_) { /* 忽略清理失败 */ }
+    }, 400);
+  }
 }

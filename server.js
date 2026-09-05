@@ -114,7 +114,34 @@ function prepare(sql) {
   return stmt;
 }
 
+// ---------- 上下文装配缓存（v0.8.0 性能优化） ----------
+// 所有写操作都会经 touchWork() 递增版本号，使缓存整体失效（单用户本地应用，全局失效足够）；
+// 缓存只作用于 buildNovelContext 的（work, chapter, mode）结果，命中时跳过全部 SQL 装配。
+let CONTEXT_DATA_VERSION = 0;
+const CONTEXT_CACHE = new Map();
+const CONTEXT_CACHE_MAX = 64;
+
+function cacheGetContext(key) {
+  const hit = CONTEXT_CACHE.get(key);
+  if (hit && hit.version === CONTEXT_DATA_VERSION) {
+    CONTEXT_CACHE.delete(key);
+    CONTEXT_CACHE.set(key, hit); // LRU：命中移到队尾
+    return hit.ctx;
+  }
+  if (hit) CONTEXT_CACHE.delete(key);
+  return undefined;
+}
+
+function cacheSetContext(key, ctx) {
+  CONTEXT_CACHE.set(key, { version: CONTEXT_DATA_VERSION, ctx });
+  while (CONTEXT_CACHE.size > CONTEXT_CACHE_MAX) {
+    const oldest = CONTEXT_CACHE.keys().next().value;
+    CONTEXT_CACHE.delete(oldest);
+  }
+}
+
 function touchWork(workId) {
+  CONTEXT_DATA_VERSION += 1;
   try {
     prepare('UPDATE works SET updated_at = ? WHERE id = ?').run(now(), workId);
   } catch (_) { /* ignore */ }
@@ -126,10 +153,10 @@ const RESOURCE_CONFIG = {
   works: { table: 'works', order: 'id DESC', fields: ['title', 'description', 'author_note', 'default_chapter_words', 'total_chapters', 'story_structure', 'narrative_pov', 'style_positive'], defaults: { description: '', author_note: '', default_chapter_words: 2000, total_chapters: 0, story_structure: '', narrative_pov: '', style_positive: '' } },
   volumes: { table: 'volumes', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'summary', 'position'], defaults: { summary: '', position: 0 } },
   plotlines: { table: 'plotlines', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'kind', 'summary', 'position'], defaults: { summary: '', position: 0 } },
-  chapters: { table: 'chapters', order: 'position ASC, id ASC', fields: ['work_id', 'volume_id', 'plotline_id', 'parent_id', 'title', 'summary', 'content', 'author_note', 'blueprint_json', 'target_words', 'position'], defaults: { summary: '', content: '', author_note: '', blueprint_json: '', target_words: 0, position: 0 } },
+  chapters: { table: 'chapters', order: 'position ASC, id ASC', fields: ['work_id', 'volume_id', 'plotline_id', 'parent_id', 'title', 'summary', 'content', 'author_note', 'blueprint_json', 'target_words', 'context_character_ids', 'position'], defaults: { summary: '', content: '', author_note: '', blueprint_json: '', target_words: 0, context_character_ids: '', position: 0 } },
   categories: { table: 'categories', order: 'position ASC, id ASC', fields: ['work_id', 'name', 'color', 'position'], defaults: { color: '#6366f1', position: 0 } },
   terms: { table: 'terms', order: 'updated_at DESC, id DESC', fields: ['work_id', 'category_id', 'title', 'content', 'tags'], defaults: { content: '', tags: '' } },
-  characters: { table: 'characters', order: 'name ASC', fields: ['work_id', 'name', 'identity', 'appearance', 'personality', 'background', 'status', 'avatar_color', 'mes_example', 'tags', 'system_prompt'], defaults: { identity: '', appearance: '', personality: '', background: '', status: '', avatar_color: '#8b5cf6', mes_example: '', tags: '', system_prompt: '' } },
+  characters: { table: 'characters', order: 'name ASC', fields: ['work_id', 'name', 'identity', 'appearance', 'personality', 'background', 'status', 'avatar_color', 'mes_example', 'tags', 'system_prompt', 'aliases'], defaults: { identity: '', appearance: '', personality: '', background: '', status: '', avatar_color: '#8b5cf6', mes_example: '', tags: '', system_prompt: '', aliases: '' } },
   relations: { table: 'character_relations', order: 'id ASC', fields: ['work_id', 'from_character_id', 'to_character_id', 'relation', 'description'], defaults: { relation: '', description: '' } },
   plotline_characters: { table: 'plotline_characters', order: 'id ASC', fields: ['work_id', 'plotline_id', 'character_id', 'status', 'notes'], defaults: { status: '', notes: '' } },
   world_entries: { table: 'world_entries', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'content', 'keywords', 'is_pinned', 'priority', 'position'], defaults: { content: '', keywords: '', is_pinned: 0, priority: 50, position: 0 } },
@@ -479,6 +506,18 @@ function plainText(html = '') {
     .trim();
 }
 
+// 上下文装配热点优化：只取头部/尾部时，先按倍数截取原始 HTML 再剥标签，
+// 避免整章全文转换浪费（HTML 标签膨胀约 2-3 倍，截取后剥标签即可）。
+function plainTextHead(html = '', n = 3000) {
+  const raw = String(html).slice(0, n * 3).replace(/<[^>]*$/, '');
+  return plainText(raw).slice(0, n);
+}
+
+function plainTextTail(html = '', n = 1200) {
+  const raw = String(html).slice(-(n * 3)).replace(/^[^<]*>/, '');
+  return plainText(raw).slice(-n);
+}
+
 // 获取作品的长期记忆摘要。
 function getStoryMemory(workId) {
   const row = prepare('SELECT summary FROM story_memories WHERE work_id = ?').get(workId);
@@ -519,6 +558,7 @@ function saveStoryMemory(workId, summary, opts = {}) {
       )
     `).run(workId, workId, MEMORY_VERSION_KEEP);
     db.exec('COMMIT');
+    touchWork(workId);
     return {
       ok: true, work_id: workId, summary, version_id: Number(info.lastInsertRowid), source,
       needs_compression: summary.length > MEMORY_COMPRESS_HINT
@@ -538,7 +578,7 @@ async function compressStoryMemory(workId) {
   const characters = prepare('SELECT name, identity, personality, status FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const worlds = prepare('SELECT title, content FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
 
-  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainText(c.content).slice(0, 500)}`).join('\n');
+  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content, 500)}`).join('\n');
   const characterText = characters.map((c) => `【${c.name}】${c.identity || ''} ${c.personality || ''} ${c.status || ''}`).join('\n');
   const worldText = worlds.map((w) => `【${w.title}】${w.content}`).join('\n');
 
@@ -549,6 +589,140 @@ async function compressStoryMemory(workId) {
   return output;
 }
 
+// ---------- 出场角色选择（评分制 · v0.8.0） ----------
+// 解决旧实现的三个遗漏源：①兜底只取“按名字前 8”与剧情无关；②名字子串误命中、漏别名；
+// ③新章节正文为空时只能靠标题/摘要碰运气。评分维度：剧情线关联 > 正文/摘要命中次数 >
+// 蓝图·作者注·最近事件提及 > 最近章节摘要出场 > 人物关系网；兜底改为“最近出场优先”。
+const SCENE_CHAR_CAP = 16;        // 出场角色卡数量上限
+const SCENE_FALLBACK_COUNT = 8;   // 无命中信号时的兜底数量（最近出场优先，其次名字序）
+
+// 名称出现次数统计：多字名称直接计数；单字 CJK 名称要求左右邻居不是 CJK 字符，
+// 避免“云”命中“云彩/李云”这类子串误命中。别名与正式名同样处理。
+function countNameHits(name, corpus) {
+  const n = String(name || '');
+  if (!n) return 0;
+  const lower = n.toLowerCase();
+  let count = 0;
+  let idx = corpus.indexOf(lower);
+  if (n.length >= 2) {
+    while (idx !== -1) { count += 1; idx = corpus.indexOf(lower, idx + lower.length); }
+    return count;
+  }
+  const isCJK = (ch) => /[\u3400-\u9FFF\uF900-\uFAFF]/.test(ch);
+  while (idx !== -1) {
+    const before = idx > 0 ? corpus[idx - 1] : '';
+    const after = idx + 1 < corpus.length ? corpus[idx + 1] : '';
+    if (!(isCJK(before) || isCJK(after))) count += 1;
+    idx = corpus.indexOf(lower, idx + 1);
+  }
+  return count;
+}
+
+function namesOfCharacter(c) {
+  return [c.name, ...String(c.aliases || '').split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean)];
+}
+
+// 评分制选择出场角色：返回 { sceneCharacters（按得分降序，含兜底）, scores: Map }。
+// opts：{ plotlineId, corpus, extraTexts, recentSummaries }
+function selectSceneCharacters(workId, opts = {}) {
+  const all = prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
+  const scores = new Map();
+  const add = (id, pts) => scores.set(id, (scores.get(id) || 0) + pts);
+  const hitsOf = (c, text) => namesOfCharacter(c).reduce((sum, nm) => sum + countNameHits(nm, text), 0);
+
+  // 1) 剧情线关联（最强信号）
+  if (opts.plotlineId) {
+    const rows = prepare('SELECT character_id FROM plotline_characters WHERE plotline_id = ? ORDER BY id ASC').all(opts.plotlineId);
+    rows.forEach((r) => add(Number(r.character_id), 100));
+  }
+  // 1b) 作者在「上下文预览」面板手动强制带入的角色（章节级覆盖，最高优先）
+  for (const id of opts.forceIds || []) add(Number(id), 1000);
+
+  const corpus = String(opts.corpus || '').toLowerCase();
+  const extraCorpus = String((opts.extraTexts || []).join(' ')).toLowerCase();
+  const recentCorpus = String((opts.recentSummaries || []).join(' ')).toLowerCase();
+
+  for (const c of all) {
+    // 2) 正文/摘要命中：每命中 +12，封顶 60
+    const mainHits = hitsOf(c, corpus);
+    if (mainHits > 0) add(c.id, Math.min(mainHits * 12, 60));
+    // 3) 蓝图/作者注/最近事件提及：每命中 +10，封顶 40
+    const extraHits = hitsOf(c, extraCorpus);
+    if (extraHits > 0) add(c.id, Math.min(extraHits * 10, 40));
+    // 4) 最近章节摘要出场：每章 +8，封顶 24
+    const recentHits = hitsOf(c, recentCorpus);
+    if (recentHits > 0) add(c.id, Math.min(recentHits * 8, 24));
+  }
+
+  // 5) 关系网：与已有信号角色（剧情线/正文命中/蓝图提及，≥10 分）有直接关系的角色 +5/条，封顶 20
+  const signaled = new Set([...scores.keys()].filter((id) => (scores.get(id) || 0) >= 10));
+  if (signaled.size) {
+    const relations = prepare('SELECT from_character_id, to_character_id FROM character_relations WHERE work_id = ?').all(workId);
+    const linkCount = new Map();
+    for (const r of relations) {
+      if (signaled.has(r.from_character_id) && !signaled.has(r.to_character_id)) {
+        linkCount.set(r.to_character_id, (linkCount.get(r.to_character_id) || 0) + 1);
+      }
+      if (signaled.has(r.to_character_id) && !signaled.has(r.from_character_id)) {
+        linkCount.set(r.from_character_id, (linkCount.get(r.from_character_id) || 0) + 1);
+      }
+    }
+    for (const [id, n] of linkCount) add(id, Math.min(n * 5, 20));
+  }
+
+  const ranked = all
+    .map((c) => ({ c, s: scores.get(c.id) || 0 }))
+    .sort((a, b) => b.s - a.s || String(a.c.name).localeCompare(String(b.c.name), 'zh'));
+
+  const chosen = ranked.filter((r) => r.s > 0);
+  if (chosen.length < SCENE_FALLBACK_COUNT) {
+    const rest = ranked.filter((r) => r.s <= 0);
+    chosen.push(...rest.slice(0, SCENE_FALLBACK_COUNT - chosen.length));
+  }
+  return { sceneCharacters: chosen.slice(0, SCENE_CHAR_CAP).map((r) => r.c), scores };
+}
+
+// 出场角色卡构建：逐卡截断、核心字段保底，避免“整层头部盲截”把靠后的角色整卡切掉。
+// 长字段（背景/对话示例/系统提示/外貌/标签）分级压缩；即使预算耗尽，每张卡的名字/
+// 身份/性格/当前状态核心信息必保。
+function buildCharacterCards(chars, cap = 4000) {
+  const FIELD_LABELS = [
+    ['background', '背景', [500, 300, 150, 80, 0]],
+    ['mes_example', '对话示例（学习其口吻）', [400, 200, 100, 0]],
+    ['system_prompt', '角色系统提示', [400, 200, 100, 0]],
+    ['appearance', '外貌', [400, 200, 100, 0]],
+    ['tags', '标签', [200, 100, 0]]
+  ];
+  const coreOf = (c) => [
+    `【${c.name}】`,
+    c.identity ? `身份：${c.identity}` : '',
+    c.personality ? `性格：${c.personality}` : '',
+    c.status ? `当前状态：${c.status}` : ''
+  ].filter(Boolean).join('\n');
+  const cardOf = (c, level) => {
+    const parts = [coreOf(c)];
+    for (const [field, label, limits] of FIELD_LABELS) {
+      const lim = limits[Math.min(level, limits.length - 1)];
+      const v = String(c[field] || '').trim();
+      if (lim > 0 && v) parts.push(`${label}：${v.slice(0, lim)}`);
+    }
+    return parts.join('\n');
+  };
+  const maxLevel = Math.max(...FIELD_LABELS.map(([, , limits]) => limits.length)) - 1;
+  let level = 0;
+  let text = chars.map((c) => cardOf(c, 0)).join('\n\n');
+  while (text.length > cap && level < maxLevel) {
+    level += 1;
+    text = chars.map((c) => cardOf(c, level)).join('\n\n');
+  }
+  // 极端兜底：所有长字段已丢弃仍超限时，逐卡按均分预算截断（核心信息尽量保留）。
+  if (text.length > cap && chars.length) {
+    const per = Math.max(160, Math.floor(cap / chars.length));
+    text = chars.map((c) => cardOf(c, maxLevel).slice(0, per)).join('\n\n');
+  }
+  return level > 0 ? `${text}\n…（角色卡层超预算：长字段已分级压缩，每张卡核心信息完整）` : text;
+}
+
 // 根据章节自动组装 AI 上下文：相关角色卡、激活的世界观词条、作者注。
 function buildAIContext(chapterId) {
   const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
@@ -556,21 +730,27 @@ function buildAIContext(chapterId) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(chapter.work_id);
   if (!work) return null;
 
-  // 优先取当前剧情线关联角色，否则回退到作品前 8 个角色。
-  const characters = [];
-  if (chapter.plotline_id) {
-    const rows = prepare('SELECT character_id FROM plotline_characters WHERE plotline_id = ? ORDER BY id ASC').all(chapter.plotline_id);
-    for (const row of rows) {
-      const c = prepare('SELECT * FROM characters WHERE id = ?').get(row.character_id);
-      if (c) characters.push(c);
-    }
-  }
-  if (!characters.length) {
-    characters.push(...prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC LIMIT 8').all(work.id));
-  }
+  const allChap = prepare('SELECT id, title, summary, position FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(work.id);
+  const pos = allChap.findIndex((c) => c.id === chapter.id);
+  const prevChapRow = pos > 0 ? allChap[pos - 1] : null;
 
   // 固定词条始终激活；关键词词条在标题/摘要/正文中匹配到关键词时激活。
-  const corpus = [chapter.title, chapter.summary, plainText(chapter.content), work.description].join(' ').toLowerCase();
+  const corpus = [chapter.title, chapter.summary, plainTextHead(chapter.content, 3000), work.description].join(' ').toLowerCase();
+
+  // 出场角色：评分制选择（剧情线关联 > 正文/摘要命中 > 蓝图/作者注/最近事件 > 最近章节摘要 > 关系网），
+  // 兜底为“最近出场优先”，不再“按名字前 8”；新章节正文为空时蓝图/作者注里的角色也能命中。
+  let blueprint = null;
+  try { blueprint = JSON.parse(chapter.blueprint_json || '{}'); } catch (_) { blueprint = null; }
+  const recentEvents = listStoryEvents(work.id, 12);
+  const forcedIds = String(chapter.context_character_ids || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  const { sceneCharacters: characters } = selectSceneCharacters(work.id, {
+    plotlineId: chapter.plotline_id,
+    corpus,
+    forceIds: forcedIds,
+    extraTexts: [chapter.author_note, work.author_note, JSON.stringify(blueprint || {}), recentEvents.map((e) => e.summary).join(' ')],
+    recentSummaries: [...allChap.slice(Math.max(0, pos - 3), pos).map((c) => c.summary || ''), chapter.summary || '']
+  });
+
   const allEntries = prepare('SELECT * FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(work.id);
   const worldEntries = allEntries.filter((entry) => {
     if (Number(entry.is_pinned)) return true;
@@ -586,19 +766,13 @@ function buildAIContext(chapterId) {
     .replace(/\{summary\}/g, chapter.summary || '');
 
   // 创作内核增强：前文衔接尾巴、最近事件、写作红线（供提示词注入/界面预览）
-  const allChap = prepare('SELECT id, title, position FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(work.id);
-  const pos = allChap.findIndex((c) => c.id === chapter.id);
-  const prevChapRow = pos > 0 ? allChap[pos - 1] : null;
   let storyTail = '';
   if (prevChapRow) {
     const pc = prepare('SELECT content FROM chapters WHERE id = ?').get(prevChapRow.id);
-    if (pc) storyTail = plainText(pc.content || '').slice(-1200);
+    if (pc) storyTail = plainTextTail(pc.content || '', 1200);
   }
-  if (!storyTail) storyTail = plainText(chapter.content || '').slice(-1200);
-  const recentEvents = listStoryEvents(work.id, 12);
+  if (!storyTail) storyTail = plainTextTail(chapter.content || '', 1200);
   const redlineRows = listRedlines(work.id);
-  let blueprint = null;
-  try { blueprint = JSON.parse(chapter.blueprint_json || '{}'); } catch (_) { blueprint = null; }
   const targetWords = (Number(chapter.target_words) > 0 ? Number(chapter.target_words) : 0)
     || Number(work.default_chapter_words) || 2000;
 
@@ -830,6 +1004,7 @@ function addStoryEvent(workId, {
         .run('resolved', Number(resolvesEventId), workId);
     }
     db.exec('COMMIT');
+    touchWork(workId);
     return { id: Number(info.lastInsertRowid), duplicate: false };
   } catch (e) {
     db.exec('ROLLBACK');
@@ -947,7 +1122,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
 
-  const allChapters = prepare('SELECT id, work_id, volume_id, plotline_id, parent_id, title, summary, author_note, blueprint_json, target_words, position, created_at, updated_at FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const allChapters = prepare('SELECT id, work_id, volume_id, plotline_id, parent_id, title, summary, author_note, blueprint_json, target_words, context_character_ids, position, created_at, updated_at FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const volumes = prepare('SELECT * FROM volumes WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const plotlines = prepare('SELECT * FROM plotlines WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const allCharacters = prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
@@ -968,38 +1143,32 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
 
   const corpus = [
     work.title, work.description,
-    chapter?.title || '', chapter?.summary || '', plainText(chapter?.content || '').slice(0, 3000),
+    chapter?.title || '', chapter?.summary || '', plainTextHead(chapter?.content || '', 3000),
     prevChapter?.title || '', prevChapter?.summary || ''
   ].join(' ').toLowerCase();
 
-  // 出场角色：当前章节剧情线关联 + 正文/摘要命中 + 兜底前 8 位；去重、限量。
-  const sceneCharIds = new Set();
-  if (chapter?.plotline_id) {
-    const rows = prepare('SELECT character_id FROM plotline_characters WHERE plotline_id = ? ORDER BY id ASC').all(chapter.plotline_id);
-    rows.forEach((r) => sceneCharIds.add(Number(r.character_id)));
-  }
-  for (const c of allCharacters) {
-    if (c.name && corpus.includes(c.name.toLowerCase())) sceneCharIds.add(c.id);
-  }
-  if (!sceneCharIds.size) {
-    allCharacters.slice(0, 8).forEach((c) => sceneCharIds.add(c.id));
-  }
-  const sceneCharacters = allCharacters.filter((c) => sceneCharIds.has(c.id)).slice(0, 12);
-  const charCardsText = sceneCharacters.map((c) => {
-    const parts = [
-      `【${c.name}】`,
-      c.identity ? `身份：${c.identity}` : '',
-      c.appearance ? `外貌：${c.appearance}` : '',
-      c.personality ? `性格：${c.personality}` : '',
-      c.background ? `背景：${(c.background || '').slice(0, 500)}` : '',
-      c.status ? `当前状态：${c.status}` : '',
-      c.tags ? `标签：${c.tags}` : ''
-    ].filter(Boolean).join('\n');
-    let extra = '';
-    if (c.mes_example) extra += `\n对话示例（学习其口吻）：${c.mes_example.slice(0, 400)}`;
-    if (c.system_prompt) extra += `\n角色系统提示：${c.system_prompt.slice(0, 400)}`;
-    return parts + extra;
-  }).join('\n\n');
+  // 出场角色：评分制选择（剧情线关联 > 正文/摘要命中 > 蓝图/作者注/最近事件 > 最近章节摘要 > 关系网）；
+  // 兜底改为“最近出场优先”而非“按名字前 8”；角色卡逐卡构建、核心字段保底（见 buildCharacterCards）。
+  let blueprint = null;
+  try { blueprint = JSON.parse(chapter?.blueprint_json || '{}'); } catch (_) { blueprint = null; }
+  const allEvents = listStoryEvents(workId, 200);
+  const recentSummaries = [
+    ...allChapters.slice(Math.max(0, chapterIndex - 3), chapterIndex).map((c) => c.summary || ''),
+    chapter?.summary || ''
+  ];
+  const forcedIds = String(chapter?.context_character_ids || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  const { sceneCharacters } = selectSceneCharacters(workId, {
+    plotlineId: chapter?.plotline_id || null,
+    corpus,
+    forceIds: forcedIds,
+    extraTexts: [
+      chapter?.author_note || '', work.author_note || '',
+      JSON.stringify(blueprint || {}),
+      allEvents.slice(0, 30).map((e) => e.summary).join(' ')
+    ],
+    recentSummaries
+  });
+  const charCardsText = buildCharacterCards(sceneCharacters, 4000);
 
   // 人物关系（仅出场角色之间）
   const sceneIdList = sceneCharacters.map((c) => c.id);
@@ -1043,7 +1212,6 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   const outlineText = outlineLines.join('\n');
 
   const storyMemory = getStoryMemory(workId);
-  const allEvents = listStoryEvents(workId, 200);
   const events = allEvents.slice(0, 30);
   const eventsText = events.length
     ? events.map((e, i) => `${events.length - i}. [${e.kind}] ${e.summary.slice(0, 200)}`).join('\n')
@@ -1055,9 +1223,9 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     : '';
 
   // 前文尾巴：接龙模式取当前章节尾部；新章节/片段取上一章尾部。
-  const currentTail = chapter ? plainText(chapter.content || '').slice(-4000) : '';
+  const currentTail = chapter ? plainTextTail(chapter.content || '', 4000) : '';
   const prevFullRow = prevChapter ? prepare('SELECT content FROM chapters WHERE id = ?').get(prevChapter.id) : null;
-  const prevTailText = prevFullRow ? plainText(prevFullRow.content || '').slice(-1500) : '';
+  const prevTailText = prevFullRow ? plainTextTail(prevFullRow.content || '', 1500) : '';
   let storyTail = '';
   if (mode === 'continuation') {
     storyTail = currentTail;
@@ -1066,7 +1234,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   } else {
     storyTail = prevTailText || (currentTail ? currentTail.slice(-1500) : '');
   }
-  if (!storyTail) storyTail = prevTailText || (chapter ? plainText(chapter.content || '').slice(-800) : '');
+  if (!storyTail) storyTail = prevTailText || (chapter ? plainTextTail(chapter.content || '', 800) : '');
 
   const redlines = listRedlines(workId);
   const styleContract = renderStyleContract(redlines, work.style_positive || '');
@@ -1092,8 +1260,6 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     : '（未指定具体章节）';
 
   // 本章蓝图（章节写作的常驻锚点）与目标字数：蓝图落库后随上下文带入，生成与核对都以其为准。
-  let blueprint = null;
-  try { blueprint = JSON.parse(chapter?.blueprint_json || '{}'); } catch (_) { blueprint = null; }
   const BLUEPRINT_LABELS = [
     ['scene_goal', '场景目标'], ['plot_points', '情节点'], ['conflicts', '冲突与转折'],
     ['character_changes', '出场角色状态变化'], ['hook', '下一章钩子'], ['references', '参考设定']
@@ -1115,34 +1281,36 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     `每章目标字数：${targetWords} 字`
   ].filter(Boolean).join('｜');
 
-  const sections = [
-    section('作品', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, 900),
-    section('卷/剧情线/章节进度（大纲）', outlineText, 2800),
-    section('长期记忆（已发生的故事摘要）', memoryBody, 2200),
-    section('最近事件（事件账本）', eventsText, 1800),
-    section('未闭合伏笔（写作时必须照顾）', foreshadowText, 1200),
-    section('当前场景', sceneBody, 1200),
-    section('本章蓝图（写作必须遵守）', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', 1500),
-    section('前文衔接', storyTail, mode === 'continuation' ? 4000 : 1600),
-    section('出场角色卡', charCardsText, 4000),
-    relationsText ? section('人物关系', relationsText, 800) : '',
-    section('激活的世界观设定（优先级排列）', worldEntriesText, 3000),
-    section('写作风格红线', styleContract, 4000)
+  const layers = [
+    { label: '作品', text: `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, cap: 900 },
+    { label: '卷/剧情线/章节进度（大纲）', text: outlineText, cap: 2800 },
+    { label: '长期记忆（已发生的故事摘要）', text: memoryBody, cap: 2200 },
+    { label: '最近事件（事件账本）', text: eventsText, cap: 1800 },
+    { label: '未闭合伏笔（写作时必须照顾）', text: foreshadowText, cap: 1200 },
+    { label: '当前场景', text: sceneBody, cap: 1200 },
+    { label: '本章蓝图（写作必须遵守）', text: blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', cap: 1500 },
+    { label: '前文衔接', text: storyTail, cap: mode === 'continuation' ? 4000 : 1600 },
+    { label: '出场角色卡', text: charCardsText, cap: Infinity },
+    relationsText ? { label: '人物关系', text: relationsText, cap: 800 } : null,
+    { label: '激活的世界观设定（优先级排列）', text: worldEntriesText, cap: 3000 },
+    { label: '写作风格红线', text: styleContract, cap: 4000 }
   ].filter(Boolean);
+  const sections = layers.map((l) => section(l.label, l.text, l.cap));
 
   // 总预算收敛：超限时从“前文衔接/大纲/世界观”等弹性层依次收缩，红线层不动。
+  // 按层名定位（旧实现按下标定位，人物关系层为空时下标错位，会把世界观层误换成红线层）。
   const TOTAL_BUDGET = 26000;
-  const FLEX_ORDER = [7, 1, 10]; // sections 下标：前文衔接 → 大纲 → 世界观
-  const flexReduce = [2400, 1600, 800, 400];
+  const FLEX_LAYERS = ['前文衔接', '卷/剧情线/章节进度（大纲）', '激活的世界观设定（优先级排列）'];
+  const FLEX_CAPS = [2400, 1600, 800, 400];
   let joined = sections.join('\n\n');
   if (joined.length > TOTAL_BUDGET) {
-    for (const idx of FLEX_ORDER) {
+    for (const label of FLEX_LAYERS) {
       if (joined.length <= TOTAL_BUDGET) break;
-      const label = sections[idx]?.split('\n')[0] || '';
-      for (const cap of flexReduce) {
+      const idx = layers.findIndex((l) => l.label === label);
+      if (idx < 0) continue;
+      for (const cap of FLEX_CAPS) {
         if (joined.length <= TOTAL_BUDGET) break;
-        const raw = idx === 7 ? storyTail : idx === 1 ? outlineText : idx === 10 ? worldEntriesText : '';
-        sections[idx] = section(label.replace('【', '').replace('】', ''), raw, cap);
+        sections[idx] = section(layers[idx].label, layers[idx].text, cap);
         joined = sections.join('\n\n');
       }
     }
@@ -1160,7 +1328,7 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     needs_compression: needsCompression,
     events,
     open_foreshadows: openForeshadows.map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id, resolves_event_id: e.resolves_event_id })),
-    scene_characters: sceneCharacters.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status })),
+    scene_characters: sceneCharacters.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status, aliases: c.aliases || '', forced: forcedIds.includes(c.id) })),
     scene_character_ids: sceneIdList,
     world_entries: worldEntries.map((w) => ({ id: w.id, title: w.title, pinned: Number(w.is_pinned) === 1, priority: Number(w.priority ?? 50), keywords: w.keywords, content_preview: String(w.content || '').slice(0, 600) })),
     relations: relations.map((r) => ({ from: nameById.get(r.from_character_id) || null, to: nameById.get(r.to_character_id) || null, relation: r.relation, description: r.description })),
@@ -1447,7 +1615,7 @@ function installDemo(force) {
         work_id: workId, name: asString(c.name, '角色'),
         identity: asString(c.identity), appearance: asString(c.appearance), personality: asString(c.personality),
         background: asString(c.background), status: asString(c.status), avatar_color: asString(c.avatar_color, '#8b5cf6'),
-        mes_example: asString(c.mes_example), tags: asString(c.tags), system_prompt: asString(c.system_prompt)
+        mes_example: asString(c.mes_example), tags: asString(c.tags), system_prompt: asString(c.system_prompt), aliases: asString(c.aliases)
       }));
     });
     (data.relations || []).forEach((r) => {
@@ -1661,7 +1829,8 @@ function createNovelFromData(data) {
         personality: asString(c.personality),
         background: asString(c.background),
         status: asString(c.status),
-        avatar_color: '#8b5cf6'
+        avatar_color: '#8b5cf6',
+        aliases: asString(c.aliases)
       });
       charIdByName.set(name, id);
       charNames.push(name);
@@ -1988,7 +2157,13 @@ async function handleAPI(req, res, pathname, query) {
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const chapterId = Number(query.chapter_id) || null;
     const mode = asString(query.mode, 'full');
-    const ctx = buildNovelContext(workId, chapterId, mode);
+    // 装配结果缓存：任何写操作（touchWork）都会使版本号前进、缓存整体失效。
+    const cacheKey = `novel:${workId}:${chapterId || 0}:${mode}`;
+    let ctx = cacheGetContext(cacheKey);
+    if (ctx === undefined) {
+      ctx = buildNovelContext(workId, chapterId, mode);
+      if (ctx) cacheSetContext(cacheKey, ctx);
+    }
     if (!ctx) return sendError(res, 404, '作品不存在');
     return sendJSON(res, 200, ctx);
   }
@@ -2001,6 +2176,7 @@ async function handleAPI(req, res, pathname, query) {
     const workId = Number(body.work_id) || null;
     try {
       const redlines = replaceRedlines(workId, body.entries || []);
+      if (workId) touchWork(workId);
       return sendJSON(res, 200, { ok: true, work_id: workId, redlines });
     } catch (e) {
       return sendError(res, 400, e.message);
@@ -2085,10 +2261,16 @@ async function handleAPI(req, res, pathname, query) {
     const openForeshadows = allEvents
       .filter((e) => e.kind === 'foreshadow' && e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped')
       .map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id }));
-    const presentCharacters = prepare('SELECT name, identity, status FROM characters WHERE work_id = ?').all(workId)
-      .filter((c) => c.name && text.includes(c.name))
-      .map((c) => ({ name: c.name, identity: c.identity, status: c.status }));
     const recentEvents = allEvents.slice(0, 30).map((e) => ({ id: e.id, kind: e.kind, summary: e.summary, foreshadow_status: e.foreshadow_status }));
+    // 出场角色按名字/别名整词命中；每个角色附上与它相关的最近事件，
+    // 供 AI 判断“角色卡当前状态是否已被最近事件改变”（状态过时检测的依据）。
+    const allCharRows = prepare('SELECT * FROM characters WHERE work_id = ?').all(workId);
+    const presentCharacters = allCharRows
+      .filter((c) => c.name && namesOfCharacter(c).some((nm) => countNameHits(nm, text) > 0))
+      .map((c) => ({
+        id: c.id, name: c.name, identity: c.identity, status: c.status,
+        related_events: recentEvents.filter((e) => namesOfCharacter(c).some((nm) => countNameHits(nm, e.summary) > 0)).slice(0, 5)
+      }));
     const scan = scanAgainstRedlines(listRedlines(workId), text);
     const memory = getStoryMemory(workId);
     return sendJSON(res, 200, {
@@ -2376,6 +2558,7 @@ async function handleAPI(req, res, pathname, query) {
         const body = await readBody(req);
         const newId = insertRow(resource, body);
         if (body.work_id) touchWork(body.work_id);
+        if (resource === 'works') touchWork(newId);
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(newId);
         return sendJSON(res, 201, row);
       }
@@ -2385,6 +2568,7 @@ async function handleAPI(req, res, pathname, query) {
         updateRow(resource, id, body);
         if (old?.work_id) touchWork(old.work_id);
         if (body.work_id) touchWork(body.work_id);
+        if (resource === 'works') touchWork(Number(id));
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
         return sendJSON(res, 200, row);
       }
@@ -2392,6 +2576,7 @@ async function handleAPI(req, res, pathname, query) {
         const old = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
         deleteRow(resource, id);
         if (old?.work_id) touchWork(old.work_id);
+        if (resource === 'works') touchWork(Number(id));
         return sendJSON(res, 200, { ok: true });
       }
       return sendError(res, 405, 'Method not allowed');

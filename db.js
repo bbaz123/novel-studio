@@ -279,8 +279,10 @@ try { db.exec(`ALTER TABLE works ADD COLUMN story_structure TEXT NOT NULL DEFAUL
 try { db.exec(`ALTER TABLE works ADD COLUMN narrative_pov TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE chapters ADD COLUMN blueprint_json TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE chapters ADD COLUMN target_words INTEGER NOT NULL DEFAULT 0`); } catch (_) {}
+try { db.exec(`ALTER TABLE chapters ADD COLUMN context_character_ids TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE works ADD COLUMN style_positive TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 try { db.exec(`ALTER TABLE writing_redlines ADD COLUMN exceptions TEXT NOT NULL DEFAULT ''`); } catch (_) {}
+try { db.exec(`ALTER TABLE characters ADD COLUMN aliases TEXT NOT NULL DEFAULT ''`); } catch (_) {}
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_volumes_work ON volumes(work_id);
@@ -292,6 +294,9 @@ CREATE INDEX IF NOT EXISTS idx_terms_work ON terms(work_id);
 CREATE INDEX IF NOT EXISTS idx_characters_work ON characters(work_id);
 CREATE INDEX IF NOT EXISTS idx_relations_work ON character_relations(work_id);
 CREATE INDEX IF NOT EXISTS idx_plotline_characters_plotline ON plotline_characters(plotline_id);
+CREATE INDEX IF NOT EXISTS idx_plotline_characters_character ON plotline_characters(character_id);
+CREATE INDEX IF NOT EXISTS idx_relations_from ON character_relations(from_character_id);
+CREATE INDEX IF NOT EXISTS idx_relations_to ON character_relations(to_character_id);
 CREATE INDEX IF NOT EXISTS idx_ai_error_logs_created ON ai_error_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chapter_save_versions_chapter ON chapter_save_versions(chapter_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_world_entries_work ON world_entries(work_id, position ASC);

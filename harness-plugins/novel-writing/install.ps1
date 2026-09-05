@@ -1,4 +1,4 @@
-﻿# Novel Writing 插件安装/升级脚本（novel-studio 内置版）
+# Novel Writing 插件安装/升级脚本（novel-studio 内置版）
 #
 # 与旧版不同：
 #   - headless patch 采用“区块合并”安装：只替换本插件维护的
@@ -22,7 +22,7 @@ $presetDest = Join-Path $dshHome '.agent-presets\novel-writing'
 $headlessDir = Join-Path $dshHome 'profiles\headless'
 
 # 与 harness-plugins/novel-writing/plugin.json 的 version 保持一致。
-$script:Version = '0.7.0'
+$script:Version = '0.8.0'
 
 $srcTools = Join-Path $root 'novel-tools.mjs'
 $srcAgent = Join-Path $root 'agent.cordis.yml'

@@ -28,7 +28,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.7.0'
+export const PLUGIN_VERSION = '0.8.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -47,30 +47,41 @@ export function apply(ctx, config) {
   const proposeMode = () => process.env.NOVELSTUDIO_PROPOSE_MODE === '1'
 
   // 严格 JSON 客户端：连接失败/非 2xx/非 JSON 都给出可读错误，不把异常静默成 {raw}。
+  // GET 请求在“连接失败”时自动重试一次（本地服务偶发未就绪）；写请求不重试，避免重复入账。
   async function jfetch(path, options = {}) {
     const base = baseOf()
-    let res
+    const attempt = async () => {
+      let res
+      try {
+        res = await fetch(base + path, {
+          method: options.method || 'GET',
+          headers: { 'content-type': 'application/json' },
+          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+          signal: AbortSignal.timeout(options.timeout || 25000),
+        })
+      } catch (e) {
+        throw new Error(`无法连接 novel-studio（${base}）：请确认小说工坊服务已启动（npm start）。详情：${e.message}`)
+      }
+      const text = await res.text()
+      if (!res.ok) {
+        let detail = text
+        try { detail = JSON.parse(text)?.error || detail } catch (_) { /* 保留原文 */ }
+        throw new Error(`novel-studio ${res.status} ${path}: ${String(detail).slice(0, 300)}`)
+      }
+      if (!text) return {}
+      try {
+        return JSON.parse(text)
+      } catch (_) {
+        throw new Error(`novel-studio 返回了非 JSON 响应（${path}）：${text.slice(0, 200)}`)
+      }
+    }
     try {
-      res = await fetch(base + path, {
-        method: options.method || 'GET',
-        headers: { 'content-type': 'application/json' },
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        signal: AbortSignal.timeout(options.timeout || 25000),
-      })
+      return await attempt()
     } catch (e) {
-      throw new Error(`无法连接 novel-studio（${base}）：请确认小说工坊服务已启动（npm start）。详情：${e.message}`)
-    }
-    const text = await res.text()
-    if (!res.ok) {
-      let detail = text
-      try { detail = JSON.parse(text)?.error || detail } catch (_) { /* 保留原文 */ }
-      throw new Error(`novel-studio ${res.status} ${path}: ${String(detail).slice(0, 300)}`)
-    }
-    if (!text) return {}
-    try {
-      return JSON.parse(text)
-    } catch (_) {
-      throw new Error(`novel-studio 返回了非 JSON 响应（${path}）：${text.slice(0, 200)}`)
+      const retryable = (options.method || 'GET') === 'GET' && /^无法连接 novel-studio/.test(String(e.message))
+      if (!retryable || options.noRetry === true) throw e
+      await new Promise((r) => setTimeout(r, 300))
+      return await attempt()
     }
   }
 
@@ -116,8 +127,8 @@ export function apply(ctx, config) {
 
   register('novel_context', [
     '写作前调用：取指定作品/章节的完整创作上下文（ST 式分层装配，每层有独立预算，超长会注明截断）。',
-    '包含：卷/剧情线/章节进度大纲、长期记忆摘要（过长时会标注建议压缩）、最近事件账本、未闭合伏笔、当前场景与前后章衔接、出场角色卡（含对话示例与角色系统提示）、人物关系、按优先级激活的世界观词条、写作风格红线。',
-    'output 的 assembled 字段就是可直接读入的整块上下文。',
+    '包含：卷/剧情线/章节进度大纲、长期记忆摘要（过长时会标注建议压缩）、最近事件账本、未闭合伏笔、当前场景与前后章衔接、出场角色卡（按相关性评分排序，别名/称呼同样命中，含对话示例与角色系统提示）、人物关系、按优先级激活的世界观词条、写作风格红线。',
+    'output 的 assembled 字段就是可直接读入的整块上下文；scene_characters 是出场角色名单（forced=true 表示作者在工坊「上下文」页签强制带入的角色，写作时必须让其出场）。',
     'work_id/chapter_id 缺省时自动使用进程注入的身份（由 novel-studio 启动的任务自带）。mode: full=整章代写/分析, continuation=接龙续写, fragment=片段补写。',
     '若任务提示词里已内联提供了同样的上下文（由 novel-studio 网页启动的任务通常如此），不必重复调用本工具，用 novel_lookup 按需补查即可。',
   ].join('\n'), {
@@ -248,8 +259,13 @@ export function apply(ctx, config) {
       lines.push('\n未闭合伏笔：无')
     }
     if (chars.length) {
-      lines.push('\n正文出场角色及其当前状态（检查人物状态/性格/说话方式是否一致）：')
-      chars.forEach((c) => lines.push(`- ${c.name}｜${c.identity || '身份未填'}｜当前状态：${c.status || '未填'}`))
+      lines.push('\n正文出场角色及其当前状态（检查人物状态/性格/说话方式是否与角色卡一致）：')
+      chars.forEach((c) => {
+        lines.push(`- ${c.name}（id=${c.id}）｜${c.identity || '身份未填'}｜当前状态：${c.status || '未填'}`)
+        if (Array.isArray(c.related_events) && c.related_events.length) {
+          c.related_events.forEach((e) => lines.push(`    ↳ 最近相关事件 #${e.id} [${e.kind}] ${String(e.summary).slice(0, 120)}`))
+        }
+      })
     } else {
       lines.push('\n正文出场角色：未能按姓名匹配到角色卡（可能为全新角色，提醒作者确认）')
     }
@@ -263,6 +279,8 @@ export function apply(ctx, config) {
     }
     const scan = c.style_scan || {}
     lines.push(`\n风格红线扫描：${scan.total ? `命中 ${scan.total} 处` : '未命中'}`)
+    lines.push('\n角色状态提示：若正文显示某角色状态已变化（与“当前状态”不符），优先判定为“新进展”而非冲突：')
+    lines.push('用 novel_event_add(kind="character", payload={"character_id": <角色id>}, summary="新状态描述") 入账，并提醒作者在工坊角色面板一键同步到角色卡。')
     lines.push('\n请输出核对结论：先一句总结，再列冲突项（如有），每项附依据与建议改法；没有冲突则明确说明。')
     return lines.join('\n')
   })
@@ -306,6 +324,7 @@ export function apply(ctx, config) {
     '仅在正文确认生成/采纳后调用，避免污染账本。',
     '伏笔用法：新埋伏笔传 kind="foreshadow"（foreshadow_status 默认 open）；正文回收某伏笔时，',
     '传 kind="event" + resolves_event_id=该伏笔的 #id，服务端会自动把它标记为 resolved。',
+    '角色状态用法：正文确认某角色状态变化后，传 kind="character" + payload={character_id: 角色id}，summary 描述新状态；作者可在工坊角色面板一键同步为“当前状态”。',
     'dedup_key：同一事件的幂等键（如“ch12-mother-dies”），重复提交不会重复入账。',
     '提案模式说明：由 novel-studio 网页启动的任务，本调用会先写成提案，由作者在工坊界面确认后入账——这是正常行为，不要重复调用。',
   ].join('\n'), {

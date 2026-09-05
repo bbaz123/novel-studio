@@ -887,6 +887,7 @@ async function renderWriting(content) {
           <button data-action="ref-tab" data-tab="characters">角色</button>
           <button data-action="ref-tab" data-tab="foreshadows">伏笔</button>
           <button data-action="ref-tab" data-tab="redlines">红线</button>
+          <button data-action="ref-tab" data-tab="context">上下文</button>
           <button data-action="ref-tab" data-tab="ai">AI</button>
           <span class="grow"></span>
           <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
@@ -952,6 +953,8 @@ function renderReference(tab = 'terms') {
     renderForeshadowTab(list);
   } else if (tab === 'redlines') {
     renderRedlineTab(list);
+  } else if (tab === 'context') {
+    renderContextTab(list);
   } else if (tab === 'ai') {
     list.innerHTML = `
       <div class="ai-panel">
@@ -968,6 +971,40 @@ function renderReference(tab = 'terms') {
         <button class="btn small secondary" data-action="ai-insert" id="ai-insert-btn" style="display:none">插入到光标处</button>
       </div>`;
   }
+}
+
+// 参考面板「上下文」页签（v0.8.0）：预览本次实际装配的分层上下文与出场角色名单，
+// 作者可勾选角色强制带入（章节级覆盖，存 chapters.context_character_ids）。
+async function renderContextTab(list) {
+  list.innerHTML = '<div class="muted" style="padding:4px 2px">加载中…</div>';
+  const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || null;
+  let ctx;
+  try {
+    ctx = await api(`/novel/context?work_id=${state.workId}${chapter ? `&chapter_id=${chapter.id}` : ''}&mode=full`);
+  } catch (e) {
+    list.innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+    return;
+  }
+  const sceneIds = new Set((ctx.scene_characters || []).map((c) => c.id));
+  const forcedSet = new Set((ctx.scene_characters || []).filter((c) => c.forced).map((c) => c.id));
+  const charRows = state.characters.map((c) => {
+    const inScene = sceneIds.has(c.id);
+    const forced = forcedSet.has(c.id);
+    return `<label class="row tree-item context-char-row" style="gap:6px">
+      <input type="checkbox" data-action="context-char-toggle" data-id="${c.id}" ${forced ? 'checked' : ''}>
+      <span>${esc(c.name)}</span>
+      <span class="grow muted" style="font-size:11px">${inScene ? (forced ? '👤 强制带入' : '✓ 已自动带入') : '未带入'}</span>
+    </label>`;
+  }).join('');
+  list.innerHTML = `
+    <div class="muted" style="padding:4px 2px">上下文预览：AI 实际收到的分层装配与出场角色</div>
+    <div class="row mb-8" style="gap:6px">
+      <button class="btn small grow" data-action="context-refresh">🔄 重新装配</button>
+    </div>
+    <div class="ref-group-title">出场角色（${(ctx.scene_characters || []).length}）· 勾选 = 强制带入本章</div>
+    <div class="context-char-list">${charRows || '<div class="muted" style="padding:2px 4px">暂无角色</div>'}</div>
+    <div class="ref-group-title">装配结果（${(ctx.assembled || '').length} 字，超层预算的截断会在文中注明）</div>
+    <pre class="context-preview">${esc(ctx.assembled || '')}</pre>`;
 }
 
 function scheduleSave() {
@@ -1313,6 +1350,7 @@ async function renderCharacters(content) {
             <h3 style="margin:0">${esc(selected.name)}</h3>
             <div class="grow"></div>
             <button class="btn secondary small" data-action="edit-character" data-id="${selected.id}">编辑档案</button>
+            <button class="btn secondary small" data-action="char-status-events" data-id="${selected.id}" title="查看该角色相关事件，一键同步为当前状态">⏱ 状态事件</button>
             <button class="btn small" data-action="add-relation">＋ 关系</button>
             <button class="btn small danger" data-action="delete-character" data-id="${selected.id}">删除</button>
           </div>
@@ -1366,6 +1404,7 @@ function openSTCharacterModal(character = null) {
         <div class="field full"><label>背景</label><textarea name="background" rows="3">${esc(character?.background || '')}</textarea></div>
         <div class="field"><label>当前状态</label><input name="status" value="${esc(character?.status || '')}" placeholder="当前状态"></div>
         <div class="field"><label>标签（逗号分隔）</label><input name="tags" value="${esc(character?.tags || '')}" placeholder="主角, 天才"></div>
+        <div class="field full"><label>别名/称呼（逗号分隔，用于上下文命中）</label><input name="aliases" value="${esc(character?.aliases || '')}" placeholder="例如：云仔、李队"></div>
         <div class="field full"><label>对话示例 mes_example</label><textarea name="mes_example" rows="4" placeholder="用于教 AI 该角色怎么说话">${esc(character?.mes_example || '')}</textarea></div>
         <div class="field full"><label>系统提示 / 全局指令</label><textarea name="system_prompt" rows="4" placeholder="该角色专属的额外系统提示">${esc(character?.system_prompt || '')}</textarea></div>
         <input type="hidden" name="work_id" value="${state.workId}">
@@ -2620,11 +2659,41 @@ function openCharacterModal(character = null) {
         <div class="field full"><label>背景</label><textarea name="background" rows="5">${esc(character?.background || '')}</textarea></div>
         <div class="field full"><label>当前状态</label><textarea name="status" rows="2">${esc(character?.status || '')}</textarea></div>
         <div class="field full"><label>标签（逗号分隔）</label><input name="tags" value="${esc(character?.tags || '')}" placeholder="主角, 天才"></div>
+        <div class="field full"><label>别名/称呼（逗号分隔，用于上下文命中）</label><input name="aliases" value="${esc(character?.aliases || '')}" placeholder="例如：云仔、李队"></div>
         <div class="field full"><label>对话示例 mes_example</label><textarea name="mes_example" rows="3">${esc(character?.mes_example || '')}</textarea></div>
         <div class="field full"><label>系统提示 / 全局指令</label><textarea name="system_prompt" rows="3">${esc(character?.system_prompt || '')}</textarea></div>
         <input type="hidden" name="work_id" value="${state.workId}">
       </div>`,
     footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="save-character" data-id="${character?.id || ''}">保存</button>`
+  });
+}
+
+// 角色状态事件（v0.8.0）：列出与该角色相关的事件账本记录，一键把某条事件同步为角色卡“当前状态”。
+async function openCharStatusEvents(characterId) {
+  const character = state.characters.find((c) => c.id === characterId);
+  if (!character) return;
+  let rows = [];
+  try {
+    const data = await api(`/novel/events?work_id=${state.workId}&limit=100`);
+    const events = data.events || [];
+    rows = events.filter((e) => String(e.summary || '').includes(character.name)).slice(0, 12);
+  } catch (e) {
+    toast('加载失败：' + e.message, 'error');
+    return;
+  }
+  openModal({
+    title: `状态事件 · ${character.name}`,
+    large: true,
+    body: rows.length ? `<div>${rows.map((e) => `
+      <div class="row tree-item">
+        <div class="grow">
+          <div>[${esc(e.kind)}] ${esc(e.summary)}</div>
+          <div class="muted" style="font-size:11px">${esc(e.created_at || '')}</div>
+        </div>
+        <button class="btn small" data-action="char-status-sync" data-char="${character.id}" data-event="${e.id}">同步为当前状态</button>
+      </div>`).join('')}</div>`
+      : '<div class="muted">该角色暂时没有相关事件记录。成文后让 AI 用 novel_event_add(kind="character") 记录状态变化，再回来一键同步。</div>',
+    footer: '<button class="btn secondary" data-close-modal>关闭</button>'
   });
 }
 
@@ -5337,6 +5406,29 @@ document.addEventListener('click', async (e) => {
         renderReference(actionEl.dataset.tab);
         break;
 
+      case 'context-refresh':
+        renderReference('context');
+        break;
+
+      case 'context-char-toggle': {
+        const chapter = state.chapters.find((c) => c.id === state.currentChapterId);
+        if (!chapter) break;
+        const id = Number(actionEl.dataset.id);
+        const ids = String(chapter.context_character_ids || '').split(',').map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0);
+        const has = ids.includes(id);
+        if (actionEl.checked && !has) ids.push(id);
+        if (!actionEl.checked && has) ids.splice(ids.indexOf(id), 1);
+        try {
+          const saved = await api(`/chapters/${chapter.id}`, { method: 'PUT', body: { context_character_ids: ids.join(',') } });
+          upsertState('chapters', saved);
+          toast('已更新本章强制带入角色', 'success');
+        } catch (e) {
+          toast('保存失败：' + e.message, 'error');
+        }
+        renderReference('context');
+        break;
+      }
+
       case 'foreshadow-goto': {
         state.currentChapterId = Number(actionEl.dataset.id);
         await render();
@@ -5443,6 +5535,29 @@ document.addEventListener('click', async (e) => {
       case 'edit-character':
         openCharacterModal(state.characters.find((c) => c.id === Number(actionEl.dataset.id)));
         break;
+
+      case 'char-status-events':
+        await openCharStatusEvents(Number(actionEl.dataset.id || state.currentCharacterId));
+        break;
+
+      case 'char-status-sync': {
+        const charId = Number(actionEl.dataset.char);
+        const eventId = Number(actionEl.dataset.event);
+        try {
+          const data = await api(`/novel/events?work_id=${state.workId}&limit=100`);
+          const ev = (data.events || []).find((e) => e.id === eventId);
+          if (!ev) throw new Error('事件不存在');
+          const saved = await api(`/characters/${charId}`, { method: 'PUT', body: { status: String(ev.summary || '') } });
+          upsertState('characters', saved);
+          state.charsCache.set(saved.id, saved);
+          closeModal();
+          toast('已同步为当前状态', 'success');
+          await render();
+        } catch (e) {
+          toast('同步失败：' + e.message, 'error');
+        }
+        break;
+      }
 
       case 'delete-character': {
         const id = Number(actionEl.dataset.id);
