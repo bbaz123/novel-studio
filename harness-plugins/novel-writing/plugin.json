@@ -1,6 +1,6 @@
 {
   "name": "novel-writing",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化）。",
   "integration": "builtin",
   "host": "novel-studio",
@@ -17,7 +17,7 @@
     { "name": "novel_context", "description": "写作前取 ST 式分层上下文（大纲/记忆/事件/伏笔/蓝图/场景/角色卡/世界观/红线），分层预算截断。" },
     { "name": "novel_works", "description": "列出作品，确认 work_id。" },
     { "name": "novel_lookup", "description": "按关键词检索角色/设定词条/章节/剧情线。" },
-    { "name": "novel_foreshadows", "description": "列出未闭合（或全部）伏笔，支持按 id 回收。" },
+    { "name": "novel_foreshadows", "description": "列出未闭合（或全部）伏笔；回收在 novel_event_add 用 resolves_event_id 完成。" },
     { "name": "novel_foreshadow_update", "description": "标记伏笔状态（resolved/dropped/open，可回链回收事件）。" },
     { "name": "novel_consistency", "description": "成文后核对一致性：未闭合伏笔/出场角色状态/最近事件 vs 正文。" },
     { "name": "novel_scan", "description": "确定性反 AI 腔红线扫描，可跳过引号内对话。" },
@@ -30,8 +30,11 @@
   ],
   "engineEndpoints": [
     "GET /api/novel/ping",
+    "GET /api/works",
+    "GET /api/search?q=&work_id=",
     "GET /api/novel/context?work_id=&chapter_id=&mode=",
     "GET/PUT /api/novel/redlines?work_id=",
+    "GET/PUT /api/novel/semantic",
     "POST /api/novel/scan",
     "GET/POST /api/novel/events",
     "GET /api/novel/foreshadows?work_id=&status=",
@@ -48,6 +51,7 @@
     "PUT /api/story_memory",
     "GET /api/story_memory/versions?work_id=",
     "POST /api/story_memory/rollback",
+    "POST /api/logs",
     "POST /api/import",
     "GET /api/export/txt|md?work_id=|chapter_id="
   ]

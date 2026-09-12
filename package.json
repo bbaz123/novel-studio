@@ -1,11 +1,11 @@
 {
   "name": "novel-studio",
-  "version": "0.1.0",
+  "version": "0.9.2",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node --watch server.js"
   },
   "engines": {
     "node": ">=22.5.0"

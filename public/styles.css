@@ -68,7 +68,6 @@ textarea { resize: vertical; }
 .mt-12 { margin-top: 12px; }
 .mb-8 { margin-bottom: 8px; }
 .mb-12 { margin-bottom: 12px; }
-.text-right { text-align: right; }
 
 #app { display: flex; height: 100vh; overflow: hidden; }
 
@@ -84,7 +83,7 @@ textarea { resize: vertical; }
   transition: margin-left .25s cubic-bezier(.4, 0, .2, 1);
   z-index: 30;
 }
-.sidebar.hidden { margin-left: -248px; }
+.sidebar.collapsed { margin-left: -248px; }
 .sidebar-head {
   display: flex;
   align-items: center;
@@ -908,9 +907,11 @@ textarea { resize: vertical; }
 }
 .ai-progress-tail {
   font-size: 12px;
-  max-height: 38px;
-  overflow: hidden;
+  max-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
   word-break: break-all;
+  white-space: pre-wrap; /* 多行进展（最近 6 行），保留换行 + 自动滚动 */
 }
 .spinner {
   width: 14px;
@@ -981,12 +982,6 @@ mark.search-hit {
   color: #fde68a;
   border-radius: 3px;
   padding: 0 2px;
-}
-.search-group-title {
-  font-size: 12px;
-  color: var(--muted);
-  padding: 6px 10px 2px;
-  letter-spacing: .03em;
 }
 .search-empty { padding: 10px 12px; }
 
@@ -1097,3 +1092,67 @@ mark.search-hit {
 .ai-create-section { display: block; }
 .ai-create-section[hidden] { display: none; }
 .ai-elapsed { font-family: var(--mono); font-size: 12px; margin-left: 8px; color: var(--accent); }
+
+/* ---------- 日志面板 ---------- */
+.logs-page { display: flex; flex-direction: column; gap: 12px; padding: 16px; max-width: 1080px; margin: 0 auto; }
+.logs-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.logs-toolbar select,
+.logs-toolbar input[type="search"] {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.logs-toolbar input[type="search"] { flex: 1; min-width: 160px; }
+.log-stats { font-size: 12px; color: var(--text-dim); margin-left: auto; white-space: nowrap; }
+.log-list { display: flex; flex-direction: column; gap: 8px; }
+.log-row {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.log-row.log-error { border-left-color: var(--danger); }
+.log-row.log-warn { border-left-color: var(--warning); }
+.log-row.log-slow { border-left-color: var(--accent); }
+.log-row.log-info { border-left-color: var(--primary); }
+.log-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.log-time { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.log-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.log-badge-error { background: rgba(248, 113, 113, .14); color: #fca5a5; border-color: rgba(248, 113, 113, .35); }
+.log-badge-warn { background: rgba(251, 191, 36, .12); color: #fcd34d; border-color: rgba(251, 191, 36, .3); }
+.log-badge-slow { background: rgba(34, 211, 238, .12); color: #67e8f9; border-color: rgba(34, 211, 238, .3); }
+.log-badge-info { background: rgba(99, 102, 241, .14); color: #a5b4fc; border-color: rgba(99, 102, 241, .35); }
+.log-badge-layer { background: rgba(148, 163, 184, .1); }
+.log-kind { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.log-msg { color: var(--text); word-break: break-word; flex: 1; min-width: 160px; }
+.log-loc { font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.log-details { margin-top: 6px; }
+.log-details summary { cursor: pointer; font-size: 12px; color: var(--text-dim); user-select: none; }
+.log-details pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, .3);
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+#log-more { align-self: center; }
+#log-more[hidden] { display: none; }

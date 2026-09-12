@@ -17,7 +17,7 @@ novel-studio/
    ├─ headless-cordis.patch.yml # 注入 headless profile 的区块片段（合并式安装）
    ├─ install.ps1               # 一键安装/升级/卸载（区块合并、保留用户其它 patch）
    ├─ plugin.json               # 清单：工具/端点/契约（文档与测试的唯一真源）
-   ├─ test/smoke.mjs            # 端到端冒烟测试（node:test）
+   ├─ test/smoke.mjs            # 端到端冒烟测试（自研断言脚本，未使用 node:test）
    ├─ ENGINE.md                 # 架构、端点、验收细节
    ├─ NATIVE_PLUGIN_GUIDE.md    # 如何在工坊内扩展本插件
    └─ README.md                 # 本文件

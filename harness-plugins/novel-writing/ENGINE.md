@@ -49,11 +49,24 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 
 ### 3. 分层上下文预算
 
-`buildNovelContext` 每层独立上限（作品 900 / 大纲 2800 / 记忆 2200 / 事件 1800 / 伏笔 1200 /
+`buildNovelContext` 每层独立上限（作品 900 / 大纲 2800 / 记忆 2200 / **语义召回 1400** / 事件 1800 / 伏笔 1200 /
 场景 1200 / **蓝图 1500** / 前文衔接 1600–4000 / 角色卡 4000 / 关系 800 / 世界观 3000 / 红线 4000），
 整块结果再按 26000 字总预算收敛（弹性层依次收缩，红线层不动；收敛按**层名定位**，
 旧实现按下标定位会在人物关系层为空时误伤红线层——v0.8.0 已修复）；
 记忆超过 1200 字压缩提示线时在上下文里标注，提醒模型优先压缩。
+
+### 3f. OpenViking 语义召回层（v0.8.0）
+
+- `buildNovelContext` 在「长期记忆」层之后装配【相关记忆检索（语义召回）】层：以当前章节
+  （标题/摘要/蓝图/开头正文）+ 最近事件为查询，从 OpenViking 共享记忆库的作品子树
+  （`user/default/resources/novel-studio/<workId>/`）语义召回相关片段（top 8、阈值 0.3、
+  命中内容 ≤300 字/条、层预算 1400 字），响应携带 `semantic_recall`（status/hits）；
+  30 秒微缓存；OpenViking 不可用/已禁用时静默跳过，装配不受影响。
+- `/api/ai_context` 同样携带 `semantic_recall.hits`，工坊正文 AI 写作提示词（蓝图/成文/续写）
+  在「长期记忆」之后注入召回片段，写作全程可见。
+- 六类数据（章节/记忆/事件/词条/角色卡/大纲）由工坊增量同步进记忆库（写操作 2s 防抖、
+  离线 pending 队列重放）；`POST /api/novel/semantic_index` 全量重建，
+  `GET/PUT /api/novel/semantic` 查看/开关语义召回；`NOVELSTUDIO_OV_DISABLED=1` 整体停用。
 
 ### 3c. 出场角色评分制与角色卡核心保底（v0.8.0）
 

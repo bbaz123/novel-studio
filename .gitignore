@@ -16,6 +16,12 @@ data/*.sqlite3-wal
 # Local database backups (full DB copies, same sensitivity as novel.db)
 data/backup-*/
 
+# OpenViking 本地同步队列状态（运行时生成，含待推送内容，不上传）
+data/openviking-pending.jsonl
+
+# 隔离测试运行产生的数据目录（可再生的数据库副本与日志）
+.test-data-*/
+
 # IDE / editor
 .vs/
 .idea/

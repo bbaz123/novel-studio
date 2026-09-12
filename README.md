@@ -4,6 +4,7 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 
 它不需要安装任何 npm 第三方依赖，使用 Node.js 内置能力与本地 SQLite 数据库即可运行。你的作品数据、API Key 默认只保存在本机。
 创作插件（novel-writing）为内置组件，源码位于 `harness-plugins/novel-writing/`，与工坊同仓维护、一起升级。
+
 ---
 
 ## ✨ 功能亮点
@@ -65,6 +66,54 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 - 深色护眼主题
 
 ---
+
+## 🧠 OpenViking 共享记忆（语义召回 · v0.9.0）
+
+工坊与 OpenViking 共享同一个记忆库：六类小说数据（章节正文 / 长期记忆 / 事件账本与伏笔 / 设定词条 / 角色卡 / 大纲剧情线）会自动渲染成 Markdown 写入 OpenViking（`user/default/resources/novel-studio/<作品id>/`），由它的本地 bge Embedding（512 维）向量化，不额外占用一套模型与向量库。
+
+- **语义召回层**：AI 写作上下文装配新增「相关记忆检索（语义召回）」层——写第 N 章时按当前章节/蓝图/最近事件语义召回全库相关片段（top 8、阈值 0.3、预算 1400 字），正文 AI 写作提示词（蓝图/成文/续写）同样注入召回结果；可在写作页参考面板「上下文」页签预览命中与相关度，并可一键开关。
+- **增量同步**：保存/删除章节、词条、角色、记忆、事件等会自动防抖同步到记忆库（2s 合并）；服务器离线时进本地 pending 队列自动重放；`POST /api/novel/semantic_index` 可全量重建索引。
+- **dsh 双通道共享**：GUI dsh（web profile）与工坊后台 headless dsh 都安装 `@openviking/dsh-memory-plugin`，写作任务会话自动采集进同一记忆库（跨会话可召回）；`harness.js` 会把 headless 任务归属到工坊 peer（`OPENVIKING_PEER_ID`，可用 `NOVELSTUDIO_OPENVIKING_PEER_ID` 覆盖）。
+- **检索语义化**：全局搜索与 `novel_lookup` 叠加语义结果（`/api/search` 返回 `semantic.hits`）。
+- **环境变量**：`NOVELSTUDIO_OV_DISABLED=1` 整体停用集成（冒烟测试/隔离环境）；`NOVELSTUDIO_OV_AUTOINDEX=0` 关闭启动自动建索引；OpenViking 地址/凭证走 `OPENVIKING_*` 环境变量 → `~/.openviking/ovcli.conf` → 默认 `http://127.0.0.1:1933`。
+- **降级**：OpenViking 服务器不可用时语义召回静默跳过，写作与装配完全不受影响。
+
+---
+
+## 🧾 统一日志系统（诊断与性能监测）
+
+工坊内置零依赖日志系统，对**代码运行错误、阻塞卡顿、慢操作、进程异常**等不正常问题全程记录，每条日志都带**发生时间（毫秒级）**、**技术栈层级**（`layer`）、**代码位置**（文件:行号:函数）与**文件地址**（绝对路径）：
+
+- **双写存储**：SQLite `app_logs` 表（侧栏「🧾 日志」页按级别/层级/关键词筛选查看、展开堆栈、一键清空、每 5 秒自动刷新）+ `data/logs/app-YYYY-MM-DD.log` 滚动 JSONL 文件（应用整体卡死/崩溃后重启仍可排查）；保留策略：数据库最新 5000 条 / 30 天，文件 14 天
+- **全层覆盖**：`server`（接口 500 与慢请求 >500ms）、`db`、`harness`（任务开始/完成/超时/退出/构建失败）、`ai`（统一 AI 错误，旧 ai_error_logs 自动迁移）、`openviking`/`sync`（记忆库同步失败/队列丢弃）、`plugin`（dsh 插件进程经 `POST /api/logs` 上报）、`frontend`（浏览器运行时错误/未处理 Promise/慢 API/页面卡顿经 `sendBeacon` 上报）、`process`（未捕获异常/未处理拒绝/退出）
+- **主动监测**：事件循环滞后采样（卡顿 >400ms 记 `block`，1.5s 以上升级为错误）、慢操作归因（上下文装配/搜索/导出/全量同步超阈值记 `slow_op` 并定位代码位置）
+- **防刷屏**：同层同消息 10 秒窗口去重（AI 错误沿用 30 分钟窗口），进程崩溃时先落日志再退出
+- **接口**：`GET /api/logs`（筛选+统计+翻页）、`POST /api/logs`（远端上报，仅接受 frontend/plugin 层）、`DELETE /api/logs`（清空）
+
+---
+
+## 🛠️ 最近更新（2026-09 · 新人体验优化版 v0.9.2）
+
+依据《新人使用体验报告》（docs/novice-experience-report.md）修复 13 项问题：
+
+- **AI 写作中文编码修复（P0）**：harness 任务不再经 pnpm→cmd.exe 启动（中文 prompt 会被 ANSI 损坏成「?」），改为按 dsh 仓库 `scripts.dsh` 定义直接 node spawn；headless 插件 baseUrl 改 `NOVELSTUDIO_BASE_URL` 环境变量优先，多实例不再串写主库
+- **AI 失败可见**：AI 写作异常/空输出时弹错误框并回显 AI 原始输出尾部，不再静默失败
+- **记忆库防串作品（P0）**：作品级 OpenViking 目录标识（works.ov_uri + 新作品自动分配随机目录名），旧作品保持原目录；同步全部改单文件 replace 写入（服务端 batch 对新建文件返回 404、upsert 不被支持），实测四类文件完整落库
+- 相关度显示修正（不再出现「8800%」）、后台标签页不再被误报「主线程阻塞」、测试连接结果驻留显示、AI 通道慢请求阈值放宽至 10s、示例导入提示按「设定词条/世界观词条」双口径、ST 设置页词条体系说明、关闭服务确认文案口语化、侧栏折叠按钮加提示、语义召回过滤目录元数据与空占位
+- 修复详情见 docs/fix-summary-2026-09-06-novice.md
+
+## 🛠️ 最近更新（2026-09 · 统一日志系统版 v0.9.1）
+
+- **统一日志系统**：双写（SQLite + 滚动文件）、全层覆盖（服务端/harness/AI/OpenViking/插件进程/浏览器前端/进程级）、错误+卡顿+慢操作主动监测、每条日志带时间/技术栈层级/代码位置/文件地址
+- 侧栏新增「🧾 日志」页：按级别/层级筛选、搜索、统计、堆栈展开、清空
+- 冒烟测试扩至 30 组（新增日志系统 7 组断言：lifecycle/远端上报/非法层拒绝/筛选统计/文件落盘/500 入账/清空）
+
+## 🛠️ 最近更新（2026-09 · OpenViking 共享记忆版 v0.9.0）
+
+- **共享记忆库语义化**：六类小说数据向量化入库（本地 bge Embedding），上下文装配与正文写作提示词新增「相关记忆检索（语义召回）」层（可预览、可开关），全局搜索与 novel_lookup 叠加语义结果
+- **增量同步**：写操作防抖自动同步到 OpenViking（离线 pending 队列自动重放），全量建索引端点 + 启动自动补索引
+- **dsh 双通道共享记忆**：headless profile 安装 `@openviking/dsh-memory-plugin`（与 GUI 同版本 0.2.1），写作任务会话自动采集进共享记忆库，peer 归属固定为工坊
+- 冒烟测试扩至 23 组（新增 OpenViking 语义集成禁用模式断言）
 
 ## 🛠️ 最近更新（2026-09 · 上下文质量与性能优化版 v0.8.0）
 
@@ -222,9 +271,16 @@ novel-studio/
 │   ├── index.html      # 页面骨架与侧边栏
 │   ├── styles.css      # 样式与深色主题
 │   └── app.js          # 前端交互逻辑
-├── db.js               # SQLite 初始化与建表（含事件账本/记忆版本/红线/入账提案表）
-├── server.js           # HTTP 服务与 API 路由（含 /api/novel/* 创作内核）
+├── db.js               # SQLite 初始化与建表（含事件账本/记忆版本/红线/入账提案/app_logs 表）
+├── server.js           # HTTP 服务与 API 路由（含 /api/novel/* 创作内核、/api/logs 日志接口）
 ├── harness.js          # DeepSeek Harness 桥接层（模型切换互斥 + CAS 还原）
+├── logger.js           # 统一日志系统（SQLite+文件双写/卡顿与慢操作监测/保留策略）
+├── openviking.js       # OpenViking 客户端（凭证解析 + 离线 pending 队列）
+├── openviking-sync.js  # OpenViking 同步层（六类数据渲染 + 语义召回）
+├── text-utils.js       # 共享文本工具（HTML→纯文本，server.js 与 openviking-sync.js 共用）
+├── api-test-suite.mjs  # 隔离实例(127.0.0.1:3738) 接口回归测试（零依赖，自清理）
+├── assets/             # 图标资源（novel-studio.ico 桌面快捷方式图标、preview.png 多尺寸预览）
+├── novel-studio-icon.ps1 # 图标生成脚本（渲染 preview / 打包 ico / 应用到桌面快捷方式）
 ├── demo-data.json      # 示例小说《雾都缝匠》演示数据（“我的作品”页一键导入，可选）
 ├── harness-plugins/novel-writing/   # 内置创作插件（dsh 侧唯一来源）
 │   ├── novel-tools.mjs              # novel_* 工具集（headless 与 GUI preset 同源）
@@ -244,7 +300,7 @@ novel-studio/
 
 ## 🗄️ 数据与隐私
 
-- 所有数据保存在本机：`novel-studio/data/novel.db`
+- 所有数据保存在本机：`novel-studio/data/novel.db`；运行日志位于 `data/logs/`（14 天自动清理）
 - API Key 也只保存在本地 SQLite 数据库中
 - `data/` 目录（含数据库备份目录 `data/backup-*`）已被 `.gitignore` 排除，**不会随仓库上传**
 - 首次启动时如果数据库不存在，程序会自动创建所需的表结构

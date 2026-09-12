@@ -19,6 +19,7 @@ const state = {
   worldEntries: [],
   apiConfigs: [],
   activeConfigId: Number(localStorage.getItem('ns_active_config')) || null,
+  apiTestResults: {}, // N-07：连接测试结果驻留显示（config_id → {ok, at, msg}）
   // 专项 A：默认两栏（编辑器更宽、参考面板收起，需要时再切三栏）
   editorLayout: localStorage.getItem('ns_editor_layout') || 'two',
   // 参考面板：当前页签 + 词条预览默认折叠为标题（专项 A）
@@ -35,6 +36,10 @@ const state = {
   currentCategoryId: 'all',
   searchTimer: null,
   editorSaveTimer: null,
+  editorSaveSnapshot: null, // F-01：自动保存的内容快照，切章/切视图时 flushSave 直接落盘
+  aiTaskRunning: false, // F-43：harness 任务互斥锁
+  demoStatusLoaded: false, // F-30：示例状态缓存，避免每次渲染都请求 /demo/status
+  demoStatus: null,
   savedRange: null,
   pendingAIApply: null,
   pendingAIInstruction: null,
@@ -43,7 +48,6 @@ const state = {
   pendingGenResult: null,
   genSelected: [],
   genSubmit: null,
-  genContextCache: '',
   pipelinePaused: false,
   pipelineStopped: false,
   pipelineResume: null,
@@ -58,16 +62,9 @@ const SETTINGS_VIEWS = ['plot', 'outline', 'terms', 'characters', 'memory'];
 const AI_VIEWS = ['ai-create', 'ai', 'st'];
 const HOME_AI_VIEWS = ['ai-create', 'ai'];
 
-function isSettingsView(view) {
-  return view === 'settings' || SETTINGS_VIEWS.includes(view);
-}
-
-function isAIView(view) {
-  return view === 'ai-board' || AI_VIEWS.includes(view);
-}
-
 // 统一跳转：把旧子页面视图映射到对应的板块；未进入作品时按初始页视图分流。
 function goView(view) {
+  flushSave(); // F-01：离开写作视图前先落盘，避免 800ms 定时器在编辑器被替换后丢字
   if (SETTINGS_VIEWS.includes(view)) {
     state.settingsTab = view;
     state.view = 'settings';
@@ -89,16 +86,115 @@ function goView(view) {
 }
 
 // ---------- helpers ----------
-async function api(path, options = {}) {
-  const opts = { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } };
-  if (opts.body && typeof opts.body !== 'string') opts.body = JSON.stringify(opts.body);
-  const res = await fetch('/api' + path, opts);
-  const text = await res.text();
-  let data;
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok) throw new Error(data.error || `请求失败 (${res.status})`);
-  return data;
+// 前端 → 服务端统一日志上报（/api/logs，fire-and-forget，绝不影响业务逻辑）。
+function reportClientLog(entry) {
+  try {
+    const body = JSON.stringify({ layer: 'frontend', level: 'error', ...entry });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/logs', new Blob([body], { type: 'application/json' }));
+    } else {
+      fetch('/api/logs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+    }
+  } catch (_) { /* 上报失败静默 */ }
 }
+
+// 非 JSON 错误响应（如 HTML 报错页）→ 剥标签取可读文本并截断 200 字，统一错误格式（F-15）。
+function extractReadableError(text, status) {
+  if (!text) return `请求失败 (${status})`;
+  const plain = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!plain) return `请求失败 (${status})`;
+  return plain.length > 200 ? plain.slice(0, 200) + '…' : plain;
+}
+
+async function api(path, options = {}) {
+  const started = performance.now();
+  // F-45：统一超时（默认 60s）。同步长任务（AI 创作/直连生成/压缩记忆/导入等）由调用方传更大的 timeout 覆盖。
+  const { timeout = 60000, ...rest } = options;
+  const opts = { ...rest, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } };
+  if (opts.body && typeof opts.body !== 'string') opts.body = JSON.stringify(opts.body);
+  try {
+    const res = await fetch('/api' + path, { ...opts, signal: AbortSignal.timeout(timeout) });
+    const text = await res.text();
+    let data;
+    try { data = text ? JSON.parse(text) : {}; } catch { data = null; }
+    if (!res.ok) {
+      const err = new Error((data && data.error) || extractReadableError(text, res.status));
+      err.status = res.status;
+      throw err;
+    }
+    return data ?? {};
+  } catch (e) {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      const err = new Error(`请求超时（${path}，超过 ${Math.round(timeout / 1000)}s）`);
+      err.status = 0;
+      throw err;
+    }
+    throw e;
+  } finally {
+    // 慢 API 监测：界面侧感知的「不流畅」上报日志库。
+    // N-07：AI 请求（直连 /ai/ 与慢通道 /harness）天然秒级起步，用更高的阈值，避免日志被「慢请求」刷屏。
+    const slowMs = (path.startsWith('/ai/') || path.startsWith('/harness')) ? 10000 : 800;
+    const ms = performance.now() - started;
+    if (ms > slowMs && !path.startsWith('/logs')) {
+      reportClientLog({
+        level: 'slow', kind: 'slow_api',
+        message: `API ${path} 耗时 ${Math.round(ms)}ms（阈值 ${slowMs}ms）`,
+        context: { path, duration_ms: Math.round(ms) }
+      });
+    }
+  }
+}
+
+// ---------- 前端全局异常与卡顿监测 ----------
+// 主线程滞后采样：页面卡顿（阻塞）检测，30 秒内同一次卡顿只报一条。
+// N-06：后台标签页会被浏览器定时器节流（1 次/分钟），把 59s 的节流滞后误报为「主线程阻塞」；
+// 页面隐藏时跳过采样，只在前台测量真实卡顿。
+(function startClientLagMonitor() {
+  let lastTick = performance.now();
+  let lastReportAt = 0;
+  setInterval(() => {
+    if (document.hidden || document.visibilityState === 'hidden') {
+      lastTick = performance.now();
+      return;
+    }
+    const nowMs = performance.now();
+    const lag = nowMs - lastTick - 1000;
+    lastTick = nowMs;
+    if (lag >= 400 && nowMs - lastReportAt >= 30000) {
+      lastReportAt = nowMs;
+      reportClientLog({
+        level: lag >= 1500 ? 'error' : 'warn', kind: 'ui_block',
+        message: `页面主线程阻塞 ${Math.round(lag)}ms（界面卡顿）`,
+        context: { lag_ms: Math.round(lag) }
+      });
+    }
+  }, 1000);
+})();
+
+// 运行时错误（含资源脚本错误）
+window.addEventListener('error', (e) => {
+  if (e.target && e.target !== window && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK' || e.target.tagName === 'IMG')) {
+    return; // 资源加载失败交给网络面板，避免日志噪音
+  }
+  reportClientLog({
+    level: 'error', kind: 'frontend_error',
+    message: e.message || '页面运行时错误',
+    code_file: e.filename || '', code_line: e.lineno || undefined, code_func: '',
+    stack: e.error?.stack || '',
+    context: { location: String(location.href).slice(0, 300) }
+  });
+}, true);
+
+// 未处理的 Promise 拒绝
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason;
+  reportClientLog({
+    level: 'error', kind: 'frontend_error',
+    message: `未处理的 Promise 拒绝：${reason instanceof Error ? reason.message : String(reason)}`,
+    stack: reason instanceof Error ? (reason.stack || '') : '',
+    context: { location: String(location.href).slice(0, 300) }
+  });
+});
 
 function esc(str = '') {
   return String(str)
@@ -109,21 +205,84 @@ function esc(str = '') {
     .replace(/'/g, '&#39;');
 }
 
+// ---------- XSS 白名单清洗器（F-03） ----------
+// 编辑器正文本身就是 HTML：消毒只剥危险标签/属性，正常段落/粗斜体/列表/词条链接必须保留。
+// 用浏览器原生 DOMParser 解析后再重建，天然免疫 <script>、on* 事件、javascript: 等注入。
+const EDITOR_ALLOWED_TAGS = new Set(['P', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'H2', 'H3', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'A', 'DIV', 'SPAN']);
+const EDITOR_DROP_TAGS = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'BASE', 'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT', 'OPTION', 'IMG', 'SVG', 'MATH', 'VIDEO', 'AUDIO', 'SOURCE', 'TRACK', 'TEMPLATE']);
+
+function sanitizeEditorHtml(html = '') {
+  const doc = new DOMParser().parseFromString(String(html), 'text/html');
+  const sanitizeNode = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.cloneNode();
+    if (node.nodeType !== Node.ELEMENT_NODE) return null; // 注释等直接丢弃
+    const tag = node.tagName.toUpperCase();
+    if (EDITOR_DROP_TAGS.has(tag)) return null; // 危险标签整体丢弃
+    let el;
+    if (EDITOR_ALLOWED_TAGS.has(tag)) {
+      el = document.createElement(tag);
+      if (tag === 'A') {
+        // 只保留词条链接（data-term-id）：重建为安全、规范化的词条链接，去掉任意 href/事件。
+        const termId = node.getAttribute('data-term-id');
+        if (termId) {
+          el.setAttribute('data-term-id', termId);
+          el.setAttribute('class', 'term-link');
+          el.setAttribute('contenteditable', 'false');
+        }
+      }
+    } else {
+      // 白名单外标签：解包（保留子节点与文本），不保留标签本身
+      el = document.createDocumentFragment();
+    }
+    for (const child of Array.from(node.childNodes)) {
+      const c = sanitizeNode(child);
+      if (c) el.appendChild(c);
+    }
+    return el;
+  };
+  const out = document.createDocumentFragment();
+  for (const child of Array.from(doc.body.childNodes)) {
+    const c = sanitizeNode(child);
+    if (c) out.appendChild(c);
+  }
+  const wrap = document.createElement('div');
+  wrap.appendChild(out);
+  return wrap.innerHTML;
+}
+
+// F-11：语义召回相关度——兼容两种量纲并防御 NaN。
+// N-05：服务端已把 OpenViking 的 0-1 分数换算成 0-100 后下发，这里再 ×100 会出现「8800%」；
+// 统一按「≤1 视为小数×100，否则原样」处理，两种来源都正确。
+function recallPercent(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n <= 1 ? n * 100 : n);
+}
+
 // D5：剧情线标题展示时剥离与 kind 重复的“主线：/支线：”前缀（兼容旧数据里已带前缀的标题）
 function plotlineDisplayTitle(p) {
   return String(p?.title || '').replace(/^(?:主线|支线)\s*[:：]\s*/, '').trim() || '未命名';
 }
 
+// F-44：记录最近 toast 用于短时间去重（同文案 3 秒内只弹一次）。
+let toastRecent = [];
+
 function toast(message, type = '') {
   // D6/D14：压缩空白、限制长度，避免多行堆栈/超长文案直接糊到用户脸上；
   // 时长随内容长度缩放（最少 3 秒、最多 9 秒），完整内容放 title 悬停查看。
   const full = String(message ?? '').replace(/\s+/g, ' ').trim();
+  const now = Date.now();
+  toastRecent = toastRecent.filter((x) => now - x.time < 3000);
+  if (toastRecent.some((x) => x.full === full)) return; // F-44：相同 message 短时间去重
+  toastRecent.push({ full, time: now });
   const short = full.length > 240 ? full.slice(0, 240) + '…' : full;
+  const root = $('#toast-root');
+  while (root.children.length >= 3) root.firstChild.remove(); // F-44：同显上限 3 条，超出移除最旧
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.textContent = short;
   if (short !== full) el.title = full;
-  $('#toast-root').appendChild(el);
+  root.appendChild(el);
   const ms = Math.min(9000, 3000 + full.length * 40);
   setTimeout(() => el.remove(), ms);
 }
@@ -157,7 +316,7 @@ function enhanceModalGenFill() {
   foot.insertBefore(btn, saveBtn);
 }
 
-function openModal({ title, body, footer = '', large = false, onMount } = {}) {
+function openModal({ title, body, footer = '', large = false } = {}) {
   const root = $('#modal-root');
   root.innerHTML = `
     <div class="modal-backdrop" data-modal-backdrop>
@@ -170,7 +329,6 @@ function openModal({ title, body, footer = '', large = false, onMount } = {}) {
         ${footer ? `<div class="modal-foot">${footer}</div>` : ''}
       </div>
     </div>`;
-  if (onMount) onMount($('.modal-body'));
   enhanceModalGenFill();
 }
 
@@ -240,8 +398,23 @@ function wordCount(text = '') {
   return stripHtml(text).replace(/\s/g, '').length;
 }
 
+// F-29：章节字数缓存——wordCount 需剥标签并解析全章，大纲/目录渲染会频繁调用；
+// 按章节内容缓存计数，内容字符串变化即自动失效（loadWorkData 全量重建时也会整体清空）。
+const chapterWordCountCache = new Map();
+function chapterWordCount(chapter) {
+  if (!chapter) return 0;
+  const cached = chapterWordCountCache.get(chapter.id);
+  if (cached && cached.content === chapter.content) return cached.count;
+  const count = wordCount(chapter.content);
+  chapterWordCountCache.set(chapter.id, { content: chapter.content, count });
+  return count;
+}
+
 function setSidebar(show) {
-  $('#sidebar').classList.toggle('hidden', !show);
+  const sidebar = $('#sidebar');
+  // F-13：侧栏折叠改用 .collapsed（margin-left 动画），不再用 .hidden（display:none 会吞掉动画）。
+  sidebar.classList.remove('hidden');
+  sidebar.classList.toggle('collapsed', !show);
   updateSidebarToggleIcon();
 }
 
@@ -264,6 +437,7 @@ async function loadWorks(force = false) {
 }
 
 async function loadWorkData(force = false) {
+  flushSave(); // F-01：加载数据前先落盘当前编辑器，覆盖切视图/切作品的路径（幂等，无待保存快照时为空操作）
   if (!state.workId) return;
   if (!force && state.loadedWorkId === state.workId) return;
   const workId = state.workId;
@@ -280,11 +454,14 @@ async function loadWorkData(force = false) {
     api(`/world_entries?work_id=${workId}`),
     api('/api_configs')
   ]);
+  // F-02：并行加载期间作品可能已切换，丢弃过期结果，避免旧作品数据覆盖新作品状态。
+  if (state.workId !== workId) return;
   Object.assign(state, {
     work, volumes, plotlines, chapters, categories, terms,
     characters, relations, plotlineCharacters, worldEntries, apiConfigs,
     loadedWorkId: workId
   });
+  chapterWordCountCache.clear(); // F-29：章节全量重建，字数缓存失效
   state.terms.forEach((t) => state.termsCache.set(t.id, t));
   state.characters.forEach((c) => state.charsCache.set(c.id, c));
   if (!state.activeConfigId && apiConfigs.length) state.activeConfigId = apiConfigs[0].id;
@@ -297,6 +474,9 @@ function updateNavVisibility() {
     if (v === 'works' || v === 'ai-create') {
       // 「我的作品」与「✨ AI 创作」只在未进入作品时显示
       b.classList.toggle('hidden', !!state.workId);
+    } else if (v === 'logs') {
+      // 日志页在作品内外都可访问
+      b.classList.remove('hidden');
     } else {
       b.classList.toggle('hidden', !state.workId);
     }
@@ -316,9 +496,20 @@ function setActiveNav() {
 
 async function renderView() {
   const content = $('#content');
+  if (state.view !== 'logs') {
+    // F-31：离开日志页时清理自动刷新定时器，避免在其它页面空轮询。
+    if (logsAutoTimer) { clearInterval(logsAutoTimer); logsAutoTimer = null; }
+  }
   if (!state.workId) {
     setSidebar(true);
     updateNavVisibility();
+    // 日志页：作品内外均可访问，不依赖作品数据
+    if (state.view === 'logs') {
+      setActiveNav();
+      updateSidebarTitle();
+      setTopbarTitle('🧾 日志');
+      return renderLogs(content);
+    }
     // 初始页：我的作品（works）与首页 AI 视图（ai-create / ai）可切换
     if (HOME_AI_VIEWS.includes(state.view)) {
       setActiveNav();
@@ -346,24 +537,17 @@ async function renderView() {
     await loadWorkData();
     updateSidebarTitle();
     setTopbarTitle(state.work ? state.work.title : '作品');
+    // F-35：goView 已将 plot/outline/terms/characters/memory 统一映射到 settings、ai-create/ai/st 映射到 ai-board，
+    // 且 restoreSession 也会把旧会话的旧视图名归一化，因此这里只保留合并后的板块分支。
     switch (state.view) {
       case 'settings':
         return renderSettingsBoard(content, state.settingsTab);
       case 'ai-board':
         return renderAIBoard(content, state.aiTab);
-      case 'plot':
-      case 'outline':
-      case 'terms':
-      case 'characters':
-      case 'memory':
-        return renderSettingsBoard(content, state.view);
-      case 'ai-create':
-      case 'ai':
-      case 'st':
-        return renderAIBoard(content, state.view);
       case 'writing': return renderWriting(content);
       case 'overview': return renderOverview(content);
       case 'works': return renderWorks();
+      case 'logs': return renderLogs(content);
       default: return renderOverview(content);
     }
   } catch (e) {
@@ -403,16 +587,149 @@ function restoreSession() {
     if (!saved || !Number(saved.workId)) return;
     state.workId = Number(saved.workId);
     state.loadedWorkId = null;
-    // 初始页视图在作品内没有意义，恢复为总览
-    state.view = HOME_AI_VIEWS.includes(saved.view) || saved.view === 'works' ? 'overview' : (saved.view || 'overview');
-    state.settingsTab = SETTINGS_VIEWS.includes(saved.settingsTab) ? saved.settingsTab : 'terms';
-    state.aiTab = ['ai', 'st'].includes(saved.aiTab) ? saved.aiTab : 'ai';
+    // 视图归一化（F-35）：旧会话可能直接存了子视图名（plot/terms/st 等），统一映射到合并后的板块视图，
+    // 初始页视图（works/ai-create/ai）在作品内没有意义，恢复为总览。
+    const savedView = saved.view || 'overview';
+    const tabSettings = SETTINGS_VIEWS.includes(saved.settingsTab) ? saved.settingsTab : 'terms';
+    const tabAi = ['ai', 'st'].includes(saved.aiTab) ? saved.aiTab : 'ai';
+    if (HOME_AI_VIEWS.includes(savedView) || savedView === 'works') {
+      state.view = 'overview';
+      state.settingsTab = tabSettings;
+      state.aiTab = tabAi;
+    } else if (SETTINGS_VIEWS.includes(savedView)) {
+      state.view = 'settings';
+      state.settingsTab = savedView; // 旧会话的 view 本身就是 tab
+      state.aiTab = tabAi;
+    } else if (AI_VIEWS.includes(savedView)) {
+      state.view = 'ai-board';
+      state.aiTab = savedView === 'st' ? 'st' : 'ai';
+      state.settingsTab = tabSettings;
+    } else {
+      state.view = savedView;
+      state.settingsTab = tabSettings;
+      state.aiTab = tabAi;
+    }
     state.aiCreateHomeTab = ['auto', 'pipeline', 'history'].includes(saved.aiCreateHomeTab) ? saved.aiCreateHomeTab : 'auto';
     state.currentChapterId = Number(saved.currentChapterId) || null;
     state.currentPlotlineId = Number(saved.currentPlotlineId) || null;
     state.currentTermId = Number(saved.currentTermId) || null;
     state.currentCharacterId = Number(saved.currentCharacterId) || null;
   } catch (_) { /* 解析失败按全新会话处理 */ }
+}
+
+// ---------- 日志面板 ----------
+let logsAutoTimer = null;
+const logsState = { level: '', layer: '', q: '', beforeId: null, loading: false };
+const debouncedLogSearch = debounce(() => refreshLogs(true), 300);
+
+const LOG_LEVEL_LABELS = { error: '错误', warn: '警告', slow: '慢', info: '信息', debug: '调试' };
+
+function fmtLogTime(ts) {
+  try {
+    const d = new Date(ts);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  } catch { return String(ts || ''); }
+}
+
+function renderLogRow(l) {
+  const ctx = (l.context && typeof l.context === 'object') ? l.context : {};
+  const hasExtra = l.stack || Object.keys(ctx).length;
+  const extraText = [l.stack, JSON.stringify(ctx, null, 2)].filter(Boolean).join('\n');
+  const loc = l.code_file ? `${l.code_file}:${l.code_line ?? ''}` : '';
+  const locShort = l.code_file ? `${l.code_file.split(/[\\/]/).pop()}:${l.code_line ?? ''}` : '';
+  return `
+    <div class="log-row log-${esc(l.level)}">
+      <div class="log-head">
+        <span class="log-time">${fmtLogTime(l.ts)}</span>
+        <span class="log-badge log-badge-${esc(l.level)}">${esc(LOG_LEVEL_LABELS[l.level] || l.level)}</span>
+        <span class="log-badge log-badge-layer" title="技术栈层级">${esc(l.layer)}</span>
+        <span class="log-kind">${esc(l.kind)}</span>
+        <span class="log-msg">${esc(l.message)}</span>
+      </div>
+      ${loc ? `<div class="log-loc" title="文件地址：${esc(loc)}">📄 ${esc(locShort)}${l.code_func ? ' · ' + esc(l.code_func) : ''}</div>` : ''}
+      ${hasExtra ? `<details class="log-details"><summary>堆栈 / 上下文</summary><pre>${esc(extraText)}</pre></details>` : ''}
+    </div>`;
+}
+
+async function refreshLogs(reset = false) {
+  const listEl = $('#log-list');
+  if (!listEl || logsState.loading) return;
+  if (reset) logsState.beforeId = null;
+  logsState.loading = true;
+  try {
+    const params = new URLSearchParams();
+    if (logsState.level) params.set('level', logsState.level);
+    if (logsState.layer) params.set('layer', logsState.layer);
+    if (logsState.q.trim()) params.set('q', logsState.q.trim());
+    if (logsState.beforeId) params.set('before_id', String(logsState.beforeId));
+    params.set('limit', '200');
+    const data = await api('/logs?' + params.toString());
+    const entries = data.entries || [];
+    const stats = data.stats || {};
+    const statsEl = $('#log-stats');
+    if (statsEl) {
+      const b = stats.by_level || {};
+      statsEl.textContent = `共 ${stats.total ?? entries.length} 条 · 错误 ${b.error || 0} · 警告 ${b.warn || 0} · 慢 ${b.slow || 0} · 信息 ${b.info || 0}`;
+    }
+    if (reset) listEl.innerHTML = '';
+    if (!entries.length && reset) {
+      listEl.innerHTML = '<div class="empty">暂无日志</div>';
+    } else {
+      listEl.insertAdjacentHTML('beforeend', entries.map(renderLogRow).join(''));
+      if (entries.length) logsState.beforeId = entries[entries.length - 1].id;
+    }
+    const moreBtn = $('#log-more');
+    if (moreBtn) moreBtn.hidden = entries.length < 200;
+  } catch (e) {
+    const el = $('#log-list');
+    if (el) el.innerHTML = `<div class="empty">日志加载失败：${esc(e.message)}</div>`;
+  } finally {
+    logsState.loading = false;
+  }
+}
+
+function renderLogs(content) {
+  if (logsAutoTimer) { clearInterval(logsAutoTimer); logsAutoTimer = null; }
+  content.innerHTML = `
+    <div class="logs-page">
+      <div class="logs-toolbar">
+        <select id="log-level">
+          <option value="">全部级别</option>
+          <option value="error">错误</option>
+          <option value="warn">警告</option>
+          <option value="slow">慢</option>
+          <option value="info">信息</option>
+        </select>
+        <select id="log-layer">
+          <option value="">全部层级</option>
+          <option value="server">server</option>
+          <option value="db">db</option>
+          <option value="harness">harness</option>
+          <option value="ai">ai</option>
+          <option value="openviking">openviking</option>
+          <option value="sync">sync</option>
+          <option value="plugin">plugin</option>
+          <option value="frontend">frontend</option>
+          <option value="process">process</option>
+        </select>
+        <input type="search" id="log-q" placeholder="搜索消息…">
+        <button class="btn small" data-action="logs-refresh">刷新</button>
+        <button class="btn small danger" data-action="logs-clear" title="清空数据库中的全部日志记录">清空</button>
+        <span class="log-stats" id="log-stats"></span>
+      </div>
+      <div class="log-list" id="log-list"></div>
+      <button class="btn secondary" id="log-more" data-action="logs-more" hidden>加载更多</button>
+    </div>`;
+  const levelSel = $('#log-level');
+  const layerSel = $('#log-layer');
+  const qInput = $('#log-q');
+  if (levelSel) levelSel.value = logsState.level;
+  if (layerSel) layerSel.value = logsState.layer;
+  if (qInput) qInput.value = logsState.q;
+  refreshLogs(true);
+  // 页面停留期间每 5 秒自动刷新
+  logsAutoTimer = setInterval(() => refreshLogs(), 5000);
 }
 
 async function render() {
@@ -424,11 +741,16 @@ async function renderWorks() {
   const content = $('#content');
   await loadWorks();
   const works = state.works;
-  let demo = null;
-  try { demo = await api('/demo/status'); } catch (_) { /* 旧服务端无此接口时静默 */ }
+  // F-30：示例状态缓存到 state，安装/删除时失效，避免每次渲染都请求 /demo/status。
+  let demo = state.demoStatusLoaded ? state.demoStatus : null;
+  if (!state.demoStatusLoaded) {
+    try { demo = await api('/demo/status'); state.demoStatus = demo; } catch (_) { /* 旧服务端无此接口时静默 */ }
+    state.demoStatusLoaded = true;
+  }
   const demoExists = !!(demo && demo.exists);
   // D9：示例小说已在下方「🧪 示例小说」区块展示，作品列表里排除它，避免同一本书出现两次。
-  const demoWorkId = demoExists && demo.work_id ? demo.work_id : null;
+  // F-41：demo.work_id 可能是字符串，比较前 Number() 归一化，避免类型不一致导致示例书重复出现。
+  const demoWorkId = demoExists && demo.work_id ? Number(demo.work_id) : null;
   const visibleWorks = demoWorkId ? works.filter((w) => w.id !== demoWorkId) : works;
   content.innerHTML = `
     <div class="page-head">
@@ -583,10 +905,10 @@ async function renderOverview(content) {
       </div>
     </div>
     <div class="grid cols-4 mb-12">
-      <div class="card stat-card"><div class="num">${stats.chapters}</div><div class="label">章节/场景</div></div>
-      <div class="card stat-card"><div class="num">${stats.terms}</div><div class="label">设定词条</div></div>
-      <div class="card stat-card"><div class="num">${stats.characters}</div><div class="label">角色</div></div>
-      <div class="card stat-card"><div class="num">${stats.plotlines}</div><div class="label">剧情线</div></div>
+      <div class="card stat-card"><div class="num">${stats.chapters ?? 0}</div><div class="label">章节/场景</div></div>
+      <div class="card stat-card"><div class="num">${stats.terms ?? 0}</div><div class="label">设定词条</div></div>
+      <div class="card stat-card"><div class="num">${stats.characters ?? 0}</div><div class="label">角色</div></div>
+      <div class="card stat-card"><div class="num">${stats.plotlines ?? 0}</div><div class="label">剧情线</div></div>
     </div>
     <div class="grid cols-2">
       <div class="card">
@@ -692,16 +1014,35 @@ function outlineChildrenOf(root) {
   return [];
 }
 
+// F-12/F-27：一次 O(N) 预构建章节索引（parentId→children 与 volumeId→根章节），
+// 渲染时 O(1) 查询，避免每节点对 state.chapters 全量 filter 造成 O(N²)。
+function buildChapterIndex() {
+  const byParent = new Map(); // parentId(或null) -> [chapters]
+  const rootsOfVolume = new Map(); // volumeId(或null) -> [根章节]
+  for (const c of state.chapters) {
+    const p = c.parent_id || null;
+    if (!byParent.has(p)) byParent.set(p, []);
+    byParent.get(p).push(c);
+    if (!c.parent_id) {
+      const v = c.volume_id || null;
+      if (!rootsOfVolume.has(v)) rootsOfVolume.set(v, []);
+      rootsOfVolume.get(v).push(c);
+    }
+  }
+  return { byParent, rootsOfVolume };
+}
+
 function renderOutlineList(content) {
   const volumes = state.volumes;
-  const chapters = state.chapters;
-  const childrenOf = (parentId) => chapters.filter((c) => (c.parent_id || null) === (parentId || null));
-  const rootsOfVolume = (vid) => chapters.filter((c) => c.volume_id === vid && !c.parent_id);
+  const { byParent, rootsOfVolume } = buildChapterIndex();
+  const childrenOf = (parentId) => byParent.get(parentId || null) || [];
+  const rootsOfVolumeFn = (vid) => rootsOfVolume.get(vid) || [];
+  const unassigned = rootsOfVolume.get(null) || [];
   const renderNode = (c, depth = 0) => `
     <li>
       <div class="tree-item" data-action="open-chapter" data-id="${c.id}" style="padding-left:${8 + depth * 14}px">
         <span>📄</span> <span class="grow">${esc(c.title)}</span>
-        <span class="muted" style="font-size:12px">${wordCount(c.content)}字</span>
+        <span class="muted" style="font-size:12px">${chapterWordCount(c)}字</span>
         <span class="tree-actions">
           <button class="btn small secondary" data-action="edit-chapter" data-id="${c.id}">编辑</button>
           <button class="btn small danger" data-action="delete-chapter" data-id="${c.id}">删</button>
@@ -724,13 +1065,13 @@ function renderOutlineList(content) {
           </div>
         </div>
         <ul class="tree">
-          ${rootsOfVolume(v.id).length ? rootsOfVolume(v.id).map((c) => renderNode(c)).join('') : '<li class="muted" style="padding:6px 10px">本卷还没有章节</li>'}
+          ${rootsOfVolumeFn(v.id).length ? rootsOfVolumeFn(v.id).map((c) => renderNode(c)).join('') : '<li class="muted" style="padding:6px 10px">本卷还没有章节</li>'}
         </ul>
       </div>
     `).join('') : '<div class="empty">还没有卷。可以创建卷来组织大纲。</div>'}
     <div class="card">
       <div class="card-head"><span class="card-title">未分卷章节</span><button class="btn small" data-action="new-chapter">＋ 新建</button></div>
-      <ul class="tree">${chapters.filter((c) => !c.volume_id && !c.parent_id).length ? chapters.filter((c) => !c.volume_id && !c.parent_id).map((c) => renderNode(c)).join('') : '<li class="muted" style="padding:6px 10px">暂无未分卷章节</li>'}</ul>
+      <ul class="tree">${unassigned.length ? unassigned.map((c) => renderNode(c)).join('') : '<li class="muted" style="padding:6px 10px">暂无未分卷章节</li>'}</ul>
     </div>`;
 }
 
@@ -767,7 +1108,7 @@ function renderOutlineMind(content) {
             <div class="mind-child" data-action="open-chapter" data-id="${c.id}">
               <span>📄</span>
               <span class="grow">${esc(c.title)}</span>
-              <span class="muted" style="font-size:12px">${wordCount(c.content)}字</span>
+              <span class="muted" style="font-size:12px">${chapterWordCount(c)}字</span>
               <span class="tree-actions">
                 <button class="btn small secondary" data-action="edit-chapter" data-id="${c.id}">编辑</button>
                 <button class="btn small danger" data-action="delete-chapter" data-id="${c.id}">删</button>
@@ -806,8 +1147,10 @@ async function renderWriting(content) {
   const volumes = state.volumes;
   if (!state.currentChapterId && chapters.length) state.currentChapterId = chapters[0].id;
   const current = state.currentChapterId ? chapters.find((c) => c.id === state.currentChapterId) : null;
-  const childrenOf = (parentId) => chapters.filter((c) => (c.parent_id || null) === (parentId || null));
-  const rootsOfVolume = (vid) => chapters.filter((c) => c.volume_id === vid && !c.parent_id);
+  // F-27：预构建索引，避免每个卷/未分卷节点都全量 filter chapters（O(N²)→O(N)）。
+  const { rootsOfVolume } = buildChapterIndex();
+  const rootsOfVolumeFn = (vid) => rootsOfVolume.get(vid) || [];
+  const unassigned = rootsOfVolume.get(null) || [];
 
   const treeHTML = `
     <div class="row mb-8">
@@ -818,14 +1161,14 @@ async function renderWriting(content) {
     ${volumes.length ? volumes.map((v) => `
       <div class="muted" style="padding:6px 8px">📚 ${esc(v.title)}</div>
       <ul class="tree">
-        ${rootsOfVolume(v.id).length ? rootsOfVolume(v.id).map((c) => `
+        ${rootsOfVolumeFn(v.id).length ? rootsOfVolumeFn(v.id).map((c) => `
           <li><div class="tree-item ${current && current.id === c.id ? 'active' : ''}" data-action="open-chapter" data-id="${c.id}">📄 ${esc(c.title)}</div></li>
         `).join('') : '<li class="muted" style="padding:2px 8px">空</li>'}
       </ul>
     `).join('') : ''}
     <div class="muted" style="padding:6px 8px">未分卷</div>
     <ul class="tree">
-      ${chapters.filter((c) => !c.volume_id && !c.parent_id).map((c) => `
+      ${unassigned.map((c) => `
         <li><div class="tree-item ${current && current.id === c.id ? 'active' : ''}" data-action="open-chapter" data-id="${c.id}">📄 ${esc(c.title)}</div></li>
       `).join('') || '<li class="muted" style="padding:2px 8px">暂无章节</li>'}
     </ul>`;
@@ -878,7 +1221,7 @@ async function renderWriting(content) {
         <div class="editor-meta">
           <input id="editor-title" value="${esc(current.title)}" placeholder="章节/场景标题">
         </div>
-        <div id="editor-content" class="editor-content" contenteditable="true" data-chapter-id="${current.id}">${current.content || ''}</div>
+        <div id="editor-content" class="editor-content" contenteditable="true" data-chapter-id="${current.id}">${sanitizeEditorHtml(current.content)}</div>
         <div class="editor-status" id="editor-status"><span>已加载</span> · <span id="editor-count">${wordCount(current.content)}</span> 字</div>
       </div>
       <div class="panel panel-reference">
@@ -987,6 +1330,20 @@ async function renderContextTab(list) {
   }
   const sceneIds = new Set((ctx.scene_characters || []).map((c) => c.id));
   const forcedSet = new Set((ctx.scene_characters || []).filter((c) => c.forced).map((c) => c.id));
+  // OpenViking 语义召回层：状态 + 命中来源（写入 AI 上下文的新增分层）。
+  const recall = ctx.semantic_recall || {};
+  const recallStatusText = {
+    ok: '✓ 已召回', unavailable: '⚠ 记忆库不可用（不阻塞写作）', disabled: '已关闭',
+    'no-hits': '无命中（阈值 0.3）', empty: '暂无查询内容', error: '召回出错', unknown: '—'
+  }[recall.status] || '—';
+  const recallHits = (recall.hits || []).map((h) => `
+    <div class="reference-item">
+      <div class="ref-title">${esc(h.label)} <span class="muted" style="font-size:11px">${esc(h.kind || '')} · 相关度 ${recallPercent(h.score)}%</span></div>
+      <div class="ref-desc muted">${esc(h.text || '')}</div>
+    </div>`).join('');
+  const recallHtml = `
+    <div class="ref-group-title">相关记忆检索（语义召回）· ${recallStatusText} · <label class="row" style="display:inline-flex;gap:4px"><input type="checkbox" data-action="semantic-toggle" ${recall.enabled === false ? '' : 'checked'}> 启用</label></div>
+    ${recallHits || '<div class="muted" style="padding:2px 4px">本次装配暂无召回命中（写入前可先保存章节/长期记忆，供记忆库向量化）</div>'}`;
   const charRows = state.characters.map((c) => {
     const inScene = sceneIds.has(c.id);
     const forced = forcedSet.has(c.id);
@@ -1003,15 +1360,42 @@ async function renderContextTab(list) {
     </div>
     <div class="ref-group-title">出场角色（${(ctx.scene_characters || []).length}）· 勾选 = 强制带入本章</div>
     <div class="context-char-list">${charRows || '<div class="muted" style="padding:2px 4px">暂无角色</div>'}</div>
+    ${recallHtml}
     <div class="ref-group-title">装配结果（${(ctx.assembled || '').length} 字，超层预算的截断会在文中注明）</div>
     <pre class="context-preview">${esc(ctx.assembled || '')}</pre>`;
 }
 
+// F-01：自动保存用闭包快照捕获当时的章节与内容，800ms 后触发时不再重查 DOM，
+// 避免定时器在编辑器已被替换（切章/切视图）后才触发而把新章节内容写回旧章节或丢字。
 function scheduleSave() {
   clearTimeout(state.editorSaveTimer);
-  state.editorSaveTimer = setTimeout(saveCurrentChapter, 800);
+  const editor = $('#editor-content');
+  const title = $('#editor-title');
+  state.editorSaveSnapshot = {
+    id: editor ? Number(editor.dataset.chapterId) : null,
+    content: editor ? editor.innerHTML : '',
+    title: title ? title.value : ''
+  };
+  state.editorSaveTimer = setTimeout(() => {
+    state.editorSaveTimer = null;
+    const snap = state.editorSaveSnapshot;
+    state.editorSaveSnapshot = null;
+    if (snap) saveChapterSnapshot(snap);
+  }, 800);
   const status = $('#editor-status');
   if (status) status.innerHTML = '<span>编辑中...</span>';
+}
+
+// F-01：立即落盘——清掉待执行的定时器并把最新快照同步保存（幂等：无待保存快照时为空操作）。
+// 在所有「切换章节 / 离开写作视图 / 切换作品 / 手动·批量保存前」路径调用，确保 800ms 内切章不丢字。
+function flushSave() {
+  if (!state.editorSaveTimer) return Promise.resolve(true);
+  clearTimeout(state.editorSaveTimer);
+  state.editorSaveTimer = null;
+  const snap = state.editorSaveSnapshot;
+  state.editorSaveSnapshot = null;
+  if (!snap) return Promise.resolve(true);
+  return saveChapterSnapshot(snap);
 }
 
 // 参考面板「伏笔」页签：未闭合/已回收/已废弃分组，可跳转章节、标记状态。
@@ -1146,44 +1530,67 @@ async function saveRedlines() {
   }
 }
 
-async function saveCurrentChapter() {
-  const editor = $('#editor-content');
-  const title = $('#editor-title');
-  if (!editor || !title) return;
-  const id = Number(editor.dataset.chapterId);
+// 保存章节核心：接收闭包快照 { id, content, title }，负责 PUT + 乐观锁 + 状态刷新。
+// F-07：PUT /chapters/:id 是部分更新——未传字段保持不变（后端 updateRow 仅更新 data[f]!==undefined 的字段），
+// 因此这里每次显式传 title/content/summary；summary 保持不变也从本地回读补上，避免被部分更新清空。
+// F-08：body 带 _if_updated_at 乐观锁，冲突（409）时提示并重载。
+async function saveChapterSnapshot({ id, content, title }) {
+  if (!id) return true;
+  const chapter = state.chapters.find((c) => c.id === id);
   const body = {
-    title: title.value || '未命名章节',
-    content: editor.innerHTML,
-    summary: state.chapters.find((c) => c.id === id)?.summary || ''
+    title: title || '未命名章节',
+    content: sanitizeEditorHtml(content), // F-03：保存前白名单消毒
+    summary: chapter?.summary || ''
   };
+  if (chapter?.updated_at) body._if_updated_at = chapter.updated_at;
   try {
     const updated = await api(`/chapters/${id}`, { method: 'PUT', body });
     const idx = state.chapters.findIndex((c) => c.id === id);
     if (idx >= 0) state.chapters[idx] = updated;
     const status = $('#editor-status');
-    if (status) status.innerHTML = '<span class="ok">✔ 已自动保存</span> · <span>' + wordCount(editor.innerText || '') + '</span> 字';
+    if (status) status.innerHTML = '<span class="ok">✔ 已自动保存</span> · <span>' + wordCount(content) + '</span> 字';
+    return true;
   } catch (e) {
+    if (e.status === 409) {
+      // F-08：内容已在其它窗口被修改，丢弃本次写入并重新加载最新数据。
+      toast('内容已在其他窗口被修改，已重新加载', 'error');
+      try { await loadWorkData(true); } catch (_) { /* 刷新失败时保留现状 */ }
+      return false;
+    }
     const status = $('#editor-status');
     if (status) status.innerHTML = `<span class="err">保存失败：${esc(e.message)}</span>`;
+    return false;
   }
 }
 
+async function saveCurrentChapter() {
+  const editor = $('#editor-content');
+  const title = $('#editor-title');
+  if (!editor || !title) return false;
+  return saveChapterSnapshot({ id: Number(editor.dataset.chapterId), content: editor.innerHTML, title: title.value });
+}
+
 // ---------- manual save / version history ----------
+// F-16：写通道注释——PUT /chapters/:id = 编辑器保存（自动/手动，乐观锁 + 白名单消毒）；
+// 另有 POST /novel/chapter_save = 审稿合并 / 批量生成写回（走 textToParagraphsHtml，旧稿自动存历史版本）。
 async function manualSaveChapter() {
   const editor = $('#editor-content');
   const title = $('#editor-title');
   if (!editor || !title) return;
   const id = Number(editor.dataset.chapterId);
   if (!id) return;
+  // F-01：取消待执行的自动保存定时器，避免与本次手动 PUT 重复写入（乐观锁下会误判 409）。
+  if (state.editorSaveTimer) { clearTimeout(state.editorSaveTimer); state.editorSaveTimer = null; state.editorSaveSnapshot = null; }
   try {
-    await saveCurrentChapter();
+    const ok = await saveCurrentChapter();
+    if (!ok) return; // 409 冲突：已提示并重载，不继续创建历史版本
     const version = await api('/chapter_versions', {
       method: 'POST',
       body: {
         chapter_id: id,
         title: title.value || '未命名章节',
         summary: state.chapters.find((c) => c.id === id)?.summary || '',
-        content: editor.innerHTML
+        content: sanitizeEditorHtml(editor.innerHTML) // F-03：历史版本同样白名单消毒
       }
     });
     toast(`已手动保存：${version.created_at || ''}`, 'success');
@@ -1231,7 +1638,7 @@ async function viewSaveVersion(id) {
   if (!v) return;
   openModal({
     title: `历史版本 · ${v.title || '未命名章节'}`,
-    body: `<div class="version-preview">${v.content || '<span class="muted">（空内容）</span>'}</div>`,
+    body: `<div class="version-preview">${v.content ? sanitizeEditorHtml(v.content) : '<span class="muted">（空内容）</span>'}</div>`,
     footer: `<button class="btn secondary" data-close-modal>关闭</button>${v.content ? `<button class="btn" data-action="restore-version" data-id="${v.id}">恢复此版本</button>` : ''}`,
     large: true
   });
@@ -1264,6 +1671,9 @@ async function renderTerms(content) {
   const activeCat = state.currentCategoryId;
   const filtered = terms.filter((t) => activeCat === 'all' || t.category_id === activeCat);
   const selected = state.currentTermId ? terms.find((t) => t.id === state.currentTermId) || null : null;
+  // F-28：分类计数预建 Map，避免每个分类都对 terms 全量 filter。
+  const countByCat = new Map();
+  for (const t of terms) countByCat.set(t.category_id, (countByCat.get(t.category_id) || 0) + 1);
 
   content.innerHTML = `
     <div class="terms-layout">
@@ -1278,7 +1688,7 @@ async function renderTerms(content) {
           <div class="category-item ${activeCat === c.id ? 'active' : ''}" data-action="select-category" data-id="${c.id}">
             <span class="category-dot" style="background:${esc(c.color)}"></span>
             <span class="grow">${esc(c.name)}</span>
-            <span class="muted">(${terms.filter((t) => t.category_id === c.id).length})</span>
+            <span class="muted">(${countByCat.get(c.id) || 0})</span>
             <button class="btn small danger" data-action="delete-category" data-id="${c.id}">删</button>
           </div>
         `).join('')}
@@ -1286,12 +1696,14 @@ async function renderTerms(content) {
       </div>
       <div class="panel terms-list">
         <div class="mb-8"><input id="term-search" placeholder="搜索词条..." value=""></div>
-        ${filtered.length ? filtered.map((t) => `
-          <div class="term-item ${selected && selected.id === t.id ? 'active' : ''}" data-action="select-term" data-id="${t.id}">
-            <b>${esc(t.title)}</b>
-            <span class="muted grow" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.tags || '')}</span>
-          </div>
-        `).join('') : '<div class="muted">暂无词条</div>'}
+        <div id="term-list">
+          ${filtered.length ? filtered.map((t) => `
+            <div class="term-item ${selected && selected.id === t.id ? 'active' : ''}" data-action="select-term" data-id="${t.id}">
+              <b>${esc(t.title)}</b>
+              <span class="muted grow" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.tags || '')}</span>
+            </div>
+          `).join('') : '<div class="muted">暂无词条</div>'}
+        </div>
       </div>
       <div class="panel terms-detail">
         ${selected ? `
@@ -1320,7 +1732,9 @@ async function renderCharacters(content) {
   const characters = state.characters;
   const selected = state.currentCharacterId ? characters.find((c) => c.id === state.currentCharacterId) || null : null;
   const relations = state.relations.filter((r) => selected && (r.from_character_id === selected.id || r.to_character_id === selected.id));
-  const plotlineStates = state.plotlineCharacters.filter((p) => selected && p.character_id === selected.id);
+  // F-28：预建 (plotline_id,character_id)→记录 Map，渲染剧情线级状态时 O(1) 查询。
+  const pcByKey = new Map();
+  for (const p of state.plotlineCharacters) pcByKey.set(`${p.plotline_id}_${p.character_id}`, p);
 
   content.innerHTML = `
     <div class="characters-layout">
@@ -1378,7 +1792,7 @@ async function renderCharacters(content) {
           <div class="card">
             <div class="card-head"><span class="card-title">剧情线级状态</span></div>
             ${state.plotlines.length ? state.plotlines.map((p) => {
-              const pc = state.plotlineCharacters.find((x) => x.plotline_id === p.id && x.character_id === selected.id);
+              const pc = pcByKey.get(`${p.id}_${selected.id}`);
               return `<div class="row tree-item">
                 <span class="chip ${p.kind === 'side' ? 'warn' : ''}">${esc(p.title)}</span>
                 <span class="grow muted">${esc(pc ? (pc.status + (pc.notes ? ' — ' + pc.notes : '')) : '未记录')}</span>
@@ -1477,6 +1891,7 @@ async function renderST(content) {
     </div>
     <div class="card">
       <div class="card-head"><span class="card-title">世界观词条</span><button class="btn small" data-action="new-world-entry">＋ 新建词条</button></div>
+      <div class="muted mb-8" style="font-size:12px">世界观词条独立于「小说设定 → 设定库」：设定库词条用于正文选中后关联与悬停预览；世界观词条（可固定、设优先级）会随 AI 写作上下文激活。</div>
       <div class="st-world-list">
         ${state.worldEntries.length ? state.worldEntries.map((w) => `
           <div class="st-world-item">
@@ -1622,7 +2037,8 @@ async function compressStoryMemory() {
   try {
     const data = await api('/story_memory/compress', {
       method: 'POST',
-      body: { work_id: state.workId }
+      body: { work_id: state.workId },
+      timeout: 600000 // F-45：同步长任务，覆盖默认 60s
     });
     el.value = data.summary || '';
     toast('长期记忆已自动压缩', 'success');
@@ -1679,14 +2095,12 @@ async function rollbackMemoryVersion(id) {
   }
 }
 
-// 句子级差异（记忆摘要通常是一整段，按句末标点切分后做 LCS）。
-function diffSentences(oldText, newText) {
-  const split = (s) => String(s || '').match(/[^。！？!?…\n]*[。！？!?…\n]|[^。！？!?…\n]+$/g)
-    ?.map((x) => x.trim()).filter(Boolean) || [];
-  const a = split(oldText), b = split(newText);
+// F-23：LCS 差异核心——对已切分的 token 数组做最长公共子序列对齐，返回 [{t:'same'|'del'|'add', x}]。
+function diffTokens(a, b) {
   const n = a.length, m = b.length;
   if (!n && !m) return [];
   if (n * m > 60000) {
+    // 超大文本退化为逐段对齐（前 n 段按位置比较）
     const out = [];
     for (let i = 0; i < Math.max(n, m); i++) {
       if (i < n && i < m) {
@@ -1712,6 +2126,13 @@ function diffSentences(oldText, newText) {
   while (i < n) { ops.push({ t: 'del', x: a[i] }); i++; }
   while (j < m) { ops.push({ t: 'add', x: b[j] }); j++; }
   return ops;
+}
+
+// 句子级差异（记忆摘要通常是一整段，按句末标点切分后做 LCS）。
+function diffSentences(oldText, newText) {
+  const split = (s) => String(s || '').match(/[^。！？!?…\n]*[。！？!?…\n]|[^。！？!?…\n]+$/g)
+    ?.map((x) => x.trim()).filter(Boolean) || [];
+  return diffTokens(split(oldText), split(newText));
 }
 
 async function showMemoryVersionDiff(id) {
@@ -1839,7 +2260,12 @@ async function renderAI(content) {
       <div class="muted mt-8">API Key 只保存在本机 SQLite 数据库中，不会上传到任何第三方服务器（除你配置的 AI 服务商）。</div>
     </div>
     <div class="grid cols-2">
-      ${configs.map((c) => `
+      ${configs.map((c) => {
+        const t = state.apiTestResults[c.id];
+        const testLine = t
+          ? `<div class="muted mt-8" style="font-size:12px">上次测试：<span style="color:${t.ok ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'}">${t.ok ? '✓ 连接成功' : '✗ 连接失败'}</span> · ${esc(t.at || '')}${t.msg ? `（${esc(t.msg)}）` : ''}</div>`
+          : '';
+        return `
         <div class="card">
           <div class="row">
             <b>${esc(c.name)}</b>
@@ -1851,13 +2277,14 @@ async function renderAI(content) {
           <div class="muted">模型：${esc(c.model)}</div>
           <div class="muted" title="最大 token 是单次生成的字数上限（1 token ≈ 0.6 个汉字），普通写作保持默认即可">温度：${c.temperature} · 最大 token：${c.max_tokens}（单次输出上限）</div>
           <div class="muted">API Key：${c.api_key ? '••••••' + esc(String(c.api_key).slice(-4)) : '未填写'}</div>
+          ${testLine}
           <div class="row mt-8">
             <button class="btn small secondary" data-action="test-api-config" data-id="${c.id}">测试连接</button>
             <button class="btn small secondary" data-action="edit-api-config" data-id="${c.id}">编辑</button>
             <button class="btn small danger" data-action="delete-api-config" data-id="${c.id}">删除</button>
           </div>
-        </div>
-      `).join('') || '<div class="empty">还没有 API 配置</div>'}
+        </div>`;
+      }).join('') || '<div class="empty">还没有 API 配置</div>'}
     </div>
     <div class="card mt-12">
       <div class="card-title">提示</div>
@@ -2075,8 +2502,12 @@ function showAITaskProgress(stageLabel) {
       if (aiTaskSeq !== seq) return; // 已被更新任务卡替换，旧任务不再写屏
       if (extraLabel && labelEl) labelEl.textContent = extraLabel;
       if (!tail || !tailEl) return;
-      const lastLine = String(tail).split(/\r?\n/).map(sanitizeAITailLine).filter(Boolean).slice(-1)[0];
-      if (lastLine) tailEl.textContent = lastLine.length > 160 ? lastLine.slice(0, 160) + '…' : lastLine;
+      // 进度卡显示最近 6 行并自动滚到底：用户能看到「读上下文→想蓝图→写正文」的真实进展，不再只剩最后一行。
+      const lines = String(tail).split(/\r?\n/).map(sanitizeAITailLine).filter(Boolean).slice(-6);
+      if (lines.length) {
+        tailEl.textContent = lines.map((l) => (l.length > 160 ? l.slice(0, 160) + '…' : l)).join('\n');
+        tailEl.scrollTop = tailEl.scrollHeight;
+      }
     },
     note(msg) {
       if (aiTaskSeq === seq && tailEl) tailEl.textContent = msg;
@@ -2098,6 +2529,14 @@ function showAITaskProgress(stageLabel) {
 
 // 提交 harness 任务并轮询状态直到结束。返回 { output, scan }。
 async function runHarnessJob(body, stageLabel) {
+  // F-43：互斥锁——同一时刻只允许一个 harness 任务运行，避免并发任务互相覆盖进度卡与取消回调。
+  if (state.aiTaskRunning) {
+    toast('已有 AI 任务进行中，请等待其完成或先点「停止」', 'error');
+    const err = new Error('已有任务进行中');
+    err.busy = true;
+    throw err;
+  }
+  state.aiTaskRunning = true;
   const progress = showAITaskProgress(stageLabel);
   let cancelled = false;
   const cancelledErr = () => {
@@ -2117,9 +2556,20 @@ async function runHarnessJob(body, stageLabel) {
       progress.note('正在取消任务…');
       api('/harness/cancel', { method: 'POST', body: { job_id: started.job_id } }).catch(() => { /* 服务端取消失败时轮询仍会读到终态 */ });
     });
+    // F-10：轮询总超时 = 任务 timeout + 固定余量（120s）；轮询间隔做简单退避（1.5s 起，上限 10s）。
+    const totalTimeout = Number(body?.timeout || 600000) + 120000;
+    const startedAt = Date.now();
+    let pollDelay = 1500;
     for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, pollDelay));
+      pollDelay = Math.min(10000, pollDelay + 1000);
       if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
+      if (Date.now() - startedAt > totalTimeout) {
+        const err = new Error(`任务轮询超时（已等待超过 ${Math.round(totalTimeout / 1000)}s，可在进度卡点「停止」取消）`);
+        err.timeout = true;
+        progress.note('任务超过预期时间，可点击右上「停止」取消');
+        throw err;
+      }
       let job;
       try {
         job = await api(`/harness/job?id=${encodeURIComponent(started.job_id)}`);
@@ -2139,6 +2589,7 @@ async function runHarnessJob(body, stageLabel) {
     }
   } finally {
     progress.close();
+    state.aiTaskRunning = false;
   }
 }
 
@@ -2163,15 +2614,16 @@ async function runHarnessFromMessages(messages, options = {}) {
             messages,
             temperature: config.temperature,
             max_tokens: config.max_tokens
-          }
+          },
+          timeout: 600000 // F-45：直连长生成（write/polish/expand 等），覆盖默认 60s
         });
         const reply = (data.reply || '').trim();
         if (reply) return reply;
         // 思考型模型偶发“长思考但 content 为空”，视为失败并回退 harness
-        console.warn('[AI] 直连通道返回空内容，回退 harness');
+        reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 直连通道返回空内容，回退 harness' });
       } catch (e) {
         // 直连失败（Key 无效/网络异常等）自动回退 harness，保证功能可用
-        console.warn(`[AI] 直连通道失败，回退 harness：${e.message}`);
+        reportClientLog({ level: 'warn', kind: 'ai_direct_fallback', message: `[AI] 直连通道失败，回退 harness：${e.message}` });
       }
     }
   }
@@ -2189,6 +2641,227 @@ async function runHarnessFromMessages(messages, options = {}) {
     mode: options.mode || undefined
   }, `${AI_ACTION_LABELS[action] || 'AI 任务'}执行中…`);
   return data.output || '';
+}
+
+// ---------- 成文直连流式（质量优先模式）----------
+// 取当前生效的 API 配置（与直连通道共用规则）；无可用配置返回 null。
+async function getActiveAIConfig() {
+  if (!state.apiConfigs?.length) {
+    try { await ensureApiConfigs(true); } catch (_) { /* 取不到就回退 harness */ }
+  }
+  return state.apiConfigs?.find((c) => c.id === state.activeConfigId) || state.apiConfigs?.[0] || null;
+}
+
+// 非流式直连单次调用（flash 质检/小缺口补足用）；失败或无配置返回 null，调用方回退 harness。
+async function directAIWrite(messages, opts = {}) {
+  const config = await getActiveAIConfig();
+  if (!config || !config.api_key) return null;
+  try {
+    const data = await api('/ai/write', {
+      method: 'POST',
+      body: {
+        config_id: config.id,
+        messages,
+        model: opts.model || undefined,
+        temperature: opts.temperature ?? config.temperature,
+        max_tokens: opts.maxTokens ?? config.max_tokens
+      },
+      timeout: 600000 // 与直连长生成同档（F-45）
+    });
+    const reply = (data.reply || '').trim();
+    if (reply) return reply;
+    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 直连通道返回空内容' });
+    return null;
+  } catch (e) {
+    reportClientLog({ level: 'warn', kind: 'ai_direct_fallback', message: `[AI] 直连通道失败：${e.message}` });
+    return null;
+  }
+}
+
+// SSE 流式直连成文：边收 token 边更新进度卡（正文逐字可见），返回 { text, scan, proposals:null, via:'direct' }。
+// 失败抛错（调用方回退 harness 精写）。占用 AI 任务互斥锁与取消通道，可点「停止」。
+async function streamAIDirectWrite(body, stageLabel) {
+  if (state.aiTaskRunning) {
+    toast('已有 AI 任务进行中，请等待其完成或先点「停止」', 'error');
+    const err = new Error('已有任务进行中');
+    err.busy = true;
+    throw err;
+  }
+  state.aiTaskRunning = true;
+  const progress = showAITaskProgress(stageLabel);
+  let cancelled = false;
+  const cancelledErr = () => {
+    const err = new Error('任务已取消');
+    err.cancelled = true;
+    return err;
+  };
+  const controller = new AbortController();
+  try {
+    progress.setCancel(() => {
+      cancelled = true;
+      progress.note('正在停止生成…');
+      controller.abort();
+    });
+    const resp = await fetch('/api/ai/write_stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!resp.ok || !resp.body) {
+      let msg = `直连通道请求失败（${resp.status}）`;
+      try { const d = await resp.json(); msg = d?.error || d?.message || msg; } catch (_) { /* 保留默认 */ }
+      throw new Error(msg);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let full = '';
+    let completed = false;
+    let lastPaint = 0;
+    const paint = () => {
+      const now = Date.now();
+      if (now - lastPaint < 250) return; // 节流：250ms 刷一次进度卡，避免高频重排
+      lastPaint = now;
+      progress.update(full.slice(-600), `AI 写作（2/3 成文）· 正在生成正文（已 ${plainLength(full)} 字）…`);
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        let evt;
+        try { evt = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+        if (typeof evt.delta === 'string') { full += evt.delta; paint(); }
+        else if (evt.done) {
+          completed = true;
+          if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
+          return { text: String(evt.text || full), scan: evt.scan || null, proposals: null, via: 'direct' };
+        } else if (evt.error) throw new Error(evt.error);
+      }
+    }
+    if (cancelled) throw cancelledErr();
+    if (completed) return { text: full, scan: null, proposals: null, via: 'direct' };
+    throw new Error('流式连接中断，未收到完成信号（可重试或改用精写内核）');
+  } catch (e) {
+    if (e.name === 'AbortError') throw cancelled ? cancelledErr() : new Error('流式生成连接中断');
+    throw e;
+  } finally {
+    progress.close();
+    state.aiTaskRunning = false;
+  }
+}
+
+// flash 轻量质检轮：核对「蓝图达成 + 一致性硬伤」；返回 { pass, issues, skipped }。
+// 只标记硬伤（蓝图要点遗漏/设定冲突/伏笔冲突/大段 AI 腔），轻微瑕疵放行；通道不可用时不阻塞交付。
+async function verifyAIDraft(blueprint, article, targetWords) {
+  const bpText = blueprint
+    ? [
+        blueprint.scene_goal && `场景目标：${blueprint.scene_goal}`,
+        blueprint.plot_points && `情节点：\n${blueprint.plot_points}`,
+        blueprint.conflicts && `冲突与转折：${blueprint.conflicts}`,
+        blueprint.character_changes && `出场角色状态变化：${blueprint.character_changes}`,
+        blueprint.hook && `下一章钩子：${blueprint.hook}`,
+        blueprint.references && `需要回扣的设定/伏笔：${blueprint.references}`
+      ].filter(Boolean).join('\n')
+    : '（无蓝图）';
+  const prompt = [
+    '你是严格的小说质检员。请核对下面这篇刚生成的章节正文，输出 JSON 对象（不要 Markdown 代码块）：',
+    '{"verdict":"pass 或 issues","issues":["硬伤描述，逐条可执行"]}',
+    '只标记真正的硬伤：与本章蓝图要点明显不符/重要情节点遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句。轻微瑕疵不判 issues。',
+    '',
+    '【本章蓝图 · 写作必须遵守】',
+    bpText,
+    '',
+    '【当前小说上下文】',
+    aiContextBlock() || '无',
+    '',
+    '【待核正文】',
+    String(article || '').slice(0, 12000),
+    '',
+    '只输出 JSON。'
+  ].join('\n');
+  const reply = await directAIWrite([{ role: 'user', content: prompt }], {
+    model: 'deepseek-v4-flash',
+    maxTokens: 1500,
+    temperature: 0.2
+  });
+  if (!reply) return { pass: true, skipped: true }; // 质检通道不可用：不阻塞成文交付
+  const parsed = extractJSONFromText(reply);
+  if (!parsed) return { pass: true, skipped: true };
+  const issues = Array.isArray(parsed.issues)
+    ? parsed.issues.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).filter(Boolean)
+    : [];
+  return { pass: String(parsed.verdict) !== 'issues' || issues.length === 0, issues, skipped: false };
+}
+
+// 质检不过时走 harness 精写内核修复：保留大部分正文、只修硬伤；
+// 内核同时做一致性/红线自检与事件/记忆入账提案（提案稍后在界面确认）。
+function buildAIWriteRepairPrompt(article, issues, blueprint, targetWords) {
+  const bpText = blueprint
+    ? [
+        blueprint.scene_goal && `场景目标：${blueprint.scene_goal}`,
+        blueprint.plot_points && `情节点：\n${blueprint.plot_points}`,
+        blueprint.conflicts && `冲突与转折：${blueprint.conflicts}`,
+        blueprint.character_changes && `出场角色状态变化：${blueprint.character_changes}`,
+        blueprint.hook && `下一章钩子：${blueprint.hook}`,
+        blueprint.references && `需要回扣的设定/伏笔：${blueprint.references}`
+      ].filter(Boolean).join('\n')
+    : '（无）';
+  return [
+    '请修复下面这篇章节正文中质检发现的硬伤，输出修复后的完整正文（不要输出【成文】等前缀，不要解释）。',
+    `整章正文以纯文本计不少于 ${targetWords} 字；修复时其余内容尽量保持原样，不要推倒重写。`,
+    '',
+    '【质检发现的硬伤】',
+    (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）',
+    '',
+    '【本章蓝图 · 写作必须遵守】',
+    bpText,
+    '',
+    '【当前小说上下文】',
+    aiContextBlock() || '无',
+    '',
+    '【待修复正文】',
+    String(article || '').slice(0, 12000)
+  ].join('\n');
+}
+
+// 入账异步化：正文被作者确认采纳后，后台用 flash 整理事件/记忆提案（不阻塞交付；
+// 提案落 pending，作者稍后在界面确认）。直连成文不再有代理现场入账，这里补回账本闭环。
+async function scheduleLedgerProposalJob(article) {
+  const workId = state.workId || state.work?.id || null;
+  if (!workId || !state.currentChapterId || !String(article || '').trim()) return;
+  const prompt = [
+    '本章正文已被作者确认采纳。请阅读下面的章节正文，按创作纪律整理入账：',
+    '用 novel_event_add 记录本章关键剧情/伏笔/状态变化（新埋伏笔 kind=foreshadow，回收旧伏笔传 resolves_event_id，角色状态变化用 kind=character + payload={"character_id":角色id}）；',
+    '再用 novel_memory_update 把本章进展并入长期记忆。当前为提案模式，各调用一次即可，不要重复提交；不要输出正文。',
+    '',
+    '【本章正文】',
+    String(article).slice(0, 12000)
+  ].join('\n');
+  try {
+    const started = await api('/harness/run', {
+      method: 'POST',
+      body: {
+        prompt,
+        timeout: 600000,
+        model: 'deepseek-v4-flash',
+        action: 'ledger',
+        work_id: workId,
+        chapter_id: state.currentChapterId,
+        mode: 'full'
+      }
+    });
+    if (started.job_id) {
+      reportClientLog({ level: 'info', kind: 'ledger_job_scheduled', message: `[AI] 入账整理任务已后台启动（job ${started.job_id}）` });
+    }
+  } catch (e) {
+    reportClientLog({ level: 'warn', kind: 'ledger_job_failed', message: `[AI] 入账整理任务启动失败：${e.message}` });
+  }
 }
 
 // ---------- Harness 深度创作流水线 ----------
@@ -2285,19 +2958,20 @@ async function runPipelineStage(prompt, { model, stageLabel, timeout = 600000 })
           model,
           messages: [PIPELINE_SYSTEM, { role: 'user', content: userContent }],
           max_tokens: 16384
-        }
+        },
+        timeout: 600000 // F-45：直连长生成，覆盖默认 60s
       });
       return (data.reply || '').trim();
     };
     let reply = '';
-    try { reply = await tryDirect(prompt); } catch (e) { console.warn(`[AI] 工作台直连失败：${e.message}`); }
+    try { reply = await tryDirect(prompt); } catch (e) { reportClientLog({ level: 'warn', kind: 'ai_direct_fallback', message: `[AI] 工作台直连失败：${e.message}` }); }
     if (!reply) {
       // 空回复（思考型模型偶发）：追加“直接输出”指令重试一次
       try { reply = await tryDirect(prompt + '\n\n（请直接输出最终结果内容，不要任何思考与解释。）'); }
-      catch (e) { console.warn(`[AI] 工作台直连重试失败：${e.message}`); }
+      catch (e) { reportClientLog({ level: 'warn', kind: 'ai_direct_fallback', message: `[AI] 工作台直连重试失败：${e.message}` }); }
     }
     if (reply) return reply;
-    console.warn('[AI] 工作台直连返回空内容，回退 harness');
+    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 工作台直连返回空内容，回退 harness' });
   }
   try {
     const data = await runHarnessJob({ prompt, timeout, model, action: 'pipeline' }, stageLabel);
@@ -2676,7 +3350,15 @@ async function openCharStatusEvents(characterId) {
   try {
     const data = await api(`/novel/events?work_id=${state.workId}&limit=100`);
     const events = data.events || [];
-    rows = events.filter((e) => String(e.summary || '').includes(character.name)).slice(0, 12);
+    // F-42：优先用事件自带的 character_id 精确匹配；否则用 \b 词边界（仅 ASCII 名有意义）兜底；
+    // 中文名无 \b 语义，退回 contains 子串匹配（可能误命中含同名字段的事件，属可接受权衡）。
+    let nameRe = null;
+    try { nameRe = new RegExp(`\\b${String(character.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'); } catch (_) {}
+    rows = events.filter((e) => {
+      if (e.character_id != null) return Number(e.character_id) === Number(character.id);
+      if (nameRe && /^[\x00-\x7F]+$/.test(character.name)) return nameRe.test(String(e.summary || ''));
+      return String(e.summary || '').includes(character.name);
+    }).slice(0, 12);
   } catch (e) {
     toast('加载失败：' + e.message, 'error');
     return;
@@ -2764,7 +3446,7 @@ function openApiConfigModal(config = null) {
       <div class="form-grid">
         <div class="field full"><label>配置名称</label><input name="name" value="${esc(config?.name || '')}" placeholder="例如：DeepSeek 主账号"></div>
         <div class="field full"><label>Base URL</label><input name="base_url" value="${esc(config?.base_url || 'https://api.deepseek.com')}" placeholder="https://api.deepseek.com"></div>
-        <div class="field"><label>API Key</label><input name="api_key" value="${esc(config?.api_key || '')}" placeholder="sk-..."></div>
+        <div class="field"><label>API Key</label><input name="api_key" value="" placeholder="${config ? '留空则保持当前密钥不变' : 'sk-...'}"></div>
         <div class="field"><label>模型</label>${modelSelectHtml(config?.model || 'deepseek-v4-pro')}</div>
         <div class="field"><label>温度</label><input name="temperature" type="number" step="0.1" min="0" max="2" value="${config?.temperature ?? 0.8}"></div>
         <div class="field"><label>最大 Token（单次输出字数上限，1 token ≈ 0.6 个汉字）</label><input name="max_tokens" type="number" min="1" value="${config?.max_tokens ?? 4096}"></div>
@@ -2846,6 +3528,10 @@ function aiContextBlock() {
   if (ctx.story_memory) {
     parts.push(`长期记忆/故事摘要：\n${ctx.story_memory}`);
   }
+  // OpenViking 语义召回层：按当前章节场景从共享记忆库召回的相关片段，注入写作提示词。
+  if (ctx.semantic_recall?.hits?.length) {
+    parts.push(`相关记忆检索（语义召回，来自共享记忆库）：\n${ctx.semantic_recall.hits.map((h) => `【${h.label}】（相关度 ${recallPercent(h.score)}%）\n${h.text}`).join('\n\n')}`);
+  }
   const notes = [ctx.work_author_note, ctx.chapter_author_note].filter(Boolean).join('\n');
   if (notes) parts.push(`作者注：\n${notes}`);
   // 本章蓝图与目标字数（写作的常驻锚点）
@@ -2868,6 +3554,10 @@ function aiContextBlock() {
   if (ctx.story_tail) parts.push(`前文衔接（上一节/当前节尾部）：\n${ctx.story_tail.slice(0, 1500)}`);
   if (ctx.recent_events?.length) {
     parts.push(`最近发生的事件：\n${ctx.recent_events.slice(0, 12).map((e) => `- [${e.kind}] ${e.summary.slice(0, 150)}`).join('\n')}`);
+  }
+  // 未闭合伏笔层：直连成文没有 novel_consistency 工具兜底，必须内联进提示词（质量优先模式）。
+  if (ctx.open_foreshadows?.length) {
+    parts.push(`未闭合伏笔（写作必须照顾，可考虑推进或回收）：\n${ctx.open_foreshadows.map((f) => `- #${f.id} ${f.summary}`).join('\n')}`);
   }
   if (ctx.style_contract) parts.push(ctx.style_contract);
   return parts.join('\n\n');
@@ -3190,9 +3880,9 @@ function extractJSONFromText(text) {
   try { return JSON.parse(s.slice(start, end + 1)); } catch (_) { return null; }
 }
 
-// 纯文本字数（去空白）。
+// 纯文本字数：与 wordCount 统一口径（都先剥 HTML 标签再去空白计数），避免成文长度与保存提示口径不一致（F-26）。
 function plainLength(text) {
-  return String(text || '').replace(/\s/g, '').length;
+  return wordCount(text);
 }
 
 // 当前章节生效的目标字数：章节覆盖 > 作品默认 > 2000。
@@ -3227,17 +3917,17 @@ function parseAIWritingOutput(raw) {
   return { finalText: text };
 }
 
-// 弹窗询问 AI 的一次追问。
-function askAIWritingQuestion(question) {
+// F-24：弹窗询问 AI 的一次追问（写作/生成共用的单函数，title/placeholder 参数化）。
+function askAIQuestion(question, title = 'AI · 需要向你确认', placeholder = '直接回答 AI 的问题，它会继续追问，直到理解你的需求') {
   return new Promise((resolve) => {
     state.pendingAIQuestion = resolve;
     openModal({
-      title: 'AI 写作 · 需要向你确认',
+      title,
       body: `
         <div class="ai-writing-question">${esc(question).replace(/\n/g, '<br>')}</div>
         <div class="field mt-12">
           <label>你的回答</label>
-          <textarea id="ai-writing-answer" rows="3" placeholder="直接回答 AI 的问题，它会继续追问，直到理解你的需求"></textarea>
+          <textarea id="ai-writing-answer" rows="3" placeholder="${esc(placeholder)}"></textarea>
         </div>`,
       footer: `
         <button class="btn secondary" data-close-modal>取消</button>
@@ -3376,35 +4066,7 @@ function buildAIRevisionPrompt(article, issues) {
 function diffParagraphs(oldText, newText) {
   const a = String(oldText || '').split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
   const b = String(newText || '').split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-  const n = a.length, m = b.length;
-  if (!n && !m) return [];
-  if (n * m > 60000) {
-    // 超大文本退化为逐段对齐（前 n 段按位置比较）
-    const out = [];
-    for (let i = 0; i < Math.max(n, m); i++) {
-      if (i < n && i < m) {
-        out.push(a[i] === b[i] ? { t: 'same', x: a[i] } : { t: 'del', x: a[i] }, { t: 'add', x: b[i] });
-      } else if (i < n) out.push({ t: 'del', x: a[i] });
-      else out.push({ t: 'add', x: b[i] });
-    }
-    return out;
-  }
-  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const ops = [];
-  let i = 0, j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) { ops.push({ t: 'same', x: a[i] }); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ t: 'del', x: a[i] }); i++; }
-    else { ops.push({ t: 'add', x: b[j] }); j++; }
-  }
-  while (i < n) { ops.push({ t: 'del', x: a[i] }); i++; }
-  while (j < m) { ops.push({ t: 'add', x: b[j] }); j++; }
-  return ops;
+  return diffTokens(a, b);
 }
 
 // 审稿主流程：审稿报告 → 确认清单 → 修稿 → 差异预览 → 合并。
@@ -3509,6 +4171,7 @@ async function mergeReviewDiff() {
   state.pendingReviewDiff = null;
   if (!newText || !state.currentChapterId) return;
   try {
+    // F-16：审稿合并走 POST /novel/chapter_save（后端自动备份旧稿历史版本），与编辑器 PUT 通道区分。
     await api('/novel/chapter_save', {
       method: 'POST',
       body: { chapter_id: state.currentChapterId, content: textToParagraphsHtml(newText) }
@@ -3529,7 +4192,7 @@ async function downloadExport(path, fallbackName) {
     const res = await fetch('/api' + path);
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text.slice(0, 200));
+      throw new Error(extractReadableError(text, res.status)); // F-15：与 api() 统一非 JSON 错误格式
     }
     const blob = await res.blob();
     const a = document.createElement('a');
@@ -3556,18 +4219,26 @@ function bytesToBase64(bytes) {
 
 async function handleImportFile(file) {
   if (!file) return;
+  // F-40：限制导入文件大小（50MB），避免超大文件把主线程/内存打爆。
+  const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+  if (file.size > MAX_IMPORT_BYTES) {
+    toast('导入文件过大（超过 50MB），请拆分后再导入', 'error');
+    const input = $('#import-file');
+    if (input) input.value = '';
+    return;
+  }
   const isEpub = /\.epub$/i.test(file.name);
   const title = file.name.replace(/\.(txt|md|markdown|epub)$/i, '').trim();
+  toast('正在读取文件…');
   try {
     let body = { title };
     if (isEpub) {
       const buf = new Uint8Array(await file.arrayBuffer());
       body.base64 = bytesToBase64(buf);
-      toast('正在导入 EPUB…', 'success');
     } else {
       body.text = await file.text();
     }
-    const r = await api('/import', { method: 'POST', body });
+    const r = await api('/import', { method: 'POST', body, timeout: 300000 });
     toast(`已导入《${r.title}》：${r.chapters} 章`, 'success');
     await loadWorks(true);
     await render();
@@ -3679,13 +4350,18 @@ async function performToolbarAIWrite(requirement) {
     while (maxTurns-- > 0) {
       const lastMsg = history.length ? history[history.length - 1] : null;
       const stageLabel = !history.length
-        ? 'AI 写作 · 正在阅读章节与设定，准备提问…'
+        ? 'AI 写作（1/3 蓝图）· 正在阅读章节与设定，准备提问…'
         : (lastMsg?.content || '').includes('【提问】')
-          ? 'AI 写作 · 已收到回答，正在生成章节蓝图…'
-          : 'AI 写作 · 正在按反馈重新规划蓝图…';
+          ? 'AI 写作（1/3 蓝图）· 已收到回答，正在生成章节蓝图…'
+          : 'AI 写作（1/3 蓝图）· 正在按反馈重新规划蓝图…';
       const data = await runHarnessJob({ ...jobBase, prompt: buildAIWritingBlueprintPrompt(initial, history, targetWords) }, stageLabel);
       const raw = data.output || '';
-      if (!raw.trim()) throw new Error('AI 没有返回内容');
+      if (!raw.trim()) {
+        // N-02：把原始输出挂到错误上，供错误弹窗回显（此前失败只有瞬态 toast，用户看不到任何原因）。
+        const err = new Error('AI 没有返回内容');
+        err.rawOutput = '（AI 任务输出为空）';
+        throw err;
+      }
       const parsed = parseAIWritingOutput(raw);
 
       if (parsed.blueprint) {
@@ -3704,29 +4380,94 @@ async function performToolbarAIWrite(requirement) {
           }
         }
         const target = Number(confirmed.target_words) || targetWords;
-        // 阶段 B：按蓝图成文
-        const proseData = await runHarnessJob(
-          { ...jobBase, prompt: buildAIWritingProsePrompt(initial, confirmed.skip ? null : confirmed, target) },
-          'AI 写作 · 正在按蓝图成文（这一步最慢，通常 2–6 分钟）…'
-        );
-        let article = parseAIWritingOutput(proseData.output || '').finalText || '';
-        if (!article.trim()) throw new Error('AI 没有返回正文内容');
-        // 阶段 C：篇幅不足自动续写补足（最多 2 轮，拼稿后一并交付）
+        const blueprintForProse = confirmed.skip ? null : confirmed;
+        const prosePrompt = buildAIWritingProsePrompt(initial, blueprintForProse, target);
+        // 阶段 B（2/3）：按蓝图成文——质量优先模式：直连流式（快，正文逐字可见）+ flash 质检轮（保质量）。
+        // 直连不可用或质检发现硬伤时自动回退 harness 精写内核。
+        let proseData = null;
+        const maxTokens = Math.min(16384, Math.ceil(target * 2 + 2000)); // 目标字数×2+余量，防长文截断
+        const activeConfig = await getActiveAIConfig();
+        if (activeConfig && activeConfig.api_key) {
+          try {
+            proseData = await streamAIDirectWrite({
+              config_id: activeConfig.id,
+              model: 'deepseek-v4-flash',
+              messages: [{ role: 'user', content: prosePrompt }],
+              max_tokens: maxTokens,
+              work_id: state.workId || state.work?.id || undefined,
+              scan: true
+            }, 'AI 写作（2/3 成文）· 正在流式生成正文…');
+          } catch (e) {
+            if (e.cancelled) throw e;
+            reportClientLog({ level: 'warn', kind: 'ai_write_stream_fallback', message: `[AI] 成文流式直连失败，回退 harness：${e.message}` });
+            proseData = null;
+          }
+        }
+        if (!proseData) {
+          proseData = await runHarnessJob({ ...jobBase, prompt: prosePrompt }, 'AI 写作（2/3 成文）· 精写内核生成中（这一步最慢，通常 2–6 分钟）…');
+        }
+        let article = parseAIWritingOutput(proseData.text ?? proseData.output ?? '').finalText || '';
+        if (!article.trim()) {
+          const err = new Error('AI 没有返回正文内容');
+          err.rawOutput = String(proseData.output ?? proseData.text ?? '').slice(-2000) || '（AI 任务输出为空）';
+          throw err;
+        }
+        // 直连路径没有代理现场入账 → 交付后后台补提案；harness 路径已按纪律入账。
+        let needsLedger = proseData.via === 'direct';
+        if (proseData.via === 'direct') {
+          // flash 轻量质检轮：核对蓝图达成与一致性硬伤（秒级，替代部分 novel_consistency 职责）
+          const verdict = await verifyAIDraft(blueprintForProse, article, target);
+          if (!verdict.pass && (verdict.issues || []).length) {
+            toast('质检发现硬伤，自动改用精写内核修复…', 'info');
+            proseData = await runHarnessJob(
+              { ...jobBase, prompt: buildAIWriteRepairPrompt(article, verdict.issues, blueprintForProse, target) },
+              'AI 写作（2/3 成文）· 精写内核修复硬伤中…'
+            );
+            const repaired = parseAIWritingOutput(proseData.output || '').finalText || '';
+            if (repaired.trim()) {
+              article = repaired;
+              needsLedger = false; // 修复走 harness：内核已做一致性/红线自检并提交入账提案
+            }
+          }
+        }
+        // 阶段 C（3/3）：篇幅不足自动续写补足（最多 2 轮，拼稿后一并交付）。
+        // 分级处理：小缺口（<15%）直连秒级补足，大缺口才劳驾 harness 精写内核。
         let rounds = 0;
         while (plainLength(article) < target && rounds < 2) {
           rounds += 1;
-          const cont = await runHarnessJob(
-            { ...jobBase, prompt: buildAIWritingContinuationPrompt(article, target) },
-            `AI 写作 · 篇幅不足，正在续写补足（${rounds}/2）…`
-          );
-          const more = parseAIWritingOutput(cont.output || '').finalText || '';
+          const gap = Math.max(0, target - plainLength(article));
+          const contPrompt = buildAIWritingContinuationPrompt(article, target);
+          let more = '';
+          if (gap <= Math.max(200, Math.ceil(target * 0.15))) {
+            const reply = await directAIWrite([{ role: 'user', content: contPrompt }], {
+              model: 'deepseek-v4-flash',
+              maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))
+            });
+            more = parseAIWritingOutput(reply || '').finalText || '';
+          }
+          if (!more.trim()) {
+            const cont = await runHarnessJob(
+              { ...jobBase, prompt: contPrompt },
+              `AI 写作（3/3 补足）· 篇幅不足，正在续写补足（${rounds}/2）…`
+            );
+            more = parseAIWritingOutput(cont.output || '').finalText || '';
+          }
           if (!more.trim()) break;
           article = `${article}\n\n${more}`;
         }
+        // 全文确定性红线扫描（成文+补足合并后）：本地正则零成本，覆盖直连路径与补足新增段落。
+        try {
+          const fullScan = await api('/novel/scan', {
+            method: 'POST',
+            body: { work_id: state.workId || state.work?.id || undefined, text: article }
+          });
+          proseData.scan = { enabled: true, total: fullScan.total || 0, hits: fullScan.hits || [] };
+        } catch (_) { /* 扫描失败不阻塞交付 */ }
         const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target);
         if (mode === null) return;
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
         await applyAIWritingArticle(mode, article);
+        if (needsLedger) scheduleLedgerProposalJob(article); // 不阻塞交付，后台整理提案
         return;
       }
 
@@ -3740,7 +4481,7 @@ async function performToolbarAIWrite(requirement) {
       }
 
       if (parsed.question) {
-        const answer = await askAIWritingQuestion(parsed.question);
+        const answer = await askAIQuestion(parsed.question, 'AI 写作 · 需要向你确认');
         if (answer === null) return;
         if (answer.type === 'skip') {
           history.push({ role: 'user', content: '请不要再提问，直接给出章节蓝图。' });
@@ -3761,8 +4502,19 @@ async function performToolbarAIWrite(requirement) {
 
     toast('AI 追问次数已达上限，请重试', 'error');
   } catch (e) {
-    if (e.cancelled) toast('已取消 AI 写作', 'success');
-    else toast('AI 写作失败：' + e.message + (e.tail ? '（查看报错历史可了解细节）' : ''), 'error');
+    if (e.cancelled) {
+      toast('已取消 AI 写作', 'success');
+    } else {
+      // N-02：失败必须可见。弹窗说明原因并回显 AI 原始输出尾部，替代此前一闪而过的 toast。
+      const detail = e.rawOutput || e.tail || e.message || '未知错误';
+      openModal({
+        title: '⚠️ AI 写作未完成',
+        body: `
+          <div class="muted mb-8">任务已结束，但没有得到可用的写作结果。常见原因：AI 拒绝执行、创作内核通道异常（如中文需求在传输中被损坏）、或返回内容无法解析。下方是原始输出尾部，可复制反馈排查：</div>
+          <pre style="white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto;background:rgba(0,0,0,.25);padding:10px;border-radius:6px;font-size:12px">${esc(String(detail).slice(-2000))}</pre>`,
+        footer: '<button class="btn" data-close-modal>知道了</button>'
+      });
+    }
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -3789,6 +4541,7 @@ function askBatchGenerate() {
 async function batchGenerateChapters(count) {
   count = Math.min(10, Math.max(1, Number(count) || 3));
   if (!state.workId) return toast('请先进入一部作品', 'error');
+  flushSave(); // F-01：批量生成前先落盘当前编辑器，避免长时间任务结束时丢失未保存内容
   let empty;
   try {
     empty = await api(`/novel/empty_chapters?work_id=${state.workId}`);
@@ -4149,7 +4902,7 @@ async function genWorkContextBlock() {
   return context.join('\n\n') || '（当前作品暂无可参考的设定内容）';
 }
 
-function genDialoguePrompt(system, context, initial, history) {
+function genDialoguePrompt(system, context, initial, history, forceQuestion = false) {
   const lines = [];
   lines.push(system);
   lines.push('');
@@ -4164,51 +4917,46 @@ function genDialoguePrompt(system, context, initial, history) {
     history.forEach((m) => lines.push(m.role === 'assistant' ? `助手：${m.content}` : `用户：${m.content}`));
   }
   lines.push('');
-  lines.push('请决定下一步：需要澄清就先输出【提问】并只问一个问题；已经理解就直接输出【成文】并给出全部内容。');
+  lines.push(forceQuestion
+    ? '这是本轮对话的第一步：无论你是否已经理解需求，都请先只问一个最关键的问题（第一行必须严格是【提问】，一次只问一个问题，不要输出最终内容）。等我回答后，再在下一轮输出【成文】。'
+    : '请决定下一步：需要澄清就先输出【提问】并只问一个问题；已经理解就直接输出【成文】并给出全部内容。');
   return lines.join('\n');
 }
 
-// 弹窗询问 AI 的一次追问（小说设定生成版，按钮协议与正文 AI 写作一致）。
-function askAIGenQuestion(question) {
-  return new Promise((resolve) => {
-    state.pendingAIQuestion = resolve;
-    openModal({
-      title: 'AI 生成 · 需要向你确认',
-      body: `
-        <div class="ai-writing-question">${esc(question).replace(/\n/g, '<br>')}</div>
-        <div class="field mt-12">
-          <label>你的回答</label>
-          <textarea id="ai-writing-answer" rows="3" placeholder="直接回答 AI 的问题，它会继续追问，直到理解你的需求"></textarea>
-        </div>`,
-      footer: `
-        <button class="btn secondary" data-close-modal>取消</button>
-        <button class="btn secondary" data-action="ai-writing-skip">跳过提问直接生成</button>
-        <button class="btn" data-action="ai-writing-answer">提交回答</button>`
-    });
-    const input = $('#ai-writing-answer');
-    if (input) input.focus();
-  });
-}
+
 
 // 多轮【提问】→【成文】生成循环，返回最终文本；用户中途取消返回 null。
+// 首轮强制一问（forceQuestion）优先走直连通道秒级出题，直连失败/空回复回退 Harness；
+// 成文轮（用户回答后）仍走 Harness 创作内核（deepseek-v4-pro）保证设定质量与上下文一致。
 async function runGenAskLoop({ system, initial }) {
   const history = [];
   const context = await genWorkContextBlock();
   let turns = 10;
   while (turns-- > 0) {
-    const data = await runHarnessJob({
-      prompt: genDialoguePrompt(system, context, initial, history),
-      timeout: 600000,
-      model: 'deepseek-v4-pro',
-      action: 'settings-gen',
-      work_id: state.workId,
-      chapter_id: state.currentChapterId || undefined,
-      mode: 'full'
-    }, '小说设定 AI 生成 · 正在分析作品与需求…');
-    const parsed = parseAIWritingOutput(data.output || '');
+    const forceQuestion = history.length === 0;
+    const prompt = genDialoguePrompt(system, context, initial, history, forceQuestion);
+    let output = null;
+    if (forceQuestion) {
+      // 直连提问轮：固定 flash，秒级、成本低；仅在需要澄清的首轮使用。
+      output = await directAIWrite([{ role: 'user', content: prompt }], { model: 'deepseek-v4-flash', maxTokens: 1500 });
+    }
+    if (!output) {
+      // 无可用 API 配置 / 直连失败 / 空回复：回退 Harness 慢通道（含后续成文轮）。
+      const data = await runHarnessJob({
+        prompt,
+        timeout: 600000,
+        model: 'deepseek-v4-pro',
+        action: 'settings-gen',
+        work_id: state.workId,
+        chapter_id: state.currentChapterId || undefined,
+        mode: 'full'
+      }, '小说设定 AI 生成 · 正在分析作品与需求…');
+      output = data.output || '';
+    }
+    const parsed = parseAIWritingOutput(output);
     if (parsed.finalText) return parsed.finalText;
     if (parsed.question) {
-      const answer = await askAIGenQuestion(parsed.question);
+      const answer = await askAIQuestion(parsed.question, 'AI 生成 · 需要向你确认');
       if (answer === null) return null;
       if (answer.type === 'skip') {
         history.push({ role: 'user', content: '请不要再提问，直接给出最终结果。' });
@@ -4632,7 +5380,7 @@ function genFillFromModal(kind) {
 
 function castNums(obj) {
   const out = { ...obj };
-  ['position', 'volume_id', 'plotline_id', 'category_id', 'work_id', 'from_character_id', 'to_character_id', 'character_id'].forEach((k) => {
+  ['position', 'volume_id', 'plotline_id', 'category_id', 'work_id', 'from_character_id', 'to_character_id', 'character_id', 'default_chapter_words', 'total_chapters'].forEach((k) => {
     if (out[k] !== undefined && out[k] !== null && out[k] !== '') {
       const n = Number(out[k]);
       if (Number.isFinite(n)) out[k] = n;
@@ -4735,7 +5483,8 @@ async function runAICreateNovel() {
     stopTick = startElapsedTicker($('#ai-create-progress'), '生成中，已用时');
     const data = await api('/harness/generate_novel', {
       method: 'POST',
-      body: { prompt, model: 'deepseek-v4-pro' }
+      body: { prompt, model: 'deepseek-v4-pro' },
+      timeout: 600000 // F-45：同步长任务，覆盖默认 60s
     });
     if (stopTick) stopTick();
     setAICreateProgress(steps, 2);
@@ -4754,36 +5503,6 @@ async function runAICreateNovel() {
   } finally {
     if (stopTick) stopTick();
     if (btn) btn.disabled = false;
-  }
-}
-
-function insertAIDraft() {
-  const draft = state.aiDraft;
-  const editor = $('#editor-content');
-  if (!draft || !editor) return;
-  editor.focus();
-  const paragraphs = draft.split(/\n{2,}/).map((p) => p.replace(/\n/g, '<br>'));
-  const html = paragraphs.map((p) => `<p>${p}</p>`).join('');
-  try {
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount) {
-      const range = sel.getRangeAt(0);
-      const div = document.createElement('div');
-      div.innerHTML = html;
-      const frag = document.createDocumentFragment();
-      while (div.firstChild) frag.appendChild(div.firstChild);
-      range.deleteContents();
-      range.insertNode(frag);
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } else {
-      editor.insertAdjacentHTML('beforeend', html);
-    }
-    scheduleSave();
-    toast('已插入 AI 内容', 'success');
-  } catch (e) {
-    toast('插入失败：' + e.message, 'error');
   }
 }
 
@@ -4838,6 +5557,48 @@ function insertTermLink(termId) {
   closeModal();
   scheduleSave();
   toast(`已关联：${term.title}`, 'success');
+}
+
+// ---------- 编辑器格式（F-36：替代已弃用的 document.execCommand） ----------
+// 行内格式（加粗/斜体/下划线）用 Selection/Range 手动包裹；块级格式（H2/引用）替换选区所在块。
+function applyInlineFormat(tag) {
+  const editor = $('#editor-content');
+  if (!editor) return;
+  editor.focus();
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount !== 1 || !sel.toString().trim()) return;
+  const range = sel.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) return;
+  const wrap = document.createElement(tag);
+  try {
+    wrap.appendChild(range.extractContents());
+    range.insertNode(wrap);
+  } catch (_) { /* 跨块选区无法包裹时静默忽略 */ }
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function applyBlockFormat(tag) {
+  const editor = $('#editor-content');
+  if (!editor) return;
+  editor.focus();
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount !== 1) return;
+  const range = sel.getRangeAt(0);
+  const anc = range.commonAncestorContainer;
+  const block = (anc.nodeType === Node.ELEMENT_NODE ? anc : anc.parentElement)?.closest('p, div, blockquote, h2, h3, li');
+  const newEl = document.createElement(tag);
+  if (block && editor.contains(block) && block !== editor) {
+    while (block.firstChild) newEl.appendChild(block.firstChild);
+    block.replaceWith(newEl);
+  } else {
+    try {
+      newEl.appendChild(range.extractContents());
+      range.insertNode(newEl);
+    } catch (_) { /* 选区异常时静默忽略 */ }
+  }
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 // ---------- global click handler ----------
@@ -4965,7 +5726,8 @@ document.addEventListener('click', async (e) => {
 
       case 'save-work': {
         const modal = $('.modal');
-        const data = collectModalData(modal);
+        // F-33：复用 castNums 把数字字段 Number 化，避免表单字符串落库导致类型不一致。
+        const data = castNums(collectModalData(modal));
         // D4：作品名称必填（前端拦截 + 服务端兜底）
         if (!String(data.title || '').trim()) {
           toast('作品名称不能为空', 'error');
@@ -5012,13 +5774,19 @@ document.addEventListener('click', async (e) => {
         const reinstall = action === 'demo-reinstall';
         if (btn) btn.disabled = true;
         try {
-          const r = await api('/demo/install', { method: 'POST', body: { force: !!reinstall } });
-          toast(`已导入示例《${r.title || '雾都缝匠'}》：${r.counts.chapters} 章 / ${r.counts.characters} 角色 / ${r.counts.world_entries} 世界观词条 / ${r.counts.events} 事件`, 'success');
+          const r = await api('/demo/install', { method: 'POST', body: { force: !!reinstall }, timeout: 300000 });
+          // F-14：先设置状态，再用可选链兜底拼接提示文案，避免 r.counts 缺失时抛 TypeError。
           state.workId = r.work_id;
           state.loadedWorkId = null;
           state.work = null;
           state.view = 'overview';
           state.currentChapterId = null;
+          const c = r.counts || {};
+          // N-08：设定库词条（terms）与世界规则词条（world_entries）是两个体系，
+          // 之前 toast 只报 world_entries 数量，与总览的「设定词条」统计口径不一致，新人会以为数据丢了。
+          toast(`已导入示例《${r.title || '雾都缝匠'}》：${c.chapters ?? 0} 章 / ${c.characters ?? 0} 角色 / ${c.terms ?? 0} 设定词条 / ${c.world_entries ?? 0} 世界观词条 / ${c.events ?? 0} 事件`, 'success');
+          state.demoStatusLoaded = false; // F-30：示例状态变更，缓存失效
+          state.demoStatus = null;
         } catch (e) {
           toast('导入失败：' + e.message, 'error');
         } finally {
@@ -5030,7 +5798,7 @@ document.addEventListener('click', async (e) => {
 
       case 'demo-remove': {
         if (!confirm('删除示例作品《雾都缝匠》？\n其卷、剧情线、章节、角色、设定、记忆与事件会全部删除。')) break;
-        await api('/demo/remove', { method: 'POST' });
+        await api('/demo/remove', { method: 'POST', timeout: 120000 });
         toast('示例数据已删除', 'success');
         if (state.workId && state.work?.title === '雾都缝匠') {
           state.workId = null;
@@ -5039,6 +5807,8 @@ document.addEventListener('click', async (e) => {
           state.view = 'works';
           state.currentChapterId = null;
         }
+        state.demoStatusLoaded = false; // F-30：示例状态变更，缓存失效
+        state.demoStatus = null;
         await loadWorks(true);
         await render();
         break;
@@ -5075,7 +5845,6 @@ document.addEventListener('click', async (e) => {
       case 'save-volume': {
         const modal = $('.modal');
         const data = collectModalData(modal);
-        data.volume_id = undefined;
         const id = actionEl.dataset.id;
         const saved = id
           ? await api(`/volumes/${id}`, { method: 'PUT', body: data })
@@ -5169,6 +5938,7 @@ document.addEventListener('click', async (e) => {
       }
 
       case 'open-chapter': {
+        flushSave(); // F-01：切章前先落盘当前编辑器，避免 800ms 内切章丢字
         state.currentChapterId = Number(actionEl.dataset.id);
         state.view = 'writing';
         await render();
@@ -5378,7 +6148,8 @@ document.addEventListener('click', async (e) => {
         break;
 
       case 'shutdown-server': {
-        if (!confirm('确定关闭 Novel Studio 并释放端口吗？')) break;
+        // N-10：确认文案口语化，说明后果（此前「释放端口」对新手无意义，误点就关掉整个服务）。
+        if (!confirm('确定要关闭 Novel Studio 服务吗？\n\n关闭后本页面将无法继续使用，需要重新启动服务（运行 start-novel-studio.cmd 或 node server.js）才能恢复。')) break;
         try {
           await api('/shutdown', { method: 'POST' });
           toast('服务已关闭，可以关闭此页面', 'success');
@@ -5391,11 +6162,15 @@ document.addEventListener('click', async (e) => {
       case 'format': {
         const editor = $('#editor-content');
         if (!editor) break;
-        editor.focus();
         const format = actionEl.dataset.format;
-        if (format === 'formatBlock') {
-          document.execCommand('formatBlock', false, actionEl.dataset.value);
-        } else {
+        // F-36：bold/italic/underline 用 Range 包裹，H2/引用用 Range 整块替换；列表结构复杂，
+        // 浏览器 execCommand 处理最稳，保留为兜底（其余格式已迁移到 Selection/Range）。
+        if (format === 'bold') applyInlineFormat('B');
+        else if (format === 'italic') applyInlineFormat('I');
+        else if (format === 'underline') applyInlineFormat('U');
+        else if (format === 'formatBlock') applyBlockFormat(actionEl.dataset.value === 'h2' ? 'H2' : 'BLOCKQUOTE');
+        else if (format === 'insertUnorderedList' || format === 'insertOrderedList') {
+          editor.focus();
           document.execCommand(format, false, null);
         }
         scheduleSave();
@@ -5503,6 +6278,7 @@ document.addEventListener('click', async (e) => {
         if (!confirm('删除该词条？正文中的关联会变成普通文本。')) break;
         await api(`/terms/${id}`, { method: 'DELETE' });
         state.currentTermId = null;
+        state.termsCache.delete(id); // F-32：同步删除缓存，避免词条链接/悬浮提示读到已删词条
         await loadWorkData(true);
         await render();
         break;
@@ -5671,12 +6447,16 @@ document.addEventListener('click', async (e) => {
         btn.textContent = '测试中...';
         try {
           await api('/ai/test', { method: 'POST', body: { config_id: id } });
+          // N-07：结果驻留显示在配置卡上（此前只有 2.5s 的瞬态 toast，容易错过）。
+          state.apiTestResults[id] = { ok: true, at: new Date().toLocaleTimeString('zh-CN', { hour12: false }), msg: '' };
           toast('连接成功', 'success');
         } catch (e) {
+          state.apiTestResults[id] = { ok: false, at: new Date().toLocaleTimeString('zh-CN', { hour12: false }), msg: e.message };
           toast('连接失败：' + e.message, 'error');
         } finally {
           btn.disabled = false;
           btn.textContent = '测试连接';
+          await render();
         }
         break;
       }
@@ -5687,6 +6467,8 @@ document.addEventListener('click', async (e) => {
         data.temperature = Number(data.temperature);
         data.max_tokens = Number(data.max_tokens);
         const id = actionEl.dataset.id;
+        // 编辑且未填新 key：传 null 表示保持原密钥（后端跳过 api_key 更新，避免回写掩码覆盖真实密钥）。
+        if (id && !String(data.api_key || '').trim()) data.api_key = null;
         const saved = id
           ? await api(`/api_configs/${id}`, { method: 'PUT', body: data })
           : await api('/api_configs', { method: 'POST', body: data });
@@ -5855,9 +6637,16 @@ document.addEventListener('click', async (e) => {
         break;
       }
 
-      case 'ai-insert':
-        insertAIDraft();
+      case 'ai-insert': {
+        // F-04/F-25：删除 insertAIDraft 的重复实现，统一走 insertHtmlAtCursor + textToParagraphsHtml（已转义）。
+        const draft = state.aiDraft;
+        const editor = $('#editor-content');
+        if (!draft || !editor) break;
+        insertHtmlAtCursor(editor, textToParagraphsHtml(draft));
+        scheduleSave();
+        toast('已插入 AI 内容', 'success');
         break;
+      }
 
       // ---------- 小说设定 AI 生成 ----------
       case 'ai-gen-plotlines-new':
@@ -5939,6 +6728,22 @@ document.addEventListener('click', async (e) => {
         break;
       }
 
+      case 'logs-refresh':
+        await refreshLogs(true);
+        break;
+
+      case 'logs-more':
+        await refreshLogs(false);
+        break;
+
+      case 'logs-clear': {
+        if (!confirm('确定清空全部日志记录？此操作不可撤销。')) break;
+        await api('/logs', { method: 'DELETE' });
+        await refreshLogs(true);
+        toast('日志已清空');
+        break;
+      }
+
       default:
         break;
     }
@@ -5958,27 +6763,40 @@ function highlightTerms(text, q) {
   return safe.replace(re, '<mark class="search-hit">$1</mark>');
 }
 
+// F-09：全局搜索请求序号——仅最新一次请求的结果允许写 DOM，避免慢响应覆盖新结果。
+let searchSeq = 0;
+
 const debouncedSearch = debounce(async () => {
   const q = $('#global-search').value.trim();
   const box = $('#search-results');
   if (!q) { box.hidden = true; return; }
+  const seq = ++searchSeq;
   try {
     const data = await api(`/search?q=${encodeURIComponent(q)}${state.workId ? `&work_id=${state.workId}` : ''}`);
+    if (seq !== searchSeq) return; // 已被更新的请求取代，丢弃过期结果
     const group = (label, items, fn) => items.length ? `
       <div class="search-group-title">${label}（${items.length}）</div>
       ${items.map(fn).join('')}` : '';
     box.innerHTML = group('设定词条', data.terms, (t) => `<div class="search-item" data-action="search-go" data-type="term" data-id="${t.id}" data-work-id="${t.work_id || ''}"><div class="title">${highlightTerms(t.title, q)}</div><div class="snippet">${highlightTerms(t.snippet || stripHtml(t.content || '').slice(0, 60), q)}</div></div>`)
       + group('章节/正文', data.chapters, (c) => `<div class="search-item" data-action="search-go" data-type="chapter" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${highlightTerms(c.title, q)}</div><div class="snippet">${highlightTerms(c.snippet || stripHtml(c.summary || c.content || '').slice(0, 60), q)}</div></div>`)
       + group('角色', data.characters, (c) => `<div class="search-item" data-action="search-go" data-type="character" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${highlightTerms(c.name, q)}</div><div class="snippet">${highlightTerms(c.identity || '', q)}</div></div>`)
-      + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}" data-work-id="${p.work_id || ''}"><div class="title">${highlightTerms(plotlineDisplayTitle(p), q)}</div><div class="snippet">${highlightTerms(p.snippet || p.summary || '', q)}</div></div>`);
+      + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}" data-work-id="${p.work_id || ''}"><div class="title">${highlightTerms(plotlineDisplayTitle(p), q)}</div><div class="snippet">${highlightTerms(p.snippet || p.summary || '', q)}</div></div>`)
+      + group('🧠 语义相关（共享记忆库）', data.semantic?.hits || [], (s) => `<div class="search-item"><div class="title">${highlightTerms(s.label || '记忆条目', q)} <span class="muted" style="font-size:11px">${esc(s.kind || '')} · 相关度 ${recallPercent(s.score)}%</span></div><div class="snippet">${highlightTerms(s.text || '', q)}</div></div>`);
     if (!box.innerHTML) box.innerHTML = '<div class="muted search-empty">未找到与「' + esc(q) + '」相关的内容</div>';
     box.hidden = false;
   } catch (_) {
-    box.hidden = true;
+    if (seq === searchSeq) box.hidden = true;
   }
 }, 300);
 
 document.addEventListener('change', async (e) => {
+  if (e.target.matches('[data-action="semantic-toggle"]')) {
+    try {
+      await api('/novel/semantic', { method: 'PUT', body: { enabled: e.target.checked } });
+      await renderContextTab($('#reference-list'));
+    } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
+    return;
+  }
   if (e.target.id === 'import-file') {
     handleImportFile(e.target.files?.[0]);
     return;
@@ -5989,15 +6807,29 @@ document.addEventListener('change', async (e) => {
   }
   // D15：单栏布局下的章节切换器
   if (e.target.id === 'chapter-switcher') {
+    flushSave(); // F-01：切章前先落盘，避免丢字
     state.currentChapterId = Number(e.target.value);
     await render();
     persistSession();
+  }
+  // 日志面板筛选
+  if (e.target.id === 'log-level') {
+    logsState.level = e.target.value;
+    refreshLogs(true);
+  }
+  if (e.target.id === 'log-layer') {
+    logsState.layer = e.target.value;
+    refreshLogs(true);
   }
 });
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'global-search') {
     debouncedSearch();
+  }
+  if (e.target.id === 'log-q') {
+    logsState.q = e.target.value;
+    debouncedLogSearch();
   }
   if (e.target.id === 'link-term-search') {
     const q = e.target.value.trim().toLowerCase();
@@ -6007,13 +6839,12 @@ document.addEventListener('input', (e) => {
     list.innerHTML = items.map((t) => `<div class="term-item" data-action="insert-term-link" data-id="${t.id}"><b>${esc(t.title)}</b><span class="muted grow">${esc((t.content || '').slice(0, 50))}</span></div>`).join('') || '<div class="muted">无匹配词条</div>';
   }
   if (e.target.id === 'term-search') {
+    // F-06：input 常驻，只重建「词条列表子容器」#term-list，避免重建 input 自身导致焦点丢失。
     const q = e.target.value.trim().toLowerCase();
     const items = state.terms.filter((t) => !q || t.title.toLowerCase().includes(q) || (t.content || '').toLowerCase().includes(q) || (t.tags || '').toLowerCase().includes(q));
-    const list = $('.terms-list');
+    const list = $('#term-list');
     if (list) {
-      const oldDetail = list.innerHTML;
-      list.innerHTML = `<div class="mb-8"><input id="term-search" placeholder="搜索词条..." value="${esc(e.target.value)}"></div>` + (items.map((t) => `<div class="term-item ${state.currentTermId === t.id ? 'active' : ''}" data-action="select-term" data-id="${t.id}"><b>${esc(t.title)}</b><span class="muted grow" style="font-size:12px">${esc(t.tags || '')}</span></div>`).join('') || '<div class="muted">暂无词条</div>');
-      void oldDetail;
+      list.innerHTML = items.map((t) => `<div class="term-item ${state.currentTermId === t.id ? 'active' : ''}" data-action="select-term" data-id="${t.id}"><b>${esc(t.title)}</b><span class="muted grow" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.tags || '')}</span></div>`).join('') || '<div class="muted">暂无词条</div>';
     }
   }
   if (e.target.id === 'character-search') {
@@ -6099,7 +6930,9 @@ document.addEventListener('mouseover', (e) => {
 // sidebar toggle
 document.addEventListener('click', (e) => {
   if (e.target.closest('#sidebar-toggle')) {
-    $('#sidebar').classList.toggle('hidden');
+    const sidebar = $('#sidebar');
+    sidebar.classList.remove('hidden'); // F-13：折叠改用 .collapsed，避免 .hidden 的 display:none 吞掉动画
+    sidebar.classList.toggle('collapsed');
     updateSidebarToggleIcon();
   }
 });
@@ -6125,7 +6958,11 @@ document.addEventListener('keydown', (e) => {
 // D11：侧栏折叠按钮图标随状态切换（◀=可收起 / ▶=可展开），不再用误导性的 ☰
 function updateSidebarToggleIcon() {
   const icon = $('#sidebar-toggle');
-  if (icon) icon.textContent = $('#sidebar').classList.contains('hidden') ? '▶' : '◀';
+  if (!icon) return;
+  const collapsed = $('#sidebar').classList.contains('collapsed');
+  icon.textContent = collapsed ? '▶' : '◀';
+  // N-11：「◀」形似返回按钮，新人误以为能回到作品列表；加 title 说明实际行为。
+  icon.title = collapsed ? '展开侧栏' : '收起侧栏（返回作品列表请点左上角图标）';
 }
 
 async function init() {
@@ -6138,7 +6975,7 @@ async function init() {
   });
   const topbarRight = $('#topbar-right');
   if (topbarRight) {
-    topbarRight.innerHTML = `<button class="btn small danger" data-action="shutdown-server" title="关闭服务并释放端口">⏻ 关闭</button>`;
+    topbarRight.innerHTML = `<button class="btn small danger" data-action="shutdown-server" title="关闭 Novel Studio 服务（关闭后本页面将失效）">⏻ 关闭服务</button>`;
   }
   updateSidebarToggleIcon();
   // D13：恢复上次会话位置；作品已被删除时安全回退到初始页

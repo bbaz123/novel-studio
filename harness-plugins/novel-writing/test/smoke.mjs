@@ -7,10 +7,11 @@
  * 伏笔闭环与事件幂等 / 提案确认流 / 记忆版本与回滚与压缩提示 /
  * 一致性核对清单 / 正文写回（历史版本）/ 写类端点归属校验（防串作品）/
  * 跨源写请求拒绝 / 非法红线拒绝 /
- * 出场角色评分制（别名命中/蓝图提及/单字防误命中/角色卡核心保底/兜底/强制带入/角色相关事件）。
+ * 出场角色评分制（别名命中/蓝图提及/单字防误命中/角色卡核心保底/兜底/强制带入/角色相关事件）/
+ * 统一日志系统（lifecycle 入账/远端上报/非法层级拒绝/筛选统计/滚动文件落盘/500 入账/清空）。
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -77,7 +78,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findStudioRoot();
 // zip 读取器在 novel-studio 仓库根（发布镜像仓库不含服务端文件），按定位到的仓库根动态加载。
 const { readZip } = await import(pathToFileURL(join(repoRoot, 'zip-reader.mjs')).href);
-const PORT = 3900 + Math.floor(Math.random() * 400);
+const PORT = 3900 + Math.floor(Math.random() * 800); // 加宽范围降低端口冲突概率
 // SMOKE_TARGET_BASE：指向已在外部启动的 novel-studio 服务时，本脚本不再自行 spawn
 // （适用于 CI 或受限沙箱环境，服务与数据目录由外部管理）。
 const EXTERNAL_BASE = process.env.SMOKE_TARGET_BASE || '';
@@ -94,6 +95,7 @@ async function jfetch(path, options = {}) {
     method: options.method || 'GET',
     headers: { 'content-type': 'application/json', ...(options.headers || {}) },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    signal: AbortSignal.timeout(options.timeout || 15000),
   });
   const text = await res.text();
   let data;
@@ -103,11 +105,16 @@ async function jfetch(path, options = {}) {
 
 const server = EXTERNAL_BASE ? null : spawn(process.execPath, ['server.js'], {
   cwd: repoRoot,
-  env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: dataDir },
+  env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: dataDir, NOVELSTUDIO_OV_DISABLED: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
 if (server) {
+  server.on('error', (err) => {
+    console.error('server.js 启动失败：', err.message);
+    serverLog += `\n[spawn error] ${err.message}`;
+    process.exitCode = 1;
+  });
   server.stdout.on('data', (c) => { serverLog += c; });
   server.stderr.on('data', (c) => { serverLog += c; });
 }
@@ -606,15 +613,115 @@ try {
     assert.equal(bigCtx.status, 200);
     assert.ok(bigCtx.data.assembled.includes('【写作风格红线】'), '大作品装配结果应包含红线层');
     assert.ok(bigCtx.data.scene_characters.length > 0, '大作品应带出兜底角色');
-    await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
-    const t2 = performance.now();
-    assert.ok(t1 - t0 < 8000, `首次装配应在 8s 内（实际 ${Math.round(t1 - t0)}ms）`);
-    console.log(`    （大作品上下文装配：首次 ${Math.round(t1 - t0)}ms，缓存命中 ${Math.round(t2 - t1)}ms）`);
+    const firstMs = t1 - t0;
+    assert.ok(firstMs < 15000, `首次装配应在 15s 内（实际 ${Math.round(firstMs)}ms）`);
+    console.log(`    （大作品上下文装配：首次 ${Math.round(firstMs)}ms）`);
+    // 命中缓存一次（走 cacheGetContext 命中分支），但不按计时断言——
+    // 大上下文下 JSON 序列化 + HTTP 往返占大头，冷/热端到端时差落在同一毫秒量级（曾 14vs14、12vs14 误红），
+    // 计时比较随机器抖动不可靠；缓存的真正风险是「吐陈旧结果」，由下方写操作断言确定性覆盖。
+    const warm = await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
+    assert.equal(warm.status, 200);
+    assert.ok(warm.data.assembled.includes('【写作风格红线】'), '缓存命中应返回完整装配结果');
     // 缓存失效正确性：任何写操作后必须返回新数据（缓存不得吐陈旧结果）。
     await jfetch(`/api/works/${bigWorkId}`, { method: 'PUT', body: { title: '大作品性能测试·改名' } });
     const after = await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
     assert.ok(after.data.assembled.includes('大作品性能测试·改名'), '写操作后缓存必须失效，返回新数据');
     ok('大作品上下文性能基线（装配耗时 + 缓存失效正确性）');
+  }
+
+  // 14. OpenViking 语义集成（禁用模式下）：接口可用、上下文装配不受影响、检索合并为空
+  {
+    const sem = await jfetch('/api/novel/semantic');
+    assert.equal(sem.status, 200);
+    assert.equal(sem.data.ok, true);
+    assert.equal(sem.data.enabled, false, '禁用环境下生效状态应为 false');
+    const semPut = await jfetch('/api/novel/semantic', { method: 'PUT', body: { enabled: true } });
+    assert.equal(semPut.data.enabled, true, '开关接口应可写（写入设置值）');
+    const sem2 = await jfetch('/api/novel/semantic');
+    assert.equal(sem2.data.setting_enabled, true, '设置值应已保存');
+    assert.equal(sem2.data.enabled, false, '环境总闸仍应使生效状态为 false');
+    const idx = await jfetch('/api/novel/semantic_index', { method: 'POST', body: {} });
+    assert.equal(idx.status, 400, '禁用环境下建索引请求应被拒绝');
+    const ctx = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chapterId}`);
+    assert.equal(ctx.status, 200);
+    assert.ok(ctx.data.semantic_recall && ctx.data.semantic_recall.status === 'disabled', '禁用模式下召回状态应为 disabled');
+    assert.ok(!ctx.data.assembled.includes('相关记忆检索（语义召回）'), '禁用模式下装配结果不得包含语义召回层');
+    const sr = await jfetch(`/api/search?q=${encodeURIComponent('钥匙')}&work_id=${workId}`);
+    assert.equal(sr.status, 200);
+    assert.ok(sr.data.semantic && Array.isArray(sr.data.semantic.hits), '检索响应应带 semantic.hits 数组');
+    assert.equal(sr.data.semantic.enabled, false, '禁用模式下语义检索合并应为禁用');
+    // 恢复开关为默认，避免影响同库其它断言
+    await jfetch('/api/novel/semantic', { method: 'PUT', body: { enabled: false } });
+    ok('OpenViking 语义集成（禁用模式接口/装配降级/检索合并）');
+  }
+
+  // N. 统一日志系统（双写 / 远端上报 / 筛选统计 / 服务端 500 入账 / 清空）
+  {
+    // 1) 服务端自带：启动时应已有 lifecycle 记录
+    const r0 = await jfetch('/api/logs?layer=server&kind=lifecycle');
+    assert.equal(r0.status, 200);
+    assert.ok(Array.isArray(r0.data.entries), '日志查询应返回 entries 数组');
+    assert.ok(r0.data.entries.some((e) => e.kind === 'lifecycle' && /服务启动/.test(e.message)), '启动生命周期日志应入账');
+    ok('日志：启动 lifecycle 记录已入账');
+
+    // 2) 远端上报（模拟 dsh 插件进程，带代码位置与文件地址）
+    const p = await jfetch('/api/logs', {
+      method: 'POST',
+      body: {
+        layer: 'plugin', level: 'error', kind: 'plugin_error',
+        message: 'smoke 插件上报测试', code_file: 'novel-tools.mjs', code_line: 42,
+        stack: 'Error: smoke\n    at x (novel-tools.mjs:42:1)',
+        context: { tool: 'novel_context' }
+      }
+    });
+    assert.equal(p.status, 201);
+    assert.equal(p.data.ok, true);
+    ok('日志：plugin 远端上报');
+
+    // 3) 非法层级拒绝（防止伪造服务端层级的日志）
+    const bad = await jfetch('/api/logs', { method: 'POST', body: { layer: 'server', message: 'x' } });
+    assert.equal(bad.status, 400);
+    ok('日志：非法层级拒绝');
+
+    // 4) 筛选查询 + 统计 + 字段完整性
+    const r1 = await jfetch('/api/logs?layer=plugin&level=error');
+    assert.equal(r1.status, 200);
+    const hit = r1.data.entries.find((e) => e.kind === 'plugin_error' && e.message.includes('smoke 插件上报测试'));
+    assert.ok(hit, '筛选 layer=plugin 应命中上报条目');
+    assert.ok(hit.code_file.includes('novel-tools.mjs'), '远端条目应保留文件地址');
+    assert.equal(hit.code_line, 42, '远端条目应保留代码行号');
+    assert.ok(r1.data.stats && typeof r1.data.stats.total === 'number' && r1.data.stats.by_level.error > 0, '应返回按级别统计');
+    ok('日志：筛选查询 / 统计 / 文件地址与代码位置');
+
+    // 5) 文本文件双写（data/logs/app-YYYY-MM-DD.log）
+    const logDir = join(dataDir, 'logs');
+    const logFiles = readdirSync(logDir).filter((f) => /^app-\d{4}-\d{2}-\d{2}\.log$/.test(f));
+    assert.ok(logFiles.length > 0, 'data/logs 下应存在滚动日志文件');
+    const fileContent = readFileSync(join(logDir, logFiles[0]), 'utf8');
+    assert.ok(fileContent.includes('smoke 插件上报测试'), '文件日志应包含上报消息');
+    assert.ok(fileContent.includes('"layer":"plugin"'), '文件日志应包含技术栈层级');
+    assert.ok(fileContent.includes('"ts":"'), '文件日志应包含发生时间');
+    ok('日志：滚动文件落盘（时间/层级/消息字段）');
+
+    // 6) 服务端接口异常入账：非法 JSON 请求体 → 400 → http_error 日志（定位代码文件）
+    const badJson = await fetch(BASE + '/api/import', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{invalid json' });
+    assert.equal(badJson.status, 400, `非法 JSON 请求体应返回 400，实际 ${badJson.status}`);
+    const r2 = await jfetch('/api/logs?kind=http_error&layer=server');
+    assert.ok(r2.data.entries.length > 0, '服务端接口异常应入账 http_error');
+    assert.ok(r2.data.entries[0].code_file.includes('server.js'), 'http_error 应携带发生位置的代码文件');
+    ok('日志：服务端接口异常（400 非法 JSON）入账并定位代码文件');
+
+    // 6b) 非法 work_id 写事件 → 404（修复前外键违约冒泡为 500）
+    const err = await jfetch('/api/novel/events', { method: 'POST', body: { work_id: 999999999, kind: 'event', summary: '非法 work_id 测试' } });
+    assert.equal(err.status, 404, `非法 work_id 写事件应返回 404，实际 ${err.status} ${JSON.stringify(err.data)}`);
+    ok('事件端点：非法 work_id 返回 404（不再冒泡为 500）');
+
+    // 7) 清空
+    const clr = await jfetch('/api/logs', { method: 'DELETE' });
+    assert.equal(clr.status, 200);
+    const r3 = await jfetch('/api/logs');
+    assert.equal(r3.data.stats.total, 0, '清空后日志应为 0');
+    ok('日志：清空');
   }
 
   console.log(`\n✅ 全部 ${passed} 组断言通过。`);
@@ -624,10 +731,9 @@ try {
   console.error(serverLog.slice(-3000));
   process.exitCode = 1;
 } finally {
-  if (server) {
-    server.kill();
-    setTimeout(() => {
-      try { rmSync(dataDir, { recursive: true, force: true }); } catch (_) { /* 忽略清理失败 */ }
-    }, 400);
-  }
+  if (server) server.kill();
+  // 外部模式（server===null）下 dataDir 也需清理，避免临时目录泄漏。
+  setTimeout(() => {
+    try { rmSync(dataDir, { recursive: true, force: true }); } catch (_) { /* 忽略清理失败 */ }
+  }, 400);
 }

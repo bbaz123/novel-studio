@@ -34,6 +34,9 @@ export function readZip(buffer) {
     const lNameLen = buf.readUInt16LE(localOffset + 26);
     const lExtraLen = buf.readUInt16LE(localOffset + 28);
     const dataStart = localOffset + 30 + lNameLen + lExtraLen;
+    if (dataStart + compSize > buf.length) {
+      throw new Error(`ZIP 数据区损坏（${name}）：压缩数据越界`);
+    }
     const raw = buf.subarray(dataStart, dataStart + compSize);
     let data;
     try {

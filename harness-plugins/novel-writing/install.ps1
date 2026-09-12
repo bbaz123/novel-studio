@@ -1,10 +1,10 @@
-# Novel Writing 插件安装/升级脚本（novel-studio 内置版）
+﻿# Novel Writing 插件安装/升级脚本（novel-studio 内置版）
 #
 # 与旧版不同：
 #   - headless patch 采用“区块合并”安装：只替换本插件维护的
 #     “Novel Studio 创作内核注入”区块，用户自己加的其它 patch 条目原样保留；
 #   - 兼容旧版（v0.x）安装留下的无标记区块，升级时自动移除；
-#   - 带版本号与 -DryRun / -Uninstall，重复安装不会堆积 .bak 文件；
+#   - 带版本号与 -DryRun / -Uninstall，备份保留最近 5 个 .bak、每次备份后自动清理更早的；
 #   - 工具代码（novel-tools.mjs）单一来源，两个安装点（headless / GUI preset）同源复制。
 #
 # 用法：
@@ -21,8 +21,8 @@ $dshHome = Join-Path $env:USERPROFILE '.dsh'
 $presetDest = Join-Path $dshHome '.agent-presets\novel-writing'
 $headlessDir = Join-Path $dshHome 'profiles\headless'
 
-# 与 harness-plugins/novel-writing/plugin.json 的 version 保持一致。
-$script:Version = '0.8.0'
+# 版本号随 plugin.json 的 version 字段（运行时读取，不再硬编码）。
+$script:Version = ([System.IO.File]::ReadAllText((Join-Path $root 'plugin.json')) | ConvertFrom-Json).version
 
 $srcTools = Join-Path $root 'novel-tools.mjs'
 $srcAgent = Join-Path $root 'agent.cordis.yml'
@@ -36,17 +36,68 @@ $legacyMarker = 'Novel Studio 创作内核注入'
 
 function Say($msg) { Write-Host $msg }
 
-function Backup-File($path) {
-  if (-not (Test-Path $path)) { return }
-  $bak = "$path.bak-$(Get-Date -Format yyyyMMddHHmmss)"
-  Copy-Item $path $bak
-  Say "    已备份原文件 -> $bak"
+# 备份保留最近 N 个 .bak，每次备份后自动清理更早的备份，避免重复安装堆积。
+$script:MaxBackups = 5
+$script:backups = @()
+
+function Cleanup-Backups($path) {
+  $dir = Split-Path $path
+  $name = [System.IO.Path]::GetFileName($path)
+  $baks = @(Get-ChildItem -Path (Join-Path $dir "$name.bak-*") -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+  if ($baks.Count -le $script:MaxBackups) { return }
+  foreach ($old in $baks[$script:MaxBackups..($baks.Count - 1)]) {
+    Remove-Item $old.FullName -Force -ErrorAction SilentlyContinue
+    Say "    已清理旧备份 -> $($old.Name)"
+  }
 }
 
-# 以无 BOM 的 UTF-8 写文件（YAML 加载器对无 BOM 最宽容）。
+function Backup-File($path) {
+  if (-not (Test-Path $path)) { return }
+  $bak = "$path.bak-$(Get-Date -Format yyyyMMddHHmmssfff)"
+  Copy-Item $path $bak
+  Say "    已备份原文件 -> $bak"
+  $script:backups += @{ Target = $path; Bak = $bak; IsDir = $false }
+  Cleanup-Backups $path
+}
+
+function Backup-Directory($path) {
+  if (-not (Test-Path $path)) { return }
+  $bak = "$path.bak-$(Get-Date -Format yyyyMMddHHmmssfff)"
+  Copy-Item $path $bak -Recurse
+  Say "    已备份原目录 -> $bak"
+  $script:backups += @{ Target = $path; Bak = $bak; IsDir = $true }
+  $dir = Split-Path $path
+  $name = [System.IO.Path]::GetFileName($path)
+  $dirBaks = @(Get-ChildItem -Path (Join-Path $dir "$name.bak-*") -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+  if ($dirBaks.Count -gt $script:MaxBackups) {
+    foreach ($old in $dirBaks[$script:MaxBackups..($dirBaks.Count - 1)]) {
+      Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+      Say "    已清理旧目录备份 -> $($old.Name)"
+    }
+  }
+}
+
+function Restore-Backups() {
+  $baks = @($script:backups)
+  for ($i = $baks.Count - 1; $i -ge 0; $i--) {
+    $b = $baks[$i]
+    if (-not (Test-Path $b.Bak)) { continue }
+    if ($b.IsDir) {
+      if (Test-Path $b.Target) { Remove-Item $b.Target -Recurse -Force -ErrorAction SilentlyContinue }
+      Copy-Item $b.Bak $b.Target -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+      Copy-Item $b.Bak $b.Target -Force -ErrorAction SilentlyContinue
+    }
+    Say "    已回滚 -> $($b.Target)"
+  }
+}
+
+# 以无 BOM 的 UTF-8 写文件（YAML 加载器对无 BOM 最宽容）；原子写：先写同目录 .tmp 再 Move-Item 覆盖。
 function Write-Utf8NoBom($path, $content) {
   $utf8 = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText($path, $content, $utf8)
+  $tmp = "$path.tmp"
+  [System.IO.File]::WriteAllText($tmp, $content, $utf8)
+  Move-Item -Force $tmp $path
 }
 
 function Read-Lines($path) {
@@ -63,16 +114,18 @@ function Find-Block($lines) {
     if ($startIdx -ge 0 -and $lines[$i].Trim() -eq $blockEnd.Trim()) { $endIdx = $i; break }
   }
   if ($startIdx -ge 0 -and $endIdx -ge 0) { return @($startIdx, $endIdx) }
-  # 旧版区块：从旧注释标记到其后最后一个 baseUrl 行。
-  $legacy = -1; $lastBase = -1
+  # 旧版区块：从旧注释标记到其后第一个 baseUrl 行（不再吞掉用户后加的其它条目）。
+  $legacy = -1; $firstBase = -1
   for ($i = 0; $i -lt $lines.Count; $i++) {
     if ($legacy -lt 0 -and $lines[$i].Contains($legacyMarker)) { $legacy = $i }
-    if ($legacy -ge 0 -and $lines[$i] -match '^\s*baseUrl:') { $lastBase = $i }
+    if ($legacy -ge 0 -and $firstBase -lt 0 -and $lines[$i] -match '^\s*baseUrl:') { $firstBase = $i; break }
   }
   if ($legacy -ge 0) {
-    $end = $lines.Count - 1
-    if ($lastBase -ge $legacy) { $end = $lastBase }
-    return @($legacy, $end)
+    if ($firstBase -ge $legacy) {
+      Say '    检测到旧版区块，已按首个 baseUrl 行裁剪，请人工核对未删内容'
+      return @($legacy, $firstBase)
+    }
+    return @($legacy, $lines.Count - 1)
   }
   return @(-1, -1)
 }
@@ -112,67 +165,103 @@ function Remove-HeadlessBlock($patchPath) {
 
 if ($Uninstall) {
   Say "==> 卸载 novel-writing 插件 v$script:Version"
-  if (Test-Path $presetDest) {
-    if ($DryRun) { Say "    [DryRun] 将删除 $presetDest" } else { Remove-Item $presetDest -Recurse -Force; Say "    已删除 GUI preset" }
-  } else {
-    Say "    GUI preset 不存在，跳过"
-  }
-  $patchPath = Join-Path $headlessDir 'cordis.patch.yml'
-  if (Test-Path $patchPath) {
-    $new = Remove-HeadlessBlock $patchPath
-    if ($DryRun) {
-      Say "    [DryRun] 将从 headless patch 移除 Novel Studio 区块"
+  try {
+    if (Test-Path $presetDest) {
+      if ($DryRun) { Say "    [DryRun] 将删除 $presetDest" }
+      else {
+        Backup-Directory $presetDest
+        Remove-Item $presetDest -Recurse -Force
+        Say "    已删除 GUI preset"
+      }
     } else {
-      Backup-File $patchPath
-      Write-Utf8NoBom $patchPath $new
-      Say "    已从 headless patch 移除 Novel Studio 区块"
+      Say "    GUI preset 不存在，跳过"
     }
+    $patchPath = Join-Path $headlessDir 'cordis.patch.yml'
+    if (Test-Path $patchPath) {
+      $new = Remove-HeadlessBlock $patchPath
+      if ($DryRun) {
+        Say "    [DryRun] 将从 headless patch 移除 Novel Studio 区块"
+      } else {
+        Backup-File $patchPath
+        Write-Utf8NoBom $patchPath $new
+        Say "    已从 headless patch 移除 Novel Studio 区块"
+      }
+    }
+    $headlessTools = Join-Path $headlessDir 'novel-tools.mjs'
+    if (Test-Path $headlessTools) {
+      if ($DryRun) { Say "    [DryRun] 将删除 $headlessTools" }
+      else {
+        Backup-File $headlessTools
+        Remove-Item $headlessTools -Force
+        Say "    已删除 headless 工具文件"
+      }
+    }
+    Say "✔ 卸载完成。"
+    exit 0
+  } catch {
+    Restore-Backups
+    Write-Error "卸载失败，已回滚已备份文件：$($_.Exception.Message)"
+    exit 1
   }
-  $headlessTools = Join-Path $headlessDir 'novel-tools.mjs'
-  if (Test-Path $headlessTools) {
-    if ($DryRun) { Say "    [DryRun] 将删除 $headlessTools" } else { Remove-Item $headlessTools -Force; Say "    已删除 headless 工具文件" }
-  }
-  Say "✔ 卸载完成。"
-  exit 0
 }
 
 Say "==> novel-writing 插件 v$script:Version 安装（内置 · 面向 novel-studio）"
 if (-not (Test-Path $srcTools)) { Write-Error "缺少 $srcTools"; exit 1 }
 if (-not (Test-Path $srcAgent)) { Write-Error "缺少 $srcAgent"; exit 1 }
+if (-not (Test-Path $srcPreset)) { Write-Error "缺少 $srcPreset"; exit 1 }
 if (-not (Test-Path $srcPatch)) { Write-Error "缺少 $srcPatch"; exit 1 }
 
-Say '==> 1/2 GUI agent preset（dsh 交互会话用）'
-if (-not (Test-Path $presetDest)) {
-  if ($DryRun) { Say "    [DryRun] 将创建 $presetDest" } else { New-Item -ItemType Directory -Path $presetDest -Force | Out-Null; Say "    已创建 preset 目录" }
-} else {
-  Say "    已存在旧 preset，将覆盖更新（preset 内容由本仓库统一维护）"
-}
-if (-not $DryRun) {
-  if (Test-Path (Join-Path $presetDest 'agent.cordis.yml')) { Backup-File (Join-Path $presetDest 'agent.cordis.yml') }
-  Copy-Item $srcAgent (Join-Path $presetDest 'agent.cordis.yml') -Force
-  Copy-Item $srcPreset (Join-Path $presetDest 'preset.yml') -Force
-  Copy-Item $srcTools (Join-Path $presetDest 'novel-tools.mjs') -Force
-  # 清理旧版（v0.x 上游 preset）残留文件：本 preset 目录只应包含本仓库维护的文件。
-  $legacyReadme = Join-Path $presetDest 'README.md'
-  if (Test-Path $legacyReadme) { Remove-Item $legacyReadme -Force; Say '    已清理旧版 preset 残留 README.md' }
-  Say "    preset 已安装：$presetDest"
-} else {
-  Say "    [DryRun] preset 文件将复制到 $presetDest"
-}
+$createdPreset = $false
+$createdHeadless = $false
+try {
+  Say '==> 1/2 GUI agent preset（dsh 交互会话用）'
+  if (-not (Test-Path $presetDest)) {
+    if ($DryRun) { Say "    [DryRun] 将创建 $presetDest" }
+    else {
+      New-Item -ItemType Directory -Path $presetDest -Force | Out-Null
+      $createdPreset = $true
+      Say "    已创建 preset 目录"
+    }
+  } else {
+    Say "    已存在旧 preset，将覆盖更新（preset 内容由本仓库统一维护）"
+  }
+  if (-not $DryRun) {
+    if (Test-Path (Join-Path $presetDest 'agent.cordis.yml')) { Backup-File (Join-Path $presetDest 'agent.cordis.yml') }
+    Copy-Item $srcAgent (Join-Path $presetDest 'agent.cordis.yml') -Force
+    Copy-Item $srcPreset (Join-Path $presetDest 'preset.yml') -Force
+    Copy-Item $srcTools (Join-Path $presetDest 'novel-tools.mjs') -Force
+    # 清理旧版（v0.x 上游 preset）残留文件：本 preset 目录只应包含本仓库维护的文件。
+    $legacyReadme = Join-Path $presetDest 'README.md'
+    if (Test-Path $legacyReadme) { Remove-Item $legacyReadme -Force; Say '    已清理旧版 preset 残留 README.md' }
+    Say "    preset 已安装：$presetDest"
+  } else {
+    Say "    [DryRun] preset 文件将复制到 $presetDest"
+  }
 
-Say '==> 2/2 headless profile 注入（novel-studio 后台 dsh 任务）'
-if (-not (Test-Path $headlessDir)) {
-  if ($DryRun) { Say "    [DryRun] 将创建 $headlessDir" } else { New-Item -ItemType Directory -Path $headlessDir -Force | Out-Null }
-}
-$patchPath = Join-Path $headlessDir 'cordis.patch.yml'
-if (-not $DryRun) {
-  Backup-File $patchPath
-  $merged = Merge-HeadlessPatch $patchPath
-  Write-Utf8NoBom $patchPath $merged
-  Copy-Item $srcTools (Join-Path $headlessDir 'novel-tools.mjs') -Force
-  Say "    headless patch 已合并注入（保留你原有的其它 patch 条目）"
-} else {
-  Say "    [DryRun] 将把 Novel Studio 区块合并进 $patchPath，并复制 novel-tools.mjs"
+  Say '==> 2/2 headless profile 注入（novel-studio 后台 dsh 任务）'
+  if (-not (Test-Path $headlessDir)) {
+    if ($DryRun) { Say "    [DryRun] 将创建 $headlessDir" }
+    else {
+      New-Item -ItemType Directory -Path $headlessDir -Force | Out-Null
+      $createdHeadless = $true
+    }
+  }
+  $patchPath = Join-Path $headlessDir 'cordis.patch.yml'
+  if (-not $DryRun) {
+    Backup-File $patchPath
+    $merged = Merge-HeadlessPatch $patchPath
+    Write-Utf8NoBom $patchPath $merged
+    Copy-Item $srcTools (Join-Path $headlessDir 'novel-tools.mjs') -Force
+    Say "    headless patch 已合并注入（保留你原有的其它 patch 条目）"
+  } else {
+    Say "    [DryRun] 将把 Novel Studio 区块合并进 $patchPath，并复制 novel-tools.mjs"
+  }
+} catch {
+  Restore-Backups
+  if ($createdPreset -and (Test-Path $presetDest)) { Remove-Item $presetDest -Recurse -Force -ErrorAction SilentlyContinue; Say "    已清理新建 preset 目录" }
+  if ($createdHeadless -and (Test-Path $headlessDir)) { Remove-Item $headlessDir -Recurse -Force -ErrorAction SilentlyContinue; Say "    已清理新建 headless 目录" }
+  Write-Error "安装失败，已回滚已备份文件：$($_.Exception.Message)"
+  exit 1
 }
 
 Say ''

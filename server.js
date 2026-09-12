@@ -3,8 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress, HARNESS_DIR } from './harness.js';
+import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress } from './harness.js';
 import { readZip } from './zip-reader.mjs';
+import { htmlToPlain } from './text-utils.js';
+import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
+import { ovClient, pendingQueueLength } from './openviking.js';
+import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -44,17 +48,25 @@ function sendError(res, status, message) {
 // 写请求的跨源防护：浏览器页面发起的 POST/PUT/DELETE 必须来自本机工坊页面
 // （Origin 为 localhost/127.0.0.1）；不带 Origin 的非浏览器客户端（curl/dsh 工具）放行。
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+const isLocalHost = (h) => h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
 function isLocalRequest(req) {
   if (!MUTATING_METHODS.has(req.method || '')) return true;
   const origin = String(req.headers.origin || '');
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    const local = (h) => h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
-    return local(url.hostname);
-  } catch (_) {
-    return false;
+  if (origin) {
+    try {
+      return isLocalHost(new URL(origin).hostname);
+    } catch (_) {
+      return false;
+    }
   }
+  // 无 Origin 的非浏览器客户端（curl/dsh 工具）：校验 Host 主机名，
+  // 拒绝经非本机主机名到达的写请求（如 DNS rebinding 场景）。
+  const hostHeader = String(req.headers.host || '');
+  if (hostHeader) {
+    const host = hostHeader.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    return isLocalHost(host);
+  }
+  return true;
 }
 
 const MAX_BODY_BYTES = 32_000_000; // 32MB：EPUB 导入用（base64 后约 1.33 倍）；写请求有本机 Origin 校验兜底。
@@ -63,26 +75,47 @@ async function readBody(req) {
   const declared = Number(req.headers['content-length'] || 0);
   if (declared > MAX_BODY_BYTES) {
     const err = new Error('Payload too large');
+    err.code = 'PAYLOAD_TOO_LARGE';
     req.destroy();
     throw err;
   }
   return new Promise((resolve, reject) => {
-    let data = '';
+    // 按字节累计而非逐块拼接字符串：既保证 32MB 上限按字节生效，
+    // 也避免跨 TCP 分块边界拆分的多字节 UTF-8 字符被逐块解码成乱码。
+    const chunks = [];
+    let received = 0;
+    let settled = false;
     req.on('data', (chunk) => {
-      data += chunk;
-      if (data.length > MAX_BODY_BYTES) {
-        reject(new Error('Payload too large'));
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      received += buf.length;
+      if (received > MAX_BODY_BYTES) {
+        settled = true;
+        const err = new Error('Payload too large');
+        err.code = 'PAYLOAD_TOO_LARGE';
         req.destroy();
+        reject(err);
+        return;
       }
+      chunks.push(buf);
     });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
       try {
+        const data = chunks.length ? Buffer.concat(chunks).toString('utf8') : '';
         resolve(data ? JSON.parse(data) : {});
       } catch (err) {
-        reject(new Error('Invalid JSON'));
+        const e = new Error('Invalid JSON');
+        e.code = 'INVALID_JSON';
+        reject(e);
       }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 
@@ -105,9 +138,11 @@ function now() {
 
 // 预编译语句缓存：相同 SQL 只 prepare 一次，减少重复解析开销，提升请求速度。
 const stmtCache = new Map();
+const STMT_CACHE_MAX = 500; // 动态 IN 列表会按占位符数量生成不同 SQL，需上限防止无限增长
 function prepare(sql) {
   let stmt = stmtCache.get(sql);
   if (!stmt) {
+    if (stmtCache.size >= STMT_CACHE_MAX) stmtCache.clear();
     stmt = db.prepare(sql);
     stmtCache.set(sql, stmt);
   }
@@ -144,7 +179,18 @@ function touchWork(workId) {
   CONTEXT_DATA_VERSION += 1;
   try {
     prepare('UPDATE works SET updated_at = ? WHERE id = ?').run(now(), workId);
-  } catch (_) { /* ignore */ }
+  } catch (e) {
+    log({ level: 'warn', layer: 'db', kind: 'db_error', message: `更新作品 updated_at 失败（work ${workId}）：${e.message}` });
+  }
+}
+
+function getAppSettingDb(key, fallback = '') {
+  const row = prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+  return row ? String(row.value) : fallback;
+}
+
+function setAppSettingDb(key, value) {
+  prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value));
 }
 
 // ---------- 通用 CRUD ----------
@@ -200,6 +246,39 @@ function normalizeValue(resource, field, value) {
   return v;
 }
 
+// 跨作品引用一致性校验：引用 id 必须存在且与目标 work_id 同作品，防止把 A 作品的数据写进 B 作品。
+function validateOwnership(resource, data) {
+  const wid = Number(data.work_id) || null;
+  const check = (table, id, label) => {
+    if (id === undefined || id === null || id === '') return;
+    const nid = Number(id);
+    if (!Number.isInteger(nid) || nid <= 0) return;
+    const row = prepare(`SELECT work_id FROM ${table} WHERE id = ?`).get(nid);
+    if (!row) throw new Error(`${label}不存在`);
+    if (wid !== null && Number(row.work_id) !== wid) throw new Error(`${label}不属于该作品`);
+  };
+  if (resource === 'chapters') {
+    check('volumes', data.volume_id, '卷');
+    check('plotlines', data.plotline_id, '剧情线');
+    check('chapters', data.parent_id, '父章节');
+  } else if (resource === 'plotline_characters') {
+    check('plotlines', data.plotline_id, '剧情线');
+    check('characters', data.character_id, '角色');
+  } else if (resource === 'relations') {
+    check('characters', data.from_character_id, '角色A');
+    check('characters', data.to_character_id, '角色B');
+  } else if (resource === 'terms') {
+    check('categories', data.category_id, '分类');
+  }
+}
+
+// API Key 掩码：本地单用户应用虽受 CORS 保护，仍只向界面回显首尾片段，避免明文全量暴露。
+function maskApiKey(key) {
+  const k = String(key || '');
+  if (!k) return '';
+  return k.length <= 8 ? k : `${k.slice(0, 6)}…${k.slice(-4)}`;
+}
+
 function insertRow(resource, data) {
   const cfg = RESOURCE_CONFIG[resource];
   if (!cfg) return null;
@@ -207,6 +286,7 @@ function insertRow(resource, data) {
   if (resource === 'works' && !String(data.title ?? '').trim()) {
     throw new Error('作品名称不能为空');
   }
+  validateOwnership(resource, data);
   const values = cfg.fields.map((f) => normalizeValue(resource, f, data[f]));
   const sql = `INSERT INTO ${cfg.table} (${cfg.fields.join(',')}) VALUES (${cfg.fields.map(() => '?').join(',')})`;
   const info = prepare(sql).run(...values);
@@ -221,17 +301,38 @@ function updateRow(resource, id, data) {
     throw new Error('作品名称不能为空');
   }
   const present = cfg.fields.filter((f) => data[f] !== undefined);
-  if (present.length === 0) return false;
-  const sql = `UPDATE ${cfg.table} SET ${present.map((f) => `${f} = ?`).join(', ')} WHERE id = ?`;
-  prepare(sql).run(...present.map((f) => normalizeValue(resource, f, data[f])), id);
-  return true;
+  // api_configs 的 api_key 传 null 表示「不修改」（掩码回显场景：用户未改动 key 时前端传 null）。
+  if (resource === 'api_configs' && data.api_key === null) {
+    const idx = present.indexOf('api_key');
+    if (idx >= 0) present.splice(idx, 1);
+  }
+  if (present.length === 0) return 0;
+  const isWorkless = resource === 'works' || resource === 'api_configs';
+  const existing = isWorkless
+    ? prepare(`SELECT id FROM ${cfg.table} WHERE id = ?`).get(id)
+    : prepare(`SELECT work_id FROM ${cfg.table} WHERE id = ?`).get(id);
+  if (!existing) return 0;
+  const baseWorkId = data.work_id !== undefined
+    ? Number(data.work_id) || null
+    : (isWorkless ? null : Number(existing.work_id) || null);
+  validateOwnership(resource, { ...data, work_id: baseWorkId });
+  // P1-01：章节通用 PUT 同时推进 updated_at，使前端 _if_updated_at 乐观锁的锁值随每次保存前进；
+  // 否则锁基准值永远相等，双窗口并发保存会静默覆盖（后写覆盖先写）而不是触发 409。
+  const touchUpdatedAt = resource === 'chapters';
+  const sql = `UPDATE ${cfg.table} SET ${present.map((f) => `${f} = ?`).join(', ')}${touchUpdatedAt ? ', updated_at = ?' : ''} WHERE id = ?`;
+  const info = prepare(sql).run(
+    ...present.map((f) => normalizeValue(resource, f, data[f])),
+    ...(touchUpdatedAt ? [now()] : []),
+    id
+  );
+  return Number(info.changes);
 }
 
 function deleteRow(resource, id) {
   const cfg = RESOURCE_CONFIG[resource];
   if (!cfg) return false;
-  prepare(`DELETE FROM ${cfg.table} WHERE id = ?`).run(id);
-  return true;
+  const info = prepare(`DELETE FROM ${cfg.table} WHERE id = ?`).run(id);
+  return Number(info.changes) > 0;
 }
 
 // ---------- search ----------
@@ -289,12 +390,12 @@ function search(q, workId) {
     .map((x) => x.row);
 
   const terms = rank(
-    queryRows('terms', ['title', 'tags', 'content']).map((t) => ({ ...t, type: 'term' })),
+    queryRows('terms', ['title', 'tags', 'substr(content,1,2000)']).map((t) => ({ ...t, type: 'term' })),
     ['title', 'tags', 'content'], 'title'
   ).map((t) => ({ ...t, snippet: snippetAny(t.content) }));
 
   const chapters = rank(
-    queryRows('chapters', ['title', 'summary', 'content']).map((c) => ({ ...c, type: 'chapter' })),
+    queryRows('chapters', ['title', 'summary', 'substr(content,1,4000)']).map((c) => ({ ...c, type: 'chapter' })),
     ['title', 'summary', 'content'], 'title'
   ).map((c) => ({ ...c, snippet: snippetAny(c.content, c.summary) }));
 
@@ -314,9 +415,10 @@ function search(q, workId) {
 // ---------- AI ----------
 function chatCompletionsUrl(baseUrl) {
   let base = String(baseUrl || 'https://api.deepseek.com').trim().replace(/\/+$/, '');
-  if (/\/chat\/completions$/i.test(base)) return base;
-  if (/\/v1$/i.test(base)) return `${base}/chat/completions`;
-  return `${base}/v1/chat/completions`;
+  // 归一化：剥离可能存在的 /v1 与 /chat/completions 尾缀，再统一加回，保证拼接幂等，
+  // 避免「base 以 /chat/completions 结尾时回退得到 .../chat/completions/v1/chat/completions」这类畸形地址。
+  base = base.replace(/(\/v1)?\/chat\/completions$/i, '').replace(/\/v1$/i, '');
+  return `${base}/chat/completions`;
 }
 
 function normalizeModel(model) {
@@ -394,8 +496,10 @@ async function callAI(config, messages, options = {}) {
   try {
     return await doPost(primary);
   } catch (e) {
-    const primaryUsesV1 = /\/v1\/chat\/completions$/i.test(primary);
-    const alt = primaryUsesV1 ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    // 归一化出另一种路径形态：/v1/chat/completions ↔ /chat/completions
+    const alt = /\/v1\/chat\/completions$/i.test(primary)
+      ? primary.replace(/\/v1\/chat\/completions$/i, '/chat/completions')
+      : primary.replace(/\/chat\/completions$/i, '/v1/chat/completions');
     if (alt === primary) throw e;
     const looksLikeUrlIssue = e.status === 404 || e.status === 405 || /missing required messages|missing.*messages|缺少\s*messages|not found|invalid url/i.test(e.message || '');
     if (!looksLikeUrlIssue) throw e;
@@ -403,10 +507,167 @@ async function callAI(config, messages, options = {}) {
   }
 }
 
+// 流式调用 OpenAI 兼容 Chat Completions（SSE）：边生成边回调 onDelta(delta, fullText)。
+// 返回完整拼接文本；与 callAI 共用 URL 形态回退；客户端断开由调用方通过 options.signal 中止。
+async function callAIStream(config, messages, options = {}, onDelta) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error('AI 请求缺少 messages 数组');
+  }
+  for (const m of messages) {
+    if (!m || typeof m.role !== 'string' || typeof m.content !== 'string') {
+      throw new Error('messages 格式错误：每个消息必须包含 role 和 content');
+    }
+  }
+  const base = String(config.base_url || 'https://api.deepseek.com').trim().replace(/\/+$/, '');
+  const rawMaxTokens = options.max_tokens ?? config.max_tokens ?? 4096;
+  const maxTokens = Number.isFinite(Number(rawMaxTokens))
+    ? Math.min(Math.max(1, Math.floor(Number(rawMaxTokens))), MAX_OUTPUT_TOKENS)
+    : MAX_OUTPUT_TOKENS;
+  const body = {
+    model: normalizeModel(config.model || 'deepseek-chat'),
+    messages,
+    temperature: options.temperature ?? config.temperature ?? 0.8,
+    max_tokens: maxTokens,
+    stream: true
+  };
+
+  const doStream = async (url) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
+    const onAbort = () => controller.abort();
+    if (options.signal) options.signal.addEventListener('abort', onAbort);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.api_key}`
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      if (!resp.ok || !resp.body) {
+        const text = await resp.text().catch(() => '');
+        let data;
+        try { data = JSON.parse(text); } catch { data = { raw: text }; }
+        const detail = data?.error?.message || data?.message || `AI request failed (${resp.status})`;
+        const err = new Error(`${detail}（接口：${url}）`);
+        err.status = resp.status;
+        err.detail = data;
+        throw err;
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      let full = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const evt = JSON.parse(payload);
+            const delta = evt?.choices?.[0]?.delta?.content;
+            if (typeof delta === 'string' && delta) {
+              full += delta;
+              if (typeof onDelta === 'function') onDelta(delta, full);
+            }
+          } catch { /* 忽略心跳/非 JSON 行 */ }
+        }
+      }
+      return full;
+    } finally {
+      clearTimeout(timeout);
+      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+    }
+  };
+
+  const primary = chatCompletionsUrl(base);
+  try {
+    return await doStream(primary);
+  } catch (e) {
+    if (options.signal?.aborted) throw e; // 客户端主动断开：不做 URL 回退重试
+    const alt = /\/v1\/chat\/completions$/i.test(primary)
+      ? primary.replace(/\/v1\/chat\/completions$/i, '/chat/completions')
+      : primary.replace(/\/chat\/completions$/i, '/v1/chat/completions');
+    if (alt === primary) throw e;
+    const looksLikeUrlIssue = e.status === 404 || e.status === 405 || /missing required messages|missing.*messages|缺少\s*messages|not found|invalid url/i.test(e.message || '');
+    if (!looksLikeUrlIssue) throw e;
+    return doStream(alt);
+  }
+}
+
+// POST /api/ai/write_stream：SSE 流式直连成文（质量优先模式）。
+// 边生成边下发 delta 事件，结束下发 done 事件（含全文 + 确定性红线扫描报告，与 harness 通道同源）。
+// 客户端断开自动中止上游请求。
+async function handleAIWriteStream(req, res, body, config) {
+  const messages = body.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return sendError(res, 400, '缺少 messages');
+  if (body.model) config.model = normalizeModel(body.model);
+  const workId = Number(body.work_id) || null;
+  const upstream = new AbortController();
+  const onClose = () => upstream.abort();
+  res.on('close', onClose);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  const send = (obj) => {
+    if (res.writableEnded || res.destroyed) return;
+    try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* 客户端已断开 */ }
+  };
+  try {
+    let full = '';
+    const text = await callAIStream(config, messages, {
+      temperature: body.temperature,
+      max_tokens: body.max_tokens,
+      signal: upstream.signal
+    }, (delta, acc) => {
+      full = acc;
+      send({ delta });
+    });
+    let scan = null;
+    if (body.scan !== false && workId) {
+      const redlineRows = listRedlines(workId);
+      const hits = scanAgainstRedlines(redlineRows, text);
+      scan = { enabled: redlineRows.length > 0, total: hits.reduce((s, h) => s + h.count, 0), hits: hits.slice(0, 50) };
+    }
+    send({ done: true, text, scan });
+  } catch (e) {
+    if (upstream.signal.aborted) {
+      log({ level: 'warn', layer: 'ai', kind: 'ai_stream_aborted', message: '流式直连已被客户端中止' });
+    } else {
+      logAIError('write_stream', e, '/api/ai/write_stream');
+      send({ error: readableErrorMessage(e) });
+    }
+  } finally {
+    res.off('close', onClose);
+    try { res.end(); } catch { /* 忽略 */ }
+  }
+}
+
 function getConfigFromBody(body) {
-  if (body.config_id) {
-    const row = prepare('SELECT * FROM api_configs WHERE id = ?').get(Number(body.config_id));
-    if (!row) throw new Error('API 配置不存在');
+  if (body.config_id !== undefined && body.config_id !== null && body.config_id !== '') {
+    const id = Number(body.config_id);
+    if (!Number.isInteger(id) || id <= 0) {
+      const err = new Error('API 配置不存在或非法');
+      err.status = 400;
+      throw err;
+    }
+    const row = prepare('SELECT * FROM api_configs WHERE id = ?').get(id);
+    if (!row) {
+      const err = new Error('API 配置不存在');
+      err.status = 400;
+      throw err;
+    }
     return row;
   }
   return {
@@ -419,48 +680,43 @@ function getConfigFromBody(body) {
 }
 
 // ---------- AI error history ----------
-// D3/D16：message 只保留一行可读错误；同 action + 同 message 在 30 分钟窗口内去重，避免报错墙堆叠重复。
-function readableErrorMessage(error) {
-  const text = String(error?.message || error || 'Unknown error');
-  const firstLine = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l && !/^\s*at\s+/.test(l)) || text.split(/\r?\n/)[0].trim();
-  return firstLine.slice(0, 300);
-}
+// D3/D16：message 只保留一行可读错误（readableErrorMessage 见 logger.js，与 harness.js 共用）；
+// 与统一日志库（app_logs）合并，30 分钟窗口内同 action + 同 message 去重。
 
 function logAIError(action, error, endpoint = '') {
-  try {
-    const message = readableErrorMessage(error);
-    const code = String(error?.status || error?.detail?.error?.code || error?.code || '').slice(0, 200);
-    const stack = String(error?.stderr || error?.stack || '').slice(0, 4000);
-    // 30 分钟窗口内相同的 action+message 视为重复错误，不重复插入。
-    const recent = prepare(`
-      SELECT id FROM ai_error_logs
-      WHERE action = ? AND message = ? AND created_at >= ?
-      ORDER BY created_at DESC, id DESC LIMIT 1
-    `).get(action || 'unknown', message, new Date(Date.now() - 30 * 60 * 1000).toISOString());
-    if (recent) return;
-    prepare(`
-      INSERT INTO ai_error_logs (action, message, error_code, stack, endpoint)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(action || 'unknown', message, code, stack, endpoint || '');
-    prepare(`
-      DELETE FROM ai_error_logs
-      WHERE id NOT IN (
-        SELECT id FROM ai_error_logs ORDER BY created_at DESC, id DESC LIMIT 5
-      )
-    `).run();
-  } catch (_) { /* 日志失败不影响主流程 */ }
+  log({
+    level: 'error', layer: 'ai', kind: 'ai_error',
+    message: readableErrorMessage(error),
+    error,
+    context: {
+      action: action || 'unknown',
+      endpoint: endpoint || '',
+      error_code: String(error?.status || error?.detail?.error?.code || error?.code || '').slice(0, 200)
+    },
+    dedupMs: 30 * 60 * 1000
+  });
 }
 
 function listAIErrors() {
   return prepare(`
-    SELECT id, action, message, error_code, stack, endpoint, created_at
-    FROM ai_error_logs
-    ORDER BY created_at DESC, id DESC
+    SELECT id, ts, message, stack, context
+    FROM app_logs
+    WHERE kind = 'ai_error'
+    ORDER BY ts DESC, id DESC
     LIMIT 5
-  `).all();
+  `).all().map((row) => {
+    let ctx = {};
+    try { ctx = JSON.parse(row.context || '{}'); } catch (_) { /* 上下文损坏按空处理 */ }
+    return {
+      id: row.id,
+      action: ctx.action || '',
+      message: row.message,
+      error_code: ctx.error_code || '',
+      stack: row.stack,
+      endpoint: ctx.endpoint || '',
+      created_at: row.ts
+    };
+  });
 }
 
 // ---------- chapter manual save versions ----------
@@ -539,7 +795,8 @@ function saveStoryMemory(workId, summary, opts = {}) {
   }
   const source = asString(opts.source, 'manual') || 'manual';
   const note = asString(opts.note, '');
-  db.exec('BEGIN');
+  const tx = opts.tx === true;
+  if (!tx) db.exec('BEGIN');
   try {
     prepare(`
       INSERT INTO story_memories (work_id, summary, updated_at)
@@ -547,9 +804,9 @@ function saveStoryMemory(workId, summary, opts = {}) {
       ON CONFLICT(work_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at
     `).run(workId, summary, now());
     const info = prepare(`
-      INSERT INTO memory_versions (work_id, summary, source, note)
-      VALUES (?, ?, ?, ?)
-    `).run(workId, summary, source, note);
+      INSERT INTO memory_versions (work_id, summary, source, note, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(workId, summary, source, note, now());
     // 版本保留策略：只留最近 MEMORY_VERSION_KEEP 个，最旧的多余版本剪除。
     prepare(`
       DELETE FROM memory_versions
@@ -557,14 +814,14 @@ function saveStoryMemory(workId, summary, opts = {}) {
         SELECT id FROM memory_versions WHERE work_id = ? ORDER BY id DESC LIMIT ?
       )
     `).run(workId, workId, MEMORY_VERSION_KEEP);
-    db.exec('COMMIT');
-    touchWork(workId);
+    if (!tx) db.exec('COMMIT');
+    if (!tx) touchWork(workId);
     return {
       ok: true, work_id: workId, summary, version_id: Number(info.lastInsertRowid), source,
       needs_compression: summary.length > MEMORY_COMPRESS_HINT
     };
   } catch (e) {
-    db.exec('ROLLBACK');
+    if (!tx) db.exec('ROLLBACK');
     throw e;
   }
 }
@@ -574,7 +831,8 @@ async function compressStoryMemory(workId) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) throw new Error('作品不存在');
 
-  const chapters = prepare('SELECT title, summary, content FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  // 只取每章正文头部，避免大作品一次性拉取数十 MB 正文再丢弃。
+  const chapters = prepare('SELECT title, summary, substr(content, 1, 1500) AS content FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const characters = prepare('SELECT name, identity, personality, status FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const worlds = prepare('SELECT title, content FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
 
@@ -585,7 +843,7 @@ async function compressStoryMemory(workId) {
   const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节：\n${chapterText.slice(0, 6000)}\n\n角色：\n${characterText.slice(0, 3000)}\n\n世界观：\n${worldText.slice(0, 3000)}\n\n请只输出压缩后的记忆摘要。`;
 
   const output = await runHarnessTask(prompt, { timeout: 10 * 60 * 1000, model: 'deepseek-v4-pro' });
-  saveStoryMemory(workId, output);
+  saveStoryMemory(workId, output, { source: 'compress' });
   return output;
 }
 
@@ -723,6 +981,24 @@ function buildCharacterCards(chars, cap = 4000) {
   return level > 0 ? `${text}\n…（角色卡层超预算：长字段已分级压缩，每张卡核心信息完整）` : text;
 }
 
+// 世界观词条统一筛选：固定(pinned)优先 + 关键词命中，按 priority 降序限量 30。
+// buildAIContext（UI 预览）与 buildNovelContext（创作内核）共用，避免两套规则分叉。
+function pickWorldEntries(workId, corpus) {
+  const rows = prepare('SELECT * FROM world_entries WHERE work_id = ? ORDER BY is_pinned DESC, priority DESC, position ASC, id ASC').all(workId);
+  const out = [];
+  for (const entry of rows) {
+    if (out.length >= 30) break;
+    const pinned = Number(entry.is_pinned) === 1;
+    let matched = pinned;
+    if (!matched) {
+      const keywords = String(entry.keywords || '').split(/[,，、\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
+      matched = keywords.some((k) => corpus.includes(k));
+    }
+    if (matched) out.push(entry);
+  }
+  return out;
+}
+
 // 根据章节自动组装 AI 上下文：相关角色卡、激活的世界观词条、作者注。
 function buildAIContext(chapterId) {
   const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
@@ -742,6 +1018,11 @@ function buildAIContext(chapterId) {
   let blueprint = null;
   try { blueprint = JSON.parse(chapter.blueprint_json || '{}'); } catch (_) { blueprint = null; }
   const recentEvents = listStoryEvents(work.id, 12);
+  // 未闭合伏笔：与创作内核（buildNovelContext）同源——kind=foreshadow 且未 resolved/dropped；
+  // 直连成文不再有 novel_consistency 工具兜底，必须内联进 AI 上下文（质量优先模式）。
+  const openForeshadows = listStoryEvents(work.id, 200)
+    .filter((e) => e.kind === 'foreshadow' && e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped')
+    .slice(0, 20);
   const forcedIds = String(chapter.context_character_ids || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
   const { sceneCharacters: characters } = selectSceneCharacters(work.id, {
     plotlineId: chapter.plotline_id,
@@ -751,12 +1032,7 @@ function buildAIContext(chapterId) {
     recentSummaries: [...allChap.slice(Math.max(0, pos - 3), pos).map((c) => c.summary || ''), chapter.summary || '']
   });
 
-  const allEntries = prepare('SELECT * FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(work.id);
-  const worldEntries = allEntries.filter((entry) => {
-    if (Number(entry.is_pinned)) return true;
-    const keywords = String(entry.keywords || '').split(/[,，、\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
-    return keywords.some((k) => corpus.includes(k));
-  });
+  const worldEntries = pickWorldEntries(work.id, corpus);
 
   const charNames = characters.map((c) => c.name).join('、');
   const replaceVars = (text = '') => String(text)
@@ -777,6 +1053,7 @@ function buildAIContext(chapterId) {
     || Number(work.default_chapter_words) || 2000;
 
   return {
+    _chapter: chapter, // 内部字段：供 /api/ai_context 复用原始章节行做语义召回，返回前删除
     work: {
       id: work.id, title: work.title,
       default_chapter_words: Number(work.default_chapter_words) || 2000,
@@ -792,6 +1069,7 @@ function buildAIContext(chapterId) {
     story_memory: getStoryMemory(work.id),
     story_tail: storyTail,
     recent_events: recentEvents.map((e) => ({ kind: e.kind, summary: e.summary, chapter_id: e.chapter_id, created_at: e.created_at })),
+    open_foreshadows: openForeshadows.map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id, resolves_event_id: e.resolves_event_id })),
     redlines: redlineRows.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note, exceptions: Array.isArray(r.exceptions) ? r.exceptions : [] })),
     style_contract: renderStyleContract(redlineRows, work.style_positive || ''),
     work_author_note: replaceVars(work.author_note || ''),
@@ -837,13 +1115,17 @@ const VALID_REDLINE_KINDS = new Set(['word', 'phrase', 'regex']);
 
 // 首次启动时写入默认红线（work_id 为空 = 全局默认）。
 function seedRedlinesIfEmpty() {
+  // 用 app_settings 标志判断是否已初始化，而非「全局红线计数为 0」：
+  // 用户清空默认红线是合法操作，不应在下次启动被重新灌入。
+  if (getAppSettingDb('redlines_seeded', '') === '1') return;
   const row = prepare('SELECT COUNT(*) AS c FROM writing_redlines WHERE work_id IS NULL').get();
-  if (Number(row.c) > 0) return;
+  if (Number(row.c) > 0) { setAppSettingDb('redlines_seeded', '1'); return; }
   db.exec('BEGIN');
   try {
     const stmt = prepare('INSERT INTO writing_redlines (work_id, kind, pattern, note) VALUES (NULL, ?, ?, ?)');
     for (const r of DEFAULT_REDLINES) stmt.run(r.kind, r.pattern, r.note || '');
     db.exec('COMMIT');
+    setAppSettingDb('redlines_seeded', '1');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
@@ -884,6 +1166,10 @@ function replaceRedlines(workId, entries) {
     if (pattern.length > MAX_PATTERN) throw new Error(`红线模式过长（上限 ${MAX_PATTERN} 字符）`);
     if (kind === 'regex') {
       try { new RegExp(pattern); } catch (_) { throw new Error(`非法正则：${pattern.slice(0, 80)}`); }
+      // 病态正则启发式拦截：嵌套量词（如 (a+)+、(\w+)* 再叠量词）易造成灾难性回溯。
+      if (/\([^)]*[+*{][^)]*\)\s*[+*{]/.test(pattern)) {
+        throw new Error('正则包含嵌套量词，存在灾难性回溯风险，请简化');
+      }
     }
     const exceptions = Array.isArray(e.exceptions)
       ? e.exceptions.map((s) => asString(s, '').trim()).filter(Boolean).slice(0, 20)
@@ -934,7 +1220,8 @@ function renderStyleContract(rows, stylePositive = '') {
 // opts.skip_dialogue=true 时先剥掉引号内对话再扫：角色台词的口语词不应按叙述标准误杀。
 function scanAgainstRedlines(rows, text, opts = {}) {
   const hits = [];
-  const source = String(text || '');
+  // 扫描文本长度上限：防病态正则叠加超长输入导致的灾难性回溯阻塞事件循环。
+  const source = String(text || '').slice(0, 1000000);
   if (!source) return hits;
   const clean = opts.skip_dialogue === true
     ? source.replace(/“[^”]*”|「[^」]*」|‘[^’]*’|『[^』]*』/g, '')
@@ -982,32 +1269,46 @@ function addStoryEvent(workId, {
   payload = {},
   foreshadowStatus = '',
   resolvesEventId = null,
-  dedupKey = ''
+  dedupKey = '',
+  tx = false
 }) {
   const summaryText = asString(summary, '');
   const key = asString(dedupKey, '');
-  if (key) {
-    const dup = prepare('SELECT id FROM story_events WHERE work_id = ? AND dedup_key = ? LIMIT 1').get(workId, key);
-    if (dup) return { id: Number(dup.id), duplicate: true };
-  }
-  db.exec('BEGIN');
+  const begin = () => { if (!tx) db.exec('BEGIN'); };
+  const commit = () => { if (!tx) db.exec('COMMIT'); };
+  const rollback = () => { if (!tx) db.exec('ROLLBACK'); };
+  begin();
   try {
+    // 查重移入事务内，配合 (work_id, dedup_key) 唯一索引兜底并发竞态。
+    if (key) {
+      const dup = prepare('SELECT id FROM story_events WHERE work_id = ? AND dedup_key = ? LIMIT 1').get(workId, key);
+      if (dup) { commit(); return { id: Number(dup.id), duplicate: true }; }
+    }
+    if (resolvesEventId) {
+      const target = prepare('SELECT id, kind FROM story_events WHERE id = ? AND work_id = ?').get(Number(resolvesEventId), workId);
+      if (!target) throw new Error('回收目标事件不存在或不属于该作品');
+      if (target.kind !== 'foreshadow') throw new Error('回收目标不是伏笔事件');
+    }
     const info = prepare(`
-      INSERT INTO story_events (work_id, chapter_id, kind, summary, payload, foreshadow_status, resolves_event_id, dedup_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO story_events (work_id, chapter_id, kind, summary, payload, foreshadow_status, resolves_event_id, dedup_key, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(workId, chapterId || null, asString(kind, 'event'), summaryText, JSON.stringify(payload || {}),
       asString(foreshadowStatus, kind === 'foreshadow' ? 'open' : ''),
-      resolvesEventId ? Number(resolvesEventId) : null, key);
+      resolvesEventId ? Number(resolvesEventId) : null, key, now());
     if (resolvesEventId && kind === 'event') {
       // 回收伏笔：把被回收的伏笔标记为 resolved，并回链到本事件。
       prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ? AND work_id = ?')
         .run('resolved', Number(resolvesEventId), workId);
     }
-    db.exec('COMMIT');
-    touchWork(workId);
+    commit();
+    if (!tx) touchWork(workId);
     return { id: Number(info.lastInsertRowid), duplicate: false };
   } catch (e) {
-    db.exec('ROLLBACK');
+    rollback();
+    if (key && /UNIQUE constraint failed/i.test(String(e?.message || ''))) {
+      const dup = prepare('SELECT id FROM story_events WHERE work_id = ? AND dedup_key = ? LIMIT 1').get(workId, key);
+      if (dup) return { id: Number(dup.id), duplicate: true };
+    }
     throw e;
   }
 }
@@ -1087,10 +1388,14 @@ function settleProposals(workId, { ids, all, action }) {
   }
   for (const p of memoryRows) {
     if (action === 'apply') {
-      let summary = p.summary || '';
+      let summary = asString(p.summary, '');
       if (!summary && p.delta) summary = mergeMemoryDraft(getStoryMemory(workId), p.delta);
-      saveStoryMemory(workId, summary, { source: 'proposal', note: p.note || '作者确认的 AI 提案' });
-      applied.memories += 1;
+      if (summary.trim()) {
+        saveStoryMemory(workId, summary, { source: 'proposal', note: p.note || '作者确认的 AI 提案' });
+        applied.memories += 1;
+      } else {
+        rejected.memories += 1; // 空提案按拒绝处理，避免把长期记忆覆盖为空串
+      }
     } else {
       rejected.memories += 1;
     }
@@ -1113,12 +1418,14 @@ function rollbackMemory(versionId) {
   const version = prepare('SELECT * FROM memory_versions WHERE id = ?').get(versionId);
   if (!version) throw new Error('记忆版本不存在');
   const result = saveStoryMemory(version.work_id, version.summary, { source: 'rollback', note: `回滚到版本 #${version.id}` });
-  return { ok: true, work_id: version.work_id, summary: result.summary, version_id: result.version_id };
+  const version_id = result.version_id
+    ?? (prepare('SELECT MAX(id) AS id FROM memory_versions WHERE work_id = ?').get(version.work_id)?.id ?? null);
+  return { ok: true, work_id: version.work_id, summary: result.summary, version_id };
 }
 
 // ---------- 场景化创作上下文（ST 式装配） ----------
 // mode: full（默认，整章代写/分析）| continuation（接龙，重视前文尾巴）| fragment（片段补写）
-function buildNovelContext(workId, chapterId, mode = 'full') {
+async function buildNovelContext(workId, chapterId, mode = 'full') {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
 
@@ -1133,6 +1440,8 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
   if (chapterId) {
     chapterIndex = allChapters.findIndex((c) => c.id === Number(chapterId));
     chapter = chapterIndex >= 0 ? allChapters[chapterIndex] : prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) || null;
+    // 防串作品：chapterId 属于其它作品时视为未指定章节。
+    if (chapter && chapter.work_id !== workId) { chapter = null; chapterIndex = -1; }
   }
   const prevChapter = chapterIndex > 0 ? allChapters[chapterIndex - 1] : null;
   const nextChapter = chapterIndex >= 0 && chapterIndex < allChapters.length - 1 ? allChapters[chapterIndex + 1] : null;
@@ -1182,29 +1491,18 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     ? relations.map((r) => `${nameById.get(r.from_character_id) || '?'} —${r.relation || '关系'}→ ${nameById.get(r.to_character_id) || '?'}${r.description ? `（${r.description.slice(0, 160)}）` : ''}`).join('\n')
     : '';
 
-  // 世界观词条：固定(pinned)优先 + 关键词命中，按 priority 降序限量截断。
-  const allEntries = prepare('SELECT * FROM world_entries WHERE work_id = ? ORDER BY is_pinned DESC, priority DESC, position ASC, id ASC').all(workId);
-  const worldEntries = [];
-  for (const entry of allEntries) {
-    if (worldEntries.length >= 30) break;
-    const pinned = Number(entry.is_pinned) === 1;
-    let matched = pinned;
-    if (!matched) {
-      const keywords = String(entry.keywords || '').split(/[,，、\s]+/).map((k) => k.trim().toLowerCase()).filter(Boolean);
-      matched = keywords.some((k) => corpus.includes(k));
-    }
-    if (matched) worldEntries.push(entry);
-  }
+  // 世界观词条：固定(pinned)优先 + 关键词命中，按 priority 降序限量截断（与 UI 预览共用 pickWorldEntries）。
+  const worldEntries = pickWorldEntries(workId, corpus);
   const worldEntriesText = worldEntries.map((w) => `【${w.title}】${String(w.content || '').slice(0, 600)}`).join('\n');
 
-  // 大纲层：卷 + 剧情线 + 章节标题/摘要（长作品只给前 30 + 最近 30，中间省略计数）
+  // 大纲层：卷 + 剧情线 + 章节标题/摘要（长作品只给前 30 + 最近 40，中间省略计数）
   const outlineLines = [];
   for (const v of volumes) outlineLines.push(`【卷】${v.title}${v.summary ? `：${v.summary.slice(0, 200)}` : ''}`);
   for (const p of plotlines) outlineLines.push(`【${p.kind === 'side' ? '支线' : '主线'}】${p.title}${p.summary ? `：${p.summary.slice(0, 200)}` : ''}`);
   const total = allChapters.length;
-  const skip = total > 80 ? total - 40 - 30 : -1;
+  const skip = total > 70 ? total - 40 : -1;
   const shown = allChapters.filter((c, i) => skip < 0 || i < 30 || i >= skip || c.id === chapter?.id);
-  if (skip >= 0) outlineLines.push(`（中间 ${total - 40 - 30} 章已省略，仅列最近进展）`);
+  if (skip >= 0) outlineLines.push(`（中间 ${total - 70} 章已省略，仅列最近进展）`);
   for (const c of shown) {
     const marker = c.id === chapter?.id ? '★' : '';
     outlineLines.push(`第${c.position + 1}节${marker} ${c.title}${c.summary ? `：${c.summary.slice(0, 120)}` : ''}`);
@@ -1281,10 +1579,24 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     `每章目标字数：${targetWords} 字`
   ].filter(Boolean).join('｜');
 
+  // OpenViking 语义召回层：以当前写作场景（章节/蓝图/最近事件）为查询，从共享记忆库的
+  // 作品子树召回相关片段（旧章正文、设定词条、角色卡、事件等），弥补固定分层漏掉的信息；
+  // OpenViking 不可用时静默跳过，不阻塞写作。
+  let semanticRecall = null;
+  try {
+    semanticRecall = await getSemanticRecall(workId, chapter || null);
+  } catch (_) {
+    semanticRecall = { enabled: true, status: 'error', query: '', hits: [] };
+  }
+  const recallLayer = semanticRecall && semanticRecall.status === 'ok' && semanticRecall.text
+    ? { label: '相关记忆检索（语义召回）', text: semanticRecall.text, cap: 1400 }
+    : null;
+
   const layers = [
     { label: '作品', text: `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, cap: 900 },
     { label: '卷/剧情线/章节进度（大纲）', text: outlineText, cap: 2800 },
     { label: '长期记忆（已发生的故事摘要）', text: memoryBody, cap: 2200 },
+    recallLayer,
     { label: '最近事件（事件账本）', text: eventsText, cap: 1800 },
     { label: '未闭合伏笔（写作时必须照顾）', text: foreshadowText, cap: 1200 },
     { label: '当前场景', text: sceneBody, cap: 1200 },
@@ -1334,6 +1646,11 @@ function buildNovelContext(workId, chapterId, mode = 'full') {
     relations: relations.map((r) => ({ from: nameById.get(r.from_character_id) || null, to: nameById.get(r.to_character_id) || null, relation: r.relation, description: r.description })),
     redlines: redlines.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note })),
     style_contract: styleContract,
+    semantic_recall: semanticRecall ? {
+      enabled: semanticRecall.enabled,
+      status: semanticRecall.status,
+      hits: semanticRecall.hits || []
+    } : { enabled: false, status: 'unknown', hits: [] },
     assembled
   };
 }
@@ -1411,22 +1728,6 @@ function splitTextIntoCapters(text) {
   return chapters.map((c) => ({ title: c.title, content: c.content.trim() })).filter((c) => c.content || c.title);
 }
 
-// HTML → 纯文本（段落换行保留，实体解码）。
-function htmlToPlain(html) {
-  return String(html || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<\/(p|div|h[1-6]|li|blockquote|tr)>/gi, '\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 // 纯文本 → 编辑器 HTML（段落 <p>）。
 function textToHtml(text) {
   return String(text || '')
@@ -1438,22 +1739,37 @@ function textToHtml(text) {
 }
 
 // EPUB → { title, chapters: [{title, content}] }（零依赖 zip 读取）。
+function xmlDecode(s = '') {
+  return String(s)
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; } })
+    .replace(/&#(\d+);/g, (_, d) => { try { return String.fromCodePoint(parseInt(d, 10)); } catch { return ''; } })
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+
 function parseEpub(buffer) {
   const entries = readZip(buffer);
   const containerText = entries.get('META-INF/container.xml')?.toString('utf8');
   if (!containerText) throw new Error('EPUB 缺少 META-INF/container.xml');
-  const rootPath = containerText.match(/full-path=["']([^"']+)["']/)?.[1];
+  const rootPath = xmlDecode(containerText.match(/full-path=["']([^"']+)["']/)?.[1] || '').trim();
   if (!rootPath) throw new Error('EPUB 无法定位 opf 文件');
   const opf = entries.get(rootPath)?.toString('utf8');
   if (!opf) throw new Error('EPUB 缺少 opf 文件');
   const title = (opf.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/)?.[1] || '')
     .replace(/<[^>]*>/g, '').trim() || '导入的 EPUB';
+  // 兼容命名空间（<opf:item>）与属性任意顺序：分别捕获 id/href/idref 再组装。
+  const attrOf = (tag, name) => tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'))?.[1];
   const manifest = {};
-  for (const m of opf.matchAll(/<item[^>]*\bid=["']([^"']+)["'][^>]*\bhref=["']([^"']+)["'][^>]*\/?>/g)) {
-    manifest[m[1]] = m[2];
+  for (const m of opf.matchAll(/<[\w:]*item\b[^>]*\/?>/g)) {
+    const id = attrOf(m[0], 'id');
+    const href = attrOf(m[0], 'href');
+    if (id && href) manifest[id] = xmlDecode(href);
   }
-  const spine = [...opf.matchAll(/<itemref[^>]*\bidref=["']([^"']+)["'][^>]*\/?>/g)]
-    .map((m) => manifest[m[1]]).filter(Boolean);
+  const spine = [];
+  for (const m of opf.matchAll(/<[\w:]*itemref\b[^>]*\/?>/g)) {
+    const idref = attrOf(m[0], 'idref');
+    if (idref && manifest[idref]) spine.push(manifest[idref]);
+  }
   if (!spine.length) throw new Error('EPUB spine 为空');
   const opfDir = rootPath.includes('/') ? rootPath.slice(0, rootPath.lastIndexOf('/') + 1) : '';
   const chapters = [];
@@ -1510,7 +1826,7 @@ function buildWorkExport(workId, fmt) {
       if (v && v !== lastVol) { lines.push('', `## ${v}`, ''); lastVol = v; }
       lines.push(`### ${c.title}`, '');
       if (c.summary) lines.push(`> ${c.summary}`, '');
-      const plain = plainText(c.content || '');
+      const plain = htmlToPlain(c.content || '');
       if (plain) lines.push(plain, '');
     }
   } else {
@@ -1521,7 +1837,7 @@ function buildWorkExport(workId, fmt) {
       if (v && v !== lastVol) { lines.push('', `【卷】${v}`, ''); lastVol = v; }
       lines.push(`【${c.title}】`, '');
       if (c.summary) lines.push(`（摘要：${c.summary}）`, '');
-      const plain = plainText(c.content || '');
+      const plain = htmlToPlain(c.content || '');
       if (plain) lines.push(plain, '');
     }
   }
@@ -1534,7 +1850,7 @@ function buildChapterExport(chapterId) {
   const work = prepare('SELECT title FROM works WHERE id = ?').get(chapter.work_id);
   const lines = [`${work?.title || ''} · ${chapter.title}`, ''];
   if (chapter.summary) lines.push(`（摘要：${chapter.summary}）`, '');
-  lines.push(plainText(chapter.content || ''));
+  lines.push(htmlToPlain(chapter.content || ''));
   return lines.join('\n').trim() + '\n';
 }
 
@@ -1552,18 +1868,6 @@ function demoDataJson() {
     }
   }
   return _demoData;
-}
-
-// 段落 → 简单 HTML（适配富文本编辑器；已含标签的原样保留）
-function demoToHtml(text) {
-  if (!text) return '';
-  if (/^</.test(String(text).trim())) return String(text).trim();
-  return String(text)
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`)
-    .join('');
 }
 
 function demoFindWork(title) {
@@ -1641,23 +1945,24 @@ function installDemo(force) {
         parent_id: null,
         title: asString(ch.title, `第${i + 1}节`),
         summary: asString(ch.summary),
-        content: demoToHtml(ch.content),
+        content: textToHtml(ch.content),
         position: i
       });
       idMap.chapter.set(ch.title, id);
     });
-    db.exec('COMMIT');
-
-    // 长期记忆（新作品无旧记忆，直接写入一次并留快照）
-    if (data.memory && asString(data.memory.summary)) {
-      saveStoryMemory(workId, asString(data.memory.summary), { source: asString(data.memory.source, 'manual') || 'manual', note: asString(data.memory.note, '示例导入') });
-    }
-    // 事件账本
+    // 长期记忆与事件账本一并纳入同一事务（tx:true），任一步失败整体回滚，
+    // 避免「作品已建但无记忆/事件」的半成品状态。
     let eventCount = 0;
+    if (data.memory && asString(data.memory.summary)) {
+      saveStoryMemory(workId, asString(data.memory.summary), { source: asString(data.memory.source, 'manual') || 'manual', note: asString(data.memory.note, '示例导入'), tx: true });
+    }
     (data.events || []).forEach((e) => {
-      addStoryEvent(workId, { chapterId: idMap.chapter.get(e.chapter) ?? null, kind: asString(e.kind, 'event'), summary: asString(e.summary), payload: e.payload || {} });
+      addStoryEvent(workId, { chapterId: idMap.chapter.get(e.chapter) ?? null, kind: asString(e.kind, 'event'), summary: asString(e.summary), payload: e.payload || {}, tx: true });
       eventCount += 1;
     });
+
+    db.exec('COMMIT');
+    touchWork(workId);
 
     return {
       work_id: workId, title,
@@ -1746,7 +2051,9 @@ async function generateNovelFromPrompt(prompt, config) {
     const ai = await callAI(config, messages, { temperature: 0.7, max_tokens: MAX_OUTPUT_TOKENS });
     data = extractJSON(ai?.choices?.[0]?.message?.content || '');
   } catch (e) {
-    // 第一次失败或解析失败时，用更明确的指令重试一次
+    // 仅对网络/超时/解析类错误重试一次；认证（401）等确定性错误直接抛出，避免浪费一次付费调用。
+    const retryable = !e.status || e.status >= 500 || /timeout|abort|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|fetch failed|JSON|没有返回内容/i.test(String(e?.message || ''));
+    if (!retryable) throw e;
     const retryMessages = [
       { role: 'system', content: NOVEL_GENERATION_SYSTEM_PROMPT + '\n\n请严格只输出 JSON，不要包含 ```json 标记，不要输出任何其他文字。' },
       { role: 'user', content: `请根据以下描述生成小说设定 JSON：\n\n${prompt.trim()}` }
@@ -1937,9 +2244,17 @@ function createHarnessJob(prompt, options) {
   };
   harnessJobs.set(jobId, job);
   // 清理：只保留最近 30 个任务，防止长时间运行内存增长。
+  // 优先淘汰终态任务；若无终态任务，先 abort 最旧的运行中任务再淘汰，避免其「消失」却继续运行。
   if (harnessJobs.size > 30) {
-    const oldest = harnessJobs.keys().next().value;
-    harnessJobs.delete(oldest);
+    let evicted = null;
+    for (const j of harnessJobs.values()) {
+      if (['done', 'failed', 'cancelled', 'timeout'].includes(j.status)) { evicted = j; break; }
+    }
+    if (!evicted) {
+      evicted = harnessJobs.values().next().value;
+      try { evicted?.abort?.abort(); } catch (_) { /* 忽略 */ }
+    }
+    if (evicted) harnessJobs.delete(evicted.id);
   }
   (async () => {
     job.status = 'running';
@@ -1984,7 +2299,11 @@ async function handleAPI(req, res, pathname, query) {
   }
 
   if (resource === 'search' && method === 'GET') {
-    return sendJSON(res, 200, search(query.q || '', query.work_id ? Number(query.work_id) : null));
+    const workId = query.work_id ? Number(query.work_id) : null;
+    const base = timed('server', '关键词检索（search）', () => search(query.q || '', workId), SLOW_REQUEST_MS);
+    // 关键词检索 + OpenViking 语义检索合并返回（novel_lookup 与全局搜索共用）。
+    const semantic = await timedAsync('sync', 'OpenViking 语义检索（semanticSearchMerge）', () => semanticSearchMerge(query.q || '', workId), 1000);
+    return sendJSON(res, 200, { ...base, semantic });
   }
 
   if (resource === 'stats' && method === 'GET') {
@@ -2011,13 +2330,18 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     try {
       const result = installDemo(body.force === true);
+      const demo = demoFindWork(DEMO_TITLE);
+      if (demo) syncWorkFull(demo.id).then(() => {}).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `示例作品同步失败：${e.message}` }));
       return sendJSON(res, 201, { ok: true, ...result });
     } catch (e) {
-      return sendError(res, 409, e.message);
+      const status = /已存在|重新导入/.test(e.message) ? 409 : 500;
+      return sendError(res, status, e.message);
     }
   }
   if (resource === 'demo' && method === 'POST' && segments[2] === 'remove') {
+    const demo = demoFindWork(DEMO_TITLE);
     const removed = deleteDemoWork(DEMO_TITLE);
+    if (removed && demo) removeWorkFromMemory(demo.id).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `示例作品目录移除失败：${e.message}` }));
     return sendJSON(res, 200, { ok: true, removed });
   }
 
@@ -2028,7 +2352,11 @@ async function handleAPI(req, res, pathname, query) {
     let chapters = [];
     try {
       if (body.base64) {
-        const bin = Buffer.from(String(body.base64), 'base64');
+        const b64 = String(body.base64);
+        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
+          return sendError(res, 400, '文件不是有效的 base64/EPUB');
+        }
+        const bin = Buffer.from(b64, 'base64');
         if (bin.length > 24 * 1024 * 1024) return sendError(res, 413, 'EPUB 文件过大（上限 24MB）');
         const epub = parseEpub(bin);
         title = title || epub.title;
@@ -2046,9 +2374,11 @@ async function handleAPI(req, res, pathname, query) {
     if (!chapters.length) return sendError(res, 400, '未能从文件中解析出章节内容');
     try {
       const workId = importWorkFromChapters(title, chapters, '由导入文件创建');
+      syncWorkFull(workId).then(() => {}).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `导入作品同步失败（work ${workId}）：${e.message}` }));
       return sendJSON(res, 201, { ok: true, work_id: workId, title: title || '导入的作品', chapters: chapters.length });
     } catch (e) {
-      return sendError(res, 500, `写入失败：${e.message}`);
+      const status = /作品名称不能为空/.test(e.message) ? 400 : 500;
+      return sendError(res, status, `写入失败：${e.message}`);
     }
   }
 
@@ -2060,15 +2390,15 @@ async function handleAPI(req, res, pathname, query) {
     let text = null;
     let fileName = 'novel.txt';
     if (fmt === 'txt' && workId) {
-      text = buildWorkExport(workId, 'txt');
+      text = timed('server', '整书 TXT 导出（buildWorkExport）', () => buildWorkExport(workId, 'txt'), SLOW_REQUEST_MS);
       const work = prepare('SELECT title FROM works WHERE id = ?').get(workId);
       if (work) fileName = `${work.title || 'novel'}.txt`;
     } else if (fmt === 'md' && workId) {
-      text = buildWorkExport(workId, 'md');
+      text = timed('server', '整书 Markdown 导出（buildWorkExport）', () => buildWorkExport(workId, 'md'), SLOW_REQUEST_MS);
       const work = prepare('SELECT title FROM works WHERE id = ?').get(workId);
       if (work) fileName = `${work.title || 'novel'}.md`;
     } else if (fmt === 'txt' && chapterId) {
-      text = buildChapterExport(chapterId);
+      text = timed('server', '单章 TXT 导出（buildChapterExport）', () => buildChapterExport(chapterId), SLOW_REQUEST_MS);
       const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
       if (chapter) fileName = `${chapter.title || 'chapter'}.txt`;
     }
@@ -2083,13 +2413,19 @@ async function handleAPI(req, res, pathname, query) {
     return;
   }
 
-  // AI 上下文：角色卡 / 世界观 / 作者注
+  // AI 上下文：角色卡 / 世界观 / 作者注（+ OpenViking 语义召回层）
   if (resource === 'ai_context' && method === 'GET') {
     const chapterId = Number(query.chapter_id);
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
-    const ctx = buildAIContext(chapterId);
+    const ctx = timed('server', 'AI 上下文装配（buildAIContext）', () => buildAIContext(chapterId), SLOW_REQUEST_MS);
     if (!ctx) return sendError(res, 404, '章节不存在');
-    return sendJSON(res, 200, ctx);
+    // 语义召回随 AI 上下文一起注入正文写作提示词；复用 buildAIContext 已加载的章节行，避免二次查询。
+    let recall = { enabled: false, status: 'disabled', hits: [] };
+    try {
+      recall = await getSemanticRecall(ctx.work.id, ctx._chapter || null);
+    } catch (_) { /* 召回失败不阻塞 */ }
+    delete ctx._chapter; // 内部字段不外泄给前端
+    return sendJSON(res, 200, { ...ctx, semantic_recall: { enabled: recall.enabled, status: recall.status, hits: recall.hits || [] } });
   }
 
   // 长期记忆 / 故事摘要
@@ -2099,9 +2435,11 @@ async function handleAPI(req, res, pathname, query) {
     if (!workId) return sendError(res, 400, '缺少 work_id');
     try {
       const summary = await compressStoryMemory(workId);
+      notifyChange('story_memory', { workId, id: workId });
       return sendJSON(res, 200, { ok: true, summary });
     } catch (e) {
-      return sendError(res, 502, e.message);
+      const status = /作品不存在/.test(e.message) ? 404 : 502;
+      return sendError(res, status, e.message);
     }
   }
   if (resource === 'story_memory' && method === 'GET') {
@@ -2118,6 +2456,8 @@ async function handleAPI(req, res, pathname, query) {
     if (!versionId) return sendError(res, 400, '缺少 version_id');
     try {
       const result = rollbackMemory(versionId);
+      const vrow = prepare('SELECT work_id FROM memory_versions WHERE id = ?').get(versionId);
+      if (vrow?.work_id) notifyChange('story_memory', { workId: vrow.work_id, id: vrow.work_id });
       return sendJSON(res, 200, { ok: true, ...result });
     } catch (e) {
       return sendError(res, 404, e.message);
@@ -2145,6 +2485,7 @@ async function handleAPI(req, res, pathname, query) {
       source: body.source || 'manual',
       note: body.note || ''
     });
+    notifyChange('story_memory', { workId, id: workId });
     return sendJSON(res, 200, { ...result, work_id: workId });
   }
 
@@ -2161,11 +2502,42 @@ async function handleAPI(req, res, pathname, query) {
     const cacheKey = `novel:${workId}:${chapterId || 0}:${mode}`;
     let ctx = cacheGetContext(cacheKey);
     if (ctx === undefined) {
-      ctx = buildNovelContext(workId, chapterId, mode);
+      ctx = await buildNovelContext(workId, chapterId, mode);
       if (ctx) cacheSetContext(cacheKey, ctx);
     }
     if (!ctx) return sendError(res, 404, '作品不存在');
     return sendJSON(res, 200, ctx);
+  }
+  if (resource === 'novel' && segments[2] === 'semantic' && method === 'GET') {
+    const healthy = await ovClient.health();
+    return sendJSON(res, 200, {
+      ok: true,
+      enabled: ovEffectiveEnabled(),
+      setting_enabled: semanticEnabled(),
+      healthy,
+      base: workDir(0).replace(/\/0$/, ''),
+      pending: pendingQueueLength()
+    });
+  }
+  if (resource === 'novel' && segments[2] === 'semantic' && method === 'PUT') {
+    const body = await readBody(req);
+    const enabled = body.enabled !== false;
+    setAppSetting('ov_semantic_enabled', enabled ? '1' : '0');
+    return sendJSON(res, 200, { ok: true, enabled });
+  }
+  if (resource === 'novel' && segments[2] === 'semantic_index' && method === 'POST') {
+    const body = await readBody(req);
+    if (!ovEffectiveEnabled()) return sendError(res, 400, '语义集成未启用（请先在上下文页签打开开关）');
+    const workId = Number(body.work_id) || null;
+    const healthy = await ovClient.health();
+    if (!healthy) return sendError(res, 503, 'OpenViking 服务器不可用，无法建索引');
+    const targets = workId
+      ? [workId]
+      : prepare('SELECT id FROM works ORDER BY id ASC').all().map((w) => w.id);
+    for (const wid of targets) {
+      syncWorkFull(wid).then(() => {}).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `重建索引失败（work ${wid}）：${e.message}` }));
+    }
+    return sendJSON(res, 202, { ok: true, scheduled: targets.length, message: '索引任务已排队（异步向量化，需要一些时间）' });
   }
   if (resource === 'novel' && segments[2] === 'redlines' && method === 'GET') {
     const workId = Number(query.work_id) || null;
@@ -2176,7 +2548,7 @@ async function handleAPI(req, res, pathname, query) {
     const workId = Number(body.work_id) || null;
     try {
       const redlines = replaceRedlines(workId, body.entries || []);
-      if (workId) touchWork(workId);
+      touchWork(workId); // 全局红线（workId 为空）同样影响所有作品的上下文缓存，需整体失效
       return sendJSON(res, 200, { ok: true, work_id: workId, redlines });
     } catch (e) {
       return sendError(res, 400, e.message);
@@ -2197,6 +2569,9 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
+    // 写事件前校验作品存在，避免外键违约冒泡为 500（非法输入应返回 4xx）。
+    const work = prepare('SELECT id FROM works WHERE id = ?').get(workId);
+    if (!work) return sendError(res, 404, '作品不存在');
     const fields = {
       chapterId: Number(body.chapter_id) || null,
       kind: asString(body.kind, 'event'),
@@ -2207,12 +2582,18 @@ async function handleAPI(req, res, pathname, query) {
       dedupKey: asString(body.dedup_key, '')
     };
     if (!fields.summary.trim()) return sendError(res, 400, '缺少 summary');
+    if (fields.chapterId) {
+      const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(fields.chapterId);
+      if (!ch) return sendError(res, 400, '章节不存在');
+      if (Number(ch.work_id) !== workId) return sendError(res, 400, '章节不属于该作品');
+    }
     // headless 生成任务（NOVELSTUDIO_PROPOSE_MODE=1）先落提案，作者在工坊界面确认后入账。
     if (body.proposed === true) {
       const result = addEventProposal(workId, { ...fields, note: asString(body.note, 'dsh 创作插件提案') });
       return sendJSON(res, 201, { ok: true, ...result, work_id: workId });
     }
     const result = addStoryEvent(workId, fields);
+    notifyChange('events', { workId, id: workId });
     return sendJSON(res, 201, { ok: true, id: result.id, duplicate: result.duplicate, work_id: workId });
   }
   if (resource === 'novel' && segments[2] === 'foreshadows' && method === 'GET') {
@@ -2232,9 +2613,13 @@ async function handleAPI(req, res, pathname, query) {
     if (!row) return sendError(res, 404, '伏笔不存在');
     prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ?').run(status, id);
     if (status === 'resolved' && body.resolves_event_id) {
-      prepare('UPDATE story_events SET resolves_event_id = ? WHERE id = ?').run(Number(body.resolves_event_id) || null, id);
+      const rid = Number(body.resolves_event_id);
+      const target = prepare('SELECT id FROM story_events WHERE id = ? AND work_id = ?').get(rid, row.work_id);
+      if (!target) return sendError(res, 404, '回收事件不存在或不属于该作品');
+      prepare('UPDATE story_events SET resolves_event_id = ? WHERE id = ?').run(rid, id);
     }
     touchWork(row.work_id);
+    notifyChange('events', { workId: row.work_id, id: row.work_id });
     return sendJSON(res, 200, { ok: true, id, foreshadow_status: status });
   }
   if (resource === 'novel' && segments[2] === 'proposals' && method === 'GET') {
@@ -2247,6 +2632,10 @@ async function handleAPI(req, res, pathname, query) {
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const result = settleProposals(workId, { ids: body.ids, all: body.all === true, action: segments[3] });
+    if (segments[3] === 'apply' && result?.applied && (result.applied.events > 0 || result.applied.memories > 0)) {
+      notifyChange('events', { workId, id: workId });
+      notifyChange('story_memory', { workId, id: workId });
+    }
     return sendJSON(res, 200, result);
   }
   if (resource === 'novel' && segments[2] === 'consistency' && method === 'POST') {
@@ -2358,6 +2747,7 @@ async function handleAPI(req, res, pathname, query) {
     prepare('UPDATE chapters SET title = ?, summary = ?, content = ?, updated_at = ? WHERE id = ?')
       .run(title, summary, content, now(), chapterId);
     touchWork(chapter.work_id);
+    notifyChange('chapters', { workId: chapter.work_id, id: chapterId });
     const hits = scanAgainstRedlines(listRedlines(chapter.work_id), plainText(content));
     return sendJSON(res, 200, {
       ok: true, chapter_id: chapterId, version_id: Number(version.id),
@@ -2370,8 +2760,7 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, {
       ok: true,
       available: isHarnessAvailable(),
-      built: isHarnessBuilt(),
-      dir: HARNESS_DIR
+      built: isHarnessBuilt()
     });
   }
 
@@ -2390,8 +2779,13 @@ async function handleAPI(req, res, pathname, query) {
     if (body.work_id) env.NOVELSTUDIO_WORK_ID = String(body.work_id);
     if (body.chapter_id) env.NOVELSTUDIO_CHAPTER_ID = String(body.chapter_id);
     if (body.mode) env.NOVELSTUDIO_MODE = String(body.mode);
+    // 并发上限：同时最多 2 个运行中/排队任务，防止刷出大量 dsh 子进程拖垮机器。
+    const runningCount = [...harnessJobs.values()].filter((j) => j.status === 'queued' || j.status === 'running').length;
+    if (runningCount >= 2) return sendError(res, 429, '已有任务运行中，请稍后再试（并发上限 2）');
+    // 超时钳制：1s ~ 60min，拒绝近乎无限的后台任务。
+    const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || 10 * 60 * 1000)), 60 * 60 * 1000);
     const job = createHarnessJob(String(body.prompt).trim(), {
-      timeout: Number(body.timeout) || 10 * 60 * 1000,
+      timeout,
       model: body.model || undefined,
       env,
       action: body.action || 'harness',
@@ -2440,13 +2834,62 @@ async function handleAPI(req, res, pathname, query) {
     }
   }
   if (resource === 'harness' && method === 'POST' && segments[2] === 'stop') {
-    // headless 模式每次任务独立进程，无需常驻停止；保留接口便于后续扩展常驻服务。
-    return sendJSON(res, 200, { ok: true, message: 'Harness headless 任务无常驻进程' });
+    // headless 模式每次任务独立进程，无常驻进程可停止；明确返回未实现，避免「成功」假象。
+    return sendError(res, 501, 'Harness 常驻停止接口未实现');
   }
 
   // AI error history
   if (resource === 'ai_errors' && method === 'GET') {
     return sendJSON(res, 200, listAIErrors());
+  }
+
+  // ---------- 统一日志系统 ----------
+  // GET  查询（可按 level/layer/kind/q 筛选，before_id 翻页）；返回 entries + 统计。
+  // POST 远端上报（浏览器前端 / dsh 插件进程）；DELETE 清空。
+  if (resource === 'logs' && method === 'GET') {
+    const result = queryLogs({
+      level: query.level || '',
+      layer: query.layer || '',
+      kind: query.kind || '',
+      q: query.q || '',
+      limit: query.limit ? Number(query.limit) : 100,
+      beforeId: query.before_id ? Number(query.before_id) : null
+    });
+    return sendJSON(res, 200, result);
+  }
+  if (resource === 'logs' && method === 'POST') {
+    const body = await readBody(req);
+    const layer = String(body.layer || '');
+    if (!REMOTE_LAYERS.includes(layer)) {
+      return sendError(res, 400, '远端上报仅允许 frontend / plugin 层级');
+    }
+    const message = String(body.message || '').trim();
+    if (!message) return sendError(res, 400, '缺少 message');
+    log({
+      remote: true,
+      level: ['error', 'warn', 'slow', 'info'].includes(body.level) ? body.level : 'error',
+      layer,
+      kind: String(body.kind || 'remote_error').slice(0, 40),
+      message: message.slice(0, 4000),
+      code_file: String(body.code_file || '').slice(0, 2000),
+      code_line: Number.isInteger(Number(body.code_line)) ? Number(body.code_line) : undefined,
+      code_func: String(body.code_func || '').slice(0, 200),
+      stack: String(body.stack || '').slice(0, 16000),
+      context: (() => {
+        let ctx = (body.context && typeof body.context === 'object') ? body.context : {};
+        try {
+          const s = JSON.stringify(ctx);
+          if (s.length > 8000) ctx = { truncated: true, preview: s.slice(0, 4000) };
+        } catch (_) { ctx = {}; }
+        return ctx;
+      })()
+    });
+    flushLogs(); // 上报后立即落盘，保证冒烟测试/崩溃排查能立刻读到
+    return sendJSON(res, 201, { ok: true });
+  }
+  if (resource === 'logs' && method === 'DELETE') {
+    clearLogs();
+    return sendJSON(res, 200, { ok: true });
   }
 
   // Chapter manual save versions
@@ -2460,6 +2903,7 @@ async function handleAPI(req, res, pathname, query) {
       const body = await readBody(req);
       const chapterId = Number(body.chapter_id);
       if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+      if (!prepare('SELECT id FROM chapters WHERE id = ?').get(chapterId)) return sendError(res, 404, '章节不存在');
       const row = saveChapterVersion(chapterId, body.title, body.summary, body.content);
       return sendJSON(res, 201, row);
     }
@@ -2486,6 +2930,8 @@ async function handleAPI(req, res, pathname, query) {
         throw e;
       }
       const updated = prepare('SELECT * FROM chapters WHERE id = ?').get(chapter.id);
+      touchWork(chapter.work_id);
+      notifyChange('chapters', { workId: chapter.work_id, id: chapter.id });
       return sendJSON(res, 200, { ok: true, chapter: updated });
     }
     return sendError(res, 405, 'Method not allowed');
@@ -2523,6 +2969,10 @@ async function handleAPI(req, res, pathname, query) {
         });
         return sendJSON(res, 200, { ok: true, reply: data?.choices?.[0]?.message?.content || '连接成功', raw: data });
       }
+      // 流式直连成文：SSE 边生成边下发，结束后带确定性红线扫描报告（质量优先模式）。
+      if (action === 'write_stream') {
+        return handleAIWriteStream(req, res, body, config);
+      }
       const messages = body.messages;
       if (!Array.isArray(messages) || messages.length === 0) return sendError(res, 400, '缺少 messages');
       if (action === 'write' || action === 'personality' || action === 'outline' || action === 'chat' || action === 'polish' || action === 'expand' || action === 'pipeline') {
@@ -2542,17 +2992,21 @@ async function handleAPI(req, res, pathname, query) {
     'characters', 'relations', 'plotline_characters', 'world_entries', 'creation_tasks', 'api_configs'
   ]);
   if (crudResources.has(resource)) {
+    // 存在 id 段但解析失败（如 /api/works/12abc）→ 404，而不是落入列表分支返回全量数据。
+    if (segments[2] !== undefined && id === null) return sendError(res, 404, 'Not found');
+    const maskRow = (row) => (resource === 'api_configs' && row ? { ...row, api_key: maskApiKey(row.api_key) } : row);
     try {
       if (method === 'GET' && !id) {
         const where = {};
         for (const key of ['work_id', 'volume_id', 'plotline_id', 'parent_id', 'category_id', 'character_id', 'from_character_id', 'to_character_id']) {
           if (query[key] !== undefined) where[key] = Number(query[key]);
         }
-        return sendJSON(res, 200, getList(resource, where));
+        const rows = getList(resource, where) || [];
+        return sendJSON(res, 200, resource === 'api_configs' ? rows.map(maskRow) : rows);
       }
       if (method === 'GET' && id) {
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
-        return row ? sendJSON(res, 200, row) : sendError(res, 404, 'Not found');
+        return row ? sendJSON(res, 200, maskRow(row)) : sendError(res, 404, 'Not found');
       }
       if (method === 'POST') {
         const body = await readBody(req);
@@ -2560,23 +3014,57 @@ async function handleAPI(req, res, pathname, query) {
         if (body.work_id) touchWork(body.work_id);
         if (resource === 'works') touchWork(newId);
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(newId);
-        return sendJSON(res, 201, row);
+        // OpenViking 增量同步：新建作品触发全量建索引，其余资源防抖后重写对应文件。
+        if (resource === 'works') {
+          syncWorkFull(newId).then(() => {}).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `新作品同步失败（work ${newId}）：${e.message}` }));
+        } else if (resource !== 'plotline_characters') {
+          const wid = (row?.work_id ?? Number(body.work_id)) || null;
+          if (wid) notifyChange(resource, { workId: wid, id: newId });
+        } else if (row?.work_id) {
+          // plotline_characters 影响出场角色选择，需失效上下文缓存（无对应记忆库渲染器，故不 notifyChange）。
+          touchWork(row.work_id);
+        }
+        return sendJSON(res, 201, maskRow(row));
       }
       if (method === 'PUT' && id) {
         const body = await readBody(req);
         const old = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
-        updateRow(resource, id, body);
+        // 乐观锁：编辑保存携带读取时的 updated_at，冲突返回 409（前端提示刷新）。
+        if (resource === 'chapters' && body._if_updated_at !== undefined) {
+          if (old && String(old.updated_at) !== String(body._if_updated_at)) {
+            return sendError(res, 409, '内容已在其他窗口被修改，请刷新后重试');
+          }
+        }
+        const changes = updateRow(resource, id, body);
+        if (changes === 0) return sendError(res, 404, 'Not found');
         if (old?.work_id) touchWork(old.work_id);
         if (body.work_id) touchWork(body.work_id);
         if (resource === 'works') touchWork(Number(id));
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
-        return sendJSON(res, 200, row);
+        const wid = resource === 'works'
+          ? Number(id)
+          : ((old?.work_id ?? row?.work_id ?? Number(body.work_id)) || null);
+        if (wid && resource !== 'plotline_characters') {
+          notifyChange(resource, { workId: wid, id: resource === 'works' ? Number(id) : id });
+        } else if (wid) {
+          touchWork(wid);
+        }
+        return sendJSON(res, 200, maskRow(row));
       }
       if (method === 'DELETE' && id) {
         const old = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
-        deleteRow(resource, id);
+        const removed = deleteRow(resource, id);
+        if (!removed) return sendError(res, 404, 'Not found');
         if (old?.work_id) touchWork(old.work_id);
         if (resource === 'works') touchWork(Number(id));
+        // OpenViking 增量同步：删除作品 → 整目录移除；其余资源 → 删除对应文件。
+        if (resource === 'works') {
+          removeWorkFromMemory(Number(id)).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `作品目录移除失败（work ${id}）：${e.message}` }));
+        } else if (old?.work_id && resource !== 'plotline_characters') {
+          notifyChange(resource, { workId: old.work_id, id, deleted: true });
+        } else if (old?.work_id) {
+          touchWork(old.work_id);
+        }
         return sendJSON(res, 200, { ok: true });
       }
       return sendError(res, 405, 'Method not allowed');
@@ -2603,7 +3091,10 @@ function serveStatic(req, res, pathname) {
     if (!err && stat.isFile()) {
       const ext = path.extname(filePath).toLowerCase();
       res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-      fs.createReadStream(filePath).pipe(res);
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', () => { try { res.destroy(); } catch (_) { /* 忽略 */ } });
+      res.on('error', () => { stream.destroy(); });
+      stream.pipe(res);
     } else {
       // SPA fallback: send index.html for non-file paths
       fs.readFile(path.join(publicDir, 'index.html'), (err2, html) => {
@@ -2622,8 +3113,12 @@ function serveStatic(req, res, pathname) {
 // 首次启动写入默认红线清单（幂等）
 seedRedlinesIfEmpty();
 
+// 日志系统初始化：注入 SQLite、迁移旧 AI 错误、安装进程兜底与卡顿监测、启动保留策略。
+initLogger(db, { onExit: () => flushDebouncedSync() });
+
 const server = http.createServer(async (req, res) => {
   const { pathname, query } = getPath(req);
+  const startedAt = performance.now();
   try {
     if (pathname.startsWith('/api/')) {
       await handleAPI(req, res, pathname, query);
@@ -2631,10 +3126,38 @@ const server = http.createServer(async (req, res) => {
       serveStatic(req, res, pathname);
     }
   } catch (e) {
-    sendError(res, 500, e.message);
+    // 统一错误日志：记录发生时间/层级/代码位置/文件地址（logger 自动解析调用栈）。
+    log({
+      level: 'error', layer: 'server', kind: 'http_error',
+      message: `接口异常：${String(e?.message || e)}`,
+      error: e,
+      context: { method: req.method, path: pathname, query: String(req.url || '').slice(0, 500) }
+    });
+    if (!res.destroyed && !res.headersSent) {
+      const status = e?.code === 'PAYLOAD_TOO_LARGE' ? 413
+        : e?.code === 'INVALID_JSON' ? 400
+        : 500;
+      sendError(res, status, e?.message);
+    }
+  } finally {
+    // 慢请求监测：API 耗时超标记 slow 日志（“不流畅”的可归因记录）。
+    // N-07：AI 通道（直连 /ai/ 与慢通道 /harness）天然秒级起步，用更高阈值避免「慢请求」刷屏。
+    const aiLike = pathname.startsWith('/api/ai/') || pathname.startsWith('/api/harness');
+    const slowMs = aiLike ? 10000 : SLOW_REQUEST_MS;
+    const ms = performance.now() - startedAt;
+    if (pathname.startsWith('/api/') && pathname !== '/api/logs' && ms > slowMs) {
+      log({
+        level: 'slow', layer: 'server', kind: 'slow_request',
+        message: `${req.method} ${pathname} 耗时 ${Math.round(ms)}ms（阈值 ${slowMs}ms）`,
+        context: { method: req.method, path: pathname, duration_ms: Math.round(ms) },
+        dedupMs: 60 * 1000
+      });
+    }
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`Novel Studio is running at http://localhost:${PORT}`);
+  // 启动后异步把尚未索引的作品导入 OpenViking 共享记忆库（语义召回开启时）。
+  autoIndexExistingWorks();
 });
