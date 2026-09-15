@@ -7,6 +7,9 @@
 
 const BASE = 'http://127.0.0.1:3738';
 import net from 'node:net';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 const results = [];
 let created = { works: [], others: [] };
 
@@ -20,7 +23,7 @@ async function api(method, path, { body, headers = {}, raw = false } = {}) {
     opts.body = typeof body === 'string' ? body : JSON.stringify(body);
     opts.headers['Content-Type'] = 'application/json';
   }
-  const res = await fetch(BASE + path, opts);
+  const res = await fetch(BASE + path, { ...opts, signal: AbortSignal.timeout(20000) });
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* not json */ }
@@ -212,13 +215,336 @@ async function main() {
 
   console.log('\n== I. api_configs 掩码 ==');
   {
-    const r1 = await api('POST', '/api/api_configs', { body: { name: '测试配置', base_url: 'https://api.deepseek.com', api_key: 'sk-test-1234567890abcdef', model: 'deepseek-chat' } });
+    const r1 = await api('POST', '/api/api_configs', { body: { name: '测试配置', base_url: 'https://api.deepseek.com', api_key: 'sk-test-1234567890abcdef', model: 'deepseek-flash' } });
     const cfg = r1.json;
     record('I1 新建配置 201', r1.status === 201 && cfg?.id);
     created.others.push(['api_configs', cfg?.id]);
     record('I2 创建响应即掩码(回显无明文 Key)', r1.status === 201 && !JSON.stringify(r1.json).includes('1234567890abcdef') && r1.json?.api_key?.includes('…'), r1.json?.api_key);
     const r2 = await api('GET', '/api/api_configs');
     record('I3 列表接口掩码 Key', r2.status === 200 && r2.json?.every((c) => !('1234567890abcdef') || true) && !JSON.stringify(r2.json).includes('1234567890abcdef'), `configs=${r2.json?.length}`);
+  }
+
+  console.log('\n== I2. harness 思考强度校验 ==');
+  {
+    // 只测非法值：合法值会真的入队一个 dsh 子进程任务（要拉起 node + harness 子进程），
+    // 代价高且非本套件职责，故不在此覆盖。
+    const r1 = await api('POST', '/api/harness/run', { body: { prompt: '校验用', reasoning_effort: 'ultra' } });
+    record('I2a 非法思考强度被拒 400', r1.status === 400 && /思考强度/.test(r1.json?.error || ''), `status=${r1.status} err=${r1.json?.error}`);
+  }
+
+  console.log('\n== I3. 🐞 运行追踪（调试录制） ==');
+  {
+    // 录制开关 + 归组 + 不记正文 + 排除自身接口 + 会话文件回看
+    const s0 = await api('GET', '/api/debug/state');
+    record('I3a 初始状态可读且未录制', s0.status === 200 && s0.json?.state?.recording === false, `status=${s0.status}`);
+    record('I3b 状态暴露上限配置', s0.json?.config?.max_nodes_per_op > 0 && s0.json?.state?.limits?.max_nodes_per_op > 0);
+
+    const start = await api('POST', '/api/debug/start', { body: { from: 'test-suite' } });
+    record('I3c 开启录制', start.status === 200 && start.json?.recording === true, `session=${start.json?.session_id}`);
+    const again = await api('POST', '/api/debug/start', { body: {} });
+    record('I3d 重复开启幂等', again.status === 200 && again.json?.already === true);
+
+    const OP = 'suite-trace-op';
+    const w = await api('POST', '/api/works', { body: { title: '追踪套件作品' }, headers: { 'X-Trace-Op': OP, 'X-Trace-Title': encodeURIComponent('新建作品') } });
+    const wId = w.json?.id;
+    created.works.push(wId);
+    const c = await api('POST', '/api/chapters', { body: { work_id: wId, title: '追踪章', content: '<p>正文内容</p>' }, headers: { 'X-Trace-Op': OP } });
+    const cId = c.json?.id;
+    created.others.push(['chapters', cId]);
+
+    await new Promise((r) => setTimeout(r, 300));
+    const ops = await api('GET', '/api/debug/ops');
+    const opList = ops.json?.ops || [];
+    const mine = opList.filter((o) => o.opId === OP);
+    record('I3e 同一 opId 的多个请求归并为一条操作', mine.length === 1, `matched=${mine.length} total=${opList.length}`);
+    record('I3f 操作标题取自前端头', mine[0]?.title === '新建作品', `title=${mine[0]?.title}`);
+    record('I3g 操作记录到 HTTP 状态码与节点数', (mine[0]?.http_status === 200 || mine[0]?.http_status === 201) && mine[0]?.nodes > 0, `status=${mine[0]?.http_status} nodes=${mine[0]?.nodes}`);
+
+    const detail = await api('GET', `/api/debug/op?op_id=${OP}`);
+    const nodes = detail.json?.nodes || [];
+    const kinds = [...new Set(nodes.map((n) => n.kind))];
+    record('I3h 明细含 SQL 节点（表名/行数/形状）', kinds.includes('db') && nodes.some((n) => n.db?.table === 'chapters' && n.db?.rows !== null), `kinds=${kinds.join(',')}`);
+    const withCode = nodes.filter((n) => n.code?.file && n.code?.line);
+    record('I3i 节点带 文件:行号（非 node 内部帧）', withCode.length > 0 && withCode.every((n) => !/node:internal/.test(n.code.file)), withCode[0] ? `${withCode[0].code.file}:${withCode[0].code.line}` : '');
+
+    const secret = 'SUITE_SECRET_MUST_NOT_BE_TRACED';
+    const c2 = await api('POST', '/api/chapters', { body: { work_id: wId, title: '密钥章', content: `<p>${secret}</p>` }, headers: { 'X-Trace-Op': 'suite-trace-op-2' } });
+    created.others.push(['chapters', c2.json?.id]);
+    const d2 = await api('GET', '/api/debug/op?op_id=suite-trace-op-2');
+    const dump2 = JSON.stringify(d2.json);
+    record('I3j 追踪数据不含正文（不记正文约束）', !dump2.includes(secret));
+    record('I3k 但记录正文长度形状', /"len":\d+/.test(dump2) || /"chars":\d+/.test(dump2));
+
+    const n1 = ((await api('GET', '/api/debug/ops')).json?.ops || []).length;
+    await api('POST', '/api/logs', { body: { layer: 'frontend', level: 'error', message: '追踪排除验证' } });
+    await api('GET', '/api/stats');
+    const n2 = ((await api('GET', '/api/debug/ops')).json?.ops || []).length;
+    record('I3l 自身/轮询接口不参与追踪', n1 === n2, `before=${n1} after=${n2}`);
+
+    const idsBefore = ((await api('GET', '/api/debug/ops')).json?.ops || []).map((o) => o.opId);
+    const stop = await api('POST', '/api/debug/stop');
+    record('I3m 停止录制并返回会话摘要', stop.status === 200 && stop.json?.recording === false && (stop.json?.summary?.ops || 0) >= 2, `ops=${stop.json?.summary?.ops} nodes=${stop.json?.summary?.nodes}`);
+
+    const w2 = await api('POST', '/api/works', { body: { title: '停止后作品' }, headers: { 'X-Trace-Op': 'suite-after-stop' } });
+    created.works.push(w2.json?.id);
+    const idsAfter = ((await api('GET', '/api/debug/ops')).json?.ops || []).map((o) => o.opId);
+    record('I3n 停止后不再新增操作', idsAfter.filter((id) => !idsBefore.includes(id)).length === 0 && !idsAfter.includes('suite-after-stop'));
+
+    await new Promise((r) => setTimeout(r, 400));
+    const sessions = await api('GET', '/api/debug/sessions');
+    const files = sessions.json?.sessions || [];
+    record('I3o 录制明细落 JSONL', files.length >= 1 && files.some((f) => /^trace-.*\.jsonl$/.test(f.file)), `files=${files.length}`);
+    const target = files[0]?.file;
+    const sess = target ? await api('GET', `/api/debug/session?file=${encodeURIComponent(target)}`) : { json: null };
+    const sessNodes = (sess.json?.ops || []).reduce((s, o) => s + (o.nodes?.length || 0), 0);
+    record('I3p 会话文件可回看（含操作与节点明细）', (sess.json?.ops?.length || 0) >= 1 && sessNodes > 0, `ops=${sess.json?.ops?.length} nodes=${sessNodes}`);
+    record('I3q 会话文件同样不含正文', !JSON.stringify(sess.json).includes(secret));
+    const bad = await api('GET', '/api/debug/session?file=../../package.json');
+    record('I3r 会话文件名做了路径穿越防护', bad.status === 404 || (bad.json && !JSON.stringify(bad.json).includes('novel-studio')), `status=${bad.status}`);
+
+    const push = await api('POST', '/api/debug/op', {
+      body: {
+        op_id: 'suite-client-op', title: '保存本章', status: 'done',
+        render: { view: 'writing', chapter_id: cId }, toast: ['已保存'],
+        nodes: [
+          { kind: 'fn', name: 'saveChapter()', file: 'public/app.js', line: 1542, func: 'saveChapter', cost_ms: 12, status: 'ok', result: { ok: true, id: cId } },
+          { kind: 'ui', name: '视图重绘', file: 'public/app.js', line: 1224, func: 'render', cost_ms: 40, status: 'ok' }
+        ]
+      }
+    });
+    record('I3s 停录后前端收尾数据仍能补建并被接受', push.status === 200 && push.json?.attached?.accepted === 2, `accepted=${push.json?.attached?.accepted}`);
+    const cli = await api('GET', '/api/debug/op?op_id=suite-client-op');
+    const cliNodes = cli.json?.nodes || [];
+    record('I3t 前端节点带代码位置并合流到同一操作', cliNodes.length === 2 && cliNodes.every((n) => n.side === 'frontend') && cliNodes[0]?.code?.line === 1542, `n=${cliNodes.length}`);
+    const repeat = await api('POST', '/api/debug/op', {
+      body: { op_id: 'suite-client-op', title: '保存本章', status: 'done', nodes: [{ kind: 'fn', name: '重复上报', file: 'public/app.js', line: 1, cost_ms: 1, status: 'ok' }] }
+    });
+    record('I3t2 重复上报不重复收尾（幂等）', repeat.json?.deduped === true, `deduped=${repeat.json?.deduped}`);
+    const noOp = await api('POST', '/api/debug/op', { body: { title: '缺少 op_id' } });
+    record('I3u 缺少 op_id 被拒 400', noOp.status === 400);
+    const unknown = await api('GET', '/api/debug/nope');
+    record('I3v 未知调试接口 404', unknown.status === 404);
+
+    // 业务主干函数级埋点：上下文装配与关键词检索必须各自成节点（否则「哪一步慢」无法归因）。
+    await api('POST', '/api/debug/start', { body: { from: 'trunk-test' } });
+    const tw = await api('POST', '/api/works', { body: { title: '主干埋点验证' } });
+    const twId = tw.json?.id;
+    created.works.push(twId);
+    const tc = await api('POST', '/api/chapters', { body: { work_id: twId, title: '主干章', content: '<p>主干正文</p>' } });
+    const tcId = tc.json?.id;
+    created.others.push(['chapters', tcId]);
+    await api('GET', `/api/novel/context?work_id=${twId}&chapter_id=${tcId}&mode=full`, { headers: { 'X-Trace-Op': 'suite-trunk-op' } });
+    await api('GET', `/api/search?q=主干正文&work_id=${twId}`, { headers: { 'X-Trace-Op': 'suite-trunk-op' } });
+    await new Promise((r) => setTimeout(r, 400));
+    const trunk = await api('GET', '/api/debug/op?op_id=suite-trunk-op');
+    const trunkNames = [...new Set((trunk.json?.nodes || []).map((n) => n.name))];
+    record('I3w 上下文装配成为独立函数级节点', trunkNames.some((n) => /buildNovelContext/.test(n)), `nodes=${trunkNames.length}`);
+    record('I3x 关键词检索成为独立函数级节点', trunkNames.some((n) => /^search/.test(n)));
+    // 分层追踪的下半截：高频动作只累计次数与总耗时（不逐条展开），必须真的被聚合出来。
+    const opsWithTools = await api('GET', '/api/debug/ops');
+    const tools = opsWithTools.json?.tools || [];
+    record('I3y 高频函数累计表非空（bumpTool 已接线）', tools.length > 0, `kinds=${tools.length} ${tools[0] ? tools[0].name + ' ×' + tools[0].count : ''}`);
+    record('I3z 累计表带次数与合计耗时', tools.some((t) => t.count > 0 && Number.isFinite(t.cost_ms)), JSON.stringify(tools[0] || {}));
+
+    // 第三轮回归：可信度标记必须随摘要下发。
+    // auto_closed：操作由追踪器空闲收尾（不是业务显式结束），耗时不可当业务耗时用。
+    // cost_untrusted：操作内存在跨时钟域算出的垃圾耗时（|cost| > 1 天）。
+    // 没有这两个字段，界面上「546469ms 的 30ms 检索」和「-1.787e12ms 的 AI 调用」都无法被识别。
+    const opsMarks = await api('GET', '/api/debug/ops');
+    const firstOp = (opsMarks.json?.ops || [])[0];
+    record('I3af 摘要带 auto_closed 可信度标记', !!firstOp && Object.prototype.hasOwnProperty.call(firstOp, 'auto_closed'), firstOp ? `auto_closed=${firstOp.auto_closed}` : 'no op');
+    record('I3ag 摘要带 cost_untrusted 可信度标记', !!firstOp && Object.prototype.hasOwnProperty.call(firstOp, 'cost_untrusted'), firstOp ? `cost_untrusted=${firstOp.cost_untrusted}` : 'no op');
+
+    await api('POST', '/api/debug/stop');
+
+    // 迟到收尾的封卷保护：停录后补发的前端节点必须进内存（界面可见），
+    // 但绝不写进已封卷的 JSONL 文件（session-end 之后出现 node/op-end 行 = 文件结构被污染）。
+    const startedLate = await api('POST', '/api/debug/start', { body: { from: 'late-test' } });
+    // ⚠️ 必须锁死「本次会话」的文件名：同一秒内可能起多个会话（上次停录 + 本次开录），
+    // 靠 mtime 取最新文件会读到刚开的新会话，把它的 session-start/node 行误判成
+    // 「封卷后写入」。（这正是本断言先前误报 after=7 的原因。）
+    const lateSessionFile = `trace-${startedLate.json?.session_id}.jsonl`;
+    const lw = await api('POST', '/api/works', { body: { title: '迟到写入验证' }, headers: { 'X-Trace-Op': 'suite-late-op' } });
+    if (lw.json?.id) created.works.push(lw.json.id);
+    await new Promise((r) => setTimeout(r, 300));
+    await api('POST', '/api/debug/stop');
+    const late = await api('POST', '/api/debug/op', {
+      body: {
+        op_id: 'suite-late-op', title: '新建作品', status: 'done', render: { view: 'works' },
+        nodes: [{ kind: 'ui', name: '迟到的渲染节点', file: 'public/app.js', line: 999, func: 'lateNode', cost_ms: 5, status: 'ok' }]
+      }
+    });
+    record('I3aa 停录后迟到收尾被接受', late.status === 200 && late.json?.attached?.accepted === 1, `status=${late.status}`);
+    await new Promise((r) => setTimeout(r, 400));
+    const liveLate = await api('GET', '/api/debug/op?op_id=suite-late-op');
+    record('I3ab 迟到节点进内存（界面可看）', (liveLate.json?.nodes || []).some((n) => n.side === 'frontend' && /迟到/.test(n.name)), `nodes=${liveLate.json?.nodes?.length}`);
+    try {
+      // 测试实例按约定使用 .test-data-trace 数据目录（与文档/README 中的隔离测试说明一致），
+      // 若环境变量显式给了其它目录则以它为准（供自定义环境使用）。
+      const dataDir = process.env.NOVELSTUDIO_DATA_DIR
+        ? path.resolve(process.env.NOVELSTUDIO_DATA_DIR)
+        : path.resolve(process.cwd(), '.test-data-trace');
+      const debugDir = path.join(dataDir, 'debug');
+      // 直接读「本次会话」的文件，不再按 mtime 猜（同秒多会话时 mtime 判据不可靠）。
+      const lines = fs.readFileSync(path.join(debugDir, lateSessionFile), 'utf8').split('\n').filter(Boolean);
+      const endIdx = lines.findIndex((l) => l.includes('"session-end"'));
+      const after = endIdx >= 0 ? lines.slice(endIdx + 1) : [];
+      record('I3ac JSONL 已封卷（含 session-end）', endIdx >= 0, `file=${lateSessionFile}`);
+      record('I3ad 封卷后无 node 行', !after.some((l) => l.includes('"type":"node"')), `after=${after.length}`);
+      record('I3ae 封卷后无 op-end 行', !after.some((l) => l.includes('"op-end"')));
+    } catch (e) {
+      record('I3ac JSONL 封卷检查', false, e.message);
+      record('I3ad 封卷后无 node 行', false);
+      record('I3ae 封卷后无 op-end 行', false);
+    }
+  }
+
+  console.log('\n== I4. 🐞 直连通道 Token 采集（本地假 AI 服务） ==');
+  {
+    // 用本地假 AI 服务返回带 usage 的响应，验证 Token 采集链路真的生效（无需真实 API Key）。
+    const fakePort = 3999;
+    const fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        let model = 'deepseek-flash';
+        try { model = JSON.parse(body).model || model; } catch (_) { /* 忽略 */ }
+        const payload = JSON.stringify({
+          id: 'chatcmpl-fake', object: 'chat.completion', model,
+          choices: [{ index: 0, message: { role: 'assistant', content: '测'.repeat(300) }, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 1234, completion_tokens: 567, total_tokens: 1801,
+            prompt_cache_hit_tokens: 800, completion_tokens_details: { reasoning_tokens: 120 }
+          }
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
+        res.end(payload);
+      });
+    });
+    await new Promise((r) => fake.listen(fakePort, '127.0.0.1', r));
+
+    try {
+      const cfg = await api('POST', '/api/api_configs', { body: { name: '假AI（Token采集验证）', base_url: `http://127.0.0.1:${fakePort}`, api_key: 'sk-fake-for-test', model: 'deepseek-flash' } });
+      const cfgId = cfg.json?.id;
+      created.others.push(['api_configs', cfgId]);
+      record('I4a 建立指向假服务的配置', (cfg.status === 200 || cfg.status === 201) && cfgId > 0, `status=${cfg.status}`);
+
+      await api('POST', '/api/debug/start', { body: { from: 'token-test' } });
+      const call = await api('POST', '/api/ai/test', { body: { config_id: cfgId, model: 'deepseek-flash' }, headers: { 'X-Trace-Op': 'suite-token-op', 'X-Trace-Title': encodeURIComponent('测试模型连接') } });
+      record('I4b 假 AI 调用成功', call.status === 200, `status=${call.status}`);
+
+      await new Promise((r) => setTimeout(r, 300));
+      const d = await api('GET', '/api/debug/op?op_id=suite-token-op');
+      const ai = (d.json?.nodes || []).filter((n) => n.kind === 'ai');
+      record('I4c 捕获 AI 节点', ai.length >= 1, `aiNodes=${ai.length}`);
+      const u = ai[0]?.usage;
+      record('I4d 输入/输出 Token 被采集', u?.prompt_tokens === 1234 && u?.completion_tokens === 567, JSON.stringify(u));
+      record('I4e 缓存命中与思考 Token 被采集', u?.prompt_cache_hit_tokens === 800 && u?.reasoning_tokens === 120);
+      record('I4f 记录模型与端点', ai[0]?.model === 'deepseek-flash' && String(ai[0]?.endpoint).includes(`:${fakePort}`), `model=${ai[0]?.model}`);
+      const dump = JSON.stringify(d.json);
+      const opRow = ((await api('GET', '/api/debug/ops')).json?.ops || []).find((o) => o.opId === 'suite-token-op');
+      record('I4g 操作级 Token 汇总', opRow?.prompt_tokens === 1234 && opRow?.completion_tokens === 567 && opRow?.ai_calls >= 1, `↑${opRow?.prompt_tokens} ↓${opRow?.completion_tokens}`);
+      record('I4h AI 返回正文被折叠为长度而非原文', !dump.includes('测'.repeat(200)) && dump.includes('"omitted":true'));
+      await api('POST', '/api/debug/stop');
+    } finally {
+      fake.close();
+    }
+  }
+
+  console.log('\n== K. 长任务结果不丢失（生成稿草稿 / 审稿报告落库） ==');
+  {
+    // 背景（2026-09-14 真实事故）：AI 成文结果只活在结果弹窗的 state 里，用户点
+    // 「先审稿再应用」关掉弹窗，这版稿子就静默消失；审稿报告因模型返回的 JSON 多一个
+    // 引号解析失败，几分钟的等待整份作废。下面把两条兜底路径都钉住。
+    const w = await api('POST', '/api/works', { body: { title: '长任务产物兜底验证' } });
+    const wid = w.json?.id;
+    if (wid) created.works.push(wid);
+    const ch = await api('POST', '/api/chapters', { body: { work_id: wid, title: '草稿章' } });
+    const cid = ch.json?.id;
+    record('K1 建立验证用作品与章节', wid > 0 && cid > 0, `work=${wid} chapter=${cid}`);
+
+    // 1) 生成稿草稿：弹窗出现时即落库，关闭弹窗后仍可取回
+    const draftBody = '<p>这是 AI 生成但用户尚未应用的一版正文。</p>';
+    const dpost = await api('POST', '/api/novel/draft', { body: { chapter_id: cid, content: draftBody } });
+    record('K2 生成稿草稿落库', dpost.status === 201 && dpost.json?.draft_id > 0, `status=${dpost.status} chars=${dpost.json?.chars}`);
+    const dget = await api('GET', `/api/novel/draft?chapter_id=${cid}`);
+    record('K3 关闭弹窗后草稿仍可取回', dget.json?.draft?.content === draftBody, `got=${String(dget.json?.draft?.content || '').slice(0, 20)}`);
+    // GET /chapter_versions 直接返回数组（不是 {versions}）
+    const vres = await api('GET', `/api/chapter_versions?chapter_id=${cid}`);
+    const vlist = Array.isArray(vres.json) ? vres.json : (vres.json?.versions || []);
+    record('K4 草稿不计入手动历史版本', vlist.length === 0, `versions=${vlist.length}`);
+    const dempty = await api('POST', '/api/novel/draft', { body: { chapter_id: cid, content: '   ' } });
+    record('K5 空草稿被拒绝', dempty.status === 400, `status=${dempty.status}`);
+
+    // 2) 审稿报告：能解析则存结构化；不能解析也必须存原文（状态 raw）
+    const report = { summary: '总评：结构完整。', issues: [{ text: '问题一' }, { text: '问题二' }], strengths: [{ text: '优点一' }] };
+    const rput = await api('PUT', '/api/novel/review', { body: { chapter_id: cid, report, status: 'parsed' } });
+    record('K6 结构化审稿报告落库', rput.status === 201 && rput.json?.review_id > 0, `status=${rput.status}`);
+    const rget = await api('GET', `/api/novel/review?chapter_id=${cid}`);
+    record('K7 审稿报告可回看且标记为已解析', rget.json?.review?.parsed === true && rget.json?.review?.issue_count === 2 && rget.json?.review?.strength_count === 1, `parsed=${rget.json?.review?.parsed} issues=${rget.json?.review?.issue_count}`);
+
+    // 解析失败路径：只给原文，服务端也必须收下（旧行为是 400 拒绝，于是什么都没留下）
+    const rawText = '{"summary":"畸形报告","issues":[{"text":"带多余引号的问题。","},{"text":"第二条"}]}';
+    const rraw = await api('PUT', '/api/novel/review', { body: { chapter_id: cid, report: {}, raw_text: rawText, status: 'raw' } });
+    record('K8 无法解析的审稿报告存原文而非拒绝', rraw.status === 201 && rraw.json?.status === 'raw', `status=${rraw.status} state=${rraw.json?.status}`);
+    const rrawGet = await api('GET', `/api/novel/review?chapter_id=${cid}`);
+    record('K9 原文可回看且标记为未解析', rrawGet.json?.review?.parsed === false && String(rrawGet.json?.review?.raw_text || '').includes('畸形报告'), `parsed=${rrawGet.json?.review?.parsed} rawLen=${String(rrawGet.json?.review?.raw_text || '').length}`);
+    record('K10 完全空的审稿仍被拒绝', (await api('PUT', '/api/novel/review', { body: { chapter_id: cid, report: {} } })).status === 400);
+  }
+
+  console.log('\n== L. 长任务：后台继续 / 刷新后续接 ==');
+  {
+    // 背景：一次成文/审稿要跑几分钟，job_id 只活在页面内存里 —— 刷新页面就再也拿不回结果。
+    // 现在任务状态与产出落库，这里把「列得出 / 取得到 / 能回填」三条钉住。
+    const w = await api('POST', '/api/works', { body: { title: '长任务续接验证' } });
+    const wid = w.json?.id;
+    if (wid) created.works.push(wid);
+    const ch = await api('POST', '/api/chapters', { body: { work_id: wid, title: '续接章' } });
+    const cid = ch.json?.id;
+    record('L1 建立验证用作品与章节', wid > 0 && cid > 0, `work=${wid} chapter=${cid}`);
+
+    const list = await api('GET', `/api/harness/recoverable?work_id=${wid}`);
+    record('L2 可续接任务列表可查询', list.status === 200 && Array.isArray(list.json?.jobs), `status=${list.status}`);
+
+    const missing = await api('GET', '/api/harness/recovered?id=不存在的任务');
+    record('L3 未知任务返回 404（而不是假装成功）', missing.status === 404, `status=${missing.status}`);
+
+    // 审稿产出回填：把「跑完但页面已关」的产出交给服务端落库
+    const rawReview = '{"summary":"回填审稿总评","issues":[{"text":"回填问题一"},{"text":"回填问题二"}],"strengths":[{"text":"回填优点"}]}';
+    const fin = await api('POST', '/api/novel/finalize', { body: { kind: 'review', chapter_id: cid, output: rawReview } });
+    record('L4 审稿产出可回填落库', fin.status === 201 && fin.json?.issue_count === 2, `status=${fin.status} issues=${fin.json?.issue_count}`);
+    const back = await api('GET', `/api/novel/review?chapter_id=${cid}`);
+    record('L5 回填的审稿可回看', back.json?.review?.parsed === true && back.json?.review?.issue_count === 2, `parsed=${back.json?.review?.parsed}`);
+
+    // 畸形产出回填：解析失败也必须留原文
+    const finRaw = await api('POST', '/api/novel/finalize', { body: { kind: 'review', chapter_id: cid, output: '完全不是 JSON 的审稿原文' } });
+    record('L6 畸形产出回填存原文而非报错', finRaw.status === 201 && finRaw.json?.parsed === false, `status=${finRaw.status} parsed=${finRaw.json?.parsed}`);
+
+    // 成文产出回填：落成草稿，绝不自动覆盖正文
+    const prose = '<p>回填的成文正文</p>';
+    const finProse = await api('POST', '/api/novel/finalize', { body: { kind: 'prose', chapter_id: cid, output: prose } });
+    record('L7 成文产出回填落成草稿', finProse.status === 201 && finProse.json?.draft_id > 0, `status=${finProse.status}`);
+    const draft = await api('GET', `/api/novel/draft?chapter_id=${cid}`);
+    record('L8 回填的成文可取回且未覆盖正文', draft.json?.draft?.content === prose, `got=${String(draft.json?.draft?.content || '').slice(0, 16)}`);
+    const chapterNow = await api('GET', `/api/chapters/${cid}`);
+    record('L9 回填不自动改写章节正文', !String(chapterNow.json?.content || '').includes('回填的成文正文'), `content=${String(chapterNow.json?.content || '').slice(0, 20)}`);
+
+    record('L10 回填缺少 kind 被拒绝', (await api('POST', '/api/novel/finalize', { body: { chapter_id: cid, output: 'x' } })).status === 400);
+    record('L11 回填空产出被拒绝', (await api('POST', '/api/novel/finalize', { body: { kind: 'review', chapter_id: cid, output: '  ' } })).status === 400);
+
+    // 重审修复的回归：resumable 只对排队/运行中为真；mark_applied 让任务从恢复条消失。
+    const probeRun = await api('POST', '/api/harness/run', { body: { prompt: '回归任务', kind: 'prose', stage: '回归任务', timeout: 600000 } });
+    const probeId = probeRun.json?.job_id;
+    record('L12 回归任务已入队', probeRun.status === 202 && !!probeId, `status=${probeRun.status}`);
+    await new Promise((r) => setTimeout(r, 1200));
+    const probeList = await api('GET', '/api/harness/recoverable');
+    const probeJob = (probeList.json?.jobs || []).find((j) => j.id === probeId);
+    record('L13 失败任务不再标记为可续接（resumable=false）', !!probeJob && probeJob.resumable === false, JSON.stringify(probeJob && { status: probeJob.status, resumable: probeJob.resumable }));
+    const mark = await api('POST', '/api/harness/mark_applied', { body: { job_id: probeId } });
+    record('L14 mark_applied 接口可用', mark.status === 200, `status=${mark.status}`);
+    const listAfter = await api('GET', '/api/harness/recoverable');
+    record('L15 已应用的任务从恢复条消失', !(listAfter.json?.jobs || []).some((j) => j.id === probeId), `remaining=${(listAfter.json?.jobs || []).length}`);
+    record('L16 mark_applied 缺少 job_id 被拒绝', (await api('POST', '/api/harness/mark_applied', { body: {} })).status === 400);
   }
 
   console.log('\n== J. 清理测试数据 ==');

@@ -9,6 +9,14 @@ import { htmlToPlain } from './text-utils.js';
 import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
 import { ovClient, pendingQueueLength } from './openviking.js';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
+import {
+  traceRequest, traceFn, traceEvent, traceAI, traceHarness, bumpTool, prepareTraced,
+  startTracing, stopTracing, pingTracing, checkStaleTracing, traceState, traceNow, traceClockDomain,
+  beginOperation, finishOperation, attachClientNodes, sweepIdleOperations,
+  listOperations, getOperation, listToolCalls, sessionSummary,
+  subscribeStream, listSessions, readSession, purgeSessions, pruneSessions,
+  flushTraceFile, traceConfigInfo, DEBUG_DIR, isExcludedPath
+} from './debug-trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -137,17 +145,27 @@ function now() {
 }
 
 // 预编译语句缓存：相同 SQL 只 prepare 一次，减少重复解析开销，提升请求速度。
+// debug-trace 的 prepareTraced 只包住「语句方法的调用」并记录 SQL 操作类型/表名/行数/耗时，
+// 不记录绑定值（B 选项：不记正文）。未录制时包装层直接走原语句，零额外开销。
 const stmtCache = new Map();
 const STMT_CACHE_MAX = 500; // 动态 IN 列表会按占位符数量生成不同 SQL，需上限防止无限增长
-function prepare(sql) {
+const prepare = prepareTraced(function prepareStatement(sql) {
   let stmt = stmtCache.get(sql);
   if (!stmt) {
+    // 🐞 运行追踪的分层机制：语句「准备」属于高频、低信息量的动作（缓存命中时几乎零耗时，
+    // 一次操作可能发生上百次），逐条记节点只会淹没业务链路。因此这里只累计次数与总耗时
+    // （bumpTool），配合真正逐条记录的 SQL 执行节点（prepareTraced），得到
+    // 「主干逐条 + 高频聚合」的分层视图。未录制时 bumpTool 第一行即返回。
+    const t0 = performance.now();
     if (stmtCache.size >= STMT_CACHE_MAX) stmtCache.clear();
     stmt = db.prepare(sql);
     stmtCache.set(sql, stmt);
+    bumpTool(`prepare 语句（缓存未命中）`, performance.now() - t0);
+  } else {
+    bumpTool('prepare 语句（缓存命中）', 0);
   }
   return stmt;
-}
+});
 
 // ---------- 上下文装配缓存（v0.8.0 性能优化） ----------
 // 所有写操作都会经 touchWork() 递增版本号，使缓存整体失效（单用户本地应用，全局失效足够）；
@@ -207,7 +225,7 @@ const RESOURCE_CONFIG = {
   plotline_characters: { table: 'plotline_characters', order: 'id ASC', fields: ['work_id', 'plotline_id', 'character_id', 'status', 'notes'], defaults: { status: '', notes: '' } },
   world_entries: { table: 'world_entries', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'content', 'keywords', 'is_pinned', 'priority', 'position'], defaults: { content: '', keywords: '', is_pinned: 0, priority: 50, position: 0 } },
   creation_tasks: { table: 'creation_tasks', order: 'id DESC', fields: ['work_id', 'prompt', 'status', 'stages_json', 'result_json', 'error'], defaults: { prompt: '', status: 'running', stages_json: '{}', result_json: '{}', error: '' } },
-  api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-v4-pro', temperature: 0.8, max_tokens: 4096 } }
+  api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 } }
 };
 
 const NUMERIC_FIELDS = new Set([
@@ -412,6 +430,9 @@ function search(q, workId) {
   return { terms, chapters, characters, plotlines };
 }
 
+// 🐞 运行追踪：给关键词检索加函数级节点（耗时归因到具体函数，而不是只看 SQL 层）。
+search = traceFn('search（关键词检索）', search, { kind: 'db', slowMs: 200 });
+
 // ---------- AI ----------
 function chatCompletionsUrl(baseUrl) {
   let base = String(baseUrl || 'https://api.deepseek.com').trim().replace(/\/+$/, '');
@@ -421,18 +442,58 @@ function chatCompletionsUrl(baseUrl) {
   return `${base}/chat/completions`;
 }
 
+// 在售 DeepSeek 模型名（仅用于大小写归一）。
+// deepseek-flash 是 V4.1 Flash 的正式名（当前能力最强、单价最低）。
+// deepseek-v4-flash / deepseek-v4-flash-vision-exp 的模型已下线，但这两个**旧名仍被服务端
+// 路由到 V4.1 Flash**，故保留在表内，保证存量配置仍能正确归一。
+// deepseek-chat / deepseek-reasoner 官方已于 2026-07-24 **停止服务**（调用直接报错，并非被路由），
+// 因此不再列为已知模型；存量配置由 db.js 的启动迁移改写为 deepseek-flash。
+const KNOWN_DEEPSEEK_MODELS = [
+  'deepseek-flash',
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp'
+];
+
+// 功能内置模型的分工，与 `public/app.js` 顶部的同名常量保持一致（两处需同步修改）：
+//   快而省 → deepseek-flash；直接产出正文/整部设定、或结果会喂给之后每一章的环节 → deepseek-v4-pro。
+// 用单点常量的意义：避免散落的字面量被批量替换误伤（本会话已因此越界改错 4 处）。
+const QUALITY_AI_MODEL = 'deepseek-v4-pro';
+
 function normalizeModel(model) {
   if (!model) return model;
   const raw = String(model).trim();
   const lower = raw.toLowerCase();
-  const known = [
-    'deepseek-chat',
-    'deepseek-reasoner',
-    'deepseek-v4-pro',
-    'deepseek-v4-flash',
-    'deepseek-v4-flash-vision-exp'
-  ];
-  return known.includes(lower) ? lower : raw;
+  return KNOWN_DEEPSEEK_MODELS.includes(lower) ? lower : raw;
+}
+
+// 思考强度归一化。取值依据：dsh-llm-deepseek 设置层公布的 off | low | high | max。
+const DEEPSEEK_REASONING_EFFORTS = new Set(['off', 'low', 'high', 'max']);
+
+function normalizeReasoningEffort(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  return DEEPSEEK_REASONING_EFFORTS.has(v) ? v : '';
+}
+
+// 思考控制字段只有 DeepSeek 官方端点认。第三方 OpenAI 兼容服务可能因未知字段直接 400，
+// 因此对自定义 base_url 不下发（模型名仍照常转发），避免把用户的第三方配置打挂。
+function isDeepSeekEndpoint(baseUrl) {
+  try {
+    const host = new URL(String(baseUrl || 'https://api.deepseek.com')).hostname.toLowerCase();
+    return host === 'deepseek.com' || host.endsWith('.deepseek.com');
+  } catch (_) {
+    return false;
+  }
+}
+
+// 把归一化后的强度翻译成 OpenAI 格式请求体。注意设置层与线上格式取值不同：
+// 强度用 reasoning_effort（low/high/max），关闭思考用 thinking.type=disabled
+// —— `off` 并不是合法的 reasoning_effort 值（依据：DeepSeek API 文档《思考模式》）。
+// 思考模式默认开启且 effort 默认 high，因此不传即为默认强度。
+function applyReasoningEffort(body, effort) {
+  if (effort === 'off') body.thinking = { type: 'disabled' };
+  else if (effort) body.reasoning_effort = effort;
+  return body;
 }
 
 // DeepSeek V4 API 当前允许的最大输出 token 数；用于把“无上限”映射到接口实际上限。
@@ -456,12 +517,15 @@ async function callAI(config, messages, options = {}) {
     ? Math.min(Math.max(1, Math.floor(Number(rawMaxTokens))), MAX_OUTPUT_TOKENS)
     : MAX_OUTPUT_TOKENS;
   const body = {
-    model: normalizeModel(config.model || 'deepseek-chat'),
+    model: normalizeModel(config.model || 'deepseek-flash'),
     messages,
     temperature: options.temperature ?? config.temperature ?? 0.8,
     max_tokens: maxTokens,
     stream: false
   };
+  // 按需下发思考强度；未指定时沿 DeepSeek 默认（开启，effort=high）。
+  const effort = normalizeReasoningEffort(options.reasoning_effort);
+  if (effort && isDeepSeekEndpoint(config.base_url)) applyReasoningEffort(body, effort);
 
   const doPost = async (url) => {
     const controller = new AbortController();
@@ -493,8 +557,29 @@ async function callAI(config, messages, options = {}) {
   };
 
   const primary = chatCompletionsUrl(base);
+  let okModel = body.model;
+  const doPostTraced = async (url) => {
+    // ⚠️ t0 必须用 traceNow()（追踪专用单调时钟）。曾经这里写 Date.now()，
+    // 与 debug-trace 的 hrtime 基准相减得到 -1.787e12ms 的负数耗时。
+    const t0 = traceNow();
+    try {
+      const data = await doPost(url);
+      // Token 采集：之前只取 content，provider 返回的 usage 被整个丢弃；
+      // 这里把它挂到运行追踪的 AI 节点上（直连通道是唯一能拿到 usage 的通道）。
+      okModel = data?.model || okModel;
+      traceAI('callAI', {
+        t0, usage: data?.usage || null, model: okModel, endpoint: url, stream: false,
+        messageStats: messages.map((m) => ({ role: m.role, chars: typeof m.content === 'string' ? m.content.length : 0 })),
+        result: data?.choices?.[0]?.message?.content ?? data
+      });
+      return data;
+    } catch (e) {
+      traceAI('callAI', { t0, usage: null, model: okModel, endpoint: url, stream: false, status: 'error', error: e });
+      throw e;
+    }
+  };
   try {
-    return await doPost(primary);
+    return await doPostTraced(primary);
   } catch (e) {
     // 归一化出另一种路径形态：/v1/chat/completions ↔ /chat/completions
     const alt = /\/v1\/chat\/completions$/i.test(primary)
@@ -503,7 +588,8 @@ async function callAI(config, messages, options = {}) {
     if (alt === primary) throw e;
     const looksLikeUrlIssue = e.status === 404 || e.status === 405 || /missing required messages|missing.*messages|缺少\s*messages|not found|invalid url/i.test(e.message || '');
     if (!looksLikeUrlIssue) throw e;
-    return doPost(alt);
+    traceEvent('note', 'callAI URL 回退重试', { code: { file: 'server.js', line: null, func: 'callAI' } });
+    return doPostTraced(alt);
   }
 }
 
@@ -524,12 +610,21 @@ async function callAIStream(config, messages, options = {}, onDelta) {
     ? Math.min(Math.max(1, Math.floor(Number(rawMaxTokens))), MAX_OUTPUT_TOKENS)
     : MAX_OUTPUT_TOKENS;
   const body = {
-    model: normalizeModel(config.model || 'deepseek-chat'),
+    model: normalizeModel(config.model || 'deepseek-flash'),
     messages,
     temperature: options.temperature ?? config.temperature ?? 0.8,
     max_tokens: maxTokens,
-    stream: true
+    stream: true,
+    // Token 采集：OpenAI 兼容的流式接口默认不回 usage，需要显式索取（最后一个 chunk 带 usage、choices 为空）。
+    // 只对官方 DeepSeek 端点下发，避免第三方兼容网关因未知字段拒绝整个写作请求。
+    ...(isDeepSeekEndpoint(config.base_url) ? { stream_options: { include_usage: true } } : {})
   };
+  // 流式成文是质量最敏感的路径，同样按需下发思考强度。
+  const effort = normalizeReasoningEffort(options.reasoning_effort);
+  if (effort && isDeepSeekEndpoint(config.base_url)) applyReasoningEffort(body, effort);
+
+  let streamUsage = null; // 流式最后一个 chunk 带回的 usage（Token 采集用）
+  const streamModel = body.model;
 
   const doStream = async (url) => {
     const controller = new AbortController();
@@ -573,6 +668,8 @@ async function callAIStream(config, messages, options = {}, onDelta) {
           if (!payload || payload === '[DONE]') continue;
           try {
             const evt = JSON.parse(payload);
+            // Token 采集：流式的 usage 出现在最后一个 chunk（choices 为空），此前被整个丢弃。
+            if (evt?.usage) streamUsage = evt.usage;
             const delta = evt?.choices?.[0]?.delta?.content;
             if (typeof delta === 'string' && delta) {
               full += delta;
@@ -589,8 +686,25 @@ async function callAIStream(config, messages, options = {}, onDelta) {
   };
 
   const primary = chatCompletionsUrl(base);
+  const doStreamTraced = async (url) => {
+    // 同 doPostTraced：追踪耗时基准只能取 traceNow()。
+    const t0 = traceNow();
+    try {
+      const full = await doStream(url);
+      traceAI('callAIStream', {
+        t0, usage: streamUsage, model: streamModel, endpoint: url, stream: true,
+        messageStats: messages.map((m) => ({ role: m.role, chars: typeof m.content === 'string' ? m.content.length : 0 })),
+        result: full,
+        usage_unavailable_reason: streamUsage ? null : 'provider 未回 usage（非官方 DeepSeek 端点或流式未带 usage chunk）'
+      });
+      return full;
+    } catch (e) {
+      traceAI('callAIStream', { t0, usage: null, model: streamModel, endpoint: url, stream: true, status: 'error', error: e });
+      throw e;
+    }
+  };
   try {
-    return await doStream(primary);
+    return await doStreamTraced(primary);
   } catch (e) {
     if (options.signal?.aborted) throw e; // 客户端主动断开：不做 URL 回退重试
     const alt = /\/v1\/chat\/completions$/i.test(primary)
@@ -599,7 +713,7 @@ async function callAIStream(config, messages, options = {}, onDelta) {
     if (alt === primary) throw e;
     const looksLikeUrlIssue = e.status === 404 || e.status === 405 || /missing required messages|missing.*messages|缺少\s*messages|not found|invalid url/i.test(e.message || '');
     if (!looksLikeUrlIssue) throw e;
-    return doStream(alt);
+    return doStreamTraced(alt);
   }
 }
 
@@ -629,6 +743,7 @@ async function handleAIWriteStream(req, res, body, config) {
     const text = await callAIStream(config, messages, {
       temperature: body.temperature,
       max_tokens: body.max_tokens,
+      reasoning_effort: body.reasoning_effort,
       signal: upstream.signal
     }, (delta, acc) => {
       full = acc;
@@ -673,7 +788,7 @@ function getConfigFromBody(body) {
   return {
     base_url: body.base_url || 'https://api.deepseek.com',
     api_key: body.api_key || '',
-    model: body.model || 'deepseek-v4-pro',
+    model: body.model || 'deepseek-flash',
     temperature: body.temperature ?? 0.8,
     max_tokens: body.max_tokens ?? 4096
   };
@@ -720,11 +835,15 @@ function listAIErrors() {
 }
 
 // ---------- chapter manual save versions ----------
-function saveChapterVersion(chapterId, title, summary, content) {
+/**
+ * @param {'manual'|'draft'} [kind] manual=手动保存/覆盖前备份的历史版本；draft=AI 生成稿草稿。
+ *   草稿与历史版本同表但分区，列表与清理都按 kind 隔离，互不挤占。
+ */
+function saveChapterVersion(chapterId, title, summary, content, kind = 'manual') {
   const info = prepare(`
-    INSERT INTO chapter_save_versions (chapter_id, title, summary, content, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(chapterId, asString(title), asString(summary), asString(content), now());
+    INSERT INTO chapter_save_versions (chapter_id, title, summary, content, created_at, kind)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(chapterId, asString(title), asString(summary), asString(content), now(), kind === 'draft' ? 'draft' : 'manual');
   pruneChapterVersions(chapterId);
   return prepare('SELECT * FROM chapter_save_versions WHERE id = ?').get(Number(info.lastInsertRowid));
 }
@@ -733,19 +852,43 @@ function listChapterVersions(chapterId) {
   return prepare(`
     SELECT id, chapter_id, title, summary, content, created_at
     FROM chapter_save_versions
-    WHERE chapter_id = ?
+    WHERE chapter_id = ? AND kind = 'manual'
     ORDER BY created_at DESC, id DESC
     LIMIT 10
   `).all(chapterId);
 }
 
+/** 最近一份 AI 生成稿草稿（关闭结果弹窗后仍可取回）。 */
+function getLatestDraft(chapterId) {
+  const row = prepare(`
+    SELECT id, chapter_id, title, content, created_at
+    FROM chapter_save_versions
+    WHERE chapter_id = ? AND kind = 'draft'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(chapterId);
+  if (!row) return null;
+  return { ...row, chars: plainText(row.content).length };
+}
+
 function pruneChapterVersions(chapterId) {
+  // 两个分区各自保留 10 份：草稿不能把历史版本挤掉，反之亦然。
   prepare(`
     DELETE FROM chapter_save_versions
-    WHERE chapter_id = ?
+    WHERE chapter_id = ? AND kind = 'manual'
       AND id NOT IN (
         SELECT id FROM chapter_save_versions
-        WHERE chapter_id = ?
+        WHERE chapter_id = ? AND kind = 'manual'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 10
+      )
+  `).run(chapterId, chapterId);
+  prepare(`
+    DELETE FROM chapter_save_versions
+    WHERE chapter_id = ? AND kind = 'draft'
+      AND id NOT IN (
+        SELECT id FROM chapter_save_versions
+        WHERE chapter_id = ? AND kind = 'draft'
         ORDER BY created_at DESC, id DESC
         LIMIT 10
       )
@@ -842,10 +985,17 @@ async function compressStoryMemory(workId) {
 
   const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节：\n${chapterText.slice(0, 6000)}\n\n角色：\n${characterText.slice(0, 3000)}\n\n世界观：\n${worldText.slice(0, 3000)}\n\n请只输出压缩后的记忆摘要。`;
 
-  const output = await runHarnessTask(prompt, { timeout: 10 * 60 * 1000, model: 'deepseek-v4-pro' });
+  // 记忆压缩是「读得多、写得少」的摘要任务。
+  // 模型用 QUALITY_AI_MODEL：产出的长期记忆会喂给之后**每一章**的上下文，质量影响是累积的，
+  // 按用户「质量优先」基线不在这里省（2026-09-13 用户决定由 flash 改回 pro）。
+  // 思考强度仍刻意不指定：沿用 ~/.dsh/settings.yaml 的全局设置，避免单方面调低。
+  const output = await runHarnessTask(prompt, { timeout: 10 * 60 * 1000, model: QUALITY_AI_MODEL });
   saveStoryMemory(workId, output, { source: 'compress' });
   return output;
 }
+
+// 🐞 运行追踪：长期记忆压缩是长任务（内含 AI 调用），单独成节点便于归因耗时。
+compressStoryMemory = traceFn('compressStoryMemory（压缩长期记忆）', compressStoryMemory, { kind: 'fn', slowMs: 3000 });
 
 // ---------- 出场角色选择（评分制 · v0.8.0） ----------
 // 解决旧实现的三个遗漏源：①兜底只取“按名字前 8”与剧情无关；②名字子串误命中、漏别名；
@@ -1077,6 +1227,11 @@ function buildAIContext(chapterId) {
   };
 }
 
+// 🐞 运行追踪：出场角色选择与 UI 预览版上下文装配的函数级节点。
+// 这两处是「AI 到底带了什么进上下文」的关键路径，耗时与规模都值得单独看。
+selectSceneCharacters = traceFn('selectSceneCharacters（选出场角色）', selectSceneCharacters, { kind: 'fn', slowMs: 200 });
+buildAIContext = traceFn('buildAIContext（UI 预览上下文）', buildAIContext, { kind: 'fn', slowMs: 300 });
+
 // ---------- 创作内核：写作红线 / 事件账本 / 记忆版本 / 场景上下文 ----------
 // 供 dsh 创作插件与后续 UI 调用；生成前取上下文、生成后扫描红线、落事件与记忆快照。
 
@@ -1259,6 +1414,9 @@ function scanAgainstRedlines(rows, text, opts = {}) {
   }
   return hits.sort((a, b) => b.count - a.count);
 }
+
+// 🐞 运行追踪：红线扫描可能跑大量正则（正文越长越慢），单独成节点便于识别卡顿来源。
+scanAgainstRedlines = traceFn('scanAgainstRedlines（写作红线扫描）', scanAgainstRedlines, { kind: 'fn', slowMs: 150 });
 
 // ---------- 故事事件账本 ----------
 // 入账一条事件；支持伏笔状态与回收关联、按 dedup_key 幂等去重。
@@ -1592,6 +1750,10 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     ? { label: '相关记忆检索（语义召回）', text: semanticRecall.text, cap: 1400 }
     : null;
 
+  // mode=settings：设定类生成（角色/世界观/词条/剧情线等）专用轻量装配——
+  // 这类任务不需要「当前这一章写到哪了」，跳过当前场景/本章蓝图/前文衔接三层
+  // （三层合计最多省 ~6,700 字/轮）。
+  const isSettingsMode = mode === 'settings';
   const layers = [
     { label: '作品', text: `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, cap: 900 },
     { label: '卷/剧情线/章节进度（大纲）', text: outlineText, cap: 2800 },
@@ -1599,9 +1761,11 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     recallLayer,
     { label: '最近事件（事件账本）', text: eventsText, cap: 1800 },
     { label: '未闭合伏笔（写作时必须照顾）', text: foreshadowText, cap: 1200 },
-    { label: '当前场景', text: sceneBody, cap: 1200 },
-    { label: '本章蓝图（写作必须遵守）', text: blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', cap: 1500 },
-    { label: '前文衔接', text: storyTail, cap: mode === 'continuation' ? 4000 : 1600 },
+    ...(isSettingsMode ? [] : [
+      { label: '当前场景', text: sceneBody, cap: 1200 },
+      { label: '本章蓝图（写作必须遵守）', text: blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', cap: 1500 },
+      { label: '前文衔接', text: storyTail, cap: mode === 'continuation' ? 4000 : 1600 },
+    ]),
     { label: '出场角色卡', text: charCardsText, cap: Infinity },
     relationsText ? { label: '人物关系', text: relationsText, cap: 800 } : null,
     { label: '激活的世界观设定（优先级排列）', text: worldEntriesText, cap: 3000 },
@@ -1611,7 +1775,12 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
 
   // 总预算收敛：超限时从“前文衔接/大纲/世界观”等弹性层依次收缩，红线层不动。
   // 按层名定位（旧实现按下标定位，人物关系层为空时下标错位，会把世界观层误换成红线层）。
-  const TOTAL_BUDGET = 26000;
+  // settings 的 18,000 = 质量层全保底时的可执行下限（红线 4,000 + 角色卡 4,000 + 长期记忆 2,200 +
+  // 最近事件 1,800 + 召回 1,400 + 伏笔 1,200 + 关系 800 + 作品 900 + 大纲/世界观收缩下限 400+400
+  // + 层标题注记）：这些层是「零损失」承诺的内容本身，不加入弹性收缩——novel_lookup 关键词检索
+  // 覆盖不到长期记忆/事件账本，收缩即不可查回的真实损失。原 12,000 预算在质量层保底下不可达，
+  // 属于误导性常量，已修正。
+  const TOTAL_BUDGET = isSettingsMode ? 18000 : 26000;
   const FLEX_LAYERS = ['前文衔接', '卷/剧情线/章节进度（大纲）', '激活的世界观设定（优先级排列）'];
   const FLEX_CAPS = [2400, 1600, 800, 400];
   let joined = sections.join('\n\n');
@@ -1655,6 +1824,9 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
   };
 }
 
+// 🐞 运行追踪：创作内核的上下文装配是最重的一段（分层预算 + 语义召回 + 缓存），单列节点。
+buildNovelContext = traceFn('buildNovelContext（创作上下文装配）', buildNovelContext, { kind: 'fn', slowMs: 500 });
+
 // 记忆增量更新辅助：在“已有摘要”基础上合并一段“本批次进展”，返回新的摘要文本。
 // 只负责文本拼接约定，真正的语义压缩由模型完成；本函数供插件生成可写入的 summary。
 function mergeMemoryDraft(prevSummary, deltaEventsText) {
@@ -1667,12 +1839,22 @@ function mergeMemoryDraft(prevSummary, deltaEventsText) {
 }
 
 // ---------- 章节审稿（审稿→确认清单→修稿→差异合并） ----------
-function saveReview(workId, chapterId, report) {
-  const json = JSON.stringify(report && typeof report === 'object' ? report : {});
+/**
+ * @param {object} report 结构化审稿报告
+ * @param {{ rawText?: string, status?: string }} [extra]
+ *   rawText：AI 返回的无法解析的原文。宁可存原文也不丢 —— 一轮审稿要等好几分钟，
+ *   因为 JSON 里多一个引号就整份丢弃，是 2026-09-14 真实事故的根因。
+ */
+function saveReview(workId, chapterId, report, extra = {}) {
+  const payload = report && typeof report === 'object' ? { ...report } : {};
+  const rawText = asString(extra.rawText, '').slice(0, 200000);
+  if (rawText && !asString(payload.raw_text, '')) payload.raw_text = rawText;
+  const status = ['parsed', 'raw'].includes(extra.status) ? extra.status : (rawText ? 'raw' : 'parsed');
+  const json = JSON.stringify(payload);
   const info = prepare(`
     INSERT INTO chapter_reviews (work_id, chapter_id, report_json, checklist_json, status)
-    VALUES (?, ?, ?, '{}', 'pending')
-  `).run(workId, chapterId, json);
+    VALUES (?, ?, ?, '{}', ?)
+  `).run(workId, chapterId, json, status);
   // 每个章节只保留最近 10 份审稿
   prepare(`
     DELETE FROM chapter_reviews WHERE chapter_id = ? AND id NOT IN (
@@ -1682,8 +1864,88 @@ function saveReview(workId, chapterId, report) {
   return Number(info.lastInsertRowid);
 }
 
-function getLatestReview(chapterId) {
-  const row = prepare('SELECT * FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 1').get(chapterId);
+// 审稿报告解析（服务端侧）：严格 JSON 失败时逐字段抢救。
+// 必须与前端 extractReviewFromText 同源同义：一轮审稿要跑几分钟，模型返回的 JSON
+// 里只要多一个引号，严格解析就会失败、整份报告作废（2026-09-14 真实事故）。
+function salvageJSONString(src, key) {
+  const at = String(src).indexOf(`"${key}"`);
+  if (at < 0) return '';
+  let i = src.indexOf(':', at) + 1;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  if (src[i] !== '"') return '';
+  i += 1;
+  let out = '';
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '\\') {
+      const n = src[i + 1];
+      out += n === 'n' ? '\n' : n === 't' ? '\t' : n;
+      i += 2;
+      continue;
+    }
+    if (c === '"') {
+      const rest = src.slice(i + 1).replace(/^[\s,]+/, '');
+      if (rest.startsWith('}') || rest.startsWith(']') || /^"[A-Za-z_]+"\s*:/.test(rest)) break;
+      if (src[i + 1] === '"') { i += 1; continue; }
+      out += c;
+      i += 1;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out.trim().replace(/["']+$/, '');
+}
+
+function salvageJSONList(src, key) {
+  const at = String(src).indexOf(`"${key}"`);
+  if (at < 0) return [];
+  const open = src.indexOf('[', at);
+  if (open < 0) return [];
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '[') depth += 1;
+    else if (src[i] === ']') { depth -= 1; if (depth === 0) { end = i; break; } }
+  }
+  const body = src.slice(open + 1, end < 0 ? src.length : end);
+  const out = [];
+  let cursor = 0;
+  for (;;) {
+    const t = body.indexOf('"text"', cursor);
+    if (t < 0) break;
+    const val = salvageJSONString(body.slice(Math.max(0, t - 1)), 'text');
+    if (val && !out.includes(val)) out.push(val);
+    cursor = t + 6;
+  }
+  return out;
+}
+
+/** 把 AI 的审稿输出变成 { summary, issues, strengths }；救不回来时返回 null。 */
+function parseReviewText(text) {
+  const s = String(text || '');
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    const slice = s.slice(start, end + 1);
+    let obj = null;
+    try { obj = JSON.parse(slice); } catch (_) {
+      try { obj = JSON.parse(slice.replace(/"\s*,\s*"/g, '","').replace(/"\s*,\s*([}\]])/g, '"$1')); } catch (_) { obj = null; }
+    }
+    if (obj && (asString(obj.summary, '').trim() || Array.isArray(obj.issues))) {
+      return {
+        summary: asString(obj.summary, ''),
+        issues: asArray(obj.issues).map((x) => asString(typeof x === 'string' ? x : x?.text, '')).filter(Boolean),
+        strengths: asArray(obj.strengths).map((x) => asString(typeof x === 'string' ? x : x?.text, '')).filter(Boolean)
+      };
+    }
+  }
+  const body = start >= 0 ? s.slice(start) : s;
+  const salvaged = { summary: salvageJSONString(body, 'summary'), issues: salvageJSONList(body, 'issues'), strengths: salvageJSONList(body, 'strengths') };
+  return (salvaged.summary || salvaged.issues.length) ? salvaged : null;
+}
+
+function getLatestReview(chapterId) {  const row = prepare('SELECT * FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 1').get(chapterId);
   if (!row) return null;
   let report = {}; let checklist = {};
   try { report = JSON.parse(row.report_json || '{}'); } catch (_) {}
@@ -1727,6 +1989,9 @@ function splitTextIntoCapters(text) {
   }
   return chapters.map((c) => ({ title: c.title, content: c.content.trim() })).filter((c) => c.content || c.title);
 }
+
+// 🐞 运行追踪：导入拆章（大文件、正则密集）单独成节点。
+splitTextIntoCapters = traceFn('splitTextIntoCapters（导入拆章）', splitTextIntoCapters, { kind: 'fn', slowMs: 300 });
 
 // 纯文本 → 编辑器 HTML（段落 <p>）。
 function textToHtml(text) {
@@ -1983,6 +2248,9 @@ function installDemo(force) {
   }
 }
 
+// 🐞 运行追踪：示例导入会一次性写数百行数据，单列节点便于看清初始化耗时。
+installDemo = traceFn('installDemo（导入示例小说）', installDemo, { kind: 'fn', slowMs: 500 });
+
 // ---------- AI auto-create novel ----------
 function extractJSON(text) {
   if (!text) throw new Error('AI 没有返回内容');
@@ -2227,6 +2495,127 @@ async function generateNovelFromHarness(prompt, model) {
 // 前端轮询 GET /harness/job?id= 获取状态、耗时与最近输出。
 // D7：任务支持取消（POST /harness/cancel），杀掉 dsh 子进程树后状态置为 cancelled。
 const harnessJobs = new Map(); // jobId -> { id, status, started_at, finished_at, output, scan, proposals, error, tail }
+
+// ---------- 长任务落库（「刷新/重启后续接」的地基） ----------
+// 内存里的 harnessJobs 一重启就没了，而一次成文/审稿要跑几分钟。
+// 这里把 id/归属/状态/产出持久化，使「刷新页面」甚至「重启服务」后
+// 仍能看见任务是否在跑、并把已完成的结果取回来应用。
+function persistHarnessJob(job) {
+  try {
+    prepare(`
+      INSERT INTO harness_jobs (id, work_id, chapter_id, kind, stage, status, output, error, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        output = excluded.output,
+        error = excluded.error,
+        stage = excluded.stage,
+        updated_at = excluded.updated_at
+    `).run(
+      job.id,
+      job.workId || null,
+      job.chapterId || null,
+      job.kind || 'harness',
+      job.stage || '',
+      job.status || 'queued',
+      // 只在完成时存产出：中途不存半截正文，避免"半个章节"被当成结果应用
+      job.status === 'done' ? String(job.output || '') : (job.status === 'failed' || job.status === 'timeout' ? String(job.output || '') : ''),
+      job.error ? String(job.error).slice(0, 4000) : '',
+      job.created_at || now(),
+      now()
+    );
+    // 行数上限：每条 done 任务都带着整章正文（可达数万字符），表会无限增长。
+    // 只保留最近 100 条；更早的任务即使被清掉，产出早已通过草稿/审稿表归档。
+    prepare(`
+      DELETE FROM harness_jobs WHERE id NOT IN (
+        SELECT id FROM harness_jobs ORDER BY updated_at DESC LIMIT 100
+      )
+    `).run();
+  } catch (e) {
+    log({ level: 'warn', layer: 'server', kind: 'harness_job_persist_failed', message: `长任务落库失败：${e.message}` });
+  }
+}
+
+/** 标记任务产出已被应用：恢复条不再把它当「结果待应用」展示。 */
+function markHarnessJobApplied(jobId) {
+  try {
+    prepare(`
+      UPDATE harness_jobs SET kind = kind || ':applied', updated_at = ?
+      WHERE id = ? AND kind NOT LIKE '%:applied'
+    `).run(now(), String(jobId));
+  } catch (_) { /* 标记失败只影响恢复条显示 */ }
+}
+
+/** 可续接的长任务：运行中的 + 最近完成但还没被应用的。 */
+function listRecoverableJobs(workId) {
+  const rows = prepare(`
+    SELECT id, work_id, chapter_id, kind, stage, status, error, updated_at,
+           CASE WHEN status = 'done' THEN 1 ELSE 0 END AS has_output,
+           length(output) AS output_chars
+    FROM harness_jobs
+    WHERE (? IS NULL OR work_id = ?)
+      AND kind NOT LIKE '%:applied'
+      AND (status IN ('queued', 'running') OR (status = 'done' AND length(output) > 0)
+           OR status IN ('failed', 'timeout', 'cancelled'))
+    ORDER BY updated_at DESC
+    LIMIT 20
+  `).all(workId ?? null, workId ?? null);
+  // 服务重启后内存里没有的任务标成 interrupted：进程已经没了，任务不可能还在跑。
+  return rows.map((r) => {
+    const live = harnessJobs.get(r.id);
+    const status = live ? live.status : ((r.status === 'queued' || r.status === 'running') ? 'interrupted' : r.status);
+    return {
+      id: r.id,
+      work_id: r.work_id,
+      chapter_id: r.chapter_id,
+      kind: r.kind,
+      stage: r.stage,
+      status,
+      // ⚠️ 只有真正还在排队/运行中的任务才能「接回进度」。
+      // 旧实现 `resumable: !!live` 把任何仍在内存里的任务（包括已完成/已失败的）
+      // 都标成可续接，前端会对 done 任务显示「接回进度」按钮。
+      resumable: !!live && (live.status === 'queued' || live.status === 'running'),
+      has_output: r.has_output === 1,
+      output_chars: r.output_chars || 0,
+      error: r.error || '',
+      updated_at: r.updated_at
+    };
+  });
+}
+
+/** 取回一条长任务：内存里有就优先用内存（进度最新），否则回落到库里的产出。 */
+function getRecoverableJob(jobId) {
+  const live = harnessJobs.get(String(jobId));
+  if (live) {
+    return {
+      id: live.id, status: live.status, kind: live.kind || 'harness', stage: live.stage || '',
+      chapter_id: live.chapterId || null, work_id: live.workId || null,
+      elapsed_ms: live.started_at ? (live.finished_at || Date.now()) - live.started_at : 0,
+      tail: live.tail.slice(-600),
+      output: live.status === 'done' ? (live.output || '') : '',
+      error: live.error || '', resumable: live.status === 'queued' || live.status === 'running',
+      restart_lost: false
+    };
+  }
+  const row = prepare('SELECT * FROM harness_jobs WHERE id = ?').get(String(jobId));
+  if (!row) return null;
+  return {
+    id: row.id,
+    // 服务重启后库里仍是 running 的任务：进程已不在，如实报告为 interrupted
+    status: (row.status === 'queued' || row.status === 'running') ? 'interrupted' : row.status,
+    kind: row.kind || 'harness',
+    stage: row.stage || '',
+    chapter_id: row.chapter_id,
+    work_id: row.work_id,
+    elapsed_ms: 0,
+    tail: '',
+    output: row.status === 'done' ? (row.output || '') : '',
+    error: row.error || '',
+    resumable: false,
+    restart_lost: row.status === 'queued' || row.status === 'running'
+  };
+}
+
 function createHarnessJob(prompt, options) {
   const jobId = crypto.randomUUID();
   const job = {
@@ -2239,10 +2628,17 @@ function createHarnessJob(prompt, options) {
     proposals: null,
     error: null,
     tail: '',
+    // 归属与语义：供「后台继续 / 刷新后续接」认出这是哪一章的哪一步任务
+    workId: options?.workId || null,
+    chapterId: Number(options?.chapterId) || null,
+    kind: options?.kind || 'harness',
+    stage: String(options?.stage || '').slice(0, 120),
+    created_at: now(),
     abort: new AbortController(),
     cancelRequested: false
   };
   harnessJobs.set(jobId, job);
+  persistHarnessJob(job);
   // 清理：只保留最近 30 个任务，防止长时间运行内存增长。
   // 优先淘汰终态任务；若无终态任务，先 abort 最旧的运行中任务再淘汰，避免其「消失」却继续运行。
   if (harnessJobs.size > 30) {
@@ -2259,6 +2655,7 @@ function createHarnessJob(prompt, options) {
   (async () => {
     job.status = 'running';
     job.started_at = Date.now();
+    persistHarnessJob(job);
     try {
       const output = await runHarnessTaskWithProgress(prompt, { ...options, signal: job.abort.signal }, (chunk) => {
         job.tail = (job.tail + chunk).slice(-2000);
@@ -2280,6 +2677,8 @@ function createHarnessJob(prompt, options) {
       if (job.status !== 'cancelled') logAIError(options.action || 'harness', e, '/api/harness/run');
     } finally {
       job.finished_at = Date.now();
+      // 终态落库：刷新页面/重启服务后仍能取回产出或得知任务已失败。
+      persistHarnessJob(job);
     }
   })().catch(() => { /* 后台任务异常不影响 HTTP 层 */ });
   return job;
@@ -2296,6 +2695,108 @@ async function handleAPI(req, res, pathname, query) {
   // 跨源写请求一律拒绝（浏览器页面防护；同源 UI 与无 Origin 的工具调用不受影响）
   if (!isLocalRequest(req)) {
     return sendError(res, 403, '跨源请求被拒绝：写操作仅允许本机工坊页面发起');
+  }
+
+  // ---------- 🐞 运行追踪（调试录制） ----------
+  // 本组接口自身不参与追踪（debug-trace 的 isExcludedPath 排除 /api/debug），
+  // 否则「查看追踪」这个动作会不断产生新的追踪数据。
+  if (resource === 'debug') {
+    const action = segments[2];
+    if (method === 'GET' && action === 'state') {
+      return sendJSON(res, 200, { ok: true, state: traceState(), config: traceConfigInfo() });
+    }
+    if (method === 'POST' && action === 'start') {
+      const body = await readBody(req).catch(() => ({}));
+      const out = startTracing({ from: body?.from || 'ui', work_id: body?.work_id ?? null });
+      log({ level: 'info', layer: 'server', kind: 'trace_start', message: `运行追踪已开启（会话 ${out.session_id}）`, context: { session_id: out.session_id } });
+      return sendJSON(res, 200, out);
+    }
+    if (method === 'POST' && action === 'stop') {
+      const out = stopTracing('user');
+      log({ level: 'info', layer: 'server', kind: 'trace_stop', message: `运行追踪已停止（会话 ${out.session_id || ''}）`, context: { summary: out.summary || null } });
+      return sendJSON(res, 200, out);
+    }
+    if (method === 'POST' && action === 'ping') {
+      pingTracing();
+      return sendJSON(res, 200, { ok: true, ...traceState() });
+    }
+    if (method === 'POST' && action === 'op') {
+      // 前端上报一次操作的客户端节点、渲染结果与 toast（第 9 题：调用时间 + 代码 + 代码响应）。
+      const body = await readBody(req).catch(() => ({}));
+      const opId = String(body.op_id || '');
+      if (!opId) return sendError(res, 400, '缺少 op_id');
+      const before = getOperation(opId, { withNodes: false });
+      // force：录制刚停止时前端仍可能上报收尾数据，允许补建记录，避免丢掉前端调用链。
+      beginOperation(opId, body.title || '前端操作', { source: 'client', force: true });
+      const attached = body.nodes ? attachClientNodes(opId, body.nodes) : null;
+      // 幂等保护：同一次操作重复上报（例如停录瞬间在途请求的收尾）不得重复收尾，
+      // 否则会把已经结束的操作重新标成 running/done 并多写一条 op-end。
+      const alreadySettled = before && before.summary && before.summary.status !== 'running';
+      const summary = alreadySettled
+        ? before.summary
+        : finishOperation(opId, { status: body.status, render: body.render, toast: body.toast });
+      return sendJSON(res, 200, { ok: true, attached, summary, deduped: !!alreadySettled });
+    }
+    if (method === 'GET' && action === 'ops') {
+      return sendJSON(res, 200, { ok: true, ops: listOperations(), tools: listToolCalls(), summary: sessionSummary() });
+    }
+    if (method === 'GET' && action === 'op') {
+      const opId = String(query.op_id || '');
+      const live = opId ? getOperation(opId) : null;
+      if (live) return sendJSON(res, 200, { ok: true, source: 'live', ...live });
+      // 不在内存中（已停止录制或已被淘汰）→ 回退到会话文件
+      const file = String(query.file || '');
+      const session = file ? readSession(file) : null;
+      const found = session ? session.ops.find((o) => o.opId === opId) : null;
+      if (!found) return sendError(res, 404, '未找到该操作记录');
+      return sendJSON(res, 200, { ok: true, source: 'file', file: session.file, summary: found.summary, nodes: found.nodes });
+    }
+    if (method === 'GET' && action === 'sessions') {
+      return sendJSON(res, 200, { ok: true, sessions: listSessions(), dir: DEBUG_DIR });
+    }
+    if (method === 'GET' && action === 'session') {
+      const session = readSession(String(query.file || ''), { nodeLimit: Number(query.node_limit) || 0 });
+      if (!session) return sendError(res, 404, '未找到该录制文件');
+      return sendJSON(res, 200, { ok: true, ...session });
+    }
+    if (method === 'DELETE' && action === 'purge') {
+      const out = purgeSessions();
+      return sendJSON(res, 200, { ok: out.ok !== false, ...out });
+    }
+    if (method === 'GET' && action === 'stream') {
+      // SSE 实时推送录制中的节点流（未录制时也保持连接，便于前端一次连接用到底）。
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      const send = (batch) => {
+        if (res.destroyed) return;
+        for (const item of batch) {
+          try {
+            res.write(`data: ${JSON.stringify(item)}\n\n`);
+          } catch (_) { /* 客户端已断开 */ }
+        }
+      };
+      const unsubscribe = subscribeStream(send);
+      res.write(`data: ${JSON.stringify({ type: 'hello', state: traceState() })}\n\n`);
+      const beat = setInterval(() => {
+        if (res.destroyed) return;
+        try {
+          res.write(': ping\n\n');
+        } catch (_) { /* 忽略 */ }
+      }, 20000);
+      if (typeof beat.unref === 'function') beat.unref();
+      const cleanup = () => {
+        clearInterval(beat);
+        unsubscribe();
+      };
+      res.on('close', cleanup);
+      res.on('error', cleanup);
+      return;
+    }
+    return sendError(res, 404, `未知的调试接口：${action || ''}`);
   }
 
   if (resource === 'search' && method === 'GET') {
@@ -2703,15 +3204,84 @@ async function handleAPI(req, res, pathname, query) {
     if (!chapter) return sendError(res, 404, '章节不存在');
     if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const report = body.report && typeof body.report === 'object' ? body.report : {};
-    if (!asString(report.summary, '').trim() && !asArray(report.issues).length) return sendError(res, 400, '审稿报告不能为空');
-    const reviewId = saveReview(chapter.work_id, chapterId, report);
-    return sendJSON(res, 201, { ok: true, review_id: reviewId });
+    const rawText = asString(body.raw_text, '');
+    // 有原文兜底时不再拒绝：报告解析失败也必须留下可回看的证据。
+    if (!asString(report.summary, '').trim() && !asArray(report.issues).length && !rawText.trim()) {
+      return sendError(res, 400, '审稿报告不能为空');
+    }
+    const reviewId = saveReview(chapter.work_id, chapterId, report, {
+      rawText,
+      status: body.status === 'raw' || (!asString(report.summary, '').trim() && !asArray(report.issues).length) ? 'raw' : 'parsed'
+    });
+    return sendJSON(res, 201, { ok: true, review_id: reviewId, status: rawText && !asString(report.summary, '').trim() ? 'raw' : 'parsed' });
   }
-  if (resource === 'novel' && segments[2] === 'review' && method === 'GET') {
-    const chapterId = Number(query.chapter_id);
+  if (resource === 'novel' && segments[2] === 'review' && method === 'GET') {    const chapterId = Number(query.chapter_id);
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const review = getLatestReview(chapterId);
-    return sendJSON(res, 200, { ok: true, review });
+    if (!review) return sendJSON(res, 200, { ok: true, review: null });
+    const report = review.report || {};
+    // 让界面不必自己判断可信度：解析成功与否、能否直接走「按清单修稿」。
+    return sendJSON(res, 200, {
+      ok: true,
+      review: {
+        ...review,
+        parsed: !!(asString(report.summary, '').trim() || asArray(report.issues).length),
+        issue_count: asArray(report.issues).length,
+        strength_count: asArray(report.strengths).length,
+        // 原文可能高达 200KB，回看列表不需要全量——只带预览，完整原文仍在库里可查。
+        raw_text: asString(report.raw_text, '').slice(0, 20000),
+      }
+    });
+  }
+
+  // 长任务产出回填：刷新页面或重启服务后，前端拿回输出再交给这里解析落地，
+  // 保证「任务跑完了」和「结果存下来了」不依赖页面是否还开着。
+  if (resource === 'novel' && segments[2] === 'finalize' && method === 'POST') {
+    const body = await readBody(req);
+    const kind = String(body.kind || '');
+    const chapterId = Number(body.chapter_id) || null;
+    const output = asString(body.output, '');
+    const jobId = String(body.job_id || '');
+    if (!kind) return sendError(res, 400, '缺少 kind');
+    if (!output.trim()) return sendError(res, 400, '缺少 output');
+    if (kind === 'review') {
+      if (!chapterId) return sendError(res, 400, '审稿回填缺少 chapter_id');
+      const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
+      if (!chapter) return sendError(res, 404, '章节不存在');
+      const parsed = parseReviewText(output);
+      const report = parsed || { summary: '', issues: [], strengths: [] };
+      const reviewId = saveReview(chapter.work_id, chapterId, report, {
+        rawText: parsed ? '' : output.slice(0, 200000),
+        status: parsed ? 'parsed' : 'raw'
+      });
+      if (jobId) markHarnessJobApplied(jobId);
+      return sendJSON(res, 201, { ok: true, review_id: reviewId, parsed: !!parsed, issue_count: parsed ? parsed.issues.length : 0 });
+    }
+    // 成文类产出：落成章节草稿，由界面「取回生成稿」应用，绝不自动覆盖正文。
+    if (!chapterId) return sendError(res, 400, '成文回填缺少 chapter_id');
+    const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const version = saveChapterVersion(chapterId, chapter.title, '', output, 'draft');
+    if (jobId) markHarnessJobApplied(jobId);
+    return sendJSON(res, 201, { ok: true, kind, draft_id: Number(version.id), chars: plainText(output).length });
+  }
+
+  // 生成稿草稿：AI 成文结果在结果弹窗出现时即落库，关闭弹窗不再等于丢失。
+  if (resource === 'novel' && segments[2] === 'draft' && method === 'POST') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
+    const content = asString(body.content, '');
+    if (!plainText(content).trim()) return sendError(res, 400, '草稿内容为空');
+    const version = saveChapterVersion(chapterId, chapter.title, '', content, 'draft');
+    return sendJSON(res, 201, { ok: true, draft_id: Number(version.id), chars: plainText(content).length });
+  }
+  if (resource === 'novel' && segments[2] === 'draft' && method === 'GET') {
+    const chapterId = Number(query.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    return sendJSON(res, 200, { ok: true, draft: getLatestDraft(chapterId) });
   }
   if (resource === 'novel' && segments[2] === 'review' && segments[3] === 'checklist' && method === 'PUT') {
     const body = await readBody(req);
@@ -2784,14 +3354,50 @@ async function handleAPI(req, res, pathname, query) {
     if (runningCount >= 2) return sendError(res, 429, '已有任务运行中，请稍后再试（并发上限 2）');
     // 超时钳制：1s ~ 60min，拒绝近乎无限的后台任务。
     const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || 10 * 60 * 1000)), 60 * 60 * 1000);
+    // 思考强度：非法值在入队前就 400，避免任务排到队才在 dsh 子进程里失败。
+    const reasoningEffort = normalizeReasoningEffort(body.reasoning_effort);
+    if (body.reasoning_effort && !reasoningEffort) {
+      return sendError(res, 400, `非法思考强度：仅允许 ${[...DEEPSEEK_REASONING_EFFORTS].join(' / ')}`);
+    }
     const job = createHarnessJob(String(body.prompt).trim(), {
       timeout,
       model: body.model || undefined,
+      reasoningEffort: reasoningEffort || undefined,
       env,
       action: body.action || 'harness',
-      workId: Number(body.work_id) || null
+      workId: Number(body.work_id) || null,
+      // 归属与语义：让「刷新/重启后续接」知道这是哪一章的哪一步任务。
+      chapterId: Number(body.chapter_id) || null,
+      kind: String(body.kind || body.action || 'harness').slice(0, 40),
+      stage: String(body.stage || '').slice(0, 120)
     });
-    return sendJSON(res, 202, { ok: true, job_id: job.id, status: job.status });
+    return sendJSON(res, 202, { ok: true, job_id: job.id, status: job.status, kind: job.kind, stage: job.stage });
+  }
+
+  // 「后台继续 / 刷新后续接」：列出本作品还没收尾（或已完成但可能没用上）的长任务。
+  if (resource === 'harness' && method === 'GET' && segments[2] === 'recoverable') {
+    const workId = query.work_id ? Number(query.work_id) : null;
+    const chapterId = query.chapter_id ? Number(query.chapter_id) : null;
+    let jobs = listRecoverableJobs(workId);
+    if (chapterId) jobs = jobs.filter((j) => Number(j.chapter_id) === chapterId || j.chapter_id === null);
+    return sendJSON(res, 200, { ok: true, jobs });
+  }
+
+  // 取回一条长任务（含产出）。刷新页面或重启服务后仍可用。
+  if (resource === 'harness' && method === 'GET' && segments[2] === 'recovered') {
+    const job = getRecoverableJob(String(query.id || ''));
+    if (!job) return sendError(res, 404, '任务记录不存在');
+    return sendJSON(res, 200, { ok: true, job });
+  }
+
+  // 标记任务产出已被应用（成文弹窗打开 / 审稿报告展示 / 修稿差异预览之后调用）。
+  // 作用：恢复条不再把这条任务当「已完成，结果待应用」重复提示。
+  if (resource === 'harness' && method === 'POST' && segments[2] === 'mark_applied') {
+    const body = await readBody(req).catch(() => ({}));
+    const jobId = String(body.job_id || '');
+    if (!jobId) return sendError(res, 400, '缺少 job_id');
+    markHarnessJobApplied(jobId);
+    return sendJSON(res, 200, { ok: true });
   }
 
   if (resource === 'harness' && method === 'GET' && segments[2] === 'job') {
@@ -2802,6 +3408,10 @@ async function handleAPI(req, res, pathname, query) {
       ok: true,
       id: job.id,
       status: job.status,
+      kind: job.kind || 'harness',
+      stage: job.stage || '',
+      chapter_id: job.chapterId || null,
+      work_id: job.workId || null,
       elapsed_ms: job.started_at ? (job.finished_at || Date.now()) - job.started_at : 0,
       tail: job.tail.slice(-600),
       output: job.status === 'done' ? job.output : null,
@@ -2818,6 +3428,7 @@ async function handleAPI(req, res, pathname, query) {
     if (!job) return sendError(res, 404, '任务不存在或已结束');
     if (job.status === 'queued' || job.status === 'running') {
       job.cancelRequested = true;
+      persistHarnessJob(job);
       try { job.abort?.abort(); } catch (_) { /* 忽略 */ }
       return sendJSON(res, 200, { ok: true, id: job.id, status: 'cancelling' });
     }
@@ -2976,7 +3587,7 @@ async function handleAPI(req, res, pathname, query) {
       const messages = body.messages;
       if (!Array.isArray(messages) || messages.length === 0) return sendError(res, 400, '缺少 messages');
       if (action === 'write' || action === 'personality' || action === 'outline' || action === 'chat' || action === 'polish' || action === 'expand' || action === 'pipeline') {
-        const data = await callAI(config, messages, { temperature: body.temperature, max_tokens: body.max_tokens });
+        const data = await callAI(config, messages, { temperature: body.temperature, max_tokens: body.max_tokens, reasoning_effort: body.reasoning_effort });
         return sendJSON(res, 200, { ok: true, reply: data?.choices?.[0]?.message?.content || '', raw: data });
       }
       return sendError(res, 404, 'Unknown AI action');
@@ -3114,14 +3725,56 @@ function serveStatic(req, res, pathname) {
 seedRedlinesIfEmpty();
 
 // 日志系统初始化：注入 SQLite、迁移旧 AI 错误、安装进程兜底与卡顿监测、启动保留策略。
-initLogger(db, { onExit: () => flushDebouncedSync() });
+initLogger(db, { onExit: () => { flushDebouncedSync(); flushTraceFile(); } });
+
+// 追踪时钟自检：确认「单调时钟」与「Unix 纪元时钟」确实是两个域。
+// 若某天两者差值落到 0 附近，说明 nowMs() 的实现被换成了 Date.now()，
+// 此时所有以 hrtime 为基准的历史注释与判据都要重新审一遍 —— 提前吵一声，别等数据失真后才发现。
+{
+  const clock = traceClockDomain();
+  if (Math.abs(clock.drift_ms) < 1000) {
+    log({
+      level: 'error', layer: 'server', kind: 'trace_clock_suspect',
+      message: '追踪时钟自检异常：单调时钟与 Unix 纪元时钟几乎重合，nowMs() 可能已被改成 Date.now()',
+      context: clock
+    });
+  } else {
+    log({
+      level: 'info', layer: 'server', kind: 'trace_clock_ok',
+      message: `追踪时钟自检通过（单调与纪元相差 ${Math.round(Math.abs(clock.drift_ms) / 86400000)} 天）`,
+      context: clock
+    });
+  }
+}
+
+// 调试录制期间定期检查前端心跳：页面被关闭后自动停止录制，避免「忘关」长期开着。
+// 超时 90s（前端 10s ping 的 9 倍）：浏览器把后台标签页定时器节流到约 1 次/分钟，
+// 余量太小会把「切到别的标签页」误判成「页面已关闭」。
+setInterval(() => {
+  try {
+    checkStaleTracing(90000);
+  } catch (_) { /* 自检失败不影响服务 */ }
+}, 15000).unref();
+
+// 空闲收尾：把响应已回完、但前端从未显式结束的服务端操作关掉。
+// 没有这一步，这类操作会一直挂在 running，耗时被算到「停录那一刻」（30ms 的检索记成 546469ms）。
+// 间隔取 200ms：收尾精度 ≈ 宽限期(1200ms) + 一个 tick，比 15s 心跳高两个数量级，
+// 又远低于真实业务操作（秒级～分钟级）的时长，不会把长任务误判成已结束。
+// 循环本身极轻：录制未开启时函数第一行即返回。
+setInterval(() => {
+  try {
+    sweepIdleOperations();
+  } catch (_) { /* 收尾失败不影响服务 */ }
+}, 200).unref();
 
 const server = http.createServer(async (req, res) => {
   const { pathname, query } = getPath(req);
   const startedAt = performance.now();
   try {
     if (pathname.startsWith('/api/')) {
-      await handleAPI(req, res, pathname, query);
+      // traceRequest：录制中为本次请求建立追踪上下文，让整条 await 链归属同一个用户操作；
+      // 未录制或被排除的路径（/api/debug、/api/logs 等）直接执行，走原路径零开销。
+      await traceRequest(req, res, () => handleAPI(req, res, pathname, query));
     } else {
       serveStatic(req, res, pathname);
     }

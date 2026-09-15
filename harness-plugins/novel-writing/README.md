@@ -1,11 +1,11 @@
 # Novel Writing 创作插件（内置版 · 面向 Novel Studio）
 
-这是 **Novel Studio（小说创作工坊）内置的创作插件**：不是独立分发、不依赖外部仓库，
-插件的 dsh 侧源码与工坊服务端创作内核**同仓维护、一起升级**。
+这是 **Novel Studio（小说创作工坊）内置的创作插件**：插件的 dsh 侧源码与工坊服务端创作内核**同仓维护、一起升级**，不是独立分发的第三方组件。
 
-> **仓库关系**：本目录的规范源在 novel-studio 仓库的 `harness-plugins/novel-writing/`。
-> 若本目录同时以独立仓库（bbaz123/novel-writing-plugin）发布，则该仓库是发布镜像：
-> 两份文件内容保持一致；安装请优先使用 novel-studio 仓库内的版本。
+| 仓库 | 地址 | 说明 |
+| --- | --- | --- |
+| 应用本体 | <https://github.com/bbaz123/novel-studio> | 工坊主程序。插件规范源就在它的 `harness-plugins/novel-writing/`，**安装请优先用这一份** |
+| 创作插件 | <https://github.com/bbaz123/novel-writing-plugin> | 本目录的独立发布镜像（本目录内容即该仓库根），与规范源保持同步 |
 
 ```
 novel-studio/
@@ -23,15 +23,43 @@ novel-studio/
    └─ README.md                 # 本文件
 ```
 
-## 安装（两步）
+## 安装（详细步骤）
+
+前置条件：
+
+- **Node.js 22.5+**（工坊本体用内置 `node:sqlite`，**无需 `npm install`**）
+- 一份**已构建的 DeepSeek Harness（dsh）仓库** + headless profile（插件要装进它的 profile）
+- Windows（`install.ps1` 是 PowerShell 脚本；插件模块本身是跨平台纯 ESM，无第三方依赖）
+
+**第 1 步：装工坊本体**
+
+```bash
+git clone https://github.com/bbaz123/novel-studio.git
+cd novel-studio
+npm start            # 打开 http://localhost:3737；数据库启动时自动建表 / 迁移
+```
+
+工坊仓库已内置创作内核，不需要覆盖任何补丁文件、也不需要单独装本插件才能跑工坊本体。
+
+**第 2 步：装 dsh 侧插件**（本目录；发布镜像仓库中本目录即仓库根）
 
 ```powershell
-# 1) 工坊本体：直接使用 novel-studio 仓库（创作内核已内置，无需覆盖任何补丁文件）。
-#    重启：npm start（数据库启动时自动迁移新表/新列）
+# 预演（不写任何文件，先看会改哪些路径）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 
-# 2) dsh 侧（本目录；发布镜像仓库中本目录即仓库根）：
+# 安装 / 升级（区块合并：只替换本插件区块，你 profile 里的其它 patch 条目原样保留）
 powershell -ExecutionPolicy Bypass -File .\install.ps1
-# 预演不落盘：… install.ps1 -DryRun    卸载：… install.ps1 -Uninstall
+
+# 卸载
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
+```
+
+若工坊本体不在默认位置，启动工坊前用环境变量指定 dsh 仓库路径：
+
+```bash
+# Windows PowerShell
+$env:NOVELSTUDIO_DSH_REPO = "C:\path\to\deepseek-harness"
+npm start
 ```
 
 完成后打开 novel-studio 使用 AI 创作即可——后台 headless dsh 自动携带 novel 工具与创作纪律，
@@ -112,7 +140,13 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 - 请求体上限 32MB（EPUB 导入用）；红线正则长度上限 500、豁免词单个上限 100；非法 JSON/非 JSON 响应显式报错。
 - 蓝图/审稿/正文写回等写类端点校验 `work_id` 与章节归属，防止串作品误写。
 
-## v0.8.0 更新：上下文质量与性能（本版重点）
+## v0.9.3 更新：设定轻量装配 + headless 瘦身（本版重点）
+
+- **`novel_context` 新增 `settings` 模式**：设定类生成（世界观 / 角色卡 / 大纲 / 长期记忆等）只去掉「当前场景 / 本章蓝图 / 前后章衔接」三层，质量层（红线、角色卡、世界观词条、长期记忆、事件账本、未闭合伏笔）零丢失，省下的上下文留给真正要产出的内容。
+- **headless profile 瘦身**：`headless-cordis.patch.yml` 关闭与创作无关的通用能力——`agent-instructions`（省 ~4.1k）、`tool-pwsh`（最大的单个工具 schema）、`workflow` / `subagent` / `subagent-fork` / `subagent-control` / `subagent-list-agents`、`todo` / `goal` / `jobs` / `ralph`、`plan-mode`、`web`、`skill` / `skill-filesystem`、`session-title-llm`；`novel_*` 工具与 read / write / edit / glob / grep、persona、OpenViking 记忆插件全部保留。
+- **冒烟测试扩至 32 组**：新增 `settings` 模式轻量装配断言（验证质量层不丢失）。
+
+## v0.8.0 更新：上下文质量与性能
 
 - **评分制出场角色**：出场角色不再「按名字前 8 兜底」，改为评分制选择——剧情线关联 > 正文/摘要命中次数 > 蓝图·作者注·最近事件提及 > 最近章节摘要出场 > 人物关系网；上限 16，兜底按最近出场优先。
 - **别名与整词命中**：角色卡新增「别名/称呼」字段（`characters.aliases`，可界面编辑），上下文与一致性核对都按正式名+别名命中；单字 CJK 名称要求词边界，杜绝「云」命中「云彩/李云」类子串误报。
@@ -136,4 +170,5 @@ powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install
 - Windows（安装脚本为 PowerShell；模块为纯 ESM JS，无第三方依赖）
 - Node.js 22.5+（novel-studio 本体）+ 已构建的 deepseek-harness（dsh）仓库 + headless profile
 - novel-studio 本地服务（http://127.0.0.1:3737，`PORT` 可覆盖；dsh 工具通过 `NOVELSTUDIO_BASE_URL` 自动定位）
-- 应用本体：https://github.com/bbaz123/novel-studio
+- 应用本体仓库：<https://github.com/bbaz123/novel-studio>
+- 创作插件仓库（发布镜像）：<https://github.com/bbaz123/novel-writing-plugin>

@@ -1,4 +1,4 @@
-﻿# 小说工坊（novel-studio）上下文记忆功能分析报告
+# 小说工坊（novel-studio）上下文记忆功能分析报告
 
 > 分析对象：`C:\Users\a1941\Desktop\DeepSeek\novel-studio`（版本 0.9.1，零依赖 Node.js + SQLite + 浏览器 SPA）
 > 分析方式：源码逐层精读（server.js / db.js / openviking.js / openviking-sync.js / harness.js / harness-plugins/novel-writing/novel-tools.mjs / public/app.js）+ 端到端冒烟实测
@@ -47,8 +47,9 @@ OpenViking 共享记忆库（RAG）：viking://user/default/resources/novel-stud
 ### 2.1 直连通道（`callAI`，server.js:437–501）
 
 - 目标：OpenAI 兼容 Chat Completions 端点，`chatCompletionsUrl()` 自动在 `/v1/chat/completions` ↔ `/chat/completions` 两种路径形态间回退；
-- 配置来源：`api_configs` 表（`base_url / api_key / model / temperature / max_tokens`），默认 `https://api.deepseek.com`、模型 `deepseek-v4-pro`；
-- 模型归一化白名单：`deepseek-chat / deepseek-reasoner / deepseek-v4-pro / deepseek-v4-flash / deepseek-v4-flash-vision-exp`；
+- 配置来源：`api_configs` 表（`base_url / api_key / model / temperature / max_tokens`），默认 `https://api.deepseek.com`、模型 `deepseek-flash`（DeepSeek-V4.1-Flash）；
+- 模型归一化白名单：`deepseek-flash / deepseek-v4-pro / deepseek-v4-flash / deepseek-v4-flash-vision-exp`（后两者为仍会被服务端路由到 V4.1 Flash 的旧名）。`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 停止服务，仅存量配置会被启动迁移改写；
+- **思考强度**：`reasoning_effort` 仅对 DeepSeek 官方端点下发（第三方 OpenAI 兼容服务可能因未知字段 400）；线上取值 `low / high / max`，关闭思考发 `thinking.type=disabled`（`off` 不是合法的 `reasoning_effort` 值）；
 - **输出上限**：`MAX_OUTPUT_TOKENS = 393216`（DeepSeek V4 接口实际上限，用于把“无上限”映射到接口上限）；
 - **超时**：`AI_REQUEST_TIMEOUT_MS = 30 分钟`（思考模式 + 大 max_tokens 放宽，避免中途 abort）；
 - 用途（`/api/ai/*`）：`write / polish / expand / personality / outline / chat / test / generate_novel / pipeline`。
@@ -70,7 +71,9 @@ OpenViking 共享记忆库（RAG）：viking://user/default/resources/novel-stud
 | 批量章节生成 / 审稿 / 修稿 / 工作台流水线 / 角色生成 / 对话生成 / 记忆压缩 | Harness | 多阶段、需创作内核 |
 | 工作台流水线（世界观→角色→大纲→正文→审查） | 直连优先、Harness 兜底 | 按 fast/balanced/deep 三档路由 flash/pro |
 
-模型路由（工作台流水线，`PIPELINE_MODEL_BY_MODE`）：`fast=全 flash`、`balanced=世界观/角色 flash + 大纲/正文/审查 pro`、`deep=全 pro`。整章 AI 写作默认 `deepseek-v4-pro`，短任务优先 `deepseek-v4-flash`。
+模型路由（工作台流水线）：模型固定为 `deepseek-flash`（`PIPELINE_MODEL`），三档策略改由**思考强度**区分（`PIPELINE_EFFORT_BY_MODE`）：`fast=low`、`balanced=high`、`deep=max`；`fast` 档保留思考（用 `low` 而非 `off`），只为提速压缩思考预算，不关闭思考。原先按档位切 `deepseek-v4-pro` 的路由已废弃——V4.1 Flash 在 Agentic/编码基准上反超 V4 Pro，旧路由实际把大纲/正文/审查降级到了上一代模型。
+
+**功能内置模型的分工**由 `public/app.js` 顶部两个常量单点控制（优先级高于 `api_configs.model`；`server.js` 有同名 `QUALITY_AI_MODEL`，两处需同步改）：`DEFAULT_AI_MODEL = deepseek-flash` 用于快而省的环节（提问/澄清、质检轮、入账整理、润色/扩写/细纲/性格校对、AI 写作、批量生成、流水线三档）；`QUALITY_AI_MODEL = deepseek-v4-pro` 用于直接产出正文/整部设定、或结果会喂给之后每一章的环节，按「质量优先」不省——**成文轮（`runGenAskLoop`）、AI 审稿、AI 修稿、AI 自动创建小说、长期记忆压缩**。
 
 ---
 
@@ -154,7 +157,7 @@ OpenViking 共享记忆库（RAG）：viking://user/default/resources/novel-stud
 ### 4.3 压缩机制
 
 - **压缩提示线**：记忆超 1200 字时，上下文「长期记忆」层末尾注入 `⚠ 记忆已 N 字…请优先用 novel_memory_update 压缩合并`，提示模型收尾时主动压缩；
-- **AI 自动压缩**（`compressStoryMemory`，server.js:676–694）：汇总作品章节/角色/世界观 → `runHarnessTask`（模型 `deepseek-v4-pro`）→ 生成 **≤800 字**压缩摘要 → `saveStoryMemory`。这是唯一一条以 `runHarnessTask`（而非 callAI）驱动、且**直接入账**（不走提案）的记忆写路径。
+- **AI 自动压缩**（`server.js` 的 `compressStoryMemory`）：汇总作品章节/角色/世界观 → `runHarnessTask`（模型 `QUALITY_AI_MODEL` = `deepseek-v4-pro`，**思考强度不指定，沿用 `~/.dsh/settings.yaml` 的全局设置**）→ 生成 **≤800 字**压缩摘要 → `saveStoryMemory`。这是唯一一条以 `runHarnessTask`（而非 callAI）驱动、且**直接入账**（不走提案）的记忆写路径。由「长期记忆」面板的按钮手动触发（`POST /api/story_memory/compress`），非后台自动运行。模型按「质量优先」用 Pro：产出会喂给之后每一章的上下文，质量影响是累积的。
 
 ### 4.4 增量合并（`mergeMemoryDraft`）
 

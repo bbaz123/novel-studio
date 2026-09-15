@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS api_configs (
   name TEXT NOT NULL,
   base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com',
   api_key TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT 'deepseek-chat',
+  model TEXT NOT NULL DEFAULT 'deepseek-flash',
   temperature REAL NOT NULL DEFAULT 0.8,
   max_tokens INTEGER NOT NULL DEFAULT 4096,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -192,6 +192,23 @@ CREATE TABLE IF NOT EXISTS chapter_save_versions (
   content TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+
+-- AI 长任务（harness 子进程）落库记录：内存里的 harnessJobs 一重启就没了，
+-- 而一次成文/审稿要跑几分钟。这里持久化 id/状态/产出/归属章节，
+-- 让「刷新页面」甚至「重启服务」之后仍能取回结果或知道任务是否还在跑。
+CREATE TABLE IF NOT EXISTS harness_jobs (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER,
+  chapter_id INTEGER,
+  kind TEXT NOT NULL DEFAULT 'harness',
+  stage TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  output TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_harness_jobs_chapter ON harness_jobs(chapter_id, updated_at DESC);
 
 -- 故事事件账本：支撑增量记忆、伏笔/状态追踪与回滚依据。
 -- foreshadow_status：伏笔状态（''=open / resolved / dropped）；resolves_event_id：回收本伏笔的事件。
@@ -315,6 +332,10 @@ const MIGRATIONS = [
   `ALTER TABLE writing_redlines ADD COLUMN exceptions TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE characters ADD COLUMN aliases TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE works ADD COLUMN ov_uri TEXT NOT NULL DEFAULT ''`,
+  // 生成稿草稿：AI 成文结果在结果弹窗出现的那一刻就落成草稿（kind='draft'），
+  // 用户关掉弹窗（含「先审稿再应用」）不再等于稿件静默消失。
+  // 默认 'manual' 让既有历史版本行为与语义完全不变。
+  `ALTER TABLE chapter_save_versions ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'`,
 ];
 for (const sql of MIGRATIONS) {
   try { db.exec(sql); } catch (e) {
@@ -361,6 +382,19 @@ for (const [table, cols] of TS_COLUMNS) {
     } catch (_) { /* 列不存在时忽略 */ }
   }
 }
+
+// 已下线模型名一次性改写：deepseek-chat / deepseek-reasoner 官方已于 2026-07-24 停止服务，
+// 存量配置若仍指向它们，任何 AI 调用都会直接被服务端拒绝。这里统一改写为当前默认模型
+// （deepseek-flash，即 V4.1 Flash），避免升级后功能静默失效。
+try {
+  const fixed = db.prepare(`
+    UPDATE api_configs SET model = 'deepseek-flash', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE lower(model) IN ('deepseek-chat', 'deepseek-reasoner')
+  `).run();
+  if (fixed.changes) {
+    console.warn(`[db] 已将 ${fixed.changes} 条 API 配置中已下线的模型名改写为 deepseek-flash`);
+  }
+} catch (_) { /* 表不存在或字段缺失时忽略 */ }
 
 // 移除冗余索引：与 UNIQUE(plotline_id, character_id) 的最左前缀重复。
 try { db.exec('DROP INDEX IF EXISTS idx_plotline_characters_plotline'); } catch (_) { /* 忽略 */ }

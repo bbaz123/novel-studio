@@ -34,4 +34,25 @@
       name: ./novel-tools.mjs
       config:
         baseUrl: 'http://127.0.0.1:3737'
+
+# ── 小说写作 headless 专用瘦身：关闭与创作无关的通用能力（零写作质量损失）──
+# 依据 docs/context-optimization-plan.md P1；条目 id 已按当前 dsh-base 组合逐一核实。
+# 保留：novel_* 工具 + read/write/edit/glob/grep + persona + OpenViking 记忆插件。
+- { id: agent-instructions,        disabled: true }   # 不再注入 deepseek-harness 的 AGENTS.md（省 ~4.1k）
+- { id: tool-pwsh,                 disabled: true }   # 最大的单个工具 schema（省 ~1.1k）
+- { id: tool-workflow,             disabled: true }
+- { id: tool-subagent,             disabled: true }
+- { id: tool-subagent-fork,        disabled: true }
+- { id: tool-subagent-control,     disabled: true }
+- { id: tool-subagent-list-agents, disabled: true }
+- { id: tool-todo,                 disabled: true }
+- { id: tool-goal,                 disabled: true }
+- { id: tool-jobs,                 disabled: true }
+- { id: tool-ralph,                disabled: true }
+- { id: plan-mode,                 disabled: true }
+- { id: tool-web,                  disabled: true }
+- { id: tool-skill,                disabled: true }
+- { id: skill,                     disabled: true }
+- { id: skill-filesystem,          disabled: true }
+- { id: session-title-llm,         disabled: true }   # 省掉每次任务的多余标题小请求
 # ═══ 区块结束 ═══

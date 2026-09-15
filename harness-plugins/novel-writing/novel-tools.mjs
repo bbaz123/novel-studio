@@ -173,12 +173,12 @@ export function apply(ctx, config) {
     '写作前调用：取指定作品/章节的完整创作上下文（ST 式分层装配，每层有独立预算，超长会注明截断）。',
     '包含：卷/剧情线/章节进度大纲、长期记忆摘要（过长时会标注建议压缩）、最近事件账本、未闭合伏笔、当前场景与前后章衔接、出场角色卡（按相关性评分排序，别名/称呼同样命中，含对话示例与角色系统提示）、人物关系、按优先级激活的世界观词条、写作风格红线。',
     'output 的 assembled 字段就是可直接读入的整块上下文；scene_characters 是出场角色名单（forced=true 表示作者在工坊「上下文」页签强制带入的角色，写作时必须让其出场）。',
-    'work_id/chapter_id 缺省时自动使用进程注入的身份（由 novel-studio 启动的任务自带）。mode: full=整章代写/分析, continuation=接龙续写, fragment=片段补写。',
+    'work_id/chapter_id 缺省时自动使用进程注入的身份（由 novel-studio 启动的任务自带）。mode: full=整章代写/分析, continuation=接龙续写, fragment=片段补写, settings=设定类生成轻量装配（不含当前场景/蓝图/前文衔接）。',
     '若任务提示词里已内联提供了同样的上下文（由 novel-studio 网页启动的任务通常如此），不必重复调用本工具，用 novel_lookup 按需补查即可。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
     chapter_id: { type: 'string', description: '章节 id（可选）' },
-    mode: { type: 'string', description: 'full | continuation | fragment（默认 full）' },
+    mode: { type: 'string', description: 'full | continuation | fragment | settings（默认 full）' },
   }, async (args) => {
     const workId = envId(args, 'work_id')
     if (workId === undefined) {

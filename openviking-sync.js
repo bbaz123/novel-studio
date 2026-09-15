@@ -18,6 +18,7 @@
 import { db } from './db.js';
 import { ovClient, enqueueOpenVikingOp, clearQueuedOpForUri, clearQueuedOpsForWork } from './openviking.js';
 import { log, timedAsync } from './logger.js';
+import { traceFn } from './debug-trace.js';
 import { htmlToPlain } from './text-utils.js';
 
 // 协议前缀运行时拼接（避免源码中出现的字面 URI 触发 dsh 的 URI 防护误判）。
@@ -383,6 +384,9 @@ export async function syncWorkFull(workId) {
   }, 3000);
 }
 
+// 🐞 运行追踪：全量同步是逐文件串行 HTTP 写，最慢的一条链路，单独成函数级节点。
+syncWorkFull = traceFn('syncWorkFull（记忆库全量同步）', syncWorkFull, { kind: 'http', slowMs: 2000 });
+
 export async function removeWorkFromMemory(workId) {
   if (OV_DISABLED) return false;
   setAppSetting(`ov_indexed_at:${workId}`, '');
@@ -582,3 +586,8 @@ export async function semanticSearchMerge(q, workId) {
     return { enabled: true, hits: [] };
   }
 }
+
+// 🐞 运行追踪：语义召回是每次上下文装配里最不可控的一段外部等待（find 6s + 逐条 read 5s），
+// 必须能单独看到它耗时多少、命中多少——否则「上下文装配慢」无法归因到记忆库还是本地 SQL。
+getSemanticRecall = traceFn('getSemanticRecall（语义召回）', getSemanticRecall, { kind: 'http', slowMs: 500 });
+semanticSearchMerge = traceFn('semanticSearchMerge（检索合并）', semanticSearchMerge, { kind: 'http', slowMs: 500 });

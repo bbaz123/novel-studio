@@ -167,6 +167,42 @@ try {
     ok('分层上下文（含伏笔层与红线保底）');
   }
 
+  // 3b. settings 模式轻量装配（设定类生成专用：只去章节层，质量层零丢失）
+  {
+    const r = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chapterId}&mode=settings`);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.mode, 'settings');
+    assert.ok(!r.data.assembled.includes('【当前场景】'), 'settings 模式不应包含当前场景层');
+    assert.ok(!r.data.assembled.includes('【本章蓝图'), 'settings 模式不应包含本章蓝图层');
+    assert.ok(!r.data.assembled.includes('【前文衔接】'), 'settings 模式不应包含前文衔接层');
+
+    // 不变量用「层构成」表达，而不是字数或长度——那两种断言都会在真实数据下失效：
+    //   · 固定层 cap 合计已 12300 字（再加大纲/世界观弹性层与角色卡），作品规模一上来必然超过 12000；
+    //   · 被截断的层会附加「本层共 N 字，已按预算截断」提示，提示文本本身（约 40 字/层）
+    //     可能让该层反而长于未截断时；当章节层内容近乎为空时，settings ≤ full 的长度比较并不成立。
+    // 层构成与数据规模、截断提示都无关，是真正常住的不变量，也正是「零损失」约束的内容本身。
+    const CHAPTER_LAYERS = ['当前场景', '本章蓝图（写作必须遵守）', '前文衔接'];
+    const KNOWN_LAYERS = [
+      '作品', '卷/剧情线/章节进度（大纲）', '长期记忆（已发生的故事摘要）', '相关记忆检索（语义召回）',
+      '最近事件（事件账本）', '未闭合伏笔（写作时必须照顾）', '出场角色卡', '人物关系',
+      '激活的世界观设定（优先级排列）', '写作风格红线'
+    ];
+    const layersOf = (text) => KNOWN_LAYERS.filter((l) => String(text).includes(`【${l}】`));
+    const full = await jfetch(`/api/novel/context?work_id=${workId}&chapter_id=${chapterId}&mode=full`);
+    assert.equal(full.status, 200);
+    const expected = layersOf(full.data.assembled).filter((l) => !CHAPTER_LAYERS.includes(l));
+    const actual = layersOf(r.data.assembled);
+    assert.deepEqual(
+      expected.filter((l) => !actual.includes(l)), [],
+      `settings 不得丢失 full 中的非章节层（full 有 ${expected.length} 层，settings 有 ${actual.length} 层）`
+    );
+    // 质量层无条件渲染（数据为空时也会输出「（无）」），因此必须恒在——这是零损失约束的底线。
+    for (const l of ['出场角色卡', '未闭合伏笔（写作时必须照顾）', '长期记忆（已发生的故事摘要）', '写作风格红线']) {
+      assert.ok(actual.includes(l), `settings 模式必须保留质量层：${l}`);
+    }
+    ok('settings 模式轻量装配（只去章节层 + 质量层零丢失）');
+  }
+
   // 4. 红线扫描 + 对话豁免
   {
     const dirty = '他嘴角勾起一抹冷笑，眼中闪过一丝复杂，不禁浑身一震。';
@@ -626,6 +662,13 @@ try {
     await jfetch(`/api/works/${bigWorkId}`, { method: 'PUT', body: { title: '大作品性能测试·改名' } });
     const after = await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
     assert.ok(after.data.assembled.includes('大作品性能测试·改名'), '写操作后缓存必须失效，返回新数据');
+    // settings 模式回归：大作品下预算必须真实收敛（18,000 = 质量层全保底的可执行下限），
+    // 且质量层（红线）与去章节层的行为与真实数据无关地成立。
+    const bigSettings = await jfetch(`/api/novel/context?work_id=${bigWorkId}&mode=settings`);
+    assert.equal(bigSettings.status, 200);
+    assert.ok(bigSettings.data.assembled.includes('【写作风格红线】'), '大作品 settings 装配必须保留红线层');
+    assert.ok(!bigSettings.data.assembled.includes('【前文衔接】'), '大作品 settings 装配不应包含前文衔接层');
+    assert.ok(bigSettings.data.assembled.length <= 18000, `大作品 settings 装配应在 18000 字预算内（实测 ${bigSettings.data.assembled.length} 字）`);
     ok('大作品上下文性能基线（装配耗时 + 缓存失效正确性）');
   }
 

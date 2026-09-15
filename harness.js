@@ -6,8 +6,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log, readableErrorMessage } from './logger.js';
+import { traceHarness, traceNow } from './debug-trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// 🐞 运行追踪：慢通道节点（任务级）。未录制时 traceHarness 内部是空操作，零开销。
+function recordHarnessTrace(name, data) {
+  try {
+    traceHarness(name, data);
+  } catch (_) { /* 追踪失败绝不影响创作任务 */ }
+}
 
 // OpenViking 共享记忆库归属：headless 写作任务的 cwd 是 dsh 仓库，插件默认会按
 // cwd 派生 workspace peer，导致小说任务记忆落在 deepseek-harness 的 peer 里。
@@ -206,23 +214,59 @@ function writeSettings(content) {
   }
 }
 
-// 在 settings.yaml 中把 agent-default-model.model 替换为目标模型。
-function patchDefaultModel(yaml, model) {
+// 思考强度取值白名单。来源：dsh-llm-deepseek 公布的 DeepSeek 适配器等级
+// （off | low | high | max）；传其它值 dsh 会在网络 I/O 前以
+// UNSUPPORTED_REASONING_EFFORT 失败，因此在进入互斥前就拦下并给出明确报错。
+export const REASONING_EFFORTS = ['off', 'low', 'high', 'max'];
+
+// 归一化思考强度：空值表示“不指定”（沿用 settings.yaml 现值），非法值返回空串由调用方报错。
+export function normalizeReasoningEffort(value) {
+  if (value === undefined || value === null || value === '') return '';
+  const v = String(value).trim().toLowerCase();
+  return REASONING_EFFORTS.includes(v) ? v : '';
+}
+
+/**
+ * 在 settings.yaml 的 agent-default-model 分节内改写 model / reasoningEffort。
+ * 只在该分节内增改，分节不存在时原样返回（由调用方决定如何告警），
+ * 以免误伤用户在同一文件里的其它配置。
+ * 导出以便单测直接覆盖（纯函数，无副作用）。
+ */
+export function patchAgentDefault(yaml, { model, reasoningEffort } = {}) {
   const lines = yaml.split('\n');
-  let inAgentDefault = false;
+  let start = -1;
+  let end = lines.length;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^agent-default-model:\s*$/.test(line)) {
-      inAgentDefault = true;
+    if (start < 0) {
+      if (/^agent-default-model:\s*$/.test(lines[i])) start = i;
       continue;
     }
-    if (inAgentDefault) {
-      if (/^\S/.test(line)) {
-        inAgentDefault = false;
-      } else if (/^\s*model:/.test(line)) {
-        lines[i] = line.replace(/:\s*.*$/, `: ${model}`);
-        break;
-      }
+    // 遇到下一个顶层键（行首非空白）即分节结束。
+    if (/^\S/.test(lines[i])) { end = i; break; }
+  }
+  if (start < 0) return yaml;
+
+  let indent = '';
+  let modelIdx = -1;
+  let effortIdx = -1;
+  for (let i = start + 1; i < end; i++) {
+    const m = lines[i].match(/^([ \t]+)\S/);
+    if (!indent && m) indent = m[1];
+    if (/^\s*model:/.test(lines[i])) modelIdx = i;
+    else if (/^\s*reasoningEffort:/.test(lines[i])) effortIdx = i;
+  }
+  // 探测不到子键缩进时（分节内一个键都没有）沿用 dsh 写 settings.yaml 的 2 空格风格。
+  if (!indent) indent = '  ';
+
+  if (model && modelIdx >= 0) {
+    lines[modelIdx] = lines[modelIdx].replace(/^(\s*model:).*$/, `$1 ${model}`);
+  }
+  if (reasoningEffort) {
+    if (effortIdx >= 0) {
+      lines[effortIdx] = lines[effortIdx].replace(/^(\s*reasoningEffort:).*$/, `$1 ${reasoningEffort}`);
+    } else {
+      // 分节内缺该键时补一行，缩进沿用同级键，保证 YAML 结构合法。
+      lines.splice(modelIdx >= 0 ? modelIdx + 1 : start + 1, 0, `${indent}reasoningEffort: ${reasoningEffort}`);
     }
   }
   return lines.join('\n');
@@ -252,7 +296,7 @@ function killChildTree(child) {
  *   2) CAS 还原：只有文件仍等于我们写入的内容时才恢复原文，不覆盖期间发生的其它修改。
  *
  * @param {string} prompt 给 AI 的任务描述
- * @param {{ timeout?: number, model?: string, env?: Record<string,string>, signal?: AbortSignal }} [options]
+ * @param {{ timeout?: number, model?: string, reasoningEffort?: string, env?: Record<string,string>, signal?: AbortSignal }} [options]
  * @param {(chunk: string) => void} [onChunk] 每次收到子进程输出时回调（用于前台进度展示）
  * @returns {Promise<string>} 任务输出
  */
@@ -281,27 +325,43 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
   };
   if (signal?.aborted) throw makeCancelled();
 
+  // 模型名/思考强度校验放在进入全局互斥之前：非法参数立刻失败，
+  // 不必先排队等别人跑完。模型名同时防特殊字符破坏 settings.yaml 结构（HA-07）。
+  if (options.model && !/^[A-Za-z0-9._-]{1,64}$/.test(String(options.model))) {
+    throw new Error('非法模型名：仅允许字母/数字/点/下划线/连字符');
+  }
+  const reasoningEffort = normalizeReasoningEffort(options.reasoningEffort);
+  if (options.reasoningEffort && !reasoningEffort) {
+    throw new Error(`非法思考强度：仅允许 ${REASONING_EFFORTS.join(' / ')}`);
+  }
+  // 两者任一需要改写 settings.yaml 就要串行化；都不需要则允许并行（HA-04）。
+  const needsSettingsSwitch = Boolean(options.model || reasoningEffort);
+
   const runTask = async () => {
-    // 模型名合法性校验：防止特殊字符破坏 settings.yaml 结构（HA-07）。
-    if (options.model && !/^[A-Za-z0-9._-]{1,64}$/.test(String(options.model))) {
-      throw new Error('非法模型名：仅允许字母/数字/点/下划线/连字符');
-    }
     const originalSettings = readSettings();
     let patched = false;
     let patchedContent = null;
-    if (options.model && originalSettings == null) {
-      log({ level: 'warn', layer: 'harness', kind: 'settings_patch_skipped', message: '无法读取 settings.yaml，模型切换被跳过（将以默认模型运行）' });
+    if (needsSettingsSwitch && originalSettings == null) {
+      log({ level: 'warn', layer: 'harness', kind: 'settings_patch_skipped', message: '无法读取 settings.yaml，模型/强度切换被跳过（将以默认设置运行）' });
     }
-    if (options.model && originalSettings != null) {
+    if (needsSettingsSwitch && originalSettings != null) {
       try {
-        patchedContent = patchDefaultModel(originalSettings, options.model);
+        patchedContent = patchAgentDefault(originalSettings, { model: options.model, reasoningEffort });
         if (patchedContent !== originalSettings) {
           writeSettings(patchedContent);
           writePatchBackup({ original: originalSettings, patched: patchedContent });
           patched = true;
+        } else if (!/^agent-default-model:\s*$/m.test(originalSettings)) {
+          // 分节缺失时改写会“静默无效”，显式告警避免误以为已切换成功。
+          // 注意只在确实没有该分节时告警：若仅因目标值与现值一致而无需改写，属正常情况。
+          log({
+            level: 'warn', layer: 'harness', kind: 'settings_patch_noop',
+            message: 'settings.yaml 中未找到 agent-default-model 分节，模型/强度切换未生效',
+            context: { model: options.model || '', reasoning_effort: reasoningEffort }
+          });
         }
       } catch (e) {
-        log({ level: 'warn', layer: 'harness', kind: 'settings_patch_failed', message: `默认模型切换失败：${e.message}` });
+        log({ level: 'warn', layer: 'harness', kind: 'settings_patch_failed', message: `默认模型/强度切换失败：${e.message}` });
       }
     }
 
@@ -310,8 +370,13 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
     log({
       level: 'info', layer: 'harness', kind: 'task_start',
       message: 'Harness 任务开始',
-      context: { timeout_ms: timeoutMs, model: options.model || '' }
+      context: { timeout_ms: timeoutMs, model: options.model || '', reasoning_effort: reasoningEffort }
     });
+    // 🐞 运行追踪：慢通道只记到进程边界（job id / 模型 / 耗时 / 成败）。
+    // Token 不可得——dsh headless 驱动显式丢弃 usage 事件，stdout 只输出正文。
+    // ⚠️ 基准必须取 traceNow()（追踪专用单调时钟），不能写 Date.now()：
+    // 后者是 Unix 纪元毫秒，与追踪内部基准相减会得到 -1.787e12ms 的负数耗时。
+    const traceT0 = traceNow();
 
     try {
       return await new Promise((resolve, reject) => {
@@ -351,10 +416,11 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           err.code = 'HARNESS_TIMEOUT';
           err.stdoutTail = stdout.slice(-600);
           err.stderr = stderr;
+          recordHarnessTrace('harness 任务（慢通道）', { t0: traceT0, model: options.model || '', status: 'timeout', error: err });
           log({
             level: 'error', layer: 'harness', kind: 'timeout',
             message: `Harness 任务超时（${Math.round(timeoutMs / 1000)}s），子进程已终止`,
-            context: { timeout_ms: timeoutMs, model: options.model || '' },
+            context: { timeout_ms: timeoutMs, model: options.model || '', reasoning_effort: reasoningEffort },
             dedupMs: 60 * 1000
           });
           reject(err);
@@ -370,7 +436,9 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
             level: 'info', layer: 'harness', kind: 'cancelled',
             message: 'Harness 任务被取消，子进程树已终止'
           });
-          reject(makeCancelled());
+          const cancelErr = makeCancelled();
+          recordHarnessTrace('harness 任务（慢通道）', { t0: traceT0, model: options.model || '', status: 'error', error: cancelErr });
+          reject(cancelErr);
         };
         if (signal) {
           if (signal.aborted) onAbort();
@@ -411,8 +479,9 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
             log({
               level: 'info', layer: 'harness', kind: 'task_done',
               message: 'Harness 任务完成',
-              context: { duration_ms: Date.now() - startedAt, model: options.model || '' }
+              context: { duration_ms: Date.now() - startedAt, model: options.model || '', reasoning_effort: reasoningEffort }
             });
+            recordHarnessTrace('harness 任务（慢通道）', { t0: traceT0, model: options.model || '', status: 'ok', result: stdout.trim() });
             resolve(stdout.trim());
           } else {
             const err = new Error(readableErrorMessage(stderr, `Harness 退出码：${code}`));
@@ -422,8 +491,9 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
               level: 'error', layer: 'harness', kind: 'harness_exit',
               message: `Harness 任务失败（退出码 ${code}）：${err.message}`,
               error: err,
-              context: { exit_code: code, duration_ms: Date.now() - startedAt, model: options.model || '' }
+              context: { exit_code: code, duration_ms: Date.now() - startedAt, model: options.model || '', reasoning_effort: reasoningEffort }
             });
+            recordHarnessTrace('harness 任务（慢通道）', { t0: traceT0, model: options.model || '', status: 'error', error: err });
             reject(err);
           }
         });
@@ -443,14 +513,14 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
       }
     }
   };
-  // 仅模型切换需串行化（改 settings.yaml 是全局副作用）；不切模型的任务并行执行（HA-04）。
-  return options.model ? withModelSwitch(runTask) : runTask();
+  // 仅需改写 settings.yaml 的任务串行化（全局副作用）；既不切模型也不切强度的任务并行执行（HA-04）。
+  return needsSettingsSwitch ? withModelSwitch(runTask) : runTask();
 }
 
 /**
  * 运行一次 dsh headless 任务。
  * @param {string} prompt 给 AI 的任务描述
- * @param {{ timeout?: number, model?: string, env?: Record<string,string> }} [options]
+ * @param {{ timeout?: number, model?: string, reasoningEffort?: string, env?: Record<string,string> }} [options]
  * @returns {Promise<string>} 任务输出
  */
 export async function runHarnessTask(prompt, options = {}) {

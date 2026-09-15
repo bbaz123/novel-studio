@@ -1,23 +1,11 @@
 # Dependencies
 node_modules/
 
-# Local database & sensitive local data
-# API keys are stored in novel.db — never upload local databases.
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/*.sqlite
-data/*.sqlite-shm
-data/*.sqlite-wal
-data/*.sqlite3
-data/*.sqlite3-shm
-data/*.sqlite3-wal
-
-# Local database backups (full DB copies, same sensitivity as novel.db)
-data/backup-*/
-
-# OpenViking 本地同步队列状态（运行时生成，含待推送内容，不上传）
-data/openviking-pending.jsonl
+# Local data — never upload
+# data/ 一个目录里同时有：novel.db（含 API Key 与作品正文）、数据库备份、
+# 运行日志、🐞 运行追踪明细、OpenViking 同步队列、以及抢救/恢复用的中间产物。
+# 任何一项泄露都会暴露作者的作品与密钥，因此整个 data/ 一律不上传。
+data/
 
 # 隔离测试运行产生的数据目录（可再生的数据库副本与日志）
 .test-data-*/

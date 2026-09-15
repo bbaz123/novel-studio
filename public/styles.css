@@ -1156,3 +1156,172 @@ mark.search-hit {
 }
 #log-more { align-self: center; }
 #log-more[hidden] { display: none; }
+
+/* ---------- 🐞 运行追踪 ---------- */
+/* 顶栏录制开关：录制中显著变红并轻微呼吸，避免「忘关」 */
+.trace-btn.recording {
+  background: rgba(248, 113, 113, .18);
+  border-color: rgba(248, 113, 113, .5);
+  color: #fca5a5;
+  animation: trace-pulse 2s ease-in-out infinite;
+}
+@keyframes trace-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, .35); }
+  50% { box-shadow: 0 0 0 5px rgba(248, 113, 113, 0); }
+}
+.trace-page { display: flex; flex-direction: column; gap: 12px; padding: 16px; max-width: 1180px; margin: 0 auto; }
+.trace-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trace-toolbar select,
+.trace-toolbar input[type="search"] {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.trace-toolbar input[type="search"] { flex: 1; min-width: 160px; }
+.trace-check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.trace-stats { font-size: 12px; color: var(--text-dim); margin-left: auto; white-space: nowrap; }
+.trace-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  background: rgba(99, 102, 241, .07);
+  border: 1px solid rgba(99, 102, 241, .18);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.trace-list { display: flex; flex-direction: column; gap: 6px; }
+.trace-op {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.trace-op:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.trace-op.open { border-color: rgba(99, 102, 241, .45); }
+.trace-op-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.trace-time { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.trace-title { font-weight: 600; color: var(--text); }
+.trace-grow { flex: 1; }
+.trace-cost { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.trace-nodes, .trace-http { font-size: 11px; color: var(--text-dim); }
+.trace-tokens { font-family: var(--mono); font-size: 11px; color: #c4b5fd; }
+.trace-caret { color: var(--text-dim); }
+.trace-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border-strong); white-space: nowrap; }
+.trace-badge.err { background: rgba(248, 113, 113, .14); color: #fca5a5; border-color: rgba(248, 113, 113, .35); }
+.trace-badge.warn { background: rgba(251, 191, 36, .12); color: #fcd34d; border-color: rgba(251, 191, 36, .3); }
+.trace-badge.run { background: rgba(52, 211, 153, .12); color: #6ee7b7; border-color: rgba(52, 211, 153, .3); }
+.trace-slow { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+.trace-detail {
+  background: rgba(0, 0, 0, .22);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: -2px;
+}
+.trace-node { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.trace-node.err { color: #fca5a5; }
+.trace-node-side { font-size: 10px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.trace-node-kind { font-size: 10px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--text-dim); }
+.trace-node-kind.k-ai { background: rgba(139, 92, 246, .16); color: #c4b5fd; border-color: rgba(139, 92, 246, .35); }
+.trace-node-kind.k-db { background: rgba(34, 211, 238, .12); color: #67e8f9; border-color: rgba(34, 211, 238, .28); }
+.trace-node-kind.k-api { background: rgba(99, 102, 241, .14); color: #a5b4fc; border-color: rgba(99, 102, 241, .32); }
+.trace-node-kind.k-harness { background: rgba(251, 191, 36, .12); color: #fcd34d; border-color: rgba(251, 191, 36, .3); }
+.trace-node-kind.k-ui { background: rgba(148, 163, 184, .12); }
+.trace-node-name { font-family: var(--mono); color: var(--text); }
+.trace-node-cost { display: inline-flex; align-items: center; gap: 6px; min-width: 120px; }
+.trace-node-cost i { display: block; height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--primary), var(--accent)); max-width: 90px; }
+.trace-node-cost b { font-family: var(--mono); font-size: 11px; color: var(--text-dim); font-weight: 400; }
+.trace-node-loc { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.trace-node-usage { font-family: var(--mono); font-size: 11px; color: #c4b5fd; }
+.trace-node-detail { flex-basis: 100%; }
+.trace-node-detail summary { cursor: pointer; font-size: 11px; color: var(--text-dim); user-select: none; }
+.trace-node-detail pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, .3);
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow: auto;
+}
+.trace-tools { font-size: 11px; color: var(--text-dim); border-bottom: 1px dashed var(--border); padding-bottom: 6px; }
+.trace-tools-panel { font-size: 12px; }
+.trace-tools-panel[hidden] { display: none; }
+.trace-tools-panel summary { cursor: pointer; color: var(--text-dim); user-select: none; }
+.trace-tools-panel pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, .3);
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+}
+.trace-sessions { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.trace-sessions-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.trace-sessions-list { display: flex; flex-direction: column; gap: 4px; }
+.trace-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.trace-session-file { font-family: var(--mono); }
+.empty.small { font-size: 12px; padding: 10px; }
+
+/* ---------- 生成稿草稿 / 上次审稿 取回条 ---------- */
+/* 用途：AI 成文结果与审稿报告现在都会落库，这里把它们重新暴露给用户，
+   避免「关掉弹窗 = 稿件静默消失」（2026-09-14 真实事故）。 */
+.recovery-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #6aa9ff);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 12px;
+}
+.recovery-item { display: flex; align-items: center; gap: 6px; }
+.recovery-item .btn { padding: 2px 8px; font-size: 12px; }
+.raw-review {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.7;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+}
+
+/* 恢复条里长任务状态着色（此前 recoveryBarHtml 引用了未定义的类，状态文字裸奔） */
+.recovery-run { color: var(--accent); }
+.recovery-ok { color: #3fb950; }
+.recovery-warn { color: #d29922; }
+.recovery-err { color: #f85149; }
