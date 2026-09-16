@@ -330,6 +330,15 @@ function killChildTree(child) {
  * @returns {Promise<string>} 任务输出
  */
 let modelSwitchTail = Promise.resolve();
+/** 可观测性（决策 D4）：模型切换互斥的当前负载，供作业设施显示「等待模型槽位」。 */
+let modelSwitchBusy = false;
+let modelSwitchWaiters = 0;
+
+/** 模型切换互斥的负载快照。`busy`=有任务正持有槽位；`waiters`=还在排队的数量。 */
+export function modelSwitchLoad() {
+  return { busy: modelSwitchBusy, waiters: modelSwitchWaiters };
+}
+
 /**
  * 模型切换互斥：把「改 settings.yaml → 跑任务 → 还原」三段串起来，避免并发任务交错。
  *
@@ -338,9 +347,19 @@ let modelSwitchTail = Promise.resolve();
  * 在实践中就退化成 1（第二个作业会先在队列里等）。
  * 导出它是为了能**离线单测**这条语义（见 .p1-baseline/test-model-switch-gate.mjs），
  * 而不是靠读代码下结论。
+ *
+ * 决策 D4（2026-09-16）：排队必须**可观测**——否则界面会把"在等槽位"显示成"运行中"，
+ * 作者会以为任务卡住了。这里维护 busy/waiters 计数，配合 `options.onPhase` 上报。
  */
 export function withModelSwitch(fn) {
-  const run = modelSwitchTail.then(fn, fn);
+  const queued = modelSwitchBusy || modelSwitchWaiters > 0;
+  if (queued) modelSwitchWaiters++;
+  const wrapped = async () => {
+    if (queued) modelSwitchWaiters = Math.max(0, modelSwitchWaiters - 1);
+    modelSwitchBusy = true;
+    try { return await fn(); } finally { modelSwitchBusy = false; }
+  };
+  const run = modelSwitchTail.then(wrapped, wrapped);
   modelSwitchTail = run.then(() => {}, () => {});
   return run;
 }
@@ -353,6 +372,17 @@ export function withModelSwitch(fn) {
  */
 export function requiresModelSwitchGate(model, reasoningEffort) {
   return Boolean(model || reasoningEffort);
+}
+
+/**
+ * 这次调用**是否会先排队**等模型槽位。
+ *
+ * 抽成纯函数是为了可离线单测（决策 D4 的可观测性依赖这条判断）：
+ * 只有"需要改写 settings"的任务才进互斥，而互斥忙/有人排队时它才会等。
+ * 不请求模型/强度的任务**不排队**——这一点必须能被断言，否则界面会对并行任务误报"等待中"。
+ */
+export function willWaitForModelSlot(takesSlot) {
+  return Boolean(takesSlot) && (modelSwitchBusy || modelSwitchWaiters > 0);
 }
 
 export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) {
@@ -385,7 +415,17 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
   // 两者任一需要改写 settings.yaml 就要串行化；都不需要则允许并行（HA-04）。
   const needsSettingsSwitch = requiresModelSwitchGate(options.model, reasoningEffort);
 
+  // 可观测性（决策 D4）：需要改 settings 且槽位已被占时，**先如实上报"在排队"**，
+  // 而不是让调用方一直显示"运行中"。真正开跑时再报一次 'running'。
+  if (typeof options.onPhase === 'function' && willWaitForModelSlot(needsSettingsSwitch)) {
+    try { options.onPhase('waiting-model', { waiters: modelSwitchWaiters + 1 }); } catch { /* 上报失败不影响任务 */ }
+  }
+
   const runTask = async () => {
+    // 真正开跑的时点（已拿到模型槽位）。用于把界面从"等待模型槽位"切回正常。
+    if (typeof options.onPhase === 'function') {
+      try { options.onPhase('running', {}); } catch { /* 上报失败不影响任务 */ }
+    }
     const originalSettings = readSettings();
     let patched = false;
     let patchedContent = null;

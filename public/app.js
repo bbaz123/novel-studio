@@ -3921,7 +3921,15 @@ async function pollHarnessJob(jobId, progress, { timeoutMs = 720000 } = {}) {
       throw new Error(`任务状态查询失败：${e.message}`);
     }
     if (cancelled) throw cancelledErr();
-    progress.update(job.tail);
+    // 决策 D4：任务被"模型切换互斥"挡在门外时，如实显示「在排队」。
+    // 排队期间不会有任何新输出（tail 是静止的），此前界面看起来就像卡死。
+    // 提示放在**最后一行**，这样在"只显示最近 6 行"的窗口里它始终可见。
+    // 判定用服务端的结构化字段 model_slot，不去正则匹配中文文案。
+    const ahead = Number(job.model_waiters) > 1 ? Number(job.model_waiters) - 1 : 0;
+    const waiting = job.model_slot === 'waiting'
+      ? `⏳ 等待模型槽位${ahead > 0 ? `（前面还有 ${ahead} 个任务）` : ''}…模型切换是串行的，前面的任务跑完会自动开始`
+      : '';
+    progress.update([job.tail, waiting].filter(Boolean).join('\n'));
     if (job.status === 'done') {
       return { job_id: jobId, output: job.output || '', scan: job.scan || null, proposals: job.proposals || null, kind: job.kind, stage: job.stage, chapter_id: job.chapter_id };
     }

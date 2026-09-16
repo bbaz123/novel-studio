@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress } from './harness.js';
+import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress, modelSwitchLoad } from './harness.js';
 import { readZip } from './zip-reader.mjs';
 import { htmlToPlain } from './text-utils.js';
 import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
@@ -2831,6 +2831,10 @@ function createHarnessJob(prompt, options) {
     chapterId: Number(options?.chapterId) || null,
     kind: options?.kind || 'harness',
     stage: String(options?.stage || '').slice(0, 120),
+    // 决策 D4：模型槽位状态（'' | 'waiting' | 'running'）。界面据此显示"等待模型槽位"，
+    // 而不是把"在队列里等"显示成"运行中"。
+    model_slot: '',
+    model_waiters: 0,
     created_at: now(),
     abort: new AbortController(),
     cancelRequested: false
@@ -2855,7 +2859,31 @@ function createHarnessJob(prompt, options) {
     job.started_at = Date.now();
     persistHarnessJob(job);
     try {
-      const output = await runHarnessTaskWithProgress(prompt, { ...options, signal: job.abort.signal }, (chunk) => {
+      const output = await runHarnessTaskWithProgress(prompt, {
+        ...options,
+        signal: job.abort.signal,
+        // 决策 D4：把「等待模型槽位」如实反映到作业上。
+        // ⚠️ 这里原先写着「前端本来就用 job.stage 显示进度，无需改前端」——**那句是错的**：
+        // 实时轮询路径（public/app.js 的 pollHarnessJob）只喂 job.tail，从不读 job.stage，
+        // 所以排队期间界面一片静止。现在双写：
+        //   stage      —— 给人看的文案（也会存进可恢复任务列表）；
+        //   model_slot —— 给前端做结构化判断（'' | 'waiting' | 'running'），别去正则匹配中文。
+        onPhase: (phase, info) => {
+          if (phase === 'waiting-model') {
+            job.model_slot = 'waiting';
+            job.model_waiters = Number(info?.waiters) || 1;
+            if (!job.stage) {
+              const ahead = Math.max(0, job.model_waiters - 1);
+              job.stage = ahead > 0 ? `等待模型槽位（前面还有 ${ahead} 个任务）` : '等待模型槽位';
+            }
+          } else if (phase === 'running') {
+            job.model_slot = 'running';
+            job.model_waiters = 0;
+            if (job.stage.startsWith('等待模型槽位')) job.stage = '';
+          }
+          persistHarnessJob(job);
+        },
+      }, (chunk) => {
         job.tail = (job.tail + chunk).slice(-2000);
       });
       job.status = 'done';
@@ -3555,7 +3583,11 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, {
       ok: true,
       available: isHarnessAvailable(),
-      built: isHarnessBuilt()
+      built: isHarnessBuilt(),
+      // 决策 D4：模型切换互斥的当前负载。服务端允许 2 个作业，但请求了模型/强度的任务会串行，
+      // 这里把真实排队情况暴露出来，而不是让调用方从"运行中"猜。
+      model_load: modelSwitchLoad(),
+      concurrency: HARNESS_CONCURRENCY
     });
   }
 
@@ -3635,6 +3667,10 @@ async function handleAPI(req, res, pathname, query) {
       status: job.status,
       kind: job.kind || 'harness',
       stage: job.stage || '',
+      // 决策 D4：排队状态必须能被前端**结构化**读到。此前只回 stage 文案，
+      // 而实时轮询根本不显示 stage，于是"在等槽位"与"运行中"在界面上无法区分。
+      model_slot: job.model_slot || '',
+      model_waiters: Number(job.model_waiters) || 0,
       chapter_id: job.chapterId || null,
       work_id: job.workId || null,
       elapsed_ms: job.started_at ? (job.finished_at || Date.now()) - job.started_at : 0,

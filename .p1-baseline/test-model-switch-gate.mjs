@@ -15,7 +15,7 @@
  */
 process.env.NOVELSTUDIO_DATA_DIR = process.env.NOVELSTUDIO_DATA_DIR || '.p0-recon/scratch-data';
 
-const { requiresModelSwitchGate, withModelSwitch, DSH_PROFILE } = await import('../harness.js');
+const { requiresModelSwitchGate, withModelSwitch, willWaitForModelSlot, modelSwitchLoad, DSH_PROFILE } = await import('../harness.js');
 
 let pass = 0;
 const fails = [];
@@ -78,14 +78,50 @@ console.log('\n【4. 返回值与错误都要原样透传】');
   ok('异常原样抛出', caught instanceof Error && caught.message === '原样');
 }
 
-console.log('\n【5. 与调用点的一致性（静态）】');
+console.log('\n【5. 排队必须可观测（决策 D4：界面不能把"在等槽位"显示成"运行中"）】');
+{
+  ok('空闲时 load = busy:false / waiters:0',
+    modelSwitchLoad().busy === false && modelSwitchLoad().waiters === 0, JSON.stringify(modelSwitchLoad()));
+  ok('空闲时不会误报"要排队"', willWaitForModelSlot(true) === false);
+  ok('不请求模型/强度的任务永不排队（否则并行任务会被误报等待中）',
+    willWaitForModelSlot(false) === false);
+
+  let release = null;
+  const held = withModelSwitch(() => new Promise((r) => { release = r; }));
+  await new Promise((s) => setTimeout(s, 30));
+  ok('有任务持有槽位时 busy=true', modelSwitchLoad().busy === true, JSON.stringify(modelSwitchLoad()));
+  ok('此时"要排队"判断为真', willWaitForModelSlot(true) === true);
+  ok('但并行（不切模型）任务仍不排队', willWaitForModelSlot(false) === false);
+
+  const queued = withModelSwitch(async () => 'second');
+  await new Promise((s) => setTimeout(s, 30));
+  ok('第二个任务进入排队 → waiters=1', modelSwitchLoad().waiters === 1, JSON.stringify(modelSwitchLoad()));
+
+  release('first');
+  const [r1, r2] = await Promise.all([held, queued]);
+  ok('两个任务都正常完成', r1 === 'first' && r2 === 'second', `${r1} / ${r2}`);
+  await new Promise((s) => setTimeout(s, 20));
+  ok('全部结束后负载归零（计数不泄漏）',
+    modelSwitchLoad().busy === false && modelSwitchLoad().waiters === 0, JSON.stringify(modelSwitchLoad()));
+}
+
+console.log('\n【6. 与调用点的一致性（静态）】');
 {
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../harness.js', import.meta.url), 'utf8');
+  const srv = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
   ok('调用点用的是这个纯函数（不是另写一份判断）',
     /const needsSettingsSwitch = requiresModelSwitchGate\(options\.model, reasoningEffort\);/.test(src));
   ok('不需要切换时**不**进互斥（否则吞吐会无条件退化成 1）',
     /return needsSettingsSwitch \? withModelSwitch\(runTask\) : runTask\(\);/.test(src));
+  ok('排队判断走的是可单测的纯函数（不是内联条件）',
+    /willWaitForModelSlot\(needsSettingsSwitch\)/.test(src));
+  ok('开跑时会再上报一次 running（界面据此切回正常）',
+    /options\.onPhase\('running'/.test(src));
+  ok('作业设施接上了 onPhase 并把等待写进 stage',
+    /onPhase: \(phase, info\) => \{/.test(srv) && /等待模型槽位/.test(srv));
+  ok('作业设施把模型槽位状态挂在作业上', /model_slot = 'waiting'/.test(srv) && /model_slot = 'running'/.test(srv));
+  ok('/harness/status 暴露了 model_load', /model_load: modelSwitchLoad\(\)/.test(srv));
   ok('当前默认 profile 可读（顺带确认 import 成功）', typeof DSH_PROFILE === 'string' && DSH_PROFILE.length > 0,
     String(DSH_PROFILE));
 }

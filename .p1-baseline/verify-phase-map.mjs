@@ -203,6 +203,10 @@ export const PHASES = [
       '.p1-baseline/verify-retrieval-map.mjs',
       '.p1-baseline/verify-layer-constants.mjs',
       '.p1-baseline/verify-all.mjs',
+      // 决策 D4（模型槽位可观测性）的验收工具。D4 的**代码**改动都落在
+      // 已被 P0/P2–P5 认领的共享文件里（harness.js / server.js / public/app.js），
+      // 所以这里只需认领新增的工具本身——与 D5 把事故证据归入 X 同一处理。
+      '.p1-baseline/verify-model-slot.mjs',
     ],
     evidence: ['.p1-baseline/verify-all.mjs', '.p1-baseline/README.md', 'docs/README.md'],
     note: '验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——'
