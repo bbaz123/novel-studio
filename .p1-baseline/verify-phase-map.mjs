@@ -202,6 +202,8 @@ export const PHASES = [
       '.p1-baseline/probe-entity-variants.mjs',
       // D8-#3：自动压缩开关的验收（含"不打开不花钱"的阴性对照）
       '.p1-baseline/verify-auto-compress.mjs',
+      // D8-#8 后半：关键改动的人工盲测工具（花钱需显式确认）
+      '.p1-baseline/blind-ab.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
