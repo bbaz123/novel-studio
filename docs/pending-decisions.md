@@ -260,8 +260,19 @@ node .p1-baseline/survey.mjs data/novel.db          # 库体检（含 D6 的孤�
 | 回归：并发闸门 | `verify-harness-gate` **12/12** ✓（黑洞端点确实收到连接）|
 | 全量套件 | `verify-all` **22 通过 / 0 未通过 / 7 跳过**（与基线一致）|
 
-**仍未做的一件事**：主实例 3737 跑的还是改动前的进程，界面要看到排队提示需要**重启一次 3737**
-（`public/app.js` 是静态文件，浏览器刷新即可）。是否需要重启请你定——重启会打断正在进行的任务。
+**主实例已重启并核对**（你选"现在重启"，提交 `e602ae6`）：
+
+```
+重启前 /api/harness/status → {ok,available,built}                    （没有 model_load）
+重启后 /api/harness/status → model_load={busy:false,waiters:0}, concurrency=2
+```
+
+新增 `.p1-baseline/verify-main-instance.mjs`（只读、零计费、不建任何 AI 任务），**6/6 通过**：
+D4 字段已上线 · 下发的 `app.js` 含排队提示且轮询读机读字段 `model_slot` · 真实库仍是
+`#9 雾都缝匠`（ov_uri=9）与 `#2 我真的只是一个路人啊`（ov_uri=2）。
+
+> 这条检查的由来："**代码提交了 ≠ 实例生效了**"。重启前那个进程是改动前启动的，
+> 不看活实例根本发现不了。现在它变成一个可复跑的工具。
 
 ---
 
