@@ -1131,7 +1131,7 @@ function saveStoryMemory(workId, summary, opts = {}) {
 }
 
 // 自动压缩作品内容为长期记忆摘要。
-async function compressStoryMemory(workId) {
+async function compressStoryMemory(workId, onChunk, signal) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) throw new Error('作品不存在');
 
@@ -1150,7 +1150,12 @@ async function compressStoryMemory(workId) {
   // 模型用 QUALITY_AI_MODEL：产出的长期记忆会喂给之后**每一章**的上下文，质量影响是累积的，
   // 按用户「质量优先」基线不在这里省（2026-09-13 用户决定由 flash 改回 pro）。
   // 思考强度仍刻意不指定：沿用 ~/.dsh/settings.yaml 的全局设置，避免单方面调低。
-  const output = await runHarnessTask(prompt, { timeout: 10 * 60 * 1000, model: QUALITY_AI_MODEL });
+  // D8-#4：带进度上报（此前用无 onChunk 的入口，进了作业设施 tail 也是空的）；
+  // 并透传 abort signal，否则作业的"取消"到不了子进程（会一直 running）。
+  const output = await runHarnessTaskWithProgress(
+    prompt,
+    { timeout: 10 * 60 * 1000, model: QUALITY_AI_MODEL, signal },
+    typeof onChunk === 'function' ? onChunk : undefined);
   saveStoryMemory(workId, output, { source: 'compress' });
   return output;
 }
@@ -2663,10 +2668,18 @@ function createNovelFromData(data) {
 }
 
 // 通过 DeepSeek Harness 生成完整小说并写入数据库。
-async function generateNovelFromHarness(prompt, model) {
+async function generateNovelFromHarness(prompt, model, onChunk, signal) {
   if (!prompt || !prompt.trim()) throw new Error('请输入一段小说描述');
   const task = `${NOVEL_GENERATION_SYSTEM_PROMPT}\n\n请根据以下描述生成小说设定 JSON：\n\n${prompt.trim()}`;
-  const output = await runHarnessTask(task, { timeout: 10 * 60 * 1000, model: model || undefined });
+  // D8-#4：改用**带进度**的入口并把 chunk 转给调用方。
+  // 此前用的是 runHarnessTask（无 onChunk）——即便任务进了作业设施，tail 也永远是空的，
+  // 界面同样看不到进展。任务能被观测的前提是执行路径真的把过程吐出来。
+  // ⚠️ 还要把 abort `signal` 透下去：作业设施的取消是"abort → 子进程被杀 → 抛
+  // HARNESS_CANCELLED"，不透传的话取消按钮点了也没用（作业会一直 running）。
+  const output = await runHarnessTaskWithProgress(
+    task,
+    { timeout: 10 * 60 * 1000, model: model || undefined, signal },
+    typeof onChunk === 'function' ? onChunk : undefined);
   const data = extractJSON(output);
   return createNovelFromData(data);
 }
@@ -2838,6 +2851,10 @@ function createHarnessJob(prompt, options) {
     started_at: null,
     finished_at: null,
     output: null,
+    // D8-#4：**结构化**产出（生成小说 / 记忆压缩这类服务端命名任务的结果对象）。
+    // 自由提示词任务（/harness/run）的产出是正文，走 output；两者刻意分开，
+    // 免得把 JSON 当正文喂给红线扫描、或把正文塞进 result 让前端多一层判断。
+    result: null,
     scan: null,
     proposals: null,
     error: null,
@@ -2874,42 +2891,59 @@ function createHarnessJob(prompt, options) {
     job.status = 'running';
     job.started_at = Date.now();
     persistHarnessJob(job);
+    // 决策 D4：把「等待模型槽位」如实反映到作业上。
+    // ⚠️ 这里原先写着「前端本来就用 job.stage 显示进度，无需改前端」——**那句是错的**：
+    // 实时轮询路径（public/app.js 的 pollHarnessJob）只喂 job.tail，从不读 job.stage，
+    // 所以排队期间界面一片静止。现在双写：
+    //   stage      —— 给人看的文案（也会存进可恢复任务列表）；
+    //   model_slot —— 给前端做结构化判断（'' | 'waiting' | 'running'），别去正则匹配中文。
+    const onPhase = (phase, info) => {
+      if (phase === 'waiting-model') {
+        job.model_slot = 'waiting';
+        job.model_waiters = Number(info?.waiters) || 1;
+        if (!job.stage) {
+          const ahead = Math.max(0, job.model_waiters - 1);
+          job.stage = ahead > 0 ? `等待模型槽位（前面还有 ${ahead} 个任务）` : '等待模型槽位';
+        }
+      } else if (phase === 'running') {
+        job.model_slot = 'running';
+        job.model_waiters = 0;
+        if (job.stage.startsWith('等待模型槽位')) job.stage = '';
+      }
+      persistHarnessJob(job);
+    };
+    const onChunk = (chunk) => {
+      job.tail = (job.tail + chunk).slice(-2000);
+    };
     try {
-      const output = await runHarnessTaskWithProgress(prompt, {
-        ...options,
-        signal: job.abort.signal,
-        // 决策 D4：把「等待模型槽位」如实反映到作业上。
-        // ⚠️ 这里原先写着「前端本来就用 job.stage 显示进度，无需改前端」——**那句是错的**：
-        // 实时轮询路径（public/app.js 的 pollHarnessJob）只喂 job.tail，从不读 job.stage，
-        // 所以排队期间界面一片静止。现在双写：
-        //   stage      —— 给人看的文案（也会存进可恢复任务列表）；
-        //   model_slot —— 给前端做结构化判断（'' | 'waiting' | 'running'），别去正则匹配中文。
-        onPhase: (phase, info) => {
-          if (phase === 'waiting-model') {
-            job.model_slot = 'waiting';
-            job.model_waiters = Number(info?.waiters) || 1;
-            if (!job.stage) {
-              const ahead = Math.max(0, job.model_waiters - 1);
-              job.stage = ahead > 0 ? `等待模型槽位（前面还有 ${ahead} 个任务）` : '等待模型槽位';
-            }
-          } else if (phase === 'running') {
-            job.model_slot = 'running';
-            job.model_waiters = 0;
-            if (job.stage.startsWith('等待模型槽位')) job.stage = '';
-          }
-          persistHarnessJob(job);
-        },
-      }, (chunk) => {
-        job.tail = (job.tail + chunk).slice(-2000);
-      });
+      let output;
+      if (typeof options.runner === 'function') {
+        // D8-#4：**自带运行体**的作业（生成小说 / 记忆压缩）。
+        // 它们此前在 HTTP 请求里同步跑完，只有并发槽位、没有作业记录——
+        // 于是界面没有进度、不能取消、刷新就丢、也不进「可恢复任务」列表。
+        // 运行体自行负责进度上报（onChunk），产出放进 job.result。
+        job.result = await options.runner({ signal: job.abort.signal, onPhase, onChunk, job });
+        output = typeof job.result === 'string' ? job.result : '';
+      } else {
+        output = await runHarnessTaskWithProgress(prompt, {
+          ...options,
+          signal: job.abort.signal,
+          onPhase,
+        }, onChunk);
+      }
       job.status = 'done';
       job.output = output;
-      // 生成后确定性红线扫描（反 AI 腔自检），随结果一起返回，不阻塞正文。
-      const redlineRows = listRedlines(Number(options.workId) || null);
-      const scanHits = scanAgainstRedlines(redlineRows, output);
-      job.scan = { enabled: redlineRows.length > 0, total: scanHits.reduce((s, h) => s + h.count, 0), hits: scanHits.slice(0, 50) };
-      // 提案模式收尾：把 AI 在本次任务里提交的事件/记忆提案一并带回，供作者确认。
-      if (options.workId) job.proposals = listProposals(Number(options.workId));
+      if (typeof options.runner === 'function') {
+        // 命名任务的产出是结构化对象，不是正文：跳过红线扫描与提案收集
+        // （拿 JSON 去扫反 AI 腔只会产生噪声命中；提案归属由运行体自己决定）。
+      } else {
+        // 生成后确定性红线扫描（反 AI 腔自检），随结果一起返回，不阻塞正文。
+        const redlineRows = listRedlines(Number(options.workId) || null);
+        const scanHits = scanAgainstRedlines(redlineRows, output);
+        job.scan = { enabled: redlineRows.length > 0, total: scanHits.reduce((s, h) => s + h.count, 0), hits: scanHits.slice(0, 50) };
+        // 提案模式收尾：把 AI 在本次任务里提交的事件/记忆提案一并带回，供作者确认。
+        if (options.workId) job.proposals = listProposals(Number(options.workId));
+      }
     } catch (e) {
       job.status = e.code === 'HARNESS_TIMEOUT' ? 'timeout'
         : (e.code === 'HARNESS_CANCELLED' || job.cancelRequested) ? 'cancelled'
@@ -3618,6 +3652,49 @@ async function handleAPI(req, res, pathname, query) {
   // D1：AI 任务进度。POST /harness/run 立即返回 job_id，任务在后台执行；
   // 前端通过 GET /harness/job?id= 轮询状态（阶段/耗时/最近输出），解决「界面静止 10 分钟」的问题。
 
+  // D8-#4：**服务端命名任务**的作业入口（把两条"同步旁路"并进作业设施）。
+  //
+  // 与 /harness/run 的分工：run 跑的是**自由提示词**（产出是正文，走 job.output）；
+  // 这里跑的是**服务端已命名的任务**（生成小说 / 记忆压缩），产出是结构化对象，走 job.result。
+  //
+  // 此前这两条在 HTTP 请求里同步跑完（只占并发槽位）：没有作业记录 → 界面没有进度、
+  // 不能取消、刷新页面就丢、也不进「可恢复任务」列表。现在它们与其它任务同构。
+  if (resource === 'harness' && method === 'POST' && segments[2] === 'job') {
+    const body = await readBody(req);
+    const kind = String(body.kind || '').trim();
+    if (harnessLoad() >= HARNESS_CONCURRENCY) return sendError(res, 429, `已有任务运行中，请稍后再试（并发上限 ${HARNESS_CONCURRENCY}）`);
+    const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || 10 * 60 * 1000)), 60 * 60 * 1000);
+
+    // 每种命名任务只声明"怎么跑"和"跑完长什么样"，作业设施本身不动。
+    const NAMED_TASKS = {
+      'generate_novel': {
+        label: 'AI 自动创建小说',
+        workId: null,
+        runner: ({ onChunk, signal }) => generateNovelFromHarness(String(body.prompt || '').trim(), body.model || undefined, onChunk, signal),
+      },
+      'compress': {
+        label: '压缩长期记忆',
+        workId: Number(body.work_id) || null,
+        runner: ({ onChunk, signal }) => compressStoryMemory(Number(body.work_id), onChunk, signal).then((summary) => ({ summary })),
+      },
+    };
+    const spec = NAMED_TASKS[kind];
+    if (!spec) return sendError(res, 400, `未知的命名任务：${kind || '(空)'}（可选：${Object.keys(NAMED_TASKS).join(' / ')}）`);
+    if (kind === 'generate_novel' && !String(body.prompt || '').trim()) return sendError(res, 400, '缺少 prompt');
+    if (kind === 'compress' && !spec.workId) return sendError(res, 400, '缺少 work_id');
+
+    const job = createHarnessJob('', {
+      timeout,
+      model: body.model || undefined,
+      action: kind,
+      kind,
+      stage: spec.label,
+      workId: spec.workId,
+      runner: spec.runner,
+    });
+    return sendJSON(res, 202, { ok: true, job_id: job.id, status: job.status, kind: job.kind, stage: job.stage });
+  }
+
   if (resource === 'harness' && method === 'POST' && segments[2] === 'run') {
     const body = await readBody(req);
     if (!body.prompt || !String(body.prompt).trim()) return sendError(res, 400, '缺少 prompt');
@@ -3700,6 +3777,9 @@ async function handleAPI(req, res, pathname, query) {
       elapsed_ms: job.started_at ? (job.finished_at || Date.now()) - job.started_at : 0,
       tail: job.tail.slice(-600),
       output: job.status === 'done' ? job.output : null,
+      // D8-#4：命名任务的结构化产出（生成小说 → {title, work_id, …}；压缩 → {summary}）。
+      // 与 output 分开：前端不必猜"这次任务的产出是正文还是对象"。
+      result: job.status === 'done' ? (job.result ?? null) : null,
       scan: job.status === 'done' ? job.scan : null,
       proposals: job.status === 'done' ? job.proposals : null,
       error: job.error

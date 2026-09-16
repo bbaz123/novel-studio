@@ -131,8 +131,17 @@ console.log('\n【6. 与调用点的一致性（静态）】');
     /cleanupTaskSettings\(taskSettings\)/.test(src));
   ok('开跑时会再上报一次 running（界面据此切回正常）',
     /options\.onPhase\('running'/.test(src));
-  ok('作业设施接上了 onPhase 并把等待写进 stage',
-    /onPhase: \(phase, info\) => \{/.test(srv) && /等待模型槽位/.test(srv));
+  // ⚠️ 这里断的是**语义**，不是代码形状。
+  // 此前写的是 `/onPhase: \(phase, info\) => \{/`——D8-#4 把内联箭头函数提成
+  // `const onPhase = (phase, info) => {`（纯重构、行为不变），断言就红了。
+  // 静态断言盯着字面形状，就会在无害重构后报假失败，而假失败会磨损对红灯的信任。
+  const handler = srv.match(/(?:const onPhase = |onPhase: )\(phase, info\) => \{/);
+  const handlerWindow = handler ? srv.slice(handler.index, handler.index + 1400) : '';
+  ok('作业设施接上了阶段上报（(phase, info) 处理器）', Boolean(handler));
+  ok('该处理器真的把"等待模型槽位"写进 stage',
+    /等待模型槽位/.test(handlerWindow) && /job\.model_slot = 'waiting'/.test(handlerWindow));
+  ok('处理器被传给了执行路径（不是定义了却没人用）',
+    /[{,]\s*onPhase\s*[,}]/.test(srv));
   ok('作业设施把模型槽位状态挂在作业上', /model_slot = 'waiting'/.test(srv) && /model_slot = 'running'/.test(srv));
   ok('/harness/status 暴露了 model_load', /model_load: modelSwitchLoad\(\)/.test(srv));
   ok('当前默认 profile 可读（顺带确认 import 成功）', typeof DSH_PROFILE === 'string' && DSH_PROFILE.length > 0,

@@ -194,6 +194,8 @@ export const PHASES = [
       '.p1-baseline/exp-concurrent-models.mjs',
       // D8-#8：质量信号哨兵（客观指标；只调端点不自己写 SQL）
       '.p1-baseline/quality-sentinel.mjs',
+      // D8-#4：命名任务并入作业设施的验收（静态接线 + 活体三段：进度/取消/落库）
+      '.p1-baseline/verify-named-jobs.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',

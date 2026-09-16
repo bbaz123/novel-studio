@@ -3355,12 +3355,13 @@ async function compressStoryMemory() {
   const btn = $('[data-action="compress-story-memory"]');
   if (btn) btn.disabled = true;
   try {
-    const data = await api('/story_memory/compress', {
-      method: 'POST',
-      body: { work_id: state.workId },
-      timeout: 600000 // F-45：同步长任务，覆盖默认 60s
-    });
-    el.value = data.summary || '';
+    // D8-#4：走作业入口而不是同步端点——于是有了进度、可取消、落库与"可恢复任务"。
+    // 注意 body 是 { kind, work_id }，产出在 result.summary 上（不再是顶层的 summary）。
+    const data = await runHarnessJob(
+      { kind: 'compress', work_id: state.workId, timeout: 600000 },
+      '压缩长期记忆',
+      '/harness/job');
+    el.value = data.result?.summary || '';
     toast('长期记忆已自动压缩', 'success');
   } catch (e) {
     toast('压缩失败：' + e.message, 'error');
@@ -3848,7 +3849,10 @@ function showAITaskProgress(stageLabel) {
 }
 
 // 提交 harness 任务并轮询状态直到结束。返回 { output, scan }。
-async function runHarnessJob(body, stageLabel) {
+// `endpoint` 默认为 /harness/run（自由提示词）；命名任务（生成小说 / 记忆压缩）走 /harness/job，
+// 结果落在 result 上——D8-#4 把这两条"同步旁路"并进了作业设施，于是它们也有了
+// 进度、取消、落库与「可恢复任务」列表。
+async function runHarnessJob(body, stageLabel, endpoint = '/harness/run') {
   // F-43：互斥锁——同一时刻只允许一个 harness 任务运行，避免并发任务互相覆盖进度卡与取消回调。
   if (state.aiTaskRunning) {
     toast('已有 AI 任务进行中，请等待其完成或先点「停止」', 'error');
@@ -3863,10 +3867,10 @@ async function runHarnessJob(body, stageLabel) {
   if (typeof traceLongOp === 'function') traceLongOp(stageLabel || 'AI 任务（慢通道）');
   const progress = showAITaskProgress(stageLabel);
   try {
-    const started = await api('/harness/run', { method: 'POST', body });
+    const started = await api(endpoint, { method: 'POST', body });
     if (!started.job_id) {
       // 兼容旧服务端：直接返回同步结果（无取消通道，停止按钮不出现）
-      return { output: started.output || '', scan: started.scan || null, proposals: started.proposals || null };
+      return { output: started.output || '', scan: started.scan || null, proposals: started.proposals || null, result: started };
     }
     return await pollHarnessJob(started.job_id, progress, { timeoutMs: Number(body?.timeout || 600000) + 120000 });
   } finally {
@@ -3931,7 +3935,7 @@ async function pollHarnessJob(jobId, progress, { timeoutMs = 720000 } = {}) {
       : '';
     progress.update([job.tail, waiting].filter(Boolean).join('\n'));
     if (job.status === 'done') {
-      return { job_id: jobId, output: job.output || '', scan: job.scan || null, proposals: job.proposals || null, kind: job.kind, stage: job.stage, chapter_id: job.chapter_id };
+      return { job_id: jobId, output: job.output || '', scan: job.scan || null, proposals: job.proposals || null, kind: job.kind, stage: job.stage, chapter_id: job.chapter_id, result: job.result ?? null };
     }
     if (job.status === 'cancelled') throw cancelledErr();
     if (job.status === 'failed' || job.status === 'timeout') {
@@ -7169,11 +7173,13 @@ async function runAICreateNovel() {
     setAICreateProgress(steps, 1);
     await new Promise((r) => setTimeout(r, 100));
     stopTick = startElapsedTicker($('#ai-create-progress'), '生成中，已用时');
-    const data = await api('/harness/generate_novel', {
-      method: 'POST',
-      body: { prompt, model: policyModel('quality') },
-      timeout: 600000 // F-45：同步长任务，覆盖默认 60s
-    });
+    // D8-#4：走作业入口。此前这条是同步请求——浏览器要挂着一个 HTTP 长连接等几分钟，
+    // 刷新即丢、也无法取消；现在与其它 AI 任务同构（进度卡 + 停止 + 可恢复）。
+    const job = await runHarnessJob(
+      { kind: 'generate_novel', prompt, model: policyModel('quality'), timeout: 600000 },
+      'AI 自动创建小说',
+      '/harness/job');
+    const data = job.result || {};
     if (stopTick) stopTick();
     setAICreateProgress(steps, 2);
     await new Promise((r) => setTimeout(r, 200));
