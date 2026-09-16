@@ -23,3 +23,6 @@ gate-env.json
 gate-env.stop
 blackhole-*.jsonl
 .blackhole-*.jsonl
+
+# 实验临时产物（哨兵 settings + 黑洞转储）：每次跑都会重建，不入库
+.exp-settings/
