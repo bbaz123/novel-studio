@@ -186,6 +186,8 @@ export const PHASES = [
       '.p1-baseline/test-context-cache.mjs',
       // D8-#1：回滚矩阵（实测哪些提交能单独 revert；自带阴性对照）
       '.p1-baseline/revert-matrix.mjs',
+      // D8-#7 的补证探针：确认外部信号 ov_indexed_at 在真实库里确实有值
+      '.p1-baseline/probe-ov-indexed-at.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
