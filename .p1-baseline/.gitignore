@@ -1,0 +1,9 @@
+# P1 生成的基线数据与隔离库副本不入库：
+#   - 数据库副本体积大（data/ ~0.9MB、stress-data/ ~2.7MB）且可由脚本重建；
+#   - 逐用例的原始 JSON 基线（约 5MB）可由 capture-baseline.mjs 重新生成。
+# 保留：工具、README、以及体积很小的 summary.json（人可读的证据）。
+data/
+stress-data/
+logs/
+baselines*/*.json
+!baselines*/summary.json

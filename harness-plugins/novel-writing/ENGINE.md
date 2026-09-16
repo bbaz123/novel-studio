@@ -192,17 +192,38 @@ dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并�
 
 1. **GUI/交互会话**：agent preset 安装到 `~/.dsh/.agent-presets/novel-writing/`
    （`agent.cordis.yml` + `preset.yml` + `novel-tools.mjs`）。
-2. **novel-studio 后台 headless（关键）**：`headless-cordis.patch.yml` 以**区块合并**方式
-   注入 `~/.dsh/profiles/headless/cordis.patch.yml`（整段替换本插件区块、保留用户其它条目），
-   并覆盖 `system-prompt.persona` 注入创作纪律；`novel-tools.mjs` 复制到同目录。
+2. **novel-studio 后台任务（关键）**：本目录是一个标准 **dsh bundle**
+   （`package.json` 的 `dsh.bundle.patch` → `cordis.patch.yml`）。profile 只需在
+   `dsh.profile.bundles` 里列出 `novel-writing`，并在 `node_modules` 下放一个指向本目录的
+   junction——**工坊仓库即唯一来源，不存在副本**。`cordis.patch.yml` 负责：覆盖
+   `system-prompt.persona` 注入创作纪律、`insert` novel_* 工具、关闭与创作无关的通用能力。
 
-两个安装点的工具与人设同源（本目录文件），升级 = 覆盖本目录后重跑 `install.ps1`。
+profile 侧的实际接线由 `install-profile.mjs` 完成（零依赖 node 脚本）：补齐 profile 骨架 →
+写 `dsh.profile.bundles` → 建 junction → 一次性清理旧版安装痕迹。`install.ps1` 是它的
+PowerShell 入口（支持 `-Profile <名>` / `-DryRun` / `-Uninstall`）。
+
+> **历史与迁移**：旧版把补丁片段**合并进** profile 的 `cordis.patch.yml`，并把
+> `novel-tools.mjs` **复制**到 profile 目录。前者要按标记行裁剪（旧版裁剪逻辑会吞掉用户
+> 后加的条目），后者会与仓库源发生版本漂移（实测 `PLUGIN_VERSION` 与 `plugin.json` 已不一致）。
+> P0 专用运行时时已改为 bundle 方式，`install-profile.mjs` 会识别并清理这两类旧痕迹（带备份）。
+> 旧的区块片段文件 `headless-cordis.patch.yml` 已弃用，仅为对照保留。
+
+**专用 profile**：P0 起本插件装在专用 profile 上（`~/.dsh/profiles/novel/`），与 GUI 及其它
+dsh 用途解耦。用哪个 profile 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFILE` 决定；当前默认仍是
+`headless`，切换到 `novel` 是 P6 的一次性动作。
 
 ## 五、已知边界与后续
 
-- headless profile 的补丁对该 profile 所有任务生效（本机 headless 基本只被 novel-studio 使用）；
+- 补丁对该 profile 的所有任务生效（P0 起的专用 profile 基本只被 novel-studio 使用）；
   人设文本已声明“非创作任务按任务执行”，无副作用。如需按任务条件化，可改用 `!!js` 判断
   `NOVELSTUDIO_WORK_ID`（见 cordis 补丁语法）。
+- **上下文分层是有预算的，且被裁内容都必须能查回**（P3 落实）。装配器给每层设正文上限，
+  被截断处标注「已按预算截断」。契约把「凡被裁剪必可查回」写成可断言的不变量（I4），
+  逐层声明查回路径并**实测**（见 `docs/p3-retrieval-verification.md`、`ai/context/layers.mjs`
+  的 `RETRIEVAL`、`.p1-baseline/verify-retrieval.mjs`）。模型侧入口：
+  长期记忆 → `novel_memory_read`；事件账本 → `novel_events`；伏笔 → `novel_foreshadows(status=all)`；
+  写作红线 → `novel_style_contract`；其余（世界观 / 蓝图 / 人物关系 / 角色 / 章节）→ `novel_lookup`。
+  **新增会被裁剪的层时，必须同时给它声明查回路径**，否则 verify-retrieval 会报缺口。
 - 记忆 delta 是“安全拼接”约定，语义压缩由模型在调用 `novel_memory_update` 时完成；
   直接 `PUT /api/story_memory` 传 delta 会得到待压缩的追加文本。
 - `novel_consistency` 只做确定性清单装配，冲突判断由模型在同一轮内完成（工具返回清单文本）。

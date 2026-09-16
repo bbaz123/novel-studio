@@ -1,0 +1,7 @@
+# 彩排临时树：每次 --rehearse 都会新建一个时间戳目录，跑完可随时删除。
+# 真实执行时的备份**不在这里**，而在 data/backup-p6-<stamp>/（那才是要留的证据）。
+.rehearsal/
+# snapshot.mjs 的比对临时树（正常跑完会自删；崩了才会留下）
+.verify/
+# 阴性对照的临时快照
+.negctl/

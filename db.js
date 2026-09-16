@@ -285,6 +285,31 @@ CREATE TABLE IF NOT EXISTS chapter_reviews (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- AI 效果埋点（P5）：记录「生成 → 采纳/丢弃」的行为信号，用于回答
+-- 「上下文质量到底有没有变好」——这是契约里唯一无法靠结构化断言回答的问题。
+--   action      generate（产出草稿）| adopt（写回正文）| discard（丢弃）
+--   channel     direct / stream / harness / pipeline
+--   model       实际使用的模型名
+--   chars_in    送进模型的上下文字数（来自装配器 manifest 的合计）
+--   chars_out   产出正文字数
+--   ms          耗时
+--   edit_distance  采纳时草稿与最终正文的编辑距离（越小说明一次成文越准）
+--   draft_key   把同一次的 generate 与 adopt/discard 串起来的键
+CREATE TABLE IF NOT EXISTS ai_eval_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER,
+  chapter_id INTEGER,
+  action TEXT NOT NULL DEFAULT 'generate',
+  channel TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  chars_in INTEGER NOT NULL DEFAULT 0,
+  chars_out INTEGER NOT NULL DEFAULT 0,
+  ms INTEGER NOT NULL DEFAULT 0,
+  edit_distance INTEGER,
+  draft_key TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
 -- 应用级键值设置（如 OpenViking 语义召回开关、各作品索引时间戳）。
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
@@ -427,6 +452,9 @@ CREATE INDEX IF NOT EXISTS idx_chapter_reviews_chapter ON chapter_reviews(chapte
 CREATE INDEX IF NOT EXISTS idx_app_logs_id ON app_logs(id DESC);
 CREATE INDEX IF NOT EXISTS idx_app_logs_layer_level ON app_logs(layer, level);
 CREATE INDEX IF NOT EXISTS idx_app_logs_kind ON app_logs(kind);
+CREATE INDEX IF NOT EXISTS idx_ai_eval_work ON ai_eval_events(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_eval_chapter ON ai_eval_events(chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_eval_draft ON ai_eval_events(draft_key);
 `);
 
 // 幂等去重唯一约束兜底（addStoryEvent 的 SELECT 查重与写入分离存在并发竞态）。

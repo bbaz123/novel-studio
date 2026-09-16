@@ -1,5 +1,6 @@
 // DeepSeek Harness 桥接层
-// 通过 dsh headless profile 执行一次性 AI 创作任务，并支持临时切换默认模型。
+// 通过 dsh profile 执行一次性 AI 创作任务，并支持临时切换默认模型。
+// profile 名由 DSH_PROFILE 决定（环境变量 NOVELSTUDIO_DSH_PROFILE，默认 headless）。
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,6 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log, readableErrorMessage } from './logger.js';
 import { traceHarness, traceNow } from './debug-trace.js';
+import { EFFORTS } from './ai/policy.mjs';
+import { harnessChildEnv } from './ai/harness-env.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,6 +53,30 @@ export const HARNESS_PACKAGE = path.join(HARNESS_DIR, 'package.json');
 
 // dsh 全局设置文件，用于临时切换默认模型
 export const DSH_SETTINGS = process.env.DSH_SETTINGS || path.join(os.homedir(), '.dsh', 'settings.yaml');
+
+// dsh profile：novel-studio 的创作任务跑在哪个 profile 上。
+//
+// 背景（P0 专用运行时）：原先硬编码 'headless'，使工坊的创作运行时与 GUI 及其它
+// dsh 用途共用同一份 profile——该 profile 由 install.ps1 做区块合并维护，且所有
+// 会话共用全局 settings.yaml。为此新增了专用 profile `novel`（headless 的功能
+// 等价体：83 行组合树逐条等价、17 条 disable 全部真实生效，证据见 .p0-recon/）。
+//
+// 默认值刻意**仍是 headless**：P0..P5 全程隔离开发，线上行为不变；切换是 P6 的
+// 一次性动作。要让隔离实例或试运行使用专用 profile，设 NOVELSTUDIO_DSH_PROFILE=novel。
+const PROFILE_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+export const DSH_PROFILE = (() => {
+  const raw = String(process.env.NOVELSTUDIO_DSH_PROFILE || '').trim();
+  if (!raw) return 'headless';
+  if (!PROFILE_NAME_RE.test(raw)) {
+    log({
+      level: 'warn', layer: 'harness', kind: 'invalid_profile',
+      message: 'NOVELSTUDIO_DSH_PROFILE 非法（仅允许字母/数字/点/下划线/连字符），已回退 headless',
+      context: { value: raw }
+    });
+    return 'headless';
+  }
+  return raw;
+})();
 
 // 模型补丁侧车备份：进程崩溃时 finally 的 CAS 还原不会执行，settings.yaml 可能停留在补丁状态；
 // 启动时检测到残留补丁则还原原文，避免用户默认模型被静默篡改。
@@ -214,10 +241,10 @@ function writeSettings(content) {
   }
 }
 
-// 思考强度取值白名单。来源：dsh-llm-deepseek 公布的 DeepSeek 适配器等级
-// （off | low | high | max）；传其它值 dsh 会在网络 I/O 前以
+// 思考强度取值白名单。**唯一来源是 ai/policy.mjs**（P4 起）——此前这里另有一份硬编码副本，
+// 与 server.js 的白名单各改各的。传其它值 dsh 会在网络 I/O 前以
 // UNSUPPORTED_REASONING_EFFORT 失败，因此在进入互斥前就拦下并给出明确报错。
-export const REASONING_EFFORTS = ['off', 'low', 'high', 'max'];
+export const REASONING_EFFORTS = EFFORTS;
 
 // 归一化思考强度：空值表示“不指定”（沿用 settings.yaml 现值），非法值返回空串由调用方报错。
 export function normalizeReasoningEffort(value) {
@@ -301,10 +328,29 @@ function killChildTree(child) {
  * @returns {Promise<string>} 任务输出
  */
 let modelSwitchTail = Promise.resolve();
-function withModelSwitch(fn) {
+/**
+ * 模型切换互斥：把「改 settings.yaml → 跑任务 → 还原」三段串起来，避免并发任务交错。
+ *
+ * ⚠️ 这个互斥体决定了**实际吞吐**：只有当调用方请求了模型/思考强度（见
+ * `requiresModelSwitchGate`）才会走它；都请求了，服务端的 `HARNESS_CONCURRENCY=2`
+ * 在实践中就退化成 1（第二个作业会先在队列里等）。
+ * 导出它是为了能**离线单测**这条语义（见 .p1-baseline/test-model-switch-gate.mjs），
+ * 而不是靠读代码下结论。
+ */
+export function withModelSwitch(fn) {
   const run = modelSwitchTail.then(fn, fn);
   modelSwitchTail = run.then(() => {}, () => {});
   return run;
+}
+
+/**
+ * 这次调用是否需要改写 settings.yaml（= 是否需要进入模型切换互斥）。
+ *
+ * 抽成纯函数是为了可离线单测：它决定了实际吞吐是 1 还是 2。
+ * 语义必须与调用点严格一致——判定用的是**归一化之后**的强度。
+ */
+export function requiresModelSwitchGate(model, reasoningEffort) {
+  return Boolean(model || reasoningEffort);
 }
 
 export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) {
@@ -335,7 +381,7 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
     throw new Error(`非法思考强度：仅允许 ${REASONING_EFFORTS.join(' / ')}`);
   }
   // 两者任一需要改写 settings.yaml 就要串行化；都不需要则允许并行（HA-04）。
-  const needsSettingsSwitch = Boolean(options.model || reasoningEffort);
+  const needsSettingsSwitch = requiresModelSwitchGate(options.model, reasoningEffort);
 
   const runTask = async () => {
     const originalSettings = readSettings();
@@ -386,14 +432,10 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           reject(new Error('未找到 dsh 启动方式（无 scripts.dsh 且未找到 pnpm 的 corepack 入口），无法运行 dsh 任务'));
           return;
         }
-        const taskArgs = ['--profile', 'headless', String(prompt || '').trim()];
+        const taskArgs = ['--profile', DSH_PROFILE, String(prompt || '').trim()];
         const spawnArgs = launch ? [...launch.args, ...taskArgs] : [pnpmJs, 'dsh', ...taskArgs];
         const spawnCwd = launch ? launch.cwd : HARNESS_DIR;
-        const childEnv = {
-          ...process.env,
-          OPENVIKING_PEER_ID: OPENVIKING_PEER_ID,
-          ...(options.env || {})
-        };
+        const childEnv = harnessChildEnv({ peerId: OPENVIKING_PEER_ID, env: options.env });
         // 仅无 shell 启动：避免 shell:true 把 prompt 拼进 cmd 命令行的注入面（HA-06）；
         // 同时避免 pnpm→cmd.exe 链路把中文参数按 ANSI 损坏（N-01）。
         const child = spawn(process.execPath, spawnArgs, {

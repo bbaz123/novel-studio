@@ -1,0 +1,1327 @@
+{
+  "base": "http://127.0.0.1:3738",
+  "db": ".p1-baseline/data/novel.db",
+  "captured_at": "2026-09-15T12:45:36.340Z",
+  "cases": [
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "full",
+      "assembled_length": 6710,
+      "layer_count": 11,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 14,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1509,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w2-c107-full.json"
+    },
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "continuation",
+      "assembled_length": 9210,
+      "layer_count": 11,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 14,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 4009,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w2-c107-continuation.json"
+    },
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "fragment",
+      "assembled_length": 6856,
+      "layer_count": 11,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 14,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1655,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w2-c107-fragment.json"
+    },
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "settings",
+      "assembled_length": 5140,
+      "layer_count": 8,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w2-c107-settings.json"
+    },
+    {
+      "work_id": 2,
+      "chapter_id": 107,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 3910,
+        "world": 0,
+        "recall": 0,
+        "events": 0,
+        "foreshadows": 0,
+        "story_memory": 779,
+        "story_tail": 1200,
+        "style_contract": 778,
+        "raw_json": 21307,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-p5-real/w2-c107-ai_context.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "full",
+      "assembled_length": 5196,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 63,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 421,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c31-full.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "continuation",
+      "assembled_length": 5196,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 63,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 421,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c31-continuation.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "fragment",
+      "assembled_length": 5196,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 63,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 421,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c31-fragment.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "settings",
+      "assembled_length": 4665,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c31-settings.json"
+    },
+    {
+      "work_id": 9,
+      "chapter_id": 31,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 844,
+        "world": 352,
+        "recall": 0,
+        "events": 332,
+        "foreshadows": 82,
+        "story_memory": 781,
+        "story_tail": 412,
+        "style_contract": 778,
+        "raw_json": 16681,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-p5-real/w9-c31-ai_context.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "full",
+      "assembled_length": 5240,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 101,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 427,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c34-full.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "continuation",
+      "assembled_length": 5252,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 101,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 439,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c34-continuation.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "fragment",
+      "assembled_length": 5252,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 101,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 439,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c34-fragment.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "settings",
+      "assembled_length": 4665,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c34-settings.json"
+    },
+    {
+      "work_id": 9,
+      "chapter_id": 34,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 844,
+        "world": 273,
+        "recall": 0,
+        "events": 332,
+        "foreshadows": 82,
+        "story_memory": 781,
+        "story_tail": 418,
+        "style_contract": 778,
+        "raw_json": 16532,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-p5-real/w9-c34-ai_context.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "full",
+      "assembled_length": 5312,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 69,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 531,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c36-full.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "continuation",
+      "assembled_length": 5312,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 69,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 531,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c36-continuation.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "fragment",
+      "assembled_length": 5312,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 69,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 531,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c36-fragment.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "settings",
+      "assembled_length": 4665,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "no-hits",
+      "file": ".p1-baseline/baselines-p5-real/w9-c36-settings.json"
+    },
+    {
+      "work_id": 9,
+      "chapter_id": 36,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 844,
+        "world": 352,
+        "recall": 0,
+        "events": 332,
+        "foreshadows": 82,
+        "story_memory": 781,
+        "story_tail": 522,
+        "style_contract": 778,
+        "raw_json": 16938,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-p5-real/w9-c36-ai_context.json"
+    }
+  ]
+}

@@ -8,6 +8,10 @@ import { readZip } from './zip-reader.mjs';
 import { htmlToPlain } from './text-utils.js';
 import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
 import { ovClient, pendingQueueLength } from './openviking.js';
+import { assemble as assembleContext } from './ai/context/assembler.mjs';
+import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId } from './ai/context/layers.mjs';
+import { editDistance } from './ai/edit-distance.mjs';
+import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
 import {
   traceRequest, traceFn, traceEvent, traceAI, traceHarness, bumpTool, prepareTraced,
@@ -170,13 +174,22 @@ const prepare = prepareTraced(function prepareStatement(sql) {
 // ---------- 上下文装配缓存（v0.8.0 性能优化） ----------
 // 所有写操作都会经 touchWork() 递增版本号，使缓存整体失效（单用户本地应用，全局失效足够）；
 // 缓存只作用于 buildNovelContext 的（work, chapter, mode）结果，命中时跳过全部 SQL 装配。
+//
+// ⚠️ P2 补上时间上界：版本号**只在写操作时前进**，而装配结果里有一层的可用性
+// 与「写」无关——语义召回层。建索引完成、OpenViking 重新上线，都不会触发写操作，
+// 于是「索引还没建完时算出的 no-hits」会被无限期缓存。
+// 实证（P1 发现 F4）：同一个请求在重启实例前后分别返回 23,275 / 24,738 字，
+// 召回层从「不存在」变成「存在」。加 TTL 把这类陈旧结果限制在有界时间内。
 let CONTEXT_DATA_VERSION = 0;
 const CONTEXT_CACHE = new Map();
 const CONTEXT_CACHE_MAX = 64;
+const CONTEXT_CACHE_TTL_MS = Number(process.env.NOVELSTUDIO_CONTEXT_CACHE_TTL_MS) > 0
+  ? Number(process.env.NOVELSTUDIO_CONTEXT_CACHE_TTL_MS)
+  : 120000;
 
 function cacheGetContext(key) {
   const hit = CONTEXT_CACHE.get(key);
-  if (hit && hit.version === CONTEXT_DATA_VERSION) {
+  if (hit && hit.version === CONTEXT_DATA_VERSION && Date.now() - hit.at < CONTEXT_CACHE_TTL_MS) {
     CONTEXT_CACHE.delete(key);
     CONTEXT_CACHE.set(key, hit); // LRU：命中移到队尾
     return hit.ctx;
@@ -186,7 +199,7 @@ function cacheGetContext(key) {
 }
 
 function cacheSetContext(key, ctx) {
-  CONTEXT_CACHE.set(key, { version: CONTEXT_DATA_VERSION, ctx });
+  CONTEXT_CACHE.set(key, { version: CONTEXT_DATA_VERSION, at: Date.now(), ctx });
   while (CONTEXT_CACHE.size > CONTEXT_CACHE_MAX) {
     const oldest = CONTEXT_CACHE.keys().next().value;
     CONTEXT_CACHE.delete(oldest);
@@ -225,7 +238,7 @@ const RESOURCE_CONFIG = {
   plotline_characters: { table: 'plotline_characters', order: 'id ASC', fields: ['work_id', 'plotline_id', 'character_id', 'status', 'notes'], defaults: { status: '', notes: '' } },
   world_entries: { table: 'world_entries', order: 'position ASC, id ASC', fields: ['work_id', 'title', 'content', 'keywords', 'is_pinned', 'priority', 'position'], defaults: { content: '', keywords: '', is_pinned: 0, priority: 50, position: 0 } },
   creation_tasks: { table: 'creation_tasks', order: 'id DESC', fields: ['work_id', 'prompt', 'status', 'stages_json', 'result_json', 'error'], defaults: { prompt: '', status: 'running', stages_json: '{}', result_json: '{}', error: '' } },
-  api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', api_key: '', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 } }
+  api_configs: { table: 'api_configs', order: 'id ASC', fields: ['name', 'base_url', 'api_key', 'model', 'temperature', 'max_tokens'], defaults: { base_url: 'https://api.deepseek.com', api_key: '', model: MODELS.fast, temperature: 0.8, max_tokens: 4096 } }
 };
 
 const NUMERIC_FIELDS = new Set([
@@ -357,7 +370,7 @@ function deleteRow(resource, id) {
 // 多关键词检索：全部关键词 AND 匹配；标题/名称命中权重最高（×3），标签/身份次之（×2），
 // 内容命中兜底；按得分排序取前 20，片段围绕最早命中的关键词截取。
 function search(q, workId) {
-  const empty = { terms: [], chapters: [], characters: [], plotlines: [] };
+  const empty = { terms: [], chapters: [], characters: [], plotlines: [], world_entries: [], relations: [] };
   if (!q) return empty;
   const keywords = String(q).toLowerCase().split(/\s+/).map((k) => k.trim()).filter(Boolean).slice(0, 5);
   if (!keywords.length) return empty;
@@ -413,8 +426,8 @@ function search(q, workId) {
   ).map((t) => ({ ...t, snippet: snippetAny(t.content) }));
 
   const chapters = rank(
-    queryRows('chapters', ['title', 'summary', 'substr(content,1,4000)']).map((c) => ({ ...c, type: 'chapter' })),
-    ['title', 'summary', 'content'], 'title'
+    queryRows('chapters', ['title', 'summary', 'substr(content,1,4000)', 'substr(blueprint_json,1,3000)']).map((c) => ({ ...c, type: 'chapter' })),
+    ['title', 'summary', 'content', 'blueprint_json'], 'title'
   ).map((c) => ({ ...c, snippet: snippetAny(c.content, c.summary) }));
 
   const characters = rank(
@@ -427,7 +440,29 @@ function search(q, workId) {
     ['title', 'summary'], 'title'
   ).map((p) => ({ ...p, snippet: snippetAny(p.summary) }));
 
-  return { terms, chapters, characters, plotlines };
+  // P3：人物关系此前不在检索范围内——而「人物关系」层会把描述截到 160 字，裁掉却查不回。
+  // 关系行只存角色 id，这里补上双方姓名，检索结果才对模型可读。
+  const charNames = new Map();
+  if (workId) {
+    for (const c of prepare('SELECT id, name FROM characters WHERE work_id = ?').all(workId)) charNames.set(c.id, c.name);
+  }
+  const relations = rank(
+    queryRows('character_relations', ['relation', 'substr(description,1,2000)']).map((r) => ({
+      ...r, type: 'relation',
+      from_name: charNames.get(r.from_character_id) || `#${r.from_character_id}`,
+      to_name: charNames.get(r.to_character_id) || `#${r.to_character_id}`
+    })),
+    ['relation', 'description'], 'relation'
+  ).map((r) => ({ ...r, snippet: snippetAny(r.description) }));
+
+  // P3：世界观词条此前**不在检索范围内**——而「激活的世界观设定」层是单次被裁最多的层
+  // （压力数据实测单次裁掉 15,359 字）。裁剪掉却查不回，直接违反契约 I4。
+  const worldEntries = rank(
+    queryRows('world_entries', ['title', 'keywords', 'substr(content,1,2000)']).map((w) => ({ ...w, type: 'world_entry' })),
+    ['title', 'keywords', 'content'], 'title'
+  ).map((w) => ({ ...w, snippet: snippetAny(w.content) }));
+
+  return { terms, chapters, characters, plotlines, world_entries: worldEntries, relations };
 }
 
 // 🐞 运行追踪：给关键词检索加函数级节点（耗时归因到具体函数，而不是只看 SQL 层）。
@@ -442,38 +477,12 @@ function chatCompletionsUrl(baseUrl) {
   return `${base}/chat/completions`;
 }
 
-// 在售 DeepSeek 模型名（仅用于大小写归一）。
-// deepseek-flash 是 V4.1 Flash 的正式名（当前能力最强、单价最低）。
-// deepseek-v4-flash / deepseek-v4-flash-vision-exp 的模型已下线，但这两个**旧名仍被服务端
-// 路由到 V4.1 Flash**，故保留在表内，保证存量配置仍能正确归一。
-// deepseek-chat / deepseek-reasoner 官方已于 2026-07-24 **停止服务**（调用直接报错，并非被路由），
-// 因此不再列为已知模型；存量配置由 db.js 的启动迁移改写为 deepseek-flash。
-const KNOWN_DEEPSEEK_MODELS = [
-  'deepseek-flash',
-  'deepseek-v4-pro',
-  'deepseek-v4-flash',
-  'deepseek-v4-flash-vision-exp'
-];
-
-// 功能内置模型的分工，与 `public/app.js` 顶部的同名常量保持一致（两处需同步修改）：
-//   快而省 → deepseek-flash；直接产出正文/整部设定、或结果会喂给之后每一章的环节 → deepseek-v4-pro。
-// 用单点常量的意义：避免散落的字面量被批量替换误伤（本会话已因此越界改错 4 处）。
-const QUALITY_AI_MODEL = 'deepseek-v4-pro';
-
-function normalizeModel(model) {
-  if (!model) return model;
-  const raw = String(model).trim();
-  const lower = raw.toLowerCase();
-  return KNOWN_DEEPSEEK_MODELS.includes(lower) ? lower : raw;
-}
-
-// 思考强度归一化。取值依据：dsh-llm-deepseek 设置层公布的 off | low | high | max。
-const DEEPSEEK_REASONING_EFFORTS = new Set(['off', 'low', 'high', 'max']);
-
-function normalizeReasoningEffort(value) {
-  const v = String(value ?? '').trim().toLowerCase();
-  return DEEPSEEK_REASONING_EFFORTS.has(v) ? v : '';
-}
+// 模型名、已知模型表、思考强度白名单与归一化函数**全部来自 ai/policy.mjs**（P4 单点策略表）。
+// 本文件不再自行定义这些取值——历史上它们在前端/后端/harness.js 各有一份，且注释与实现已经漂移。
+// 这里保留同名局部绑定只是为了不动既有调用点；要改分工，改 policy.mjs。
+const QUALITY_AI_MODEL = resolveModel('quality');
+const DEEPSEEK_REASONING_EFFORTS = new Set(EFFORTS);
+const normalizeReasoningEffort = normalizeEffort;
 
 // 思考控制字段只有 DeepSeek 官方端点认。第三方 OpenAI 兼容服务可能因未知字段直接 400，
 // 因此对自定义 base_url 不下发（模型名仍照常转发），避免把用户的第三方配置打挂。
@@ -517,7 +526,7 @@ async function callAI(config, messages, options = {}) {
     ? Math.min(Math.max(1, Math.floor(Number(rawMaxTokens))), MAX_OUTPUT_TOKENS)
     : MAX_OUTPUT_TOKENS;
   const body = {
-    model: normalizeModel(config.model || 'deepseek-flash'),
+    model: normalizeModel(config.model || MODELS.fast),
     messages,
     temperature: options.temperature ?? config.temperature ?? 0.8,
     max_tokens: maxTokens,
@@ -610,7 +619,7 @@ async function callAIStream(config, messages, options = {}, onDelta) {
     ? Math.min(Math.max(1, Math.floor(Number(rawMaxTokens))), MAX_OUTPUT_TOKENS)
     : MAX_OUTPUT_TOKENS;
   const body = {
-    model: normalizeModel(config.model || 'deepseek-flash'),
+    model: normalizeModel(config.model || MODELS.fast),
     messages,
     temperature: options.temperature ?? config.temperature ?? 0.8,
     max_tokens: maxTokens,
@@ -788,7 +797,7 @@ function getConfigFromBody(body) {
   return {
     base_url: body.base_url || 'https://api.deepseek.com',
     api_key: body.api_key || '',
-    model: body.model || 'deepseek-flash',
+    model: body.model || MODELS.fast,
     temperature: body.temperature ?? 0.8,
     max_tokens: body.max_tokens ?? 4096
   };
@@ -897,6 +906,129 @@ function pruneChapterVersions(chapterId) {
 
 // ---------- AI 上下文（角色卡 / 世界观 / 作者注） ----------
 // 简单去掉 HTML 标签，用于关键词匹配。
+// ---------- AI 效果埋点（P5） ----------
+// 契约里的结构化不变量只能回答「预算有没有超、内容能不能查回」，
+// 回答不了「**上下文质量到底有没有变好**」。后者只能靠作者的真实行为信号：
+// 一次成文用不用得上（采纳率）、采纳前改了多少（编辑距离）、送进去多少字（上下文成本）。
+// 这张表刻意只记行为与规模，不记正文内容——避免把作品文本复制进一张分析表。
+function recordAIEval({ workId, chapterId, action, channel, model, charsIn, charsOut, ms, editDistance, draftKey } = {}) {
+  try {
+    prepare(`
+      INSERT INTO ai_eval_events (work_id, chapter_id, action, channel, model, chars_in, chars_out, ms, edit_distance, draft_key, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      Number(workId) || null,
+      Number(chapterId) || null,
+      asString(action, 'generate') || 'generate',
+      asString(channel, ''),
+      asString(model, ''),
+      Math.max(0, Math.round(Number(charsIn) || 0)),
+      Math.max(0, Math.round(Number(charsOut) || 0)),
+      Math.max(0, Math.round(Number(ms) || 0)),
+      Number.isFinite(Number(editDistance)) && editDistance !== null && editDistance !== '' ? Math.max(0, Math.round(Number(editDistance))) : null,
+      asString(draftKey, ''),
+      now()
+    );
+    return true;
+  } catch (e) {
+    // 埋点失败绝不能影响创作：只记一条日志。
+    log({ level: 'warn', layer: 'ai', kind: 'eval_record_failed', message: `AI 埋点写入失败：${e.message}`, error: e, dedupMs: 60000 });
+    return false;
+  }
+}
+
+/**
+ * 编辑距离的测量点：**作者改动章节后保存**时（PUT /api/chapters/:id）。
+ *
+ * 为什么不在采纳那一刻量：结果弹窗里的正文是只读预览（`ai-apply-preview`），
+ * 采纳写回正文必然等于草稿 → 恒为 0、没有信息量。真正有信息量的是"作者接着改了多少"。
+ *
+ * 草稿文本不从埋点表取——埋点表刻意**不记正文内容**。草稿本来就在
+ * `chapter_save_versions(kind='draft')` 里（生成时就落了库），这里直接读它。
+ *
+ * 配对规则（都是刻意的、可解释的近似）：
+ *   - 取该章节**最近一条尚未测量**的 `adopt` 行；
+ *   - 只与**不晚于该采纳**的最近一份草稿配对（避免配到下一次生成的草稿）；
+ *   - 测一次就写回 `edit_distance`，之后再次保存不会重复测量。
+ *
+ * 失败一律静默（与埋点同一条纪律：分析指标绝不能影响创作）。
+ *
+ * @returns {{distance:number, method:string}|null}
+ */
+function measureAdoptEditDistance(chapterId, finalContent) {
+  try {
+    const cid = Number(chapterId);
+    if (!cid) return null;
+    const finalText = plainText(finalContent);
+    if (!finalText) return null;
+
+    const pending = prepare(`
+      SELECT id, created_at FROM ai_eval_events
+      WHERE chapter_id = ? AND action = 'adopt' AND edit_distance IS NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(cid);
+    if (!pending) return null;
+
+    const draft = prepare(`
+      SELECT content, created_at FROM chapter_save_versions
+      WHERE chapter_id = ? AND kind = 'draft' AND created_at <= ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(cid, pending.created_at);
+    if (!draft || !String(draft.content || '').trim()) return null;
+
+    const draftText = plainText(draft.content);
+    if (!draftText) return null;
+
+    const { distance, method } = editDistance(draftText, finalText);
+    prepare('UPDATE ai_eval_events SET edit_distance = ? WHERE id = ?').run(distance, pending.id);
+    log({
+      level: 'info', layer: 'ai', kind: 'edit_distance_measured',
+      message: `编辑距离已测量：${distance} 字（${method}）`,
+      context: { chapter_id: cid, eval_id: pending.id, draft_chars: draftText.length, final_chars: finalText.length, method }
+    });
+    return { distance, method };
+  } catch (e) {
+    log({ level: 'warn', layer: 'ai', kind: 'edit_distance_failed', message: `编辑距离测量失败：${e.message}`, error: e, dedupMs: 60000 });
+    return null;
+  }
+}
+
+function summarizeAIEval(workId) {
+  const where = workId ? 'WHERE work_id = ?' : '';
+  const args = workId ? [workId] : [];
+  const agg = prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN action = 'generate' THEN 1 ELSE 0 END) AS generations,
+      SUM(CASE WHEN action = 'adopt'    THEN 1 ELSE 0 END) AS adopts,
+      SUM(CASE WHEN action = 'discard'  THEN 1 ELSE 0 END) AS discards,
+      AVG(CASE WHEN action = 'generate' THEN chars_in  END) AS avg_chars_in,
+      AVG(CASE WHEN action = 'generate' THEN chars_out END) AS avg_chars_out,
+      AVG(CASE WHEN action = 'generate' THEN ms        END) AS avg_ms,
+      AVG(CASE WHEN action = 'adopt'    THEN edit_distance END) AS avg_edit_distance
+    FROM ai_eval_events ${where}
+  `).get(...args);
+  const generations = Number(agg.generations) || 0;
+  const adopts = Number(agg.adopts) || 0;
+  const round = (v) => (v == null ? null : Math.round(Number(v)));
+  return {
+    work_id: workId || null,
+    total: Number(agg.total) || 0,
+    generations,
+    adopts,
+    discards: Number(agg.discards) || 0,
+    // 采纳率 = 采纳次数 / 生成次数。null 表示样本不足，不要用 0 假装有结论。
+    adoption_rate: generations ? Number((adopts / generations).toFixed(3)) : null,
+    avg_chars_in: round(agg.avg_chars_in),
+    avg_chars_out: round(agg.avg_chars_out),
+    avg_ms: round(agg.avg_ms),
+    avg_edit_distance: round(agg.avg_edit_distance),
+    note: '采纳率与编辑距离用于横向比较上下文质量的改动；样本少时不要下结论。'
+  };
+}
+
 function plainText(html = '') {
   return String(html)
     .replace(/<[^>]*>/g, ' ')
@@ -1093,7 +1225,11 @@ function selectSceneCharacters(workId, opts = {}) {
 // 出场角色卡构建：逐卡截断、核心字段保底，避免“整层头部盲截”把靠后的角色整卡切掉。
 // 长字段（背景/对话示例/系统提示/外貌/标签）分级压缩；即使预算耗尽，每张卡的名字/
 // 身份/性格/当前状态核心信息必保。
-function buildCharacterCards(chars, cap = 4000) {
+// ⚠️ `cap` 刻意**不给默认值**：它的单点在 `layers.mjs` 的 `entityCap`，
+// 调用方一律用 `entityCapOfId('characters')` 取值。早先这里写着 `cap = 4000`，
+// 与调用处的 `4000`、规格里的 `entityCap: 4000` 构成三份拷贝。
+function buildCharacterCards(chars, cap) {
+  if (!Number.isFinite(cap)) throw new Error('buildCharacterCards 需要显式的实体上限（见 layers.mjs 的 entityCapOfId）');
   const FIELD_LABELS = [
     ['background', '背景', [500, 300, 150, 80, 0]],
     ['mes_example', '对话示例（学习其口吻）', [400, 200, 100, 0]],
@@ -1635,7 +1771,7 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     ],
     recentSummaries
   });
-  const charCardsText = buildCharacterCards(sceneCharacters, 4000);
+  const charCardsText = buildCharacterCards(sceneCharacters, entityCapOfId('characters'));
 
   // 人物关系（仅出场角色之间）
   const sceneIdList = sceneCharacters.map((c) => c.id);
@@ -1679,7 +1815,8 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     : '';
 
   // 前文尾巴：接龙模式取当前章节尾部；新章节/片段取上一章尾部。
-  const currentTail = chapter ? plainTextTail(chapter.content || '', 4000) : '';
+  // 4000 = `story_tail` 在 continuation 模式下的 cap（capContinuation），从规格取而不是另写一份。
+  const currentTail = chapter ? plainTextTail(chapter.content || '', capOfId('story_tail', 'continuation')) : '';
   const prevFullRow = prevChapter ? prepare('SELECT content FROM chapters WHERE id = ?').get(prevChapter.id) : null;
   const prevTailText = prevFullRow ? plainTextTail(prevFullRow.content || '', 1500) : '';
   let storyTail = '';
@@ -1695,20 +1832,16 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
   const redlines = listRedlines(workId);
   const styleContract = renderStyleContract(redlines, work.style_positive || '');
 
-  // 分层预算：每层独立上限，超长截断并注明原文长度；红线层与角色卡保底，
-  // 整块装配结果再做一个总上限的收敛截断，避免盲切。
+  // 分层预算：渲染 / 每层 cap / 总预算收敛 / 裁剪清单统一由 ai/context/assembler.mjs 负责。
+  // 本函数只负责「取数」——把每一层的正文准备好，层的 cap 与 kind 一律从 layers.mjs 读。
   const needsCompression = storyMemory.length > MEMORY_COMPRESS_HINT;
-  const section = (label, text, cap) => {
-    const body = String(text || '');
-    if (!body) return `【${label}】\n（无）`;
-    if (cap && body.length > cap) {
-      return `【${label}】\n${body.slice(0, cap)}\n…（本层共 ${body.length} 字，已按预算截断；如需精确内容可用 novel_lookup 查证）`;
-    }
-    return `【${label}】\n${body}`;
-  };
 
   const memoryBody = storyMemory
-    ? `${storyMemory}${needsCompression ? `\n（⚠ 记忆已 ${storyMemory.length} 字，超过 ${MEMORY_COMPRESS_HINT} 字压缩提示线，收尾时请优先用 novel_memory_update 压缩合并）` : ''}`
+    // ⚠️ 压缩提示必须放在**正文开头**：层是按 cap 从**头部**截断的，而长期记忆会随章节无界增长
+    //（`mergeMemoryDraft` 新事件置顶、只拼接不压缩）。提示若挂在末尾，记忆越长越会被自己截掉——
+    // 恰恰在最该提示压缩的时候提示消失。实测：work#16 记忆 9063 字、cap 2200 → 末尾提示被切掉，
+    // 层内只剩截断提示（见 docs/p5-memory-eval-verification.md §四·3）。
+    ? `${needsCompression ? `（⚠ 记忆已 ${storyMemory.length} 字，超过 ${MEMORY_COMPRESS_HINT} 字压缩提示线，收尾时请优先用 novel_memory_update 压缩合并）\n` : ''}${storyMemory}`
     : '（无，可建议压缩一次）';
 
   const sceneBody = chapter
@@ -1751,52 +1884,45 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     : null;
 
   // mode=settings：设定类生成（角色/世界观/词条/剧情线等）专用轻量装配——
-  // 这类任务不需要「当前这一章写到哪了」，跳过当前场景/本章蓝图/前文衔接三层
-  // （三层合计最多省 ~6,700 字/轮）。
+  // 这类任务不需要「当前这一章写到哪了」，跳过当前场景/本章蓝图/前文衔接三层。
+  // 注意：旧注释写的「三层合计最多省 ~6,700 字/轮」是三层 **cap 之和**，不是实际节省；
+  // 实际节省取决于这三层当时的真实长度，可能远小于上限。
   const isSettingsMode = mode === 'settings';
+  const specById = new Map(CONTEXT_LAYER_SPEC.map((l) => [l.id, l]));
+  // 按 spec 的 id 组装一层：cap 与 kind 一律取自 layers.mjs（单一来源），
+  // 这里只负责把该层的正文准备好。
+  const L = (id, text) => {
+    const spec = specById.get(id);
+    if (!spec) throw new Error(`未知的上下文层 id：${id}（layers.mjs 与 buildNovelContext 不同步）`);
+    return { id, label: spec.label, kind: spec.kind, text, cap: contextCapOf(spec, mode) };
+  };
   const layers = [
-    { label: '作品', text: `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, cap: 900 },
-    { label: '卷/剧情线/章节进度（大纲）', text: outlineText, cap: 2800 },
-    { label: '长期记忆（已发生的故事摘要）', text: memoryBody, cap: 2200 },
-    recallLayer,
-    { label: '最近事件（事件账本）', text: eventsText, cap: 1800 },
-    { label: '未闭合伏笔（写作时必须照顾）', text: foreshadowText, cap: 1200 },
+    L('work', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`),
+    L('outline', outlineText),
+    L('memory', memoryBody),
+    recallLayer ? L('recall', recallLayer.text) : null,
+    L('events', eventsText),
+    L('foreshadows', foreshadowText),
     ...(isSettingsMode ? [] : [
-      { label: '当前场景', text: sceneBody, cap: 1200 },
-      { label: '本章蓝图（写作必须遵守）', text: blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', cap: 1500 },
-      { label: '前文衔接', text: storyTail, cap: mode === 'continuation' ? 4000 : 1600 },
+      L('scene', sceneBody),
+      L('blueprint', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）'),
+      L('story_tail', storyTail),
     ]),
-    { label: '出场角色卡', text: charCardsText, cap: Infinity },
-    relationsText ? { label: '人物关系', text: relationsText, cap: 800 } : null,
-    { label: '激活的世界观设定（优先级排列）', text: worldEntriesText, cap: 3000 },
-    { label: '写作风格红线', text: styleContract, cap: 4000 }
+    L('characters', charCardsText),
+    relationsText ? L('relations', relationsText) : null,
+    L('world', worldEntriesText),
+    L('redlines', styleContract),
   ].filter(Boolean);
-  const sections = layers.map((l) => section(l.label, l.text, l.cap));
 
-  // 总预算收敛：超限时从“前文衔接/大纲/世界观”等弹性层依次收缩，红线层不动。
-  // 按层名定位（旧实现按下标定位，人物关系层为空时下标错位，会把世界观层误换成红线层）。
-  // settings 的 18,000 = 质量层全保底时的可执行下限（红线 4,000 + 角色卡 4,000 + 长期记忆 2,200 +
-  // 最近事件 1,800 + 召回 1,400 + 伏笔 1,200 + 关系 800 + 作品 900 + 大纲/世界观收缩下限 400+400
-  // + 层标题注记）：这些层是「零损失」承诺的内容本身，不加入弹性收缩——novel_lookup 关键词检索
-  // 覆盖不到长期记忆/事件账本，收缩即不可查回的真实损失。原 12,000 预算在质量层保底下不可达，
-  // 属于误导性常量，已修正。
-  const TOTAL_BUDGET = isSettingsMode ? 18000 : 26000;
-  const FLEX_LAYERS = ['前文衔接', '卷/剧情线/章节进度（大纲）', '激活的世界观设定（优先级排列）'];
-  const FLEX_CAPS = [2400, 1600, 800, 400];
-  let joined = sections.join('\n\n');
-  if (joined.length > TOTAL_BUDGET) {
-    for (const label of FLEX_LAYERS) {
-      if (joined.length <= TOTAL_BUDGET) break;
-      const idx = layers.findIndex((l) => l.label === label);
-      if (idx < 0) continue;
-      for (const cap of FLEX_CAPS) {
-        if (joined.length <= TOTAL_BUDGET) break;
-        sections[idx] = section(layers[idx].label, layers[idx].text, cap);
-        joined = sections.join('\n\n');
-      }
-    }
-  }
-  const assembled = joined;
+  // 装配：渲染 + 每层 cap + 总预算收敛（弹性层按 FLEX_ORDER 逐档压缩，零损失层绝不参与），
+  // 并产出裁剪清单。总预算的「可执行下限」由 layers.mjs 的 computeFloor() 自动核算，
+  // 不再靠注释里的手算数字（历史失误 1：预算常量不核算可执行下限）。
+  const {
+    text: assembled,
+    manifest: contextManifest,
+    overflow: contextOverflow,
+    stats: contextStats,
+  } = assembleContext(layers, { mode });
 
   return {
     ok: true,
@@ -1820,7 +1946,14 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
       status: semanticRecall.status,
       hits: semanticRecall.hits || []
     } : { enabled: false, status: 'unknown', hits: [] },
-    assembled
+    assembled,
+    // P2 新增（additive，旧消费方不受影响）：
+    //   context_manifest  逐层裁剪清单——零损失审计的依据（每层原始长 / 采用长 / 占用 / 被裁字数）
+    //   context_overflow  压到下限仍超预算时的显式标记（契约 I1：不静默超限）
+    //   context_stats     装配统计（预算 / 实际长度 / 截断层数 / 被裁总字数 / 收缩步数）
+    context_manifest: contextManifest,
+    context_overflow: contextOverflow,
+    context_stats: contextStats
   };
 }
 
@@ -2496,6 +2629,39 @@ async function generateNovelFromHarness(prompt, model) {
 // D7：任务支持取消（POST /harness/cancel），杀掉 dsh 子进程树后状态置为 cancelled。
 const harnessJobs = new Map(); // jobId -> { id, status, started_at, finished_at, output, scan, proposals, error, tail }
 
+// ---------- harness 并发闸门（唯一入口）----------
+// 闸门的意图是「防止刷出大量 dsh 子进程拖垮机器」。但此前只有 /harness/run 走作业设施、
+// 被计数；另有两条路由直接调 runHarnessTask、不建 job，于是**完全绕过闸门**：
+//   · POST /harness/generate_novel
+//   · POST /story_memory/compress
+// 现在它们也要占一个槽位；闸门值抽成常量，不再在两处各写一个 2。
+const HARNESS_CONCURRENCY = 2;
+let directHarnessRuns = 0; // 不走作业设施、直接跑 harness 的在途请求数
+
+/** 当前 harness 负载 = 排队/运行中的作业数 + 直接跑的在途数。 */
+function harnessLoad() {
+  const jobCount = [...harnessJobs.values()].filter((j) => j.status === 'queued' || j.status === 'running').length;
+  return jobCount + directHarnessRuns;
+}
+
+/**
+ * 占用一个并发槽位执行 fn；无空位时抛 429。
+ * 检查与自增之间没有 await，单线程下即为原子操作。
+ */
+async function withHarnessSlot(fn) {
+  if (harnessLoad() >= HARNESS_CONCURRENCY) {
+    const err = new Error(`已有任务运行中，请稍后再试（并发上限 ${HARNESS_CONCURRENCY}）`);
+    err.status = 429;
+    throw err;
+  }
+  directHarnessRuns += 1;
+  try {
+    return await fn();
+  } finally {
+    directHarnessRuns -= 1;
+  }
+}
+
 // ---------- 长任务落库（「刷新/重启后续接」的地基） ----------
 // 内存里的 harnessJobs 一重启就没了，而一次成文/审稿要跑几分钟。
 // 这里把 id/归属/状态/产出持久化，使「刷新页面」甚至「重启服务」后
@@ -2915,18 +3081,45 @@ async function handleAPI(req, res, pathname, query) {
   }
 
   // AI 上下文：角色卡 / 世界观 / 作者注（+ OpenViking 语义召回层）
+  //
+  // P2 起，**提示词里实际使用的那段文本**不再由前端拼装，而是走与 /api/novel/context
+  // 完全相同的唯一装配器（ai/context/assembler.mjs，经 buildNovelContext）。
+  // 原因（契约 I5/I6）：前端 aiContextBlock 的拼装没有任何预算——压力数据下同一章
+  // 它喂进去约 7.4 万字，而受预算约束的路径只有 2.4 万字；两条路径渲染同一份数据
+  // 却差 3 倍，是上下文质量最大的结构性缺口。
+  //
+  // buildAIContext 的结构化字段继续返回：界面的「上下文预览」面板仍在用它（需要更细的字段）。
   if (resource === 'ai_context' && method === 'GET') {
     const chapterId = Number(query.chapter_id);
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const ctx = timed('server', 'AI 上下文装配（buildAIContext）', () => buildAIContext(chapterId), SLOW_REQUEST_MS);
     if (!ctx) return sendError(res, 404, '章节不存在');
     // 语义召回随 AI 上下文一起注入正文写作提示词；复用 buildAIContext 已加载的章节行，避免二次查询。
+    // 先调用一次把召回微缓存焐热，随后的 buildNovelContext 会命中同一个键。
     let recall = { enabled: false, status: 'disabled', hits: [] };
     try {
       recall = await getSemanticRecall(ctx.work.id, ctx._chapter || null);
     } catch (_) { /* 召回失败不阻塞 */ }
+    const workId = ctx.work.id;
     delete ctx._chapter; // 内部字段不外泄给前端
-    return sendJSON(res, 200, { ...ctx, semantic_recall: { enabled: recall.enabled, status: recall.status, hits: recall.hits || [] } });
+
+    // 预算内的分层装配：与 /api/novel/context 共用同一份缓存与实现（契约 I5/I6）
+    const cacheKey = `novel:${workId}:${chapterId}:full`;
+    let budgeted = cacheGetContext(cacheKey);
+    if (budgeted === undefined) {
+      budgeted = await buildNovelContext(workId, chapterId, 'full');
+      if (budgeted) cacheSetContext(cacheKey, budgeted);
+    }
+
+    return sendJSON(res, 200, {
+      ...ctx,
+      semantic_recall: { enabled: recall.enabled, status: recall.status, hits: recall.hits || [] },
+      // 提示词使用的分层文本（前端 aiContextBlock 直接采用它），以及配套的裁剪清单
+      assembled: budgeted ? budgeted.assembled : '',
+      context_manifest: budgeted ? budgeted.context_manifest : [],
+      context_overflow: budgeted ? budgeted.context_overflow : null,
+      context_stats: budgeted ? budgeted.context_stats : null
+    });
   }
 
   // 长期记忆 / 故事摘要
@@ -2935,11 +3128,11 @@ async function handleAPI(req, res, pathname, query) {
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
     try {
-      const summary = await compressStoryMemory(workId);
+      const summary = await withHarnessSlot(() => compressStoryMemory(workId));
       notifyChange('story_memory', { workId, id: workId });
       return sendJSON(res, 200, { ok: true, summary });
     } catch (e) {
-      const status = /作品不存在/.test(e.message) ? 404 : 502;
+      const status = e.status === 429 ? 429 : (/作品不存在/.test(e.message) ? 404 : 502);
       return sendError(res, status, e.message);
     }
   }
@@ -3349,9 +3542,9 @@ async function handleAPI(req, res, pathname, query) {
     if (body.work_id) env.NOVELSTUDIO_WORK_ID = String(body.work_id);
     if (body.chapter_id) env.NOVELSTUDIO_CHAPTER_ID = String(body.chapter_id);
     if (body.mode) env.NOVELSTUDIO_MODE = String(body.mode);
-    // 并发上限：同时最多 2 个运行中/排队任务，防止刷出大量 dsh 子进程拖垮机器。
-    const runningCount = [...harnessJobs.values()].filter((j) => j.status === 'queued' || j.status === 'running').length;
-    if (runningCount >= 2) return sendError(res, 429, '已有任务运行中，请稍后再试（并发上限 2）');
+    // 并发上限：同时最多 HARNESS_CONCURRENCY 个运行中/排队任务，防止刷出大量 dsh 子进程拖垮机器。
+    // 负载 = 作业设施里的排队/运行中 + 直接跑 harness 的在途请求（两条旁路也算）。
+    if (harnessLoad() >= HARNESS_CONCURRENCY) return sendError(res, 429, `已有任务运行中，请稍后再试（并发上限 ${HARNESS_CONCURRENCY}）`);
     // 超时钳制：1s ~ 60min，拒绝近乎无限的后台任务。
     const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || 10 * 60 * 1000)), 60 * 60 * 1000);
     // 思考强度：非法值在入队前就 400，避免任务排到队才在 dsh 子进程里失败。
@@ -3437,9 +3630,12 @@ async function handleAPI(req, res, pathname, query) {
   if (resource === 'harness' && method === 'POST' && segments[2] === 'generate_novel') {
     const body = await readBody(req);
     try {
-      const result = await generateNovelFromHarness(body.prompt, body.model);
+      // 同步跑 harness 的路由也要占并发槽位（此前完全绕过闸门）。
+      const result = await withHarnessSlot(() => generateNovelFromHarness(body.prompt, body.model));
       return sendJSON(res, 200, { ok: true, ...result });
     } catch (e) {
+      // 429 是闸门拒绝，不是 AI 调用失败——不该混进 AI 错误日志。
+      if (e.status === 429) return sendError(res, 429, e.message);
       logAIError('generate_novel', e, '/api/harness/generate_novel');
       return sendError(res, 502, e.message);
     }
@@ -3559,6 +3755,27 @@ async function handleAPI(req, res, pathname, query) {
   }
 
   // AI endpoints
+  // AI 效果埋点（P5）：POST 记一条行为信号；GET 取聚合（采纳率 / 编辑距离 / 上下文成本）。
+  if (resource === 'ai' && segments[2] === 'eval') {
+    if (method === 'POST') {
+      const body = await readBody(req);
+      const ok = recordAIEval({
+        workId: body.work_id, chapterId: body.chapter_id, action: body.action,
+        channel: body.channel, model: body.model, charsIn: body.chars_in, charsOut: body.chars_out,
+        ms: body.ms, editDistance: body.edit_distance, draftKey: body.draft_key
+      });
+      return sendJSON(res, 200, { ok });
+    }
+    if (method === 'GET') {
+      return sendJSON(res, 200, { ok: true, ...summarizeAIEval(Number(query.work_id) || null) });
+    }
+    return sendError(res, 405, 'Method not allowed');
+  }
+  // AI 策略快照（P4）：前端据此把散落的模型字面量换成档位查询，取得与后端同一份策略。
+  // 必须放在下面 /api/ai/* 的 POST 分支之前——它是 GET。
+  if (resource === 'ai' && segments[2] === 'policy' && method === 'GET') {
+    return sendJSON(res, 200, { ok: true, ...policySnapshot() });
+  }
   if (resource === 'ai' && segments[2]) {
     const action = segments[2];
     if (method !== 'POST') return sendError(res, 405, 'Method not allowed');
@@ -3648,6 +3865,11 @@ async function handleAPI(req, res, pathname, query) {
         }
         const changes = updateRow(resource, id, body);
         if (changes === 0) return sendError(res, 404, 'Not found');
+        // P5 埋点：章节正文落盘是「AI 草稿 → 作者最终正文」的测量点（见函数注释）。
+        // 只在正文真的被写时尝试；没有待测量的采纳行时它是空操作。
+        if (resource === 'chapters' && typeof body.content === 'string' && body.content.trim()) {
+          measureAdoptEditDistance(id, body.content);
+        }
         if (old?.work_id) touchWork(old.work_id);
         if (body.work_id) touchWork(body.work_id);
         if (resource === 'works') touchWork(Number(id));

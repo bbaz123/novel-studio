@@ -1,8 +1,10 @@
 /**
  * novel-tools — Novel Studio 创作内核的 dsh 模型工具集。
  *
- * 本文件是 dsh 侧插件的唯一来源（headless profile 与 GUI preset 共用，
- * 由 harness-plugins/novel-writing/install.ps1 安装到 ~/.dsh 对应位置）。
+ * 本文件是 dsh 侧插件的唯一来源：它是 novel-writing **bundle 的入口**
+ * （见同目录 package.json 的 main），profile 经 node_modules 下的 junction 直接引用
+ * 本目录，因此不存在需要同步的副本。GUI preset 侧由 install.ps1 复制一份到
+ * ~/.dsh/.agent-presets/novel-writing/。
  * 工具通过 novel-studio 本地 HTTP API（默认 http://127.0.0.1:3737）读写创作数据：
  *
  *  - novel_works          列出作品（确认 work_id）
@@ -28,7 +30,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.8.0'
+export const PLUGIN_VERSION = '0.8.2'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -196,13 +198,26 @@ export function apply(ctx, config) {
     return `${head}\n\n${body}`
   })
 
+  // P3：上下文装配会把蓝图各字段截到 600 字、世界观词条截到 600 字、关系描述截到 160 字。
+  // 这些被裁掉的内容必须能查回（契约 I4），因此检索结果里要把它们呈现出来。
+  function blueprintBrief(json) {
+    try {
+      const bp = JSON.parse(json || '{}')
+      const parts = [bp.scene_goal, bp.plot_points, bp.conflicts, bp.character_changes, bp.hook, bp.references]
+        .map((v) => String(v || '')).filter(Boolean)
+      return parts.length ? `\n    蓝图：${parts.join('｜').slice(0, 600)}` : ''
+    } catch { return '' }
+  }
+
   register('novel_lookup', [
-    '需要临时核实设定时调用：按关键词检索角色/设定词条/章节/剧情线（一次最多各 8 条）。',
+    '需要临时核实设定时调用：按关键词检索角色/设定词条/章节/剧情线/世界观/人物关系（一次最多各 8 条）。',
     '写正文前若上下文未覆盖某设定，用它查证，避免凭记忆写错。',
+    '上下文里的分层是有预算的：蓝图字段、世界观词条、人物关系描述都可能被截断——',
+    '需要被截断部分的原文时，用本工具按关键词查回（章章节结果会带蓝图全文）。',
   ].join('\n'), {
     query: { type: 'string', description: '要查的关键词（角色名、地名、物品、事件等）' },
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
-    kind: { type: 'string', description: '可选过滤：character | term | chapter | plotline' },
+    kind: { type: 'string', description: '可选过滤：character | term | chapter | plotline | world_entry | relation' },
   }, async (args) => {
     const query = String(args.query || '').trim()
     if (!query) throw new Error('缺少 query')
@@ -221,11 +236,19 @@ export function apply(ctx, config) {
     }
     if (!kind || kind === 'chapter') {
       const chs = pick(data.chapters)
-      if (chs.length) out.push('章节：\n' + chs.map((c) => `- ${c.title}${c.summary ? `：${String(c.summary).slice(0, 120)}` : ''}`).join('\n'))
+      if (chs.length) out.push('章节：\n' + chs.map((c) => `- ${c.title}${c.summary ? `：${String(c.summary).slice(0, 120)}` : ''}${blueprintBrief(c.blueprint_json)}`).join('\n'))
     }
     if (!kind || kind === 'plotline') {
       const pls = pick(data.plotlines)
       if (pls.length) out.push('剧情线：\n' + pls.map((p) => `- ${p.title}（${p.kind === 'side' ? '支线' : '主线'}）${p.summary ? `：${String(p.summary).slice(0, 120)}` : ''}`).join('\n'))
+    }
+    if (!kind || kind === 'world_entry') {
+      const ws = pick(data.world_entries)
+      if (ws.length) out.push('世界观：\n' + ws.map((w) => `- 【${w.title}】${String(w.content || '').slice(0, 300)}`).join('\n'))
+    }
+    if (!kind || kind === 'relation') {
+      const rs = pick(data.relations)
+      if (rs.length) out.push('人物关系：\n' + rs.map((r) => `- ${r.from_name} —${r.relation || '关系'}→ ${r.to_name}${r.description ? `（${String(r.description).slice(0, 200)}）` : ''}`).join('\n'))
     }
     // 语义检索（OpenViking 共享记忆库）：与关键词结果并列，供查证关键词没覆盖到的相关内容。
     const sem = Array.isArray(data.semantic?.hits) ? data.semantic.hits.slice(0, 6) : []
@@ -252,6 +275,30 @@ export function apply(ctx, config) {
     if (!rows.length) return status === 'all' ? '该作品还没有伏笔记录。' : '✅ 当前没有未闭合的伏笔。'
     return `【${status === 'all' ? '全部伏笔' : '未闭合伏笔'}】\n` + rows.map((f) =>
       `#${f.id} ${f.summary}${f.foreshadow_status === 'resolved' ? '（已回收）' : f.foreshadow_status === 'dropped' ? '（已废弃）' : '（未闭合）'}${f.resolves_event_id ? ` → 回收事件 #${f.resolves_event_id}` : ''}`
+    ).join('\n')
+  })
+
+  register('novel_events', [
+    '读取作品的事件账本（剧情 / 伏笔 / 角色状态 / 设定变更的时间线）。',
+    '何时用：上下文里的「最近事件」层按预算只带最近 30 条（每条截 200 字）。',
+    '需要更早的剧情、或要确认某件事是否已经记过账时，用本工具翻账本（limit 可放大）。',
+    'kind 可按类型过滤：event（剧情）/ foreshadow（伏笔）/ character（角色状态）/ setting（设定变更）。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    limit: { type: 'number', description: '取最近多少条（默认 60，上限 500）' },
+    kind: { type: 'string', description: '按类型过滤（可选）' },
+    chapter_id: { type: 'string', description: '只看该章节相关的事件（可选）' },
+  }, async (args) => {
+    const workId = envId(args, 'work_id')
+    if (workId === undefined) throw new Error('未提供 work_id')
+    const limit = Math.min(Math.max(Number(args.limit) || 60, 1), 500)
+    const data = await jfetch(`/api/novel/events?work_id=${encodeURIComponent(workId)}&limit=${limit}`)
+    let rows = Array.isArray(data.events) ? data.events : []
+    if (args.kind) rows = rows.filter((e) => String(e.kind || '') === String(args.kind))
+    if (args.chapter_id) rows = rows.filter((e) => String(e.chapter_id || '') === String(args.chapter_id))
+    if (!rows.length) return '该作品暂无符合条件的事件账本记录。'
+    return `【事件账本 · ${rows.length} 条】\n` + rows.map((e) =>
+      `#${e.id} [${e.kind}] ${e.summary}${e.foreshadow_status ? `（伏笔：${e.foreshadow_status}）` : ''}${e.resolves_event_id ? ` → 回收 #${e.resolves_event_id}` : ''}${e.chapter_id ? `（章节 #${e.chapter_id}）` : ''}`
     ).join('\n')
   })
 
@@ -421,6 +468,22 @@ export function apply(ctx, config) {
     if (data.proposed) return `已记为提案 #${data.proposal_id}：${summary}（作者在 novel-studio 界面确认后入账）`
     if (data.duplicate) return `事件已存在（#${data.id}），按 dedup_key 跳过重复入账：${summary}`
     return `已记录事件 #${data.id}：${summary}`
+  })
+
+  register('novel_memory_read', [
+    '读取作品**完整**的长期记忆摘要。',
+    '为什么需要它：上下文里的「长期记忆」层按预算截断（默认 2200 字），超出部分不在提示词里。',
+    '何时用：要核对更早的剧情、或准备压缩合并记忆时——先读全文，再决定压成什么。',
+    '压缩后用 novel_memory_update 传 summary 写回。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+  }, async (args) => {
+    const workId = envId(args, 'work_id')
+    if (workId === undefined) throw new Error('未提供 work_id')
+    const data = await jfetch(`/api/story_memory?work_id=${encodeURIComponent(workId)}`)
+    const summary = String(data.summary || '')
+    if (!summary.trim()) return '该作品还没有长期记忆摘要。'
+    return `【长期记忆全文 · ${summary.length} 字】\n${summary}`
   })
 
   register('novel_memory_update', [

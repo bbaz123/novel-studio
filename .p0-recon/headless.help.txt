@@ -1,0 +1,13 @@
+Usage: dsh --profile headless [options] [task...]
+
+Answer one task, print the final assistant message, and exit.
+
+Arguments:
+  task        the task text; multiple words are joined by spaces
+
+Options:
+  -h, --help  show this help
+
+Examples:
+  dsh --profile headless "run the tests"     answer one task and exit
+

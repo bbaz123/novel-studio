@@ -135,6 +135,9 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 
 `server.js`：`search`（关键词检索）、`selectSceneCharacters`（选出场角色）、`buildAIContext`（UI 预览上下文）、`scanAgainstRedlines`（红线扫描）、`buildNovelContext`（创作上下文装配）、`compressStoryMemory`（压缩长期记忆）、`splitTextIntoCapters`（导入拆章）、`installDemo`（导入示例）、`callAI` / `callAIStream`（AI 调用，带 Token）。
 
+`ai/context/`：`assemble`（唯一上下文装配器，P2 起）、`renderSection`（单层渲染）。
+`ai/policy.mjs`：模型档位与思考强度（P4 起为唯一来源）。
+
 `openviking-sync.js`：`syncWorkFull`（记忆库全量同步）、`getSemanticRecall`（语义召回）、`semanticSearchMerge`（检索合并）。
 
 `harness.js`：harness 任务（会话级，含成功/失败/超时/取消四种结局）。
@@ -178,6 +181,12 @@ node frontend-test.mjs
 - 冒烟测试扩至 30 组（新增日志系统 7 组断言：lifecycle/远端上报/非法层拒绝/筛选统计/文件落盘/500 入账/清空）
 
 > 📚 更早的更新记录（共 7 条：v0.9.0 及以前）已存档到 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
+
+> 🔧 **AI 内核重构（2026-09-15，未发版）**：上下文装配器与模型策略从 `server.js`/`public/app.js`
+> 抽成独立模块（`ai/context/`、`ai/policy.mjs`），后台任务迁到专用 dsh profile。
+> **现状说明见 [docs/ai-core.md](docs/ai-core.md)；全部文档索引见 [docs/README.md](docs/README.md)**——
+> 注意 `docs/` 里的**历史报告描述的是重构前的代码**，行号已过时。
+> 一键跑完全部验证：`node .p1-baseline/verify-all.mjs`。
 
 ---
 
@@ -275,16 +284,23 @@ npm start
 
 ```powershell
 # 预演（不写任何文件）
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel -DryRun
 
-# 安装 / 升级（区块合并安装，不动你 profile 里的其它 patch 条目）
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1
+# 安装 / 升级到专用 profile `novel`（novel-studio 后台任务用）
+powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel
 
 # 卸载
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel -Uninstall
 ```
 
-安装会把 `novel_*` 工具同时注册到 headless profile 与 GUI preset，旧的安装区块会自动识别并替换。
+`-Profile` 省略时默认 `headless`。安装做三件事：① 把 GUI preset 复制到
+`~/.dsh/.agent-presets/novel-writing/`；② 让目标 profile 在 `dsh.profile.bundles` 里列出
+`novel-writing`，并在它的 `node_modules` 下建立指向本仓库的 **junction**——
+**工坊仓库即唯一来源，没有副本**；③ 识别并清理旧版"区块合并"安装留下的痕迹（带备份）。
+
+> 自 P0（专用运行时）起，插件不再以"区块合并"方式写进 profile 的 `cordis.patch.yml`，
+> 也不再往 profile 目录复制 `novel-tools.mjs`。改完插件代码**立即生效**（走 junction），
+> 不需要重跑安装。详见 `docs/ai-core.md` §六。
 
 ### 第 6 步（可选）：导入示例作品
 
@@ -333,10 +349,14 @@ AI创造板块 → AI 设置     （作品内）
 - Base URL（DeepSeek 默认 `https://api.deepseek.com`）
 - API Key
 - 模型（下拉可选 `deepseek-flash`（DeepSeek-V4.1-Flash，**默认且推荐**）/ `deepseek-v4-pro`（上一代 Pro，更贵更慢）；其它 OpenAI 兼容服务商的自定义模型名同样兼容）
-  - ⚠️ **模型优先级：功能内置的模型参数 > 这里的 `model`**。功能内置分工由 `public/app.js` 顶部两个常量单点控制（`server.js` 有同名 `QUALITY_AI_MODEL`，两处需同步改）：
-    - `DEFAULT_AI_MODEL = deepseek-flash` —— 快而省的环节：提问/澄清、质检轮、入账整理、润色/扩写/细纲/性格校对、AI 写作、批量生成、创作工作台三档；
-    - `QUALITY_AI_MODEL = deepseek-v4-pro` —— 直接产出正文/整部设定，或结果会喂给之后每一章的环节，按「质量优先」不省：成文轮、AI 审稿、AI 修稿、AI 自动创建小说、长期记忆压缩。
-    - 因此**改这里的 `model` 不会影响上述功能**；该字段仅对未固定模型的功能生效（当前为连接测试，以及仅供 API 调用的 `/api/ai/generate_novel`）。要调整分工请改上述常量。
+  - ⚠️ **模型优先级：功能内置的模型参数 > 这里的 `model`**。功能内置分工由
+    **`ai/policy.mjs` 单点控制**（P4 起；此前散落在 `public/app.js` 的 12 处硬编码 +
+    `server.js` 的同名常量 + `harness.js` 的另一份强度白名单里）。前端经 `GET /api/ai/policy`
+    取同一份策略。两个档位：
+    - `fast` = `deepseek-flash` —— 快而省的环节：提问/澄清、质检轮、入账整理、润色/扩写/细纲/性格校对、**章节正文成文**、批量生成、创作工作台三档；
+    - `quality` = `deepseek-v4-pro` —— 结果会喂给之后每一章的环节，按「质量优先」不省：AI 审稿、AI 修稿、**设定生成的成文轮**、AI 自动创建小说、长期记忆压缩。
+    - 因此**改这里的 `model` 不会影响上述功能**；该字段仅对未固定模型的功能生效（当前为连接测试，以及仅供 API 调用的 `/api/ai/generate_novel`）。要调整分工请改 `ai/policy.mjs`。
+    - 改完可跑 `node .p1-baseline/verify-ai-branches.mjs` 确认没有绕过策略的散落字面量。
   - 已下线的模型名不再出现在下拉框中：`deepseek-chat` / `deepseek-reasoner` 官方已于 2026-07-24 停止服务，`deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 已由 V4.1 Flash 取代（旧名仍会被服务端路由到 V4.1 Flash）。存量配置中那两个已停止服务的名字会在启动时自动改写为 `deepseek-flash`。
 - 温度、最大 Token
 
@@ -401,13 +421,20 @@ novel-studio/
 ├── novel-studio-icon.ps1 # 图标生成脚本（渲染 preview / 打包 ico / 应用到桌面快捷方式）
 ├── demo-data.json      # 示例小说《雾都缝匠》演示数据（“我的作品”页一键导入，可选）
 ├── harness-plugins/novel-writing/   # 内置创作插件（dsh 侧唯一来源；发布镜像见 novel-writing-plugin 仓库）
-│   ├── novel-tools.mjs              # novel_* 工具集（headless 与 GUI preset 同源）
+│   ├── package.json / cordis.patch.yml # bundle 声明与补丁层（人设 + novel_* 工具 + 瘦身）
+│   ├── novel-tools.mjs              # novel_* 工具集（后台任务与 GUI preset 同源）
 │   ├── agent.cordis.yml / preset.yml# GUI 会话 preset
-│   ├── headless-cordis.patch.yml    # headless profile 注入区块（合并式安装）
-│   ├── install.ps1                  # 安装/升级/卸载（-DryRun/-Uninstall）
+│   ├── install-profile.mjs          # profile 接线器（bundles + junction + 旧痕迹清理）
+│   ├── install.ps1                  # 安装入口（-Profile/-DryRun/-Uninstall）
 │   ├── plugin.json                  # 清单：工具/端点/契约
 │   ├── test/smoke.mjs               # 端到端冒烟测试（node:test 风格断言）
 │   ├── ENGINE.md / NATIVE_PLUGIN_GUIDE.md / README.md
+│   └── headless-cordis.patch.yml    # 【已弃用】旧区块合并片段，仅为对照保留
+├── ai/                 # AI 内核（见 docs/ai-core.md）
+│   ├── policy.mjs      # 模型档位与思考强度的唯一来源
+│   └── context/        # 上下文装配内核：layers.mjs（层规格）+ assembler.mjs（装配器）
+├── .p1-baseline/       # 契约基线、压力数据与验证工具（verify-all.mjs 一键跑全部）
+├── .p0-recon/          # dsh profile 侧的证据与工具（组合树对账、spawn 路径验证）
 ├── package.json
 ├── start-novel-studio.cmd
 ├── create-desktop-shortcut.ps1

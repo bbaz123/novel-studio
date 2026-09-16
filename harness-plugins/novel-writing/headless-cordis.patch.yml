@@ -1,3 +1,12 @@
+# ⚠️ 已弃用（P0 专用运行时改版，2026-09-15）
+#
+# 本文件是旧版「区块合并」安装方式的补丁片段，install.ps1 已不再读取它。
+# 现在创作人设、novel_* 工具与瘦身条目由同目录的 **cordis.patch.yml** 提供
+# （那才是 novel-writing bundle 的补丁层，见 package.json 的 dsh.bundle.patch）。
+#
+# 保留本文件仅为一次性参考与旧版对照；请勿编辑、勿据此安装。
+# 待文档（ENGINE.md / README.md / NATIVE_PLUGIN_GUIDE.md）同步更新后应删除。
+#
 # ═══ Novel Studio 创作内核注入（headless）═══════════════════════════════════
 # 该区块由 novel-studio 的 harness-plugins/novel-writing/install.ps1 自动维护：
 # 升级时整段替换；如需自定义，请修改工坊仓库里的 headless-cordis.patch.yml 后重装。

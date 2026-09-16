@@ -10,10 +10,10 @@
 ```js
 export const name = 'novel-tools'        // 插件名（行 id 用）
 export const inject = ['tools']          // 依赖 dsh 的 tools 注册表服务
-export const PLUGIN_VERSION = '0.8.0'    // 与 plugin.json 的 version 保持一致
+export const PLUGIN_VERSION = '0.8.1'    // 与 plugin.json 的 version 保持一致（plugin.json 是真源）
 
 export function apply(ctx, config) {
-  // config 来自行配置（agent.cordis.yml / headless patch 里的 config 字段）
+  // config 来自行配置（agent.cordis.yml / cordis.patch.yml 里的 config 字段）
   // ctx.tools.register({ name, description, parameters, output, execute }) 注册模型工具
 }
 ```
@@ -31,16 +31,17 @@ export function apply(ctx, config) {
    - 用 `jfetch` 调服务端（严格 JSON、可读错误、超时）；
    - 需要“只读给作者看”的工具返回人话文本；需要“写账本”的工具遵循提案模式
      （`proposeMode()` 为 true 时传 `proposed: true`）。
-3. **人设**（`agent.cordis.yml` 与 `headless-cordis.patch.yml`）：在创作纪律里补一句该工具的使用时机，
+3. **人设**（`agent.cordis.yml` 与 `cordis.patch.yml`）：在创作纪律里补一句该工具的使用时机，
    两个文件的人设保持同一纪律文本。
 4. **清单与文档**：`plugin.json` 的 tools/engineEndpoints 补一行；README 工具表补一行；本文档验收步骤补断言。
 5. **测试**：在 `test/smoke.mjs` 里对新端点补一段断言。
-6. **发布**：本仓库 `git commit` 后，重跑 `install.ps1`（区块合并升级，自动同步 ~/.dsh 两处安装点）。
+6. **发布**：本仓库 `git commit` 后重跑 `install.ps1`。bundle 方式是 junction 引用本目录，
+   仓库改动**立即生效**（无复制步骤）；`install.ps1` 只需在新增 profile 或清理旧痕迹时执行。
 
 ## 改动注意
 
-- **唯一来源**：dsh 侧工具/人设只维护本目录一份；安装是“复制”，不是“分发”。
-  不要直接手改 `~/.dsh` 里的副本，否则下次安装会覆盖。
+- **唯一来源**：dsh 侧工具/人设只维护本目录一份。profile 通过 junction 直接引用本目录，
+  因此不存在“需要同步的副本”；也**不要**手工往 `~/.dsh` 里放第二份，那会与 bundle 抢同一个行 id。
 - **提案模式**：写账本类工具必须遵循 `NOVELSTUDIO_PROPOSE_MODE`（headless 先提案、作者确认后入账），
   否则 headless 任务会绕过作者直接污染作品账本。
 - **红线扫描**：新模式必须通过 `replaceRedlines` 的校验（kind 白名单 / 长度 ≤500 / regex 可编译）；
@@ -52,5 +53,7 @@ export function apply(ctx, config) {
 
 ## 版本
 
-- `plugin.json.version` 与 `novel-tools.mjs` 的 `PLUGIN_VERSION` 必须同步；
-- 升级路径：改仓库 → `node test/smoke.mjs` → `install.ps1` → 重启 novel-studio。
+- `plugin.json.version` 是版本真源，`novel-tools.mjs` 的 `PLUGIN_VERSION` 与
+  `package.json`（bundle 包）的 `version` 都必须与它同步；
+- 升级路径：改仓库 → `node test/smoke.mjs` → 重启 novel-studio。
+  （bundle 走 junction，无需重跑 `install.ps1`；仅在新增 profile 或迁移旧安装时才需要。）

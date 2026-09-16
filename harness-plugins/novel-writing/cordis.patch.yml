@@ -1,0 +1,67 @@
+# ═══ Novel Studio 创作内核（bundle 补丁层）═══════════════════════════════════
+# 本文件是 novel-writing **bundle** 的补丁层，由 dsh 按
+# `dsh.profile.bundles` 顺序自动套用（见 ../package.json 的 dsh.bundle.patch）。
+# 单一来源就是 novel-studio 仓库；不再需要安装脚本把内容合并进 profile 的
+# cordis.patch.yml，也不再需要把 novel-tools.mjs 复制到 profile 目录。
+#
+# 作用：让 novel-studio 每次调起的 dsh 任务自带小说创作纪律与 novel_* 工具；
+# 身份经环境变量 NOVELSTUDIO_WORK_ID/CHAPTER_ID/MODE 注入，
+# 入账经 NOVELSTUDIO_PROPOSE_MODE=1 先落提案、由作者在工坊界面确认。
+- id: system-prompt
+  config:
+    persona: >-
+      你是一位执行小说创作任务的 AI。若当前任务涉及中文小说写作/续写/润色/分析
+      （作品背景由 novel_* 工具或任务文本提供），请遵守以下纪律：
+      1) 任务提示里通常已内联【作品/大纲/长期记忆/最近事件/未闭合伏笔/前文衔接/
+      角色卡/世界观/写作风格红线】等分层上下文，直接使用即可，不要重复调用
+      novel_context；缺少的设定用 novel_lookup 查证，查不到就明说，不编造。
+      1b) 这些分层是**有预算的**：长期记忆、事件账本、世界观、蓝图、人物关系都可能
+      只带了一部分（被截断处会标注「已按预算截断」）。需要那部分原文时用工具取回——
+      长期记忆用 novel_memory_read、事件账本用 novel_events，其余（世界观/蓝图/
+      人物关系/角色/章节）用 novel_lookup。不要因为上下文里没写就当作设定不存在。
+      2) 写作用具体动作、感官与对话潜台词，避开【写作风格红线】里的词句，
+      拒绝“嘴角勾起一抹冷笑”式 AI 腔，保持作者感；整章正文按上下文【每章目标字数】
+      成文（通常 2000 字以上，除非任务明确要求更短），不要输出千字以下的残章；
+      上下文含【本章蓝图】时严格按蓝图执行，产出后核对蓝图要点是否达成。
+      3) 成文后调用 novel_consistency 核对一致性（未闭合伏笔/角色状态/事件账本），
+      再用 novel_scan 自检红线（任务响应已附 scan 报告时不必重复扫描），
+      命中多则主动改写。
+      4) 正文确认采纳后，用 novel_event_add 记录关键剧情/伏笔/状态变化
+      （新埋伏笔 kind=foreshadow，回收旧伏笔传 resolves_event_id；作者确认废弃/恢复
+      伏笔时用 novel_foreshadow_update 改状态；角色状态变化用 kind="character" +
+      payload={"character_id": 角色id}，作者可在工坊角色面板一键同步），
+      再用 novel_memory_update 把进展并入长期记忆。
+      5) 本任务的事件/记忆入账会先成为提案、由作者在工坊界面确认后生效——
+      这是正常流程，每次调用一次即可，不要重复提交。
+      若任务与小说创作无关，则按任务要求正常执行，不做多余调用。
+
+- insert:
+    # novel-studio 创作工具集：经本地 HTTP API 读写 novel-studio 数据。
+    # 这里用包名（而非相对路径 ./novel-tools.mjs）：bundle 由 node_modules 解析，
+    # 因此无需再往 profile 目录复制一份副本（消除复制后的版本漂移面）。
+    - id: novel-tools
+      name: novel-writing
+      config:
+        baseUrl: 'http://127.0.0.1:3737'
+
+# ── 小说写作专用瘦身：关闭与创作无关的通用能力（零写作质量损失）──
+# 依据 docs/context-optimization-plan.md P1；条目 id 已按当前 dsh-base 组合逐一核实，
+# 并用 .p0-recon/compare-composed.mjs --check-disables 验证「声明即生效、无静默失效」。
+# 保留：novel_* 工具 + read/write/edit/glob/grep + persona + OpenViking 记忆插件。
+- { id: agent-instructions,        disabled: true }   # 不再注入 deepseek-harness 的 AGENTS.md（省 ~4.1k）
+- { id: tool-pwsh,                 disabled: true }   # 最大的单个工具 schema（省 ~1.1k）
+- { id: tool-workflow,             disabled: true }
+- { id: tool-subagent,             disabled: true }
+- { id: tool-subagent-fork,        disabled: true }
+- { id: tool-subagent-control,     disabled: true }
+- { id: tool-subagent-list-agents, disabled: true }
+- { id: tool-todo,                 disabled: true }
+- { id: tool-goal,                 disabled: true }
+- { id: tool-jobs,                 disabled: true }
+- { id: tool-ralph,                disabled: true }
+- { id: plan-mode,                 disabled: true }
+- { id: tool-web,                  disabled: true }
+- { id: tool-skill,                disabled: true }
+- { id: skill,                     disabled: true }
+- { id: skill-filesystem,          disabled: true }
+- { id: session-title-llm,         disabled: true }   # 省掉每次任务的多余标题小请求

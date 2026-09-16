@@ -1,0 +1,3343 @@
+{
+  "base": "http://127.0.0.1:5302",
+  "db": ".p1-baseline/stress-data/novel.db",
+  "captured_at": "2026-09-15T14:28:22.259Z",
+  "cases": [
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "full",
+      "assembled_length": 6710,
+      "layer_count": 11,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 14,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1509,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w2-c107-full.json"
+    },
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "continuation",
+      "assembled_length": 9210,
+      "layer_count": 11,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 14,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 4009,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w2-c107-continuation.json"
+    },
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "fragment",
+      "assembled_length": 6856,
+      "layer_count": 11,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 14,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1655,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w2-c107-fragment.json"
+    },
+    {
+      "work_id": 2,
+      "work_title": "我真的只是一个路人啊",
+      "chapter_id": 107,
+      "mode": "settings",
+      "assembled_length": 5140,
+      "layer_count": 8,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 141,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 884,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 2460,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w2-c107-settings.json"
+    },
+    {
+      "work_id": 2,
+      "chapter_id": 107,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 3910,
+        "world": 0,
+        "recall": 0,
+        "events": 0,
+        "foreshadows": 0,
+        "story_memory": 779,
+        "story_tail": 1200,
+        "style_contract": 778,
+        "raw_json": 21309,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w2-c107-ai_context.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "full",
+      "assembled_length": 5196,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 63,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 421,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c31-full.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "continuation",
+      "assembled_length": 5196,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 63,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 421,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c31-continuation.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "fragment",
+      "assembled_length": 5196,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 63,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 421,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c31-fragment.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 31,
+      "mode": "settings",
+      "assembled_length": 4665,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c31-settings.json"
+    },
+    {
+      "work_id": 9,
+      "chapter_id": 31,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 844,
+        "world": 352,
+        "recall": 0,
+        "events": 332,
+        "foreshadows": 82,
+        "story_memory": 781,
+        "story_tail": 412,
+        "style_contract": 778,
+        "raw_json": 16683,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w9-c31-ai_context.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "full",
+      "assembled_length": 5240,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 101,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 427,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c34-full.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "continuation",
+      "assembled_length": 5252,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 101,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 439,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c34-continuation.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "fragment",
+      "assembled_length": 5252,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 101,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 439,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c34-fragment.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 34,
+      "mode": "settings",
+      "assembled_length": 4665,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c34-settings.json"
+    },
+    {
+      "work_id": 9,
+      "chapter_id": 34,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 844,
+        "world": 273,
+        "recall": 0,
+        "events": 332,
+        "foreshadows": 82,
+        "story_memory": 781,
+        "story_tail": 418,
+        "style_contract": 778,
+        "raw_json": 16534,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w9-c34-ai_context.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "full",
+      "assembled_length": 5312,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 69,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 531,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c36-full.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "continuation",
+      "assembled_length": 5312,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 69,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 531,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c36-continuation.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "fragment",
+      "assembled_length": 5312,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 69,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 531,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c36-fragment.json"
+    },
+    {
+      "work_id": 9,
+      "work_title": "雾都缝匠",
+      "chapter_id": 36,
+      "mode": "settings",
+      "assembled_length": 4665,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 138,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 599,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 800,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 468,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1205,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 175,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 383,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w9-c36-settings.json"
+    },
+    {
+      "work_id": 9,
+      "chapter_id": 36,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 844,
+        "world": 352,
+        "recall": 0,
+        "events": 332,
+        "foreshadows": 82,
+        "story_memory": 781,
+        "story_tail": 522,
+        "style_contract": 778,
+        "raw_json": 16940,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w9-c36-ai_context.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 108,
+      "mode": "full",
+      "assembled_length": 20713,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 446,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1509,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c108-full.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 108,
+      "mode": "continuation",
+      "assembled_length": 23213,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 446,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 4009,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c108-continuation.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 108,
+      "mode": "fragment",
+      "assembled_length": 20859,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 446,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1655,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c108-fragment.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 108,
+      "mode": "settings",
+      "assembled_length": 17511,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 1666,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c108-settings.json"
+    },
+    {
+      "work_id": 16,
+      "chapter_id": 108,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 18544,
+        "world": 27270,
+        "recall": 0,
+        "events": 3600,
+        "foreshadows": 6000,
+        "story_memory": 9000,
+        "story_tail": 1200,
+        "style_contract": 5394,
+        "raw_json": 118138,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w16-c108-ai_context.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 168,
+      "mode": "full",
+      "assembled_length": 20015,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 448,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 809,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c168-full.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 168,
+      "mode": "continuation",
+      "assembled_length": 23215,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 448,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 4009,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c168-continuation.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 168,
+      "mode": "fragment",
+      "assembled_length": 20861,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 448,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 1655,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c168-fragment.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 168,
+      "mode": "settings",
+      "assembled_length": 17511,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 1666,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1798,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c168-settings.json"
+    },
+    {
+      "work_id": 16,
+      "chapter_id": 168,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 18544,
+        "world": 27270,
+        "recall": 0,
+        "events": 3600,
+        "foreshadows": 6000,
+        "story_memory": 9000,
+        "story_tail": 800,
+        "style_contract": 5394,
+        "raw_json": 117068,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w16-c168-ai_context.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 227,
+      "mode": "full",
+      "assembled_length": 23293,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 450,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 1563,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "前文衔接",
+          "length": 809,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 3558,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c227-full.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 227,
+      "mode": "continuation",
+      "assembled_length": 24939,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 450,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 1563,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "前文衔接",
+          "length": 2455,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 3558,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c227-continuation.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 227,
+      "mode": "fragment",
+      "assembled_length": 24139,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 2866,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "当前场景",
+          "length": 450,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 1563,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "前文衔接",
+          "length": 1655,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 3558,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 3067,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c227-fragment.json"
+    },
+    {
+      "work_id": 16,
+      "work_title": "压力测试·百章五十人",
+      "chapter_id": 227,
+      "mode": "settings",
+      "assembled_length": 17471,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 661,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 466,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 2270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 1861,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 1270,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 3558,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 855,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 2467,
+          "truncated": true,
+          "empty": false
+        },
+        {
+          "label": "写作风格红线",
+          "length": 4063,
+          "truncated": true,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w16-c227-settings.json"
+    },
+    {
+      "work_id": 16,
+      "chapter_id": 227,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 37088,
+        "world": 27270,
+        "recall": 0,
+        "events": 3600,
+        "foreshadows": 6000,
+        "story_memory": 9000,
+        "story_tail": 800,
+        "style_contract": 5394,
+        "raw_json": 150904,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w16-c227-ai_context.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 228,
+      "mode": "full",
+      "assembled_length": 5028,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 119,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 886,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c228-full.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 228,
+      "mode": "continuation",
+      "assembled_length": 5028,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 119,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 886,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c228-continuation.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 228,
+      "mode": "fragment",
+      "assembled_length": 5028,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 119,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 886,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c228-fragment.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 228,
+      "mode": "settings",
+      "assembled_length": 3976,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c228-settings.json"
+    },
+    {
+      "work_id": 18,
+      "chapter_id": 228,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 1117,
+        "world": 0,
+        "recall": 0,
+        "events": 0,
+        "foreshadows": 0,
+        "story_memory": 0,
+        "story_tail": 877,
+        "style_contract": 778,
+        "raw_json": 14731,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w18-c228-ai_context.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 230,
+      "mode": "full",
+      "assembled_length": 4131,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 96,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 12,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c230-full.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 230,
+      "mode": "continuation",
+      "assembled_length": 4131,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 96,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 12,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c230-continuation.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 230,
+      "mode": "fragment",
+      "assembled_length": 4131,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 96,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 12,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c230-fragment.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 230,
+      "mode": "settings",
+      "assembled_length": 3976,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c230-settings.json"
+    },
+    {
+      "work_id": 18,
+      "chapter_id": 230,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 1117,
+        "world": 0,
+        "recall": 0,
+        "events": 0,
+        "foreshadows": 0,
+        "story_memory": 0,
+        "story_tail": 0,
+        "style_contract": 778,
+        "raw_json": 12949,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w18-c230-ai_context.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 232,
+      "mode": "full",
+      "assembled_length": 4145,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 12,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c232-full.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 232,
+      "mode": "continuation",
+      "assembled_length": 4145,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 12,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c232-continuation.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 232,
+      "mode": "fragment",
+      "assembled_length": 4145,
+      "layer_count": 12,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "当前场景",
+          "length": 110,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "本章蓝图（写作必须遵守）",
+          "length": 47,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "前文衔接",
+          "length": 12,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c232-fragment.json"
+    },
+    {
+      "work_id": 18,
+      "work_title": "零号测试员",
+      "chapter_id": 232,
+      "mode": "settings",
+      "assembled_length": 3976,
+      "layer_count": 9,
+      "layers": [
+        {
+          "label": "作品",
+          "length": 188,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "卷/剧情线/章节进度（大纲）",
+          "length": 861,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "长期记忆（已发生的故事摘要）",
+          "length": 30,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "最近事件（事件账本）",
+          "length": 25,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "未闭合伏笔（写作时必须照顾）",
+          "length": 22,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "出场角色卡",
+          "length": 1552,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "人物关系",
+          "length": 488,
+          "truncated": false,
+          "empty": false
+        },
+        {
+          "label": "激活的世界观设定（优先级排列）",
+          "length": 23,
+          "truncated": false,
+          "empty": true
+        },
+        {
+          "label": "写作风格红线",
+          "length": 787,
+          "truncated": false,
+          "empty": false
+        }
+      ],
+      "semantic_recall_status": "disabled",
+      "file": ".p1-baseline/baselines-post-hint/w18-c232-settings.json"
+    },
+    {
+      "work_id": 18,
+      "chapter_id": 232,
+      "mode": "ai_context(P3)",
+      "input_measure": {
+        "characters": 1117,
+        "world": 0,
+        "recall": 0,
+        "events": 0,
+        "foreshadows": 0,
+        "story_memory": 0,
+        "story_tail": 0,
+        "style_contract": 778,
+        "raw_json": 12980,
+        "note": "aiContextBlock 的渲染在浏览器侧（public/app.js:4834），此处量化其输入规模；渲染还会再叠加层标题与固定文案。"
+      },
+      "file": ".p1-baseline/baselines-post-hint/w18-c232-ai_context.json"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# 探测脚本的临时数据目录（logger.js 会按 NOVELSTUDIO_DATA_DIR 在此写日志）。
+# 存在的意义：让「导入 harness.js / db.js 的探测脚本」有一个安全的落点，
+# 而不是把日志写进真实的 data/logs/。
+scratch-data/

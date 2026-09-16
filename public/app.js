@@ -2,24 +2,44 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-// 功能内置模型（优先级高于 API 配置里的 model）。
-// 这两个常量把「哪些环节值得用贵的模型」这条策略**单点化**——散落的字面量一旦被
-// 批量替换，就会把刻意的质量选择悄悄改掉（本会话已因此误伤过 4 处：成文轮、AI 审稿、
-// AI 修稿、AI 自动创建小说）。要调整分工，改这里的常量，不要改各处字面量。
+// 模型分工策略 —— **真源在服务端 `ai/policy.mjs`**，经 GET /api/ai/policy 下发，
+// 由下面的 policyModel()/policyEffort() 在调用时解析。本文件不再写死模型字面量。
 //
-//   DEFAULT_AI_MODEL  —— 快而省的环节：提问/澄清、质检轮、入账整理、
-//                        润色/扩写/细纲/性格校对、AI 写作、批量生成、创作工作台三档。
-//                        理由：V4.1 Flash 在这类任务上能力足够且单价低 3–7 倍。
-//   QUALITY_AI_MODEL  —— 直接产出正文/整部设定，或结果会喂给之后每一章的环节，
-//                        按「质量优先」基线不省：成文轮、AI 审稿、AI 修稿、
-//                        AI 自动创建小说、长期记忆压缩（后者在 server.js，用同名常量）。
+//   fast（DEFAULT_AI_MODEL）—— 快而省的环节：提问/澄清、质检轮、入账整理、润色/扩写/
+//                              细纲/性格校对、**章节正文成文**、批量生成、创作工作台三档。
+//                              理由：V4.1 Flash 在这类任务上能力足够且单价低 3–7 倍。
+//   quality（QUALITY_AI_MODEL）—— 结果会喂给之后每一章的环节，按「质量优先」基线不省：
+//                              AI 审稿、AI 修稿、**设定生成的成文轮**、AI 自动创建小说、
+//                              长期记忆压缩（后者在 server.js）。
+//
+// ⚠️ 注释更正（P4）：此前这里写的是「QUALITY 管成文轮」，与实现不符——
+//    **章节正文成文实际走 fast**（见 performToolbarAIWrite / streamAIDirectWrite）。
+//    走 quality 的只有「设定生成」的成文轮（runGenAskLoop 的 harness 分支）。
+//    这处偏差是 2026-09-13 复盘中「注释只写了主路径」的同类问题，已按实现改正。
 //
 // 该分工只作用于已显式固定模型的功能；API 配置里的 model 仅对未固定模型的功能生效
 // （当前为连接测试，以及仅供 API 调用的 /api/ai/generate_novel）。
+//
+// 下面两个常量退化为**策略快照未就绪时的兜底值**——正常路径不会用到它们。
 const DEFAULT_AI_MODEL = 'deepseek-flash';
 const QUALITY_AI_MODEL = 'deepseek-v4-pro';
 
+// 档位 → 模型名。优先用服务端下发的策略；未就绪/取不到时退回兜底常量。
+function policyModel(tier) {
+  const models = state.aiPolicy && state.aiPolicy.models;
+  if (models && models[tier]) return models[tier];
+  return tier === 'quality' ? QUALITY_AI_MODEL : DEFAULT_AI_MODEL;
+}
+
+// 工作台档位 → 思考强度，同样以服务端策略为准。
+function policyEffort(mode) {
+  const table = state.aiPolicy && state.aiPolicy.pipeline_effort_by_mode;
+  if (table && table[mode]) return table[mode];
+  return PIPELINE_EFFORT_BY_MODE[mode] || PIPELINE_EFFORT_BY_MODE.balanced;
+}
+
 const state = {
+  aiPolicy: null, // GET /api/ai/policy 的策略快照（P4）：模型档位与档位→强度表的唯一来源
   works: [],
   workId: null,
   work: null,
@@ -4115,7 +4135,7 @@ async function verifyAIDraft(blueprint, article, targetWords) {
     '只输出 JSON。'
   ].join('\n');
   const reply = await directAIWrite([{ role: 'user', content: prompt }], {
-    model: 'deepseek-flash',
+    model: policyModel('fast'),
     maxTokens: 1500,
     temperature: 0.2
   });
@@ -4178,7 +4198,7 @@ async function scheduleLedgerProposalJob(article) {
       body: {
         prompt,
         timeout: 600000,
-        model: 'deepseek-flash',
+        model: policyModel('fast'),
         action: 'ledger',
         work_id: workId,
         chapter_id: state.currentChapterId,
@@ -4206,7 +4226,7 @@ const PIPELINE_MODE_HINTS = {
 // 官方基准显示 V4.1 Flash 在推理/Agentic 任务上反超 V4 Pro，且输入缓存命中价低 7.5 倍、
 // 输出价低约 3.4 倍。继续按老路由反而把大纲/正文/审查降级到了上一代模型。
 // 因此模型不再随档位变化，三档策略改由「思考强度」区分。
-const PIPELINE_MODEL = DEFAULT_AI_MODEL;
+// 模型：调用时由 policyModel('fast') 解析（真源 ai/policy.mjs）；此处不再固定常量。
 
 // 档位 → 思考强度（DeepSeek 取值：off | low | high | max，默认 high）。
 // fast 用 low 而非 off：保留思考、只压缩思考预算，不为提速牺牲成文质量。
@@ -4379,8 +4399,8 @@ async function runHarnessPipeline(startIndex = 0) {
       const stage = PIPELINE_STAGES[i];
       setPipelineStatus(stage.key, '运行中...');
       const output = await runPipelineStage(stage.build(input, previous, mode), {
-        model: PIPELINE_MODEL,
-        reasoningEffort: PIPELINE_EFFORT_BY_MODE[mode] || PIPELINE_EFFORT_BY_MODE.balanced,
+        model: policyModel('fast'),
+        reasoningEffort: policyEffort(mode),
         stageLabel: `创作工作台 · ${stage.label}（${i + 1}/${PIPELINE_STAGES.length}）`
       });
       setPipelineOutput(stage.key, output);
@@ -4834,6 +4854,11 @@ function askAIInstruction(title, placeholder) {
 function aiContextBlock() {
   const ctx = state.aiContext;
   if (!ctx) return '';
+  // P2：提示词文本改由服务端**唯一装配器**产出（分层预算 + 裁剪清单 + 溢出标记）。
+  // 下面那段前端拼装没有预算——压力数据下同一章它会喂进约 7.4 万字，
+  // 而受预算约束的路径只有 2.4 万字。服务端给了 assembled 就用它。
+  // 保留旧拼装作为兜底：兼容尚未升级的服务端与浏览器缓存里的旧响应。
+  if (typeof ctx.assembled === 'string' && ctx.assembled) return ctx.assembled;
   const parts = [];
   if (ctx.characters?.length) {
     const charText = ctx.characters.map((c) => {
@@ -4932,7 +4957,7 @@ async function runAIWrite() {
   if (out) out.textContent = 'AI 正在写作，请稍候...';
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(buildAIWriteMessages(), { model: 'deepseek-flash', action: 'write' });
+    const reply = await runHarnessFromMessages(buildAIWriteMessages(), { model: policyModel('fast'), action: 'write' });
     if (out) out.textContent = reply;
     state.aiDraft = reply;
     const insertBtn = $('#ai-insert-btn');
@@ -5421,12 +5446,43 @@ function articleLengthHint(article, targetWords) {
 // 弹窗展示最终文章，让用户选择如何应用。
 // jobId：这版文章来自哪条 harness 长任务。弹窗一打开就代表结果已经交到用户手里，
 // 顺手把任务标记为已应用，恢复条才不会永远挂着「已完成，结果待应用」。
-function showAIWritingResult(article, scan, proposals, targetWords, jobId) {
+// ---------- AI 效果埋点（P5） ----------
+// 契约的结构化不变量只能回答「预算有没有超、内容能不能查回」，回答不了
+// 「上下文质量到底有没有变好」——那只能靠作者的真实行为：一次成文用不用得上、
+// 要不要重生成、送进去多少字。这里只记行为与规模，**不记正文内容**。
+// 埋点失败绝不影响创作（fire-and-forget）。
+function recordAIEval(payload) {
+  try {
+    api('/ai/eval', { method: 'POST', body: payload }).catch(() => { /* 埋点失败静默 */ });
+  } catch (_) { /* 同上 */ }
+}
+
+/** 本次生成送进模型的上下文字数（来自装配器的 context_stats）。 */
+function aiEvalContextSize() {
+  const ctx = state.aiContext;
+  if (ctx && ctx.context_stats && Number.isFinite(ctx.context_stats.length)) return ctx.context_stats.length;
+  return ctx && typeof ctx.assembled === 'string' ? ctx.assembled.length : 0;
+}
+
+function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta = {}) {
   return new Promise((resolve) => {
     // 🗂 先落草稿再开弹窗：这版稿子此前只活在弹窗 state 里，
     // 用户点「先审稿再应用」或「取消」关闭弹窗就等于静默销毁（2026-09-14 真实事故）。
     // 落库后可在章节里「取回上一版生成稿」，关闭弹窗不再是丢失。
     const draftChapterId = state.currentChapterId;
+
+    // ── P5 埋点：这次「生成」的规模与上下文成本 ──────────────────────────
+    // 契约的结构化不变量回答不了「上下文质量有没有变好」，只有作者的真实行为能回答。
+    // 只记行为与规模，不记正文内容。draftKey 把本次生成与它的采纳/丢弃串起来。
+    const draftKey = `c${draftChapterId || 0}-${Date.now().toString(36)}`;
+    const draftLen = String(article || '').length;
+    const evalBase = { work_id: state.workId || null, chapter_id: draftChapterId || null, draft_key: draftKey };
+    recordAIEval({
+      ...evalBase, action: 'generate',
+      channel: meta.channel || '', model: meta.model || '',
+      chars_in: aiEvalContextSize(), chars_out: draftLen, ms: Number(meta.ms) || 0
+    });
+
     if (draftChapterId && String(article || '').trim()) {
       api('/novel/draft', { method: 'POST', body: { chapter_id: draftChapterId, content: article } })
         .catch(() => { /* 草稿落库失败不影响主流程，但会少一层兜底 */ });
@@ -5434,7 +5490,18 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId) {
     if (jobId) {
       markJobApplied(jobId);
     }
-    state.pendingAIFinal = resolve;
+    state.pendingAIFinal = (action) => {
+      // 采纳 / 丢弃信号：三个「应用到正文」的动作算采纳；重新生成算丢弃。
+      // 「先审稿再应用」不在此列——它会走审稿闭环，本次生成暂无结论（不计入采纳率分子）。
+      const adopted = action === 'insert' || action === 'replace' || action === 'append';
+      recordAIEval({
+        ...evalBase,
+        action: adopted ? 'adopt' : 'discard',
+        channel: adopted ? action : (action === 'regenerate' ? 'regenerate' : 'closed'),
+        chars_out: draftLen
+      });
+      resolve(action);
+    };
     state.pendingAIArticle = { article, scan, proposals, targetWords };
     state.pendingAIProposals = Array.isArray(proposals) && proposals.length
       ? { workId: state.workId || state.work?.id || null, proposals }
@@ -5523,7 +5590,7 @@ async function runArticleReview(info) {
   const jobBase = {
     timeout: 600000,
     // 质量优先：审稿报告决定后续修稿方向，不用便宜的模型省这一步。
-    model: QUALITY_AI_MODEL,
+    model: policyModel('quality'),
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
     chapter_id: state.currentChapterId || undefined,
@@ -5609,7 +5676,7 @@ async function refineByChecklist() {
   const jobBase = {
     timeout: 600000,
     // 质量优先：这一步直接产出修好的正文，是交付物本身。
-    model: QUALITY_AI_MODEL,
+    model: policyModel('quality'),
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
     chapter_id: state.currentChapterId || undefined,
@@ -5821,7 +5888,7 @@ async function performToolbarAIWrite(requirement) {
   let traceWriteCancelled = false;
   const jobBase = {
     timeout: 600000,
-    model: 'deepseek-flash',
+    model: policyModel('fast'),
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
     chapter_id: state.currentChapterId || undefined,
@@ -5888,7 +5955,7 @@ async function performToolbarAIWrite(requirement) {
           try {
             proseData = await streamAIDirectWrite({
               config_id: activeConfig.id,
-              model: 'deepseek-flash',
+              model: policyModel('fast'),
               messages: [{ role: 'user', content: prosePrompt }],
               max_tokens: maxTokens,
               work_id: state.workId || state.work?.id || undefined,
@@ -5937,7 +6004,7 @@ async function performToolbarAIWrite(requirement) {
           let more = '';
           if (gap <= Math.max(200, Math.ceil(target * 0.15))) {
             const reply = await directAIWrite([{ role: 'user', content: contPrompt }], {
-              model: 'deepseek-flash',
+              model: policyModel('fast'),
               maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))
             });
             more = parseAIWritingOutput(reply || '').finalText || '';
@@ -6053,7 +6120,7 @@ async function batchGenerateChapters(count) {
   if (!targets.length) return toast('没有空章节可生成（可先在正文写作页新建章节）', 'error');
   const jobBase = {
     timeout: 600000,
-    model: 'deepseek-flash',
+    model: policyModel('fast'),
     action: 'write',
     work_id: state.workId,
     mode: 'full',
@@ -6129,7 +6196,7 @@ async function runToolbarAIPolish() {
   const btn = $('[data-action="toolbar-ai-polish"]');
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(buildAIPolishMessages(source, instruction.trim()), { model: 'deepseek-flash', action: 'polish' });
+    const reply = await runHarnessFromMessages(buildAIPolishMessages(source, instruction.trim()), { model: policyModel('fast'), action: 'polish' });
     if (!reply) throw new Error('AI 没有返回内容');
     const range = sel?.range || null;
     showAIApplyPreview('润色结果', reply, () => applyAIReply(editor, reply, range));
@@ -6156,7 +6223,7 @@ async function runToolbarAIExpand() {
   const btn = $('[data-action="toolbar-ai-expand"]');
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(buildAIExpandMessages(source, instruction.trim()), { model: 'deepseek-flash', action: 'expand' });
+    const reply = await runHarnessFromMessages(buildAIExpandMessages(source, instruction.trim()), { model: policyModel('fast'), action: 'expand' });
     if (!reply) throw new Error('AI 没有返回内容');
     const range = sel?.range || null;
     showAIApplyPreview('扩写结果', reply, () => applyAIReply(editor, reply, range));
@@ -6216,7 +6283,7 @@ async function runAIPersonality() {
   if (out) out.textContent = 'AI 正在校对角色性格，请稍候...';
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(messages, { model: 'deepseek-flash', action: 'personality' });
+    const reply = await runHarnessFromMessages(messages, { model: policyModel('fast'), action: 'personality' });
     if (out) out.textContent = reply;
     state.aiDraft = reply;
     const insertBtn = $('#ai-insert-btn');
@@ -6266,7 +6333,7 @@ async function runAIOutline() {
   if (out) out.textContent = 'AI 正在生成细纲，请稍候...';
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(buildAIOutlineMessages(), { model: 'deepseek-flash', action: 'outline' });
+    const reply = await runHarnessFromMessages(buildAIOutlineMessages(), { model: policyModel('fast'), action: 'outline' });
     if (out) out.textContent = reply;
     state.aiDraft = reply;
     const insertBtn = $('#ai-insert-btn');
@@ -6550,7 +6617,7 @@ async function runGenAskLoop({ system, initial }) {
     let output = null;
     if (forceQuestion) {
       // 直连提问轮：固定 flash，秒级、成本低；仅在需要澄清的首轮使用。
-      output = await directAIWrite([{ role: 'user', content: prompt }], { model: 'deepseek-flash', maxTokens: 1500 });
+      output = await directAIWrite([{ role: 'user', content: prompt }], { model: policyModel('fast'), maxTokens: 1500 });
     }
     if (!output) {
       // 无可用 API 配置 / 直连失败 / 空回复：回退 Harness 慢通道（含后续成文轮）。
@@ -6558,7 +6625,7 @@ async function runGenAskLoop({ system, initial }) {
         prompt,
         timeout: 600000,
         // 质量优先：成文轮产出正式设定，与提问轮分工不同，不用 flash 省这一步。
-        model: QUALITY_AI_MODEL,
+        model: policyModel('quality'),
         action: 'settings-gen',
         work_id: state.workId,
         chapter_id: state.currentChapterId || undefined,
@@ -7096,7 +7163,7 @@ async function runAICreateNovel() {
     stopTick = startElapsedTicker($('#ai-create-progress'), '生成中，已用时');
     const data = await api('/harness/generate_novel', {
       method: 'POST',
-      body: { prompt, model: QUALITY_AI_MODEL },
+      body: { prompt, model: policyModel('quality') },
       timeout: 600000 // F-45：同步长任务，覆盖默认 60s
     });
     if (stopTick) stopTick();
@@ -8470,6 +8537,7 @@ const debouncedSearch = debounce(async () => {
       + group('章节/正文', data.chapters, (c) => `<div class="search-item" data-action="search-go" data-type="chapter" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${highlightTerms(c.title, q)}</div><div class="snippet">${highlightTerms(c.snippet || stripHtml(c.summary || c.content || '').slice(0, 60), q)}</div></div>`)
       + group('角色', data.characters, (c) => `<div class="search-item" data-action="search-go" data-type="character" data-id="${c.id}" data-work-id="${c.work_id || ''}"><div class="title">${highlightTerms(c.name, q)}</div><div class="snippet">${highlightTerms(c.identity || '', q)}</div></div>`)
       + group('剧情线', data.plotlines, (p) => `<div class="search-item" data-action="search-go" data-type="plotline" data-id="${p.id}" data-work-id="${p.work_id || ''}"><div class="title">${highlightTerms(plotlineDisplayTitle(p), q)}</div><div class="snippet">${highlightTerms(p.snippet || p.summary || '', q)}</div></div>`)
+      + group('世界观', data.world_entries, (w) => `<div class="search-item" data-action="search-go" data-type="world_entry" data-id="${w.id}" data-work-id="${w.work_id || ''}"><div class="title">${highlightTerms(w.title, q)}</div><div class="snippet">${highlightTerms(w.snippet || stripHtml(w.content || '').slice(0, 60), q)}</div></div>`)
       + group('🧠 语义相关（共享记忆库）', data.semantic?.hits || [], (s) => `<div class="search-item"><div class="title">${highlightTerms(s.label || '记忆条目', q)} <span class="muted" style="font-size:11px">${esc(s.kind || '')} · 相关度 ${recallPercent(s.score)}%</span></div><div class="snippet">${highlightTerms(s.text || '', q)}</div></div>`);
     if (!box.innerHTML) box.innerHTML = '<div class="muted search-empty">未找到与「' + esc(q) + '」相关的内容</div>';
     box.hidden = false;
@@ -8604,6 +8672,14 @@ document.addEventListener('click', async (e) => {
     goView('plot');
     state.currentPlotlineId = id;
     await render();
+  } else if (type === 'world_entry') {
+    // 世界观词条位于「AI创造板块 → 设定」标签页。
+    // 注意这里必须用 goView('st')（'st' 在 AI_VIEWS 里，goView 会顺带把 aiTab 设成 'st'
+    // 并把 view 切到 'ai-board'，未进入作品时还会回退到 AI 创作）。
+    // 早先写的是 goView('ai-board')——它不在任何映射表里，只是靠 goView 的通用 fallback
+    // 碰巧把 view 设对；在「未进入作品」的场景下会切到一个无作品可渲染的板块。
+    goView('st');
+    await render();
   }
   if (crossing) toast('已进入对应作品并定位到搜索结果', 'success');
 });
@@ -8672,6 +8748,13 @@ function updateSidebarToggleIcon() {
 }
 
 async function init() {
+  // P4：先取 AI 策略快照（模型档位 / 档位→强度表），让后续所有 AI 调用按同一份策略解析。
+  // 失败不阻塞启动——policyModel/policyEffort 会退回本文件顶部的兜底常量。
+  try {
+    state.aiPolicy = await api('/ai/policy');
+  } catch (_) {
+    state.aiPolicy = null;
+  }
   $('#global-search').addEventListener('focus', () => {
     const q = $('#global-search').value.trim();
     if (q) debouncedSearch();

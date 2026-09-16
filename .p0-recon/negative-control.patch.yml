@@ -1,0 +1,7 @@
+# 阴性对照：插入一个绝不存在的插件包。
+# 用途：验证 `dsh --profile <name> --help` 这条免 AI 调用的启动路径，
+# 是否真的会加载/校验插件树。若启动仍 exit 0，说明该路径不能作为挂载验证
+# 手段，必须改用真实任务启动来验证 bundle 解析。
+- insert:
+    - id: bogus-plugin-xyz
+      name: 'definitely-not-a-real-package-xyz-9f3a'

@@ -11,15 +11,18 @@
 novel-studio/
 ├─ db.js / server.js / harness.js / public/app.js   ← 工坊主体（创作内核：上下文装配/红线/事件账本/记忆版本/提案确认）
 └─ harness-plugins/novel-writing/                   ← 本插件（dsh 侧唯一来源）
-   ├─ novel-tools.mjs           # novel_* 工具集（headless 与 GUI preset 同源）
+   ├─ package.json              # bundle 包声明（dsh.bundle.patch → cordis.patch.yml）
+   ├─ cordis.patch.yml          # bundle 补丁层：创作人设 + novel_* 工具 + 通用能力瘦身
+   ├─ novel-tools.mjs           # novel_* 工具集（后台任务与 GUI preset 同源）
    ├─ agent.cordis.yml          # GUI 会话 preset（写作人设 + novel_* 工具 + fs）
    ├─ preset.yml                # preset 元信息
-   ├─ headless-cordis.patch.yml # 注入 headless profile 的区块片段（合并式安装）
-   ├─ install.ps1               # 一键安装/升级/卸载（区块合并、保留用户其它 patch）
+   ├─ install-profile.mjs       # profile 接线器（bundles + junction + 旧痕迹清理）
+   ├─ install.ps1               # 安装入口（-Profile / -DryRun / -Uninstall）
    ├─ plugin.json               # 清单：工具/端点/契约（文档与测试的唯一真源）
    ├─ test/smoke.mjs            # 端到端冒烟测试（自研断言脚本，未使用 node:test）
    ├─ ENGINE.md                 # 架构、端点、验收细节
    ├─ NATIVE_PLUGIN_GUIDE.md    # 如何在工坊内扩展本插件
+   ├─ headless-cordis.patch.yml # 【已弃用】旧区块合并片段，仅为对照保留
    └─ README.md                 # 本文件
 ```
 
@@ -28,7 +31,7 @@ novel-studio/
 前置条件：
 
 - **Node.js 22.5+**（工坊本体用内置 `node:sqlite`，**无需 `npm install`**）
-- 一份**已构建的 DeepSeek Harness（dsh）仓库** + headless profile（插件要装进它的 profile）
+- 一份**已构建的 DeepSeek Harness（dsh）仓库** + 目标 profile（插件要装进它的 profile）
 - Windows（`install.ps1` 是 PowerShell 脚本；插件模块本身是跨平台纯 ESM，无第三方依赖）
 
 **第 1 步：装工坊本体**
@@ -45,14 +48,23 @@ npm start            # 打开 http://localhost:3737；数据库启动时自动�
 
 ```powershell
 # 预演（不写任何文件，先看会改哪些路径）
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel -DryRun
 
-# 安装 / 升级（区块合并：只替换本插件区块，你 profile 里的其它 patch 条目原样保留）
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+# 安装 / 升级到专用 profile `novel`（novel-studio 后台任务用）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel
 
 # 卸载
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel -Uninstall
 ```
+
+`-Profile` 省略时默认 `headless`（与 `harness.js` 的默认值一致）。安装做的事：
+
+1. 把 GUI preset 复制到 `~/.dsh/.agent-presets/novel-writing/`；
+2. 让目标 profile 在 `dsh.profile.bundles` 里列出 `novel-writing`，并在它的 `node_modules`
+   下建立指向本目录的 **junction**——工坊仓库即唯一来源，**没有副本**；
+3. 识别并清理旧版安装留下的区块与 `novel-tools.mjs` 副本（带备份）。
+
+因为走 junction，改完本目录的代码**立即生效**，不需要重跑安装（重启 novel-studio 即可）。
 
 若工坊本体不在默认位置，启动工坊前用环境变量指定 dsh 仓库路径：
 
@@ -72,12 +84,17 @@ npm start
 # 或用 NOVELSTUDIO_REPO 环境变量指定其根目录）
 node test/smoke.mjs
 
-# dsh 侧工具目录
+# dsh 侧工具目录（PROFILE 换成你安装时用的 profile，例如 novel）
 cd <你的 deepseek-harness 目录>
-pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名称，用逗号分隔"
+pnpm dsh --profile novel "只输出一行：你当前可用的全部工具名称，用逗号分隔"
 # 期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract,
-#           novel_event_add, novel_memory_update, novel_foreshadows, novel_foreshadow_update,
-#           novel_consistency, novel_blueprint, novel_review, novel_chapter_save
+#           novel_event_add, novel_events, novel_memory_read, novel_memory_update,
+#           novel_foreshadows, novel_foreshadow_update, novel_consistency, novel_blueprint,
+#           novel_review, novel_chapter_save（共 15 个）
+
+# 零成本挂载验证（不出网、不产生 API 费用：把端点指向本机死端口，观察是否报 TRANSPORT）
+$env:DEEPSEEK_BASE_URL='http://127.0.0.1:1'
+pnpm dsh --profile novel "Reply with the single word: ok"
 ```
 
 ## 工具一览
@@ -86,13 +103,15 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 | --- | --- |
 | `novel_context` | 取作品/章节分层上下文（大纲/记忆/事件/未闭合伏笔/本章蓝图/目标字数/前后章衔接/角色卡/激活世界观/红线），分层预算截断 |
 | `novel_works` | 列出作品（确认 work_id） |
-| `novel_lookup` | 关键词检索角色/词条/章节/剧情线（写前查证设定） |
+| `novel_lookup` | 关键词检索角色/词条/章节/剧情线/**世界观/人物关系**（写前查证设定；也是被预算截断内容的查回入口） |
 | `novel_foreshadows` | 列出未闭合（或全部）伏笔 |
+| `novel_events` | 读取事件账本（比上下文「最近事件」层更早的记录），可按类型/章节过滤 |
 | `novel_foreshadow_update` | 标记伏笔状态（resolved/dropped/open，可回链回收事件） |
 | `novel_consistency` | 成文后一致性核对：未闭合伏笔/出场角色状态/最近事件 vs 正文（蓝图为核对锚点） |
 | `novel_scan` | 确定性反 AI 腔红线扫描（可跳过引号内对话） |
 | `novel_style_contract` | 读取写作红线清单 |
 | `novel_event_add` | 事件/伏笔/状态变化入账（伏笔状态与回收、幂等去重；headless 先落提案） |
+| `novel_memory_read` | 读取完整长期记忆摘要（上下文里的该层按预算截断到 2200 字） |
 | `novel_memory_update` | 长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案） |
 | `novel_blueprint` | 保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），作者确认后落库 |
 | `novel_review` | 保存成文的审稿报告（总评/问题清单/优点），作者在工坊界面确认清单并按清单修稿 |
@@ -143,7 +162,7 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 ## v0.9.3 更新：设定轻量装配 + headless 瘦身（本版重点）
 
 - **`novel_context` 新增 `settings` 模式**：设定类生成（世界观 / 角色卡 / 大纲 / 长期记忆等）只去掉「当前场景 / 本章蓝图 / 前后章衔接」三层，质量层（红线、角色卡、世界观词条、长期记忆、事件账本、未闭合伏笔）零丢失，省下的上下文留给真正要产出的内容。
-- **headless profile 瘦身**：`headless-cordis.patch.yml` 关闭与创作无关的通用能力——`agent-instructions`（省 ~4.1k）、`tool-pwsh`（最大的单个工具 schema）、`workflow` / `subagent` / `subagent-fork` / `subagent-control` / `subagent-list-agents`、`todo` / `goal` / `jobs` / `ralph`、`plan-mode`、`web`、`skill` / `skill-filesystem`、`session-title-llm`；`novel_*` 工具与 read / write / edit / glob / grep、persona、OpenViking 记忆插件全部保留。
+- **profile 瘦身**：`cordis.patch.yml` 关闭与创作无关的通用能力——`agent-instructions`（省 ~4.1k）、`tool-pwsh`（最大的单个工具 schema）、`workflow` / `subagent` / `subagent-fork` / `subagent-control` / `subagent-list-agents`、`todo` / `goal` / `jobs` / `ralph`、`plan-mode`、`web`、`skill` / `skill-filesystem`、`session-title-llm`；`novel_*` 工具与 read / write / edit / glob / grep、persona、OpenViking 记忆插件全部保留。这 17 条已用组合树对账验证「声明即生效、无静默失效」（见 `.p0-recon/README.md`）。
 - **冒烟测试扩至 32 组**：新增 `settings` 模式轻量装配断言（验证质量层不丢失）。
 
 ## v0.8.0 更新：上下文质量与性能
@@ -158,7 +177,7 @@ pnpm dsh --profile headless "只输出一行：你当前可用的全部工具名
 ## 卸载 / 回退
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Uninstall
+powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel -Uninstall
 ```
 
 - 删除 `~/.dsh/.agent-presets/novel-writing`（GUI preset）
