@@ -262,6 +262,13 @@ run('I4 端到端可查回（被裁层逐个实调端点）', process.execPath,
   ['.p1-baseline/verify-retrieval.mjs', BASE, DB, WORK, CHAPTER],
   { requires: () => hasBase && fs.existsSync(DB) });
 
+// ── 5b. 质量信号哨兵（需活实例；只读 GET，零计费）───────────────────────
+// 它衡量"你改了多少"（采纳率/编辑距离/体量），**不衡量"写得好不好"**。
+// 刻意只调端点而不自己写 SQL：汇总口径的唯一来源是 server.js 的 summarizeAIEval。
+run('质量信号哨兵（客观指标快照）', process.execPath,
+  ['.p1-baseline/quality-sentinel.mjs', '--base', BASE],
+  { requires: () => hasBase, skipReason: '需要活实例（哨兵复用服务端汇总口径，不自己写 SQL）' });
+
 run('主成文路径与创作内核同源（逐字节）', process.execPath,
   ['.p1-baseline/verify-p3-unified.mjs', BASE, DB, CHAPTER],
   { requires: () => hasBase && fs.existsSync(DB) });

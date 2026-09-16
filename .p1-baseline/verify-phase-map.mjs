@@ -192,6 +192,8 @@ export const PHASES = [
       'ai/task-settings.mjs',
       '.p1-baseline/test-task-settings.mjs',
       '.p1-baseline/exp-concurrent-models.mjs',
+      // D8-#8：质量信号哨兵（客观指标；只调端点不自己写 SQL）
+      '.p1-baseline/quality-sentinel.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
