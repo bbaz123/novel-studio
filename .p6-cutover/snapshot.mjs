@@ -9,7 +9,11 @@
  *
  * 这个工具做两件事：
  *   --create   生成快照：`git diff HEAD`（已跟踪改动）+ 未跟踪的**源码**文件 + manifest（逐文件 sha256）
- *   --verify   在**克隆出来的 HEAD 树**上套用快照，逐文件比对哈希，证明"快照确实能还原工作区"
+ *   --verify   在**快照记录的基线 commit**（manifest.head）导出的干净树上套用快照，做两级判定：
+ *                 A. 快照自洽（副本哈希与 manifest 相符）——**与工作区无关**，决定退出码；
+ *                 B. 是否仍与当前工作区逐字节一致——过期检测，只告警不判失败。
+ *               分开的理由：工作区后来又改过（甚至已提交）不该把一份**完好**的历史快照判成"损坏"；
+ *               而副本真损坏时，也绝不能因为"工作区恰好也没改"而被掩盖。
  *
  * 刻意**不**快照可再生的派生数据（基线 JSON、数据库副本、彩排临时树、黑洞日志）——
  * 它们体积大且在 manifest 里以「排除项 + 指纹」记录，不会被静默丢掉。
@@ -229,42 +233,77 @@ function verify(snapDir) {
   const say = (ok, text) => { if (!ok) bad++; console.log(`  ${ok ? '✓' : '✗'} ${text}`); };
   console.log(`═══ 验证快照 ═══\n快照：${path.relative(REPO, dir)}\n临时树：${scratchRel}\n`);
 
-  // 1) 用 HEAD 建一棵树（git archive，不碰工作区、不动 .git/worktrees）
+  // 1) 用**快照记录的基线 commit**（manifest.head）建一棵树。
+  // ⚠️ 原先用的是当前 HEAD，而打印文案写的是 manifest.head —— 在"重构未提交"的年代两者恰好相同，
+  // 所以看不出问题。D1 决定提交之后 HEAD 前进了，于是输出变成"已从 HEAD (ca1cdf96) 导出"
+  // 却把**新** HEAD 导了出来：所有补丁都"套用失败"、哈希大面积不符，看起来像快照坏了，
+  // 其实是**基线取错了**。快照的语义是「基线 + 本快照 = 快照时点的工作区」，基线必须取自 manifest。
+  const base = manifest.head || '';
+  const live = headCommit();
+  if (!base) {
+    say(false, 'manifest 没记录基线 commit，无法确定该套用到哪棵树上');
+    process.exit(1);
+  }
+  if (base !== live) {
+    console.log(`  · 快照记录的基线是 ${base.slice(0, 8)}，当前 HEAD 已是 ${live.slice(0, 8)}`
+      + `——快照取自更早时点，下面按**快照自己的基线**校验。\n`);
+  }
   try {
-    const tar = execFileSync('git', ['archive', 'HEAD'], { cwd: REPO, maxBuffer: 512 * 1024 * 1024 });
+    const tar = execFileSync('git', ['archive', base], { cwd: REPO, maxBuffer: 512 * 1024 * 1024 });
     execFileSync('tar', ['-xf', '-', '-C', scratch], { input: tar, maxBuffer: 512 * 1024 * 1024 });
-    say(true, `已从 HEAD (${manifest.head.slice(0, 8)}) 导出干净树`);
+    say(true, `已从快照记录的基线 (${base.slice(0, 8)}) 导出干净树`);
   } catch (e) {
-    say(false, `导出 HEAD 失败：${e.message}`);
+    say(false, `导出基线 ${base.slice(0, 8)} 失败（该 commit 还在仓库里吗？）：${String(e.stderr || e.message).slice(0, 200)}`);
     process.exit(1);
   }
 
-  // 2) 套用快照里的补丁（证明补丁本身可用；它同时是可读的改动证据）
+  // 2) 套用补丁（证明补丁本身可用、且与整文件副本同源；它同时是可读的改动证据）
+  // ⚠️ 空补丁必须跳过而不是套用：只含新增文件的快照（例如刚提交完就建快照）patchBytes=0，
+  // 而 `git apply` 对空文件会**报错**，于是整份完好的快照被误判成"套用失败"。
   const patchPath = path.join(dir, 'changes.patch');
-  try {
-    execFileSync('git', ['apply', '--directory', scratchRel, '--check', patchPath], { cwd: REPO, encoding: 'utf8' });
-    execFileSync('git', ['apply', '--directory', scratchRel, patchPath], { cwd: REPO, encoding: 'utf8' });
-    say(true, '已跟踪改动补丁套用成功（供 review/替代路径；未用它做字节级还原）');
-  } catch (e) {
-    say(false, `补丁套用失败：${String(e.stderr || e.message).slice(0, 300)}`);
+  if (!manifest.patchBytes) {
+    console.log('  · 快照没有记录已跟踪改动（空补丁），跳过补丁套用——字节级还原由 files/ 负责');
+  } else {
+    try {
+      execFileSync('git', ['apply', '--directory', scratchRel, '--check', patchPath], { cwd: REPO, encoding: 'utf8' });
+      execFileSync('git', ['apply', '--directory', scratchRel, patchPath], { cwd: REPO, encoding: 'utf8' });
+      say(true, '改动补丁对记录基线套用成功（供 review/替代路径；未用它做字节级还原）');
+    } catch (e) {
+      say(false, `补丁套用失败：${String(e.stderr || e.message).slice(0, 300)}`);
+    }
   }
 
-  // 3) 用整文件副本做**字节级**还原（新增 + 修改都覆盖一遍）
-  // 这一步才是"能回滚"的依据：补丁会被 core.autocrlf 改写行尾，副本不会。
+  // 3) 【判定 A · 快照自洽】整文件副本 vs manifest 记录的哈希。
+  // 这一步**与当前工作区无关**，所以它才是"能不能回到快照时点"的依据。
+  // 分开判定的理由：工作区后来改了代码（甚至已提交），不该把一份**完好的历史快照**判成"坏了"；
+  // 反过来，副本真的损坏时也绝不能被"工作区正好也没改"掩盖过去。
   const filesRoot = path.join(dir, 'files');
   const restorable = manifest.entries.filter((x) => x.kind === 'untracked-new' || x.kind === 'tracked-modified');
+  const broken = [];
+  for (const e of restorable) {
+    const src = path.join(filesRoot, e.path);
+    if (!fs.existsSync(src)) { broken.push(`${e.path}（副本缺失）`); continue; }
+    if (sha256File(src) !== e.sha256) broken.push(`${e.path}（副本与记录哈希不符）`);
+  }
+  say(broken.length === 0, `快照自洽：${restorable.length - broken.length}/${restorable.length} 个整文件副本与 manifest 哈希相符`);
+  for (const b of broken.slice(0, 10)) console.log(`      · ${b}`);
+  if (broken.length > 10) console.log(`      · …其余 ${broken.length - 10} 项`);
+
+  // 3b) 用整文件副本做**字节级**还原（新增 + 修改都覆盖一遍）
+  // 补丁会被 core.autocrlf 改写行尾，副本不会——所以"能还原"这件事由副本保证。
   let copied = 0;
   for (const e of restorable) {
     const src = path.join(filesRoot, e.path);
     const dst = path.join(scratch, e.path);
-    if (!fs.existsSync(src)) { say(false, `快照缺文件：${e.path}`); continue; }
+    if (!fs.existsSync(src)) continue;   // 已在上面计为损坏
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.copyFileSync(src, dst);
     copied++;
   }
-  say(copied === restorable.length, `整文件副本已还原（${copied}/${restorable.length} 个：新增 + 修改）`);
+  say(copied === restorable.length, `整文件副本已还原到基线树（${copied}/${restorable.length} 个：新增 + 修改）`);
 
-  // 4) 逐文件比对：快照树 vs 真实工作区
+  // 4) 【判定 B · 是否仍与当前工作区一致】这是**过期检测**，不是损坏检测——
+  // 不一致只说明"快照描述的是更早的工作区"，不说明快照不可用。
   let same = 0;
   const diffs = [];
   for (const e of manifest.entries) {
@@ -276,9 +315,15 @@ function verify(snapDir) {
     if (sha256File(inScratch) === sha256File(inWork)) same++;
     else diffs.push(`${e.path}（内容不一致）`);
   }
-  say(diffs.length === 0, `逐文件哈希一致：${same}/${manifest.entries.filter((e) => e.kind !== 'tracked-deleted').length}`);
-  for (const d of diffs.slice(0, 15)) console.log(`      · ${d}`);
-  if (diffs.length > 15) console.log(`      · …其余 ${diffs.length - 15} 项`);
+  const total = manifest.entries.filter((e) => e.kind !== 'tracked-deleted').length;
+  if (diffs.length === 0) {
+    console.log(`  ✓ 与当前工作区逐文件一致：${same}/${total}`);
+  } else {
+    console.log(`  ⚠ 与当前工作区不同：${diffs.length}/${total} 项 —— 快照描述的是 ${base.slice(0, 8)} 时点，`
+      + `之后工作区又改过；它仍是**可用**的历史还原点，但不是当前状态的回滚点。`);
+    for (const d of diffs.slice(0, 10)) console.log(`      · ${d}`);
+    if (diffs.length > 10) console.log(`      · …其余 ${diffs.length - 10} 项`);
+  }
 
   // 5) 过期检测：工作区里有没有快照**没覆盖**的源码文件。
   // 没有这一条，"快照可用"就只对生成那一刻成立——之后继续写代码的人会误以为仍然安全。
@@ -293,13 +338,21 @@ function verify(snapDir) {
   for (const rel of git(['diff', '--name-only', 'HEAD']).split('\n').map((s) => s.trim()).filter(Boolean)) {
     if (!inManifest.has(rel)) stale.push(rel);
   }
-  say(stale.length === 0, stale.length
-    ? `快照已过期：工作区有 ${stale.length} 个文件不在快照里（快照只对生成那一刻成立）`
-    : '无快照未覆盖的新文件（快照不过期）');
-  for (const s of stale.slice(0, 10)) console.log(`      · ${s}`);
+  if (stale.length === 0) {
+    console.log('  ✓ 无快照未覆盖的新文件（快照不过期）');
+  } else {
+    console.log(`  ⚠ 快照未覆盖工作区里的 ${stale.length} 个文件（快照只对生成那一刻成立）`);
+    for (const s of stale.slice(0, 10)) console.log(`      · ${s}`);
+  }
 
   fs.rmSync(scratch, { recursive: true, force: true });
-  console.log(`\n${bad ? `✗ 快照未能完整还原（${bad} 处问题）` : '✓ 快照可完整还原当前工作区（已删除临时树）'}`);
+  // 退出码只反映**判定 A**（快照自身是否完好）。
+  // B 与"未覆盖"是过期信息：把它们算成失败会让"提交之后"的正常局面看起来像回滚能力坏了。
+  console.log(`\n${bad
+    ? `✗ 快照损坏（${bad} 处），不可依赖`
+    : (diffs.length === 0 && stale.length === 0
+      ? '✓ 快照自洽，且与当前工作区完全一致（已删除临时树）'
+      : `✓ 快照自洽：可还原到 ${base.slice(0, 8)} 时点（已删除临时树）；⚠ 它不是当前工作区的回滚点，见上面 ⚠`) }`);
   process.exitCode = bad ? 1 : 0;
 }
 

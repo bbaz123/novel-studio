@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isExcluded, fingerprintDir, sha256File, EXCLUDES } from './snapshot.mjs';
+import { isExcluded, fingerprintDir, sha256File, EXCLUDES, REPO, headCommit } from './snapshot.mjs';
 
 let pass = 0;
 const fails = [];
@@ -115,6 +115,60 @@ console.log('\n【5. 已有快照的 manifest 自洽（没有就跳过）】');
         fs.existsSync(p) && sha256File(p) === sample.sha256, sample.path);
     }
   }
+}
+
+console.log('\n【6. --verify 的两级判定与阴性对照（每个新判定都要能证明它会失败）】');
+{
+  // 判定 A = 快照自洽（副本 vs manifest 哈希），与工作区无关，决定退出码；
+  // 判定 B = 是否仍与当前工作区一致，只告警。
+  // 这里造一份**合成快照**，分别制造"只 B 不成立"和"A 不成立"两种局面。
+  const { execFileSync } = await import('node:child_process');
+  const head = headCommit();
+  const target = 'docs/README.md';
+  const workContent = fs.readFileSync(path.join(REPO, target));
+  const runVerify = (snapDir) => {
+    try {
+      const out = execFileSync(process.execPath, ['snapshot.mjs', '--verify', snapDir],
+        { cwd: path.join(REPO, '.p6-cutover'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return { code: 0, out };
+    } catch (e) {
+      return { code: e.status ?? -1, out: String(e.stdout || '') + String(e.stderr || '') };
+    }
+  };
+  const makeSnap = (dir, copyBuf, declaredSha) => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(dir, 'files', path.dirname(target)), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'files', target), copyBuf);
+    fs.writeFileSync(path.join(dir, 'changes.patch'), '');   // 空补丁：本组只测哈希判定
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
+      createdAt: new Date().toISOString(), head, coreAutocrlf: '', patchBytes: 0, patchSha256: '',
+      restoreNote: 'x', entries: [{ path: target, kind: 'tracked-modified', sha256: declaredSha, size: copyBuf.length }],
+      excluded: [], skippedFiles: [],
+    }, null, 2));
+  };
+
+  const tmpRoot = path.join(REPO, '.p6-cutover', '.verify', 'negctl');
+  const snapStale = path.join(tmpRoot, 'stale');
+  const snapBroken = path.join(tmpRoot, 'broken');
+
+  // 对照 1：副本与 manifest 自洽（A ✓），但与工作区不同（B ✗）→ 必须 exit 0
+  const { createHash } = await import('node:crypto');
+  const sha = (buf) => createHash('sha256').update(buf).digest('hex');
+  const altered = Buffer.concat([workContent, Buffer.from('\n// negctl\n')]);
+  makeSnap(snapStale, altered, sha(altered));
+  const r1 = runVerify('.p6-cutover/.verify/negctl/stale');
+  ok('对照1：仅"与工作区不同"时判为过期、退出码 0（不把完好的历史快照判成损坏）',
+    r1.code === 0 && /与当前工作区不同/.test(r1.out) && /快照自洽/.test(r1.out),
+    `exit=${r1.code}`);
+
+  // 对照 2：副本与 manifest **不符**（A ✗）→ 必须 exit 1
+  makeSnap(snapBroken, altered, 'f'.repeat(64));
+  const r2 = runVerify('.p6-cutover/.verify/negctl/broken');
+  ok('对照2：副本哈希不符时判为损坏、退出码 1（真损坏不会被"工作区恰好没改"掩盖）',
+    r2.code === 1 && /快照损坏/.test(r2.out) && /副本与记录哈希不符/.test(r2.out),
+    `exit=${r2.code} out=${r2.out.slice(-120)}`);
+
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
 }
 
 console.log(`\n══════════════════════════════`);
