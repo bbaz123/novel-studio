@@ -112,10 +112,23 @@ console.log('\n【6. 与调用点的一致性（静态）】');
   const srv = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
   ok('调用点用的是这个纯函数（不是另写一份判断）',
     /const needsSettingsSwitch = requiresModelSwitchGate\(options\.model, reasoningEffort\);/.test(src));
-  ok('不需要切换时**不**进互斥（否则吞吐会无条件退化成 1）',
-    /return needsSettingsSwitch \? withModelSwitch\(runTask\) : runTask\(\);/.test(src));
+  // 决策 D8-#2 改写了这里的契约：进不进互斥不再等于"要不要切模型"，
+  // 而是"**有没有成功建起每任务独立 settings**"。走 --patch 的任务不碰全局状态，
+  // 所以可以真并行；只有回退路径才需要串行化。
+  ok('进互斥的条件是 willSerialize，而不是 needsSettingsSwitch（否则吞吐仍被无条件压成 1）',
+    /return willSerialize \? withModelSwitch\(runTask\) : runTask\(\);/.test(src));
+  ok('willSerialize 只对"回退路径"为真（needsSettingsSwitch 且没建起每任务 settings）',
+    /const willSerialize = needsSettingsSwitch && !taskSettings;/.test(src));
+  ok('决策发生在**上报排队之前**（否则会对不需要排队的任务谎报"在排队"）',
+    src.indexOf('const willSerialize =') > 0
+    && src.indexOf('const willSerialize =') < src.indexOf("onPhase('waiting-model'"));
   ok('排队判断走的是可单测的纯函数（不是内联条件）',
-    /willWaitForModelSlot\(needsSettingsSwitch\)/.test(src));
+    /willWaitForModelSlot\(willSerialize\)/.test(src));
+  ok('每任务 settings 建立失败时回退到全局改写（可用性不因这次优化变差）',
+    /materializeTaskSettings\(\{ model: options\.model, reasoningEffort \}\)/.test(src)
+    && /needsSettingsSwitch && !taskSettings && originalSettings != null/.test(src));
+  ok('临时目录一定会被清理（里面是用户 settings 的副本）',
+    /cleanupTaskSettings\(taskSettings\)/.test(src));
   ok('开跑时会再上报一次 running（界面据此切回正常）',
     /options\.onPhase\('running'/.test(src));
   ok('作业设施接上了 onPhase 并把等待写进 stage',

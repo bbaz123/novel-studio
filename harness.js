@@ -10,6 +10,7 @@ import { log, readableErrorMessage } from './logger.js';
 import { traceHarness, traceNow } from './debug-trace.js';
 import { EFFORTS } from './ai/policy.mjs';
 import { harnessChildEnv } from './ai/harness-env.mjs';
+import { buildSettingsRedirectPatch, buildTaskArgs, TASK_SETTINGS_PREFIX } from './ai/task-settings.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -385,6 +386,48 @@ export function willWaitForModelSlot(takesSlot) {
   return Boolean(takesSlot) && (modelSwitchBusy || modelSwitchWaiters > 0);
 }
 
+/**
+ * 决策 D8-#2：为本任务物化一份**独立**的 settings 文档 + 指向它的补丁层。
+ *
+ * 成功（返回对象）→ 该任务不需要改写全局 settings，因此**不需要互斥**，可以真并行。
+ * 失败（返回 null）→ 调用方回退到旧的「全局改写 + 互斥」路径，行为与历史一致。
+ * 之所以保留回退而不是"失败就让任务挂掉"：读不到 settings 时历史行为是
+ * 告警后继续跑（settings_patch_skipped），不该因为这次优化把可用性变差。
+ *
+ * @returns {{dir:string, settingsPath:string, patchPath:string}|null}
+ */
+function materializeTaskSettings({ model, reasoningEffort }) {
+  try {
+    const original = readSettings();
+    if (original == null) return null;
+    const content = patchAgentDefault(original, { model, reasoningEffort });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), TASK_SETTINGS_PREFIX));
+    const settingsPath = path.join(dir, 'settings.yaml');
+    const patchPath = path.join(dir, 'redirect-settings.patch.yml');
+    // 整份拷贝而不是只写 agent-default-model 分节：settings 里还可能有提供方/路由配置，
+    // 少写一段就会让子进程的模型解析与全局不一致（那是很难查的"只在某台机器上复现"）。
+    fs.writeFileSync(settingsPath, content, 'utf8');
+    fs.writeFileSync(patchPath, buildSettingsRedirectPatch(settingsPath), 'utf8');
+    return { dir, settingsPath, patchPath };
+  } catch (e) {
+    log({
+      level: 'warn', layer: 'harness', kind: 'task_settings_failed',
+      message: `每任务独立 settings 建立失败，回退到全局改写 + 互斥：${e.message}`
+    });
+    return null;
+  }
+}
+
+/** 清掉每任务 settings 的临时目录（失败只记日志，不影响任务结果）。 */
+function cleanupTaskSettings(taskSettings) {
+  if (!taskSettings) return;
+  try {
+    fs.rmSync(taskSettings.dir, { recursive: true, force: true });
+  } catch (e) {
+    log({ level: 'warn', layer: 'harness', kind: 'task_settings_cleanup_failed', message: `每任务 settings 临时目录清理失败：${e.message}` });
+  }
+}
+
 export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) {
   if (!isHarnessAvailable()) {
     throw new Error(`未找到 deepseek-harness：${HARNESS_DIR}`);
@@ -412,27 +455,41 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
   if (options.reasoningEffort && !reasoningEffort) {
     throw new Error(`非法思考强度：仅允许 ${REASONING_EFFORTS.join(' / ')}`);
   }
-  // 两者任一需要改写 settings.yaml 就要串行化；都不需要则允许并行（HA-04）。
+  // 两者任一需要改写 settings.yaml 才需要切换；都不需要则允许并行（HA-04）。
   const needsSettingsSwitch = requiresModelSwitchGate(options.model, reasoningEffort);
 
-  // 可观测性（决策 D4）：需要改 settings 且槽位已被占时，**先如实上报"在排队"**，
+  // 决策 D8-#2：先物化「每任务独立 settings」。
+  // ⚠️ 这一步必须在**上报"在排队"之前**做：若本任务其实不需要互斥（因为它不碰全局文件），
+  // 却先报了 waiting-model，那正是 D4 要消灭的那种谎——只不过方向反了过来。
+  const taskSettings = needsSettingsSwitch
+    ? materializeTaskSettings({ model: options.model, reasoningEffort })
+    : null;
+  // 只有**回退路径**才真的会去抢全局槽位。
+  const willSerialize = needsSettingsSwitch && !taskSettings;
+
+  // 可观测性（决策 D4）：会抢全局槽位、且槽位已被占时，**先如实上报"在排队"**，
   // 而不是让调用方一直显示"运行中"。真正开跑时再报一次 'running'。
-  if (typeof options.onPhase === 'function' && willWaitForModelSlot(needsSettingsSwitch)) {
+  if (typeof options.onPhase === 'function' && willWaitForModelSlot(willSerialize)) {
     try { options.onPhase('waiting-model', { waiters: modelSwitchWaiters + 1 }); } catch { /* 上报失败不影响任务 */ }
   }
 
   const runTask = async () => {
-    // 真正开跑的时点（已拿到模型槽位）。用于把界面从"等待模型槽位"切回正常。
+    // 真正开跑的时点（已拿到模型槽位，或确认根本不需要槽位）。
+    // 用于把界面从"等待模型槽位"切回正常。
     if (typeof options.onPhase === 'function') {
       try { options.onPhase('running', {}); } catch { /* 上报失败不影响任务 */ }
     }
-    const originalSettings = readSettings();
+    // 回退路径才改写全局文件；走每任务 settings 时这两个变量保持原样。
+    let originalSettings = null;
     let patched = false;
     let patchedContent = null;
-    if (needsSettingsSwitch && originalSettings == null) {
+    if (needsSettingsSwitch && !taskSettings) {
+      originalSettings = readSettings();
+    }
+    if (needsSettingsSwitch && !taskSettings && originalSettings == null) {
       log({ level: 'warn', layer: 'harness', kind: 'settings_patch_skipped', message: '无法读取 settings.yaml，模型/强度切换被跳过（将以默认设置运行）' });
     }
-    if (needsSettingsSwitch && originalSettings != null) {
+    if (needsSettingsSwitch && !taskSettings && originalSettings != null) {
       try {
         patchedContent = patchAgentDefault(originalSettings, { model: options.model, reasoningEffort });
         if (patchedContent !== originalSettings) {
@@ -474,7 +531,14 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           reject(new Error('未找到 dsh 启动方式（无 scripts.dsh 且未找到 pnpm 的 corepack 入口），无法运行 dsh 任务'));
           return;
         }
-        const taskArgs = ['--profile', DSH_PROFILE, String(prompt || '').trim()];
+        // 决策 D8-#2：走每任务独立 settings 时，用 `--patch` 把本子进程的 settings 文档
+        // 指过去——全局文件一个字节都不动，因此多个任务可以真并行。
+        // 参数顺序由 ai/task-settings.mjs 的纯函数保证（选项必须在任务文本之前）。
+        const taskArgs = buildTaskArgs({
+          profile: DSH_PROFILE,
+          prompt,
+          patchPath: taskSettings ? taskSettings.patchPath : null,
+        });
         const spawnArgs = launch ? [...launch.args, ...taskArgs] : [pnpmJs, 'dsh', ...taskArgs];
         const spawnCwd = launch ? launch.cwd : HARNESS_DIR;
         const childEnv = harnessChildEnv({ peerId: OPENVIKING_PEER_ID, env: options.env });
@@ -583,7 +647,9 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
         });
       });
     } finally {
-      // CAS 还原：文件仍等于我们写入的内容时才恢复，避免覆盖并发/手改内容。
+      // 每任务 settings 的临时目录：无论成败都要清掉（里面是用户 settings 的副本）。
+      cleanupTaskSettings(taskSettings);
+      // CAS 还原（**仅回退路径**）：文件仍等于我们写入的内容时才恢复，避免覆盖并发/手改内容。
       if (patched && patchedContent != null) {
         try {
           if (readSettings() === patchedContent) {
@@ -597,8 +663,9 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
       }
     }
   };
-  // 仅需改写 settings.yaml 的任务串行化（全局副作用）；既不切模型也不切强度的任务并行执行（HA-04）。
-  return needsSettingsSwitch ? withModelSwitch(runTask) : runTask();
+  // 决策 D8-#2：只有**回退路径**（没能建起每任务 settings）才需要串行化。
+  // 走 `--patch` 的任务不碰任何全局状态，可以真并行——这正是吞吐从 1 回到 2 的原因。
+  return willSerialize ? withModelSwitch(runTask) : runTask();
 }
 
 /**

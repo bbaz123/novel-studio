@@ -188,6 +188,10 @@ export const PHASES = [
       '.p1-baseline/revert-matrix.mjs',
       // D8-#7 的补证探针：确认外部信号 ov_indexed_at 在真实库里确实有值
       '.p1-baseline/probe-ov-indexed-at.mjs',
+      // D8-#2：每任务独立 settings 的内核模块与两条证据（离线单测 + 并发端到端实验）
+      'ai/task-settings.mjs',
+      '.p1-baseline/test-task-settings.mjs',
+      '.p1-baseline/exp-concurrent-models.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
