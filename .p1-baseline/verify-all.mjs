@@ -173,6 +173,10 @@ run('AI 全分支核对（0 处绕过策略）', process.execPath, ['.p1-baselin
 run('插件工具面与版本一致', process.execPath, ['.p1-baseline/verify-plugin-tools.mjs']);
 // D8-#5：召回层不可用时不得静默消失（缺口判据真值表 + 变异体阴性对照 + 三处接线同源）
 run('召回缺口不得静默（占位层与端点同源）', process.execPath, ['.p1-baseline/test-recall-gap.mjs']);
+// D8-#6：「建完立刻删」不得留下孤儿记忆目录（真实时序 + 摘掉闸门的阴性对照）
+run('同步闸门（在途同步 vs 移除的竞态）', process.execPath, ['.p1-baseline/test-sync-gate.mjs']);
+// D8-#7：上下文缓存按"输入有没有变"失效，而不是靠时间猜（含修复前行为的阴性对照）
+run('上下文缓存按外部状态失效', process.execPath, ['.p1-baseline/test-context-cache.mjs']);
 
 // ── 4b. I4 的**静态**保证：可截断层必须真有查回路径（零成本，默认跑）────────
 // 端到端那条（verify-retrieval）是数据相关的：只查"当前数据里实际被裁的层"。

@@ -25,6 +25,7 @@
 | **P4** | 通道收敛 + 单点策略表 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **P5** | 记忆语义压缩 + 效果埋点 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **P6** | 一次性切换（工具就绪，**未执行**） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **D8** | 不足清单修复（D8-#1…#8） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **X** | 跨阶段：总纲与工具入口 | 🟡 可单独撤，但会让若干验收工具失效（需同步修） |
 
 **可独立回滚的阶段：（无）。**仅会让验收工具失效的：X。其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
@@ -81,7 +82,7 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - ai/context/layers.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
-  - ai/context/layers.mjs 被 .p1-baseline/test-recall-gap.mjs（验收工具，X）import——撤掉会让该工具失效
+  - ai/context/layers.mjs 被 .p1-baseline/test-recall-gap.mjs（验收工具，D8）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-all.mjs（验收工具，X）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-invariants.mjs（验收工具，P2）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-layer-constants.mjs（验收工具，X）import——撤掉会让该工具失效
@@ -160,6 +161,7 @@
 - **阻断原因（推导得出）**：
   - ai/edit-distance.mjs 被**生产代码** server.js（P2/P3/P4）import——撤掉会打断线上路径
   - db.js 被 .p1-baseline/probe-recall-direct.mjs（验收工具，P1）import——撤掉会让该工具失效
+  - db.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
   - db.js 被**生产代码** server.js（P2/P3/P4）import——撤掉会打断线上路径
   - 文件 public/app.js 同时属于 P3/P4/P5——改动改在同一批代码里，撤不干净
   - 文件 server.js 同时属于 P2/P3/P4/P5——改动改在同一批代码里，撤不干净
@@ -195,15 +197,34 @@
   - `docs/p6-cutover-runbook.md`
   - `docs/self-review-p0-p6.md`
 
+### D8 · 不足清单修复（D8-#1…#8）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - ai/context/cache.mjs 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
+  - openviking-sync.js 被 .p1-baseline/probe-recall-direct.mjs（验收工具，P1）import——撤掉会让该工具失效
+  - openviking-sync.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
+- **说明**：D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。
+- **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`
+- **本阶段认领的文件**（7 个）：
+  - `.p1-baseline/exp-per-task-settings.mjs`
+  - `.p1-baseline/test-context-cache.mjs`
+  - `.p1-baseline/test-recall-gap.mjs`
+  - `.p1-baseline/test-sync-gate.mjs`
+  - `ai/context/cache.mjs`
+  - `ai/sync-gate.mjs`
+  - `openviking-sync.js`
+
 ### X · 跨阶段：总纲与工具入口
 
 - **回滚方式**：可单独撤，但会让若干验收工具失效（需同步修）
 - **阻断原因（推导得出）**：
   - .p1-baseline/audit-llm-calls.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0）import——撤掉会让该工具失效
   - .p1-baseline/blackhole.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0）import——撤掉会让该工具失效
+  - .p1-baseline/blackhole.mjs 被 .p1-baseline/exp-per-task-settings.mjs（验收工具，D8）import——撤掉会让该工具失效
 - **说明**：验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——但注意 X 内部彼此 import（verify-all ↔ 各工具），且被 .p0-recon 的线路层工具引用。
 - **验收证据**：`.p1-baseline/verify-all.mjs`、`.p1-baseline/README.md`、`docs/README.md`
-- **本阶段认领的文件**（32 个）：
+- **本阶段认领的文件**（30 个）：
   - `.p1-baseline/.gitignore`
   - `.p1-baseline/README.md`
   - `.p1-baseline/audit-llm-calls.mjs`
@@ -212,7 +233,6 @@
   - `.p1-baseline/compare-memory-hint.mjs`
   - `.p1-baseline/diff-log-noise.mjs`
   - `.p1-baseline/diff-real-db.mjs`
-  - `.p1-baseline/exp-per-task-settings.mjs`
   - `.p1-baseline/gate-env.mjs`
   - `.p1-baseline/incident-evidence-app-log-2026-09-15.md`
   - `.p1-baseline/incident-evidence-app-log-2026-09-15.raw.txt`
@@ -220,7 +240,6 @@
   - `.p1-baseline/read-dsh-session.mjs`
   - `.p1-baseline/test-gate-assert.mjs`
   - `.p1-baseline/test-harness-env.mjs`
-  - `.p1-baseline/test-recall-gap.mjs`
   - `.p1-baseline/verify-all.mjs`
   - `.p1-baseline/verify-harness-gate.mjs`
   - `.p1-baseline/verify-layer-constants.mjs`
@@ -239,7 +258,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**111** 个文件
+- 真实改动集：**116** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

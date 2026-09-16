@@ -173,6 +173,27 @@ export const PHASES = [
       + ' harness.js 的默认 profile 仍是 headless（未切换）。',
   },
   {
+    id: 'D8',
+    title: '不足清单修复（D8-#1…#8）',
+    files: [
+      // 这一条是 D8 独有的生产文件：`openviking-sync.js` 此前不属于任何阶段。
+      'openviking-sync.js',
+      'ai/sync-gate.mjs',
+      'ai/context/cache.mjs',
+      '.p1-baseline/exp-per-task-settings.mjs',
+      '.p1-baseline/test-recall-gap.mjs',
+      '.p1-baseline/test-sync-gate.mjs',
+      '.p1-baseline/test-context-cache.mjs',
+    ],
+    evidence: [
+      '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
+      '.p1-baseline/test-context-cache.mjs', '.p1-baseline/exp-per-task-settings.mjs',
+    ],
+    note: 'D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，'
+      + 'ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。'
+      + ' 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。',
+  },
+  {
     id: 'X',
     title: '跨阶段：总纲与工具入口',
     files: [
@@ -210,10 +231,6 @@ export const PHASES = [
       '.p1-baseline/verify-model-slot.mjs',
       // 主实例重启后的对照检查（只读、零计费）：证明"代码提交了"≠"实例生效了"。
       '.p1-baseline/verify-main-instance.mjs',
-      // 决策 D8-#2 的前置实验：证明 --patch 能重定向单个任务的 settings 文档。
-      '.p1-baseline/exp-per-task-settings.mjs',
-      // 决策 D8-#5 的离线单测：召回层不可用时不得静默消失（含变异体阴性对照）。
-      '.p1-baseline/test-recall-gap.mjs',
     ],
     evidence: ['.p1-baseline/verify-all.mjs', '.p1-baseline/README.md', 'docs/README.md'],
     note: '验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——'

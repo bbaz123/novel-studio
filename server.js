@@ -10,6 +10,7 @@ import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, 
 import { ovClient, pendingQueueLength } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
+import { createContextCache } from './ai/context/cache.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -175,39 +176,35 @@ const prepare = prepareTraced(function prepareStatement(sql) {
 // 所有写操作都会经 touchWork() 递增版本号，使缓存整体失效（单用户本地应用，全局失效足够）；
 // 缓存只作用于 buildNovelContext 的（work, chapter, mode）结果，命中时跳过全部 SQL 装配。
 //
-// ⚠️ P2 补上时间上界：版本号**只在写操作时前进**，而装配结果里有一层的可用性
+// ⚠️ P2 曾补上 120 秒时间上界：版本号**只在写操作时前进**，而装配结果里有一层的可用性
 // 与「写」无关——语义召回层。建索引完成、OpenViking 重新上线，都不会触发写操作，
 // 于是「索引还没建完时算出的 no-hits」会被无限期缓存。
 // 实证（P1 发现 F4）：同一个请求在重启实例前后分别返回 23,275 / 24,738 字，
-// 召回层从「不存在」变成「存在」。加 TTL 把这类陈旧结果限制在有界时间内。
-let CONTEXT_DATA_VERSION = 0;
-const CONTEXT_CACHE = new Map();
-const CONTEXT_CACHE_MAX = 64;
+// 召回层从「不存在」变成「存在」。
+//
+// 决策 D8-#7：那个 TTL 是**靠猜**（任意改动后最多陈旧 2 分钟）。而"索引完成"其实有明确的
+// 可观测信号——`syncWorkFull` 成功后会写 `ov_indexed_at:<workId>`。现在把它纳入缓存版本：
+// 索引一完成，相关缓存**立刻**失效；TTL 退回纯兜底（默认 10 分钟），只防"没人通知我们"。
+// 实现见 ai/context/cache.mjs（独立模块，可离线单测，含阴性对照）。
 const CONTEXT_CACHE_TTL_MS = Number(process.env.NOVELSTUDIO_CONTEXT_CACHE_TTL_MS) > 0
   ? Number(process.env.NOVELSTUDIO_CONTEXT_CACHE_TTL_MS)
-  : 120000;
+  : 600000;
 
-function cacheGetContext(key) {
-  const hit = CONTEXT_CACHE.get(key);
-  if (hit && hit.version === CONTEXT_DATA_VERSION && Date.now() - hit.at < CONTEXT_CACHE_TTL_MS) {
-    CONTEXT_CACHE.delete(key);
-    CONTEXT_CACHE.set(key, hit); // LRU：命中移到队尾
-    return hit.ctx;
-  }
-  if (hit) CONTEXT_CACHE.delete(key);
-  return undefined;
-}
+const contextCache = createContextCache({
+  ttlMs: CONTEXT_CACHE_TTL_MS,
+  // 外部可观测状态：该作品的记忆库索引时间戳。变化即"输入变了"，缓存必须失效。
+  // 读不到（表缺失/异常）时退化为空串——即纯进程内版本，不会把功能整体打挂。
+  externalVersionOf: (workId) => {
+    try { return getAppSettingDb(`ov_indexed_at:${workId}`, ''); } catch { return ''; }
+  },
+});
 
-function cacheSetContext(key, ctx) {
-  CONTEXT_CACHE.set(key, { version: CONTEXT_DATA_VERSION, at: Date.now(), ctx });
-  while (CONTEXT_CACHE.size > CONTEXT_CACHE_MAX) {
-    const oldest = CONTEXT_CACHE.keys().next().value;
-    CONTEXT_CACHE.delete(oldest);
-  }
-}
+const cacheGetContext = (key, workId) => contextCache.get(key, workId);
+const cacheSetContext = (key, ctx, workId) => contextCache.set(key, ctx, workId);
 
 function touchWork(workId) {
-  CONTEXT_DATA_VERSION += 1;
+  // D8-#7：进程内数据变更 → 整体作废缓存（外部状态那部分由 cache.mjs 自行比对）。
+  contextCache.invalidateAll();
   try {
     prepare('UPDATE works SET updated_at = ? WHERE id = ?').run(now(), workId);
   } catch (e) {
@@ -3184,10 +3181,10 @@ async function handleAPI(req, res, pathname, query) {
 
     // 预算内的分层装配：与 /api/novel/context 共用同一份缓存与实现（契约 I5/I6）
     const cacheKey = `novel:${workId}:${chapterId}:full`;
-    let budgeted = cacheGetContext(cacheKey);
+    let budgeted = cacheGetContext(cacheKey, workId);
     if (budgeted === undefined) {
       budgeted = await buildNovelContext(workId, chapterId, 'full');
-      if (budgeted) cacheSetContext(cacheKey, budgeted);
+      if (budgeted) cacheSetContext(cacheKey, budgeted, workId);
     }
 
     return sendJSON(res, 200, {
@@ -3279,12 +3276,12 @@ async function handleAPI(req, res, pathname, query) {
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const chapterId = Number(query.chapter_id) || null;
     const mode = asString(query.mode, 'full');
-    // 装配结果缓存：任何写操作（touchWork）都会使版本号前进、缓存整体失效。
+    // 装配结果缓存：进程内写操作（touchWork）整体作废；记忆库索引完成由外部状态触发失效。
     const cacheKey = `novel:${workId}:${chapterId || 0}:${mode}`;
-    let ctx = cacheGetContext(cacheKey);
+    let ctx = cacheGetContext(cacheKey, workId);
     if (ctx === undefined) {
       ctx = await buildNovelContext(workId, chapterId, mode);
-      if (ctx) cacheSetContext(cacheKey, ctx);
+      if (ctx) cacheSetContext(cacheKey, ctx, workId);
     }
     if (!ctx) return sendError(res, 404, '作品不存在');
     return sendJSON(res, 200, ctx);

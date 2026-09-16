@@ -20,6 +20,7 @@ import { ovClient, enqueueOpenVikingOp, clearQueuedOpForUri, clearQueuedOpsForWo
 import { log, timedAsync } from './logger.js';
 import { traceFn } from './debug-trace.js';
 import { htmlToPlain } from './text-utils.js';
+import { createSyncGate } from './ai/sync-gate.mjs';
 
 // 协议前缀运行时拼接（避免源码中出现的字面 URI 触发 dsh 的 URI 防护误判）。
 const OV_PROTO = 'viking:' + '//';
@@ -355,12 +356,21 @@ export function collectWorkOperations(workId) {
   return { workId, work, ops };
 }
 
+// D8-#6：同一作品的「在途同步」与「移除」之间的顺序闸（实现见 ai/sync-gate.mjs）。
+// 为什么放在这一层而不是让调用点各自记得 await：`syncWorkFull` / `removeWorkFromMemory`
+// 在 server.js 里有六个 fire-and-forget 调用点——指望它们都记得，等于没修。
+const gate = createSyncGate();
+
 export async function syncWorkFull(workId) {
   if (OV_DISABLED) return { ok: false, reason: '集成已禁用' };
   const collected = collectWorkOperations(workId);
   if (!collected) return { ok: false, reason: '作品不存在' };
-  return timedAsync('sync', `全量同步（work ${workId}）`, async () => {
+  const job = timedAsync('sync', `全量同步（work ${workId}）`, async () => {
     const { ops } = collected;
+    // D8-#6：本作品已被请求移除时立刻停手——不要往一个正在被删的目录里写。
+    // 这是「建完立刻删」留下孤儿目录的直接原因：同步要跑几十个串行请求（生产约 30 秒），
+    // 删除早就完成了，剩下的文件却还在写。
+    if (gate.shouldStop(workId)) return { ok: false, files: ops.length, wrote: 0, aborted: true };
     const metaOp = ops.find((o) => o.uri.endsWith('/meta.md'));
     // N-04：先写 meta.md 创建目录；其余文件逐条走 write（replace，幂等）。
     // 不再使用 batch-write：当前 OpenViking 服务端的 batch 对「尚不存在的目标文件」返回 404
@@ -369,6 +379,8 @@ export async function syncWorkFull(workId) {
     const rest = ops.filter((o) => o !== metaOp);
     let wrote = first.ok ? 1 : 0;
     for (const op of rest) {
+      // 每条写之前都问一次：作品可能就在这几十秒里被删掉了。
+      if (gate.shouldStop(workId)) return { ok: false, files: ops.length, wrote, aborted: true };
       const r = await ovClient.write(op.uri, op.content || '', { wait: false });
       if (r.ok) wrote += 1;
       else enqueueOpenVikingOp({ kind: 'write', uri: op.uri, content: op.content || '' });
@@ -382,6 +394,8 @@ export async function syncWorkFull(workId) {
     }
     return { ok: allOk, files: ops.length, wrote };
   }, 3000);
+  // 登记在途任务：移除流程会先等它收手，再删目录。
+  return gate.register(workId, job);
 }
 
 // 🐞 运行追踪：全量同步是逐文件串行 HTTP 写，最慢的一条链路，单独成函数级节点。
@@ -389,8 +403,34 @@ syncWorkFull = traceFn('syncWorkFull（记忆库全量同步）', syncWorkFull, 
 
 export async function removeWorkFromMemory(workId) {
   if (OV_DISABLED) return false;
-  setAppSetting(`ov_indexed_at:${workId}`, '');
-  return safeRemove(workDir(workId), true);
+  try {
+    // D8-#6：**先举旗、再等在途同步收手，然后才删目录**。
+    // 只"等"不收手是不够的：同步仍会把几十个文件写完，删除照样排在它后面。
+    const { drained } = await gate.cancelAndDrain(workId);
+    if (!drained) {
+      log({
+        level: 'warn', layer: 'sync', kind: 'sync_remove_blocked',
+        message: `作品目录移除前仍有在途同步未收手（work ${workId}）——继续移除，但可能留下孤儿文件`,
+        context: { work_id: workId }
+      });
+    }
+    setAppSetting(`ov_indexed_at:${workId}`, '');
+    const dir = workDir(workId);
+    const removed = await safeRemove(dir, true);
+    // D3 发现生产记忆库里有 183 个孤儿目录，而**没有任何一条日志提示过**。
+    // 移除失败会进重试队列，但那对使用者不可见——这里必须出声。
+    if (!removed) {
+      log({
+        level: 'warn', layer: 'sync', kind: 'sync_remove_failed',
+        message: `作品目录移除失败（work ${workId}）：${dir}——已进重试队列；若反复出现请检查 OpenViking 服务`,
+        context: { work_id: workId, uri: dir }
+      });
+    }
+    return removed;
+  } finally {
+    // 旗子必须撤：作品 id 可能被复用（删掉再建），旧旗子会误伤新作品的第一轮同步。
+    gate.release(workId);
+  }
 }
 
 // ---------- 启动时自动建索引（只补缺/过期，全量同步本身幂等） ----------
