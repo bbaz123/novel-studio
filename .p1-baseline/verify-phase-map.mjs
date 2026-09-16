@@ -200,6 +200,8 @@ export const PHASES = [
       'ai/memory-compress-guard.mjs',
       '.p1-baseline/test-memory-compress-guard.mjs',
       '.p1-baseline/probe-entity-variants.mjs',
+      // D8-#3：自动压缩开关的验收（含"不打开不花钱"的阴性对照）
+      '.p1-baseline/verify-auto-compress.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',

@@ -1087,6 +1087,9 @@ function getStoryMemory(workId) {
 
 // 长期记忆超过该字数时标记 needs_compression，提示创作上下文里让 AI 优先压缩。
 const MEMORY_COMPRESS_HINT = 1200;
+// D8-#3：自动压缩的开关键（app_settings）。**默认关闭**——打开会真的产生 API 费用：
+// 实测单次压缩模型产出 5.6k~22k 字（含推理，同样计费）。约束是"付费调用需先取得许可"。
+const MEMORY_AUTO_COMPRESS_KEY = 'memory_auto_compress';
 // 每个作品最多保留的历史版本数：超出自动剪除最旧的，防止 memory_versions 无限膨胀。
 const MEMORY_VERSION_KEEP = 200;
 
@@ -2984,8 +2987,56 @@ function createHarnessJob(prompt, options) {
   return job;
 }
 
-// ---------- 路由入口 ----------
-// 统一处理 /api 下的请求：搜索、统计、AI、历史版本、关闭服务、通用 CRUD。
+/**
+ * D8-#3：记忆自动压缩（**默认关闭**）。
+ *
+ * 为什么默认关闭：它会真的产生 API 费用——2026-09-16 两次真实调用实测，
+ * 任务是"生成不超过 800 字的摘要"，模型实际产出 5.6k~22k 字（差额是推理输出，**同样计费**）。
+ * 用户的既有约束是「付费调用需先取得许可」，所以这里默认 '0'：不打开就一个字节都不花。
+ *
+ * 打开之后的行为：章节正文落盘时检查长期记忆长度，超过阈值就**建一个压缩作业**
+ * （走作业设施：有进度、可取消、失败可见、进「可恢复任务」），而不是在请求里同步跑完。
+ * 压缩结果仍要过零损失护栏，不通过就拒绝落库。
+ *
+ * @returns {object|null} 建出来的作业；未触发时返回 null
+ */
+function memoryAutoCompressEnabled() {
+  try { return getAppSettingDb(MEMORY_AUTO_COMPRESS_KEY, '0') === '1'; } catch { return false; }
+}
+
+function maybeAutoCompressMemory(workId) {
+  if (!memoryAutoCompressEnabled()) return null;
+  const wid = Number(workId);
+  if (!wid) return null;
+  try {
+    const row = prepare('SELECT summary FROM story_memories WHERE work_id = ? ORDER BY id DESC LIMIT 1').get(wid);
+    const summary = String(row?.summary || '');
+    if (summary.length <= MEMORY_COMPRESS_HINT) return null;
+    // 同一作品已有压缩在跑就不再建：否则每保存一章都会叠一个作业上去。
+    for (const j of harnessJobs.values()) {
+      if (j.kind === 'compress' && Number(j.workId) === wid && (j.status === 'queued' || j.status === 'running')) {
+        return null;
+      }
+    }
+    const job = createHarnessJob('', {
+      action: 'compress', kind: 'compress', stage: '自动压缩长期记忆',
+      workId: wid, timeout: 10 * 60 * 1000,
+      runner: ({ onChunk, signal }) => compressStoryMemory(wid, onChunk, signal).then((s) => ({ summary: s })),
+    });
+    log({
+      level: 'info', layer: 'ai', kind: 'memory_auto_compress_started',
+      message: `长期记忆 ${summary.length} 字超过阈值 ${MEMORY_COMPRESS_HINT}，已自动建压缩作业`,
+      context: { work_id: wid, job_id: job.id, summary_chars: summary.length }
+    });
+    return job;
+  } catch (e) {
+    // 自动压缩失败绝不能影响章节保存本身——它只是锦上添花。
+    log({ level: 'warn', layer: 'ai', kind: 'memory_auto_compress_failed', message: `自动压缩未能启动：${e.message}` });
+    return null;
+  }
+}
+
+// ---------- 路由入口 ----------// 统一处理 /api 下的请求：搜索、统计、AI、历史版本、关闭服务、通用 CRUD。
 async function handleAPI(req, res, pathname, query) {
   const method = req.method;
   const segments = pathname.split('/').filter(Boolean);
@@ -3360,6 +3411,28 @@ async function handleAPI(req, res, pathname, query) {
     const enabled = body.enabled !== false;
     setAppSetting('ov_semantic_enabled', enabled ? '1' : '0');
     return sendJSON(res, 200, { ok: true, enabled });
+  }
+  // D8-#3：记忆自动压缩开关。默认关闭；打开后章节落盘时超过阈值即自动建压缩作业。
+  // 与 novel/semantic 同构（GET 读状态、PUT 改状态），界面可直接接这两个端点。
+  if (resource === 'novel' && segments[2] === 'memory_auto_compress' && method === 'GET') {
+    let lastJob = null;
+    for (const j of harnessJobs.values()) {
+      if (j.kind === 'compress' && (!lastJob || (j.created_at || '') > (lastJob.created_at || ''))) lastJob = j;
+    }
+    return sendJSON(res, 200, {
+      ok: true,
+      enabled: memoryAutoCompressEnabled(),
+      threshold: MEMORY_COMPRESS_HINT,
+      // 上次压缩作业的状态：让作者能判断"自动压缩到底跑没跑、成没成"，
+      // 而不是只能从日志里翻（护栏拒绝时尤其需要可见）。
+      last_job: lastJob ? { id: lastJob.id, status: lastJob.status, error: lastJob.error || null, created_at: lastJob.created_at } : null,
+    });
+  }
+  if (resource === 'novel' && segments[2] === 'memory_auto_compress' && method === 'PUT') {
+    const body = await readBody(req);
+    const enabled = body.enabled === true || body.enabled === '1';
+    setAppSetting(MEMORY_AUTO_COMPRESS_KEY, enabled ? '1' : '0');
+    return sendJSON(res, 200, { ok: true, enabled, threshold: MEMORY_COMPRESS_HINT });
   }
   if (resource === 'novel' && segments[2] === 'semantic_index' && method === 'POST') {
     const body = await readBody(req);
@@ -4065,6 +4138,9 @@ async function handleAPI(req, res, pathname, query) {
         // 只在正文真的被写时尝试；没有待测量的采纳行时它是空操作。
         if (resource === 'chapters' && typeof body.content === 'string' && body.content.trim()) {
           measureAdoptEditDistance(id, body.content);
+          // D8-#3：记忆自动压缩的触发点（**默认关闭**，见 maybeAutoCompressMemory）。
+          // 放在正文落盘之后：此时长期记忆的输入（本章正文）才是最新的。
+          if (old?.work_id) maybeAutoCompressMemory(old.work_id);
         }
         if (old?.work_id) touchWork(old.work_id);
         if (body.work_id) touchWork(body.work_id);

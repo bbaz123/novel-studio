@@ -275,6 +275,9 @@ run('命名任务的作业接线（静态）', process.execPath,
 // D8-#3：记忆压缩的零损失护栏（实体变体匹配 + 覆盖率下限；含真实数据教出来的假阳性回归）
 run('记忆压缩零损失护栏', process.execPath,
   ['.p1-baseline/test-memory-compress-guard.mjs']);
+// D8-#3：自动压缩开关（静态部分零成本；活体段会写库并建作业，需显式授权 + 隔离实例）
+run('自动压缩开关（默认关闭，"不打开不花钱"）', process.execPath,
+  ['.p1-baseline/verify-auto-compress.mjs']);
 
 run('主成文路径与创作内核同源（逐字节）', process.execPath,
   ['.p1-baseline/verify-p3-unified.mjs', BASE, DB, CHAPTER],
