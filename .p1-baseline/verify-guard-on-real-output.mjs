@@ -14,14 +14,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { decodeZstdFrames } from './audit-llm-calls.mjs';
+import { decodeZstdFrames, harnessHomes } from './audit-llm-calls.mjs';
 import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance } from '../ai/memory-compress-guard.mjs';
 
 const sessionName = process.argv[2];
 if (!sessionName) { console.error('用法: node .p1-baseline/verify-guard-on-real-output.mjs <session目录名>'); process.exit(2); }
 
-const root = path.join(os.homedir(), '.dsh', 'sessions', '--C-Users-a1941-Desktop-DeepSeek-deepseek-harness--', sessionName);
-if (!fs.existsSync(root)) { console.error(`✗ 找不到会话目录：${root}`); process.exit(2); }
+// 决策 B 起会有多个 harness home（写作任务被关进专用 home）。逐个找；
+// 找不到就明确报出来——"看不见"不能伪装成"没发生"。
+const root = harnessHomes()
+  .map((h) => path.join(h, 'sessions', '--C-Users-a1941-Desktop-DeepSeek-deepseek-harness--', sessionName))
+  .find((d) => fs.existsSync(d));
+if (!root) { console.error(`✗ 在所有 harness home 里都找不到会话 ${sessionName}`); process.exit(2); }
+console.log(`（会话来自 ${root.includes('.dsh-novel') ? '专用 home' : '共享 home'}）`);
 const zst = fs.readdirSync(root).filter((f) => f.endsWith('.zstd'));
 if (!zst.length) { console.error('✗ 会话里没有 .zstd 转录'); process.exit(2); }
 

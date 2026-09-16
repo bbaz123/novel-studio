@@ -1,0 +1,56 @@
+{
+  "at": "2026-09-16T13:16:53.844Z",
+  "src": "C:\\Users\\a1941\\.dsh",
+  "dst": "C:\\Users\\a1941\\.dsh-novel",
+  "plan": [
+    {
+      "rel": "settings.yaml",
+      "kind": "copy-file",
+      "bytes": 186
+    },
+    {
+      "rel": "profiles/novel/package.json",
+      "kind": "copy-file",
+      "bytes": 859
+    },
+    {
+      "rel": "profiles/novel/cordis.yml",
+      "kind": "copy-file",
+      "bytes": 223
+    },
+    {
+      "rel": "profiles/novel/cordis.patch.yml",
+      "kind": "copy-file",
+      "bytes": 456
+    },
+    {
+      "rel": "profiles/novel/pnpm-workspace.yaml",
+      "kind": "copy-file",
+      "bytes": 61
+    },
+    {
+      "rel": ".credentials.yaml",
+      "kind": "copy-file",
+      "bytes": 223
+    },
+    {
+      "rel": "profiles/novel/node_modules/@openviking",
+      "kind": "copy-dir",
+      "bytes": 159876
+    },
+    {
+      "rel": "profiles/novel/node_modules/novel-writing",
+      "kind": "link",
+      "target": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio\\harness-plugins\\novel-writing"
+    }
+  ],
+  "done": {
+    "copied": 7,
+    "linked": 1,
+    "existed": 0,
+    "skipped": []
+  },
+  "dstOk": true,
+  "linkOk": true,
+  "srcUnchanged": true
+}

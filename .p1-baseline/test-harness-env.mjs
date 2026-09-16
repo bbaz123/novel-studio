@@ -10,7 +10,10 @@
  *
  * 用法: node .p1-baseline/test-harness-env.mjs
  */
-import { harnessChildEnv, selfBaseUrl, DEFAULT_PORT } from '../ai/harness-env.mjs';
+import { harnessChildEnv, selfBaseUrl, DEFAULT_PORT, dedicatedHomePath, dedicatedHomeUsable, resolveTaskDshHome, taskHomeInfo, DEDICATED_HOME_ENV, DEFAULT_DEDICATED_HOME } from '../ai/harness-env.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 let pass = 0;
 const fails = [];
@@ -61,6 +64,70 @@ console.log('\n【5. selfBaseUrl 自身】');
 {
   ok('selfBaseUrl(3741)', selfBaseUrl(3741) === 'http://127.0.0.1:3741');
   ok('selfBaseUrl 收到非法值 → 退默认', selfBaseUrl('abc') === `http://127.0.0.1:${DEFAULT_PORT}`);
+}
+
+console.log('\n【6. 决策 B：写作任务的专用 DSH_HOME】');
+{
+  // 用临时目录造一个"可用/不可用"的 home，避免依赖本机真实状态。
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'novelhome-test-'));
+  const usable = path.join(tmp, 'usable');
+  fs.mkdirSync(path.join(usable, 'profiles'), { recursive: true });
+  const unusable = path.join(tmp, 'unusable');
+  fs.mkdirSync(unusable, { recursive: true });
+
+  ok('默认路径是 ~/.dsh-novel（与 ~/.dsh 平级）',
+    dedicatedHomePath({}) === path.join(os.homedir(), DEFAULT_DEDICATED_HOME), dedicatedHomePath({}));
+  ok('可用环境变量覆盖', dedicatedHomePath({ [DEDICATED_HOME_ENV]: 'D:/x' }) === 'D:/x');
+  ok('空字符串不算覆盖（退默认）', dedicatedHomePath({ [DEDICATED_HOME_ENV]: '  ' }) === path.join(os.homedir(), DEFAULT_DEDICATED_HOME));
+
+  ok('含 profiles/ 才算可用', dedicatedHomeUsable(usable) === true);
+  ok('不含 profiles/ 判为不可用（否则 dsh 会找不到 profile 而起不来）', dedicatedHomeUsable(unusable) === false);
+  ok('路径不存在也判为不可用（不抛异常）', dedicatedHomeUsable(path.join(tmp, 'nope')) === false);
+
+  ok('可用时 resolveTaskDshHome 返回该路径', resolveTaskDshHome({ [DEDICATED_HOME_ENV]: usable }) === usable);
+  ok('不可用时返回 null（= 沿用共享 home，即改动前行为）',
+    resolveTaskDshHome({ [DEDICATED_HOME_ENV]: unusable }) === null);
+  ok('路径不存在时也返回 null', resolveTaskDshHome({ [DEDICATED_HOME_ENV]: path.join(tmp, 'nope') }) === null);
+
+  // 下发给子进程
+  const eOk = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { [DEDICATED_HOME_ENV]: usable } });
+  ok('可用时把 DSH_HOME 下发给子进程', eOk.DSH_HOME === usable, `实际 ${eOk.DSH_HOME}`);
+  const eNo = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { [DEDICATED_HOME_ENV]: unusable } });
+  ok('不可用时**不设** DSH_HOME（退回共用，不把任务打挂）', eNo.DSH_HOME === undefined, `实际 ${eNo.DSH_HOME}`);
+  const eBase = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { DSH_HOME: 'C:/somewhere-else' } });
+  // ⚠️ 这条断言的方向是**故意的**：实测 `DSH_HOME` 会随启动方式变——从 DSH 派生的终端
+  // 启动工坊时环境里已经带着它，从桌面快捷方式启动时没有。若让"继承环境"说了算，
+  // 同一份代码就会看启动方式决定行为。所以专用 home **覆盖**它，并把这件事显式报出来。
+  ok('专用 home **有意覆盖**环境里已有的 DSH_HOME（不看启动方式决定行为）',
+    eBase.DSH_HOME === path.join(os.homedir(), DEFAULT_DEDICATED_HOME), `实际 ${eBase.DSH_HOME}`);
+  ok('覆盖这件事是可观测的（taskHomeInfo 会报 overridesAmbient）',
+    taskHomeInfo({ DSH_HOME: 'C:/somewhere-else' }).overridesAmbient === true);
+  ok('专用 home 不存在时不做覆盖（退回继承环境，= 改动前行为）',
+    harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { DSH_HOME: 'C:/keep-me', [DEDICATED_HOME_ENV]: unusable } }).DSH_HOME === 'C:/keep-me');
+  const eCaller = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { [DEDICATED_HOME_ENV]: usable }, env: { DSH_HOME: 'C:/caller-wins' } });
+  ok('调用方显式给的 DSH_HOME 优先级最高（与本模块其它变量同一约定）',
+    eCaller.DSH_HOME === 'C:/caller-wins', `实际 ${eCaller.DSH_HOME}`);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n【7. 接线：harness.js 的设置文件必须跟着专用 home 走】');
+{
+  const src = fs.readFileSync(new URL('../harness.js', import.meta.url), 'utf8');
+  ok('导入了 resolveTaskDshHome', /resolveTaskDshHome/.test(src));
+  // 这是 B 的必要配套：不跟着走的话，回退路径改的是 GUI 的 settings.yaml，
+  // 而子进程读的是新 home 的 —— 改了等于没改，且会静默用默认模型。
+  ok('DSH_SETTINGS 在专用 home 生效时指向该 home',
+    /DSH_SETTINGS\s*=\s*process\.env\.DSH_SETTINGS\s*\|\|\s*\(\(\)\s*=>\s*\{[\s\S]{0,200}resolveTaskDshHome\(\)/.test(src));
+  ok('显式设 DSH_SETTINGS 时仍最高优先', /process\.env\.DSH_SETTINGS\s*\|\|/.test(src));
+}
+
+console.log('\n【8. 接线：审计工具必须能看见专用 home，否则总闸会变瞎】');
+{
+  const src = fs.readFileSync(new URL('./audit-llm-calls.mjs', import.meta.url), 'utf8');
+  ok('导出了 harnessHomes()', /export function harnessHomes\(/.test(src));
+  ok('扫描列表里含专用 home', /\.dsh-novel/.test(src));
+  ok('每行标注来自哪个 home（"看不见"不能伪装成"没发生"）', /home: path\.basename/.test(src));
 }
 
 console.log(`\n══════════════════════════════`);

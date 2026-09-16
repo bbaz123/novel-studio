@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { log, readableErrorMessage } from './logger.js';
 import { traceHarness, traceNow } from './debug-trace.js';
 import { EFFORTS } from './ai/policy.mjs';
-import { harnessChildEnv } from './ai/harness-env.mjs';
+import { harnessChildEnv, resolveTaskDshHome, taskHomeInfo } from './ai/harness-env.mjs';
 import { buildSettingsRedirectPatch, buildTaskArgs, TASK_SETTINGS_PREFIX } from './ai/task-settings.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -52,8 +52,30 @@ function resolveHarnessDir() {
 export const HARNESS_DIR = resolveHarnessDir();
 export const HARNESS_PACKAGE = path.join(HARNESS_DIR, 'package.json');
 
-// dsh 全局设置文件，用于临时切换默认模型
-export const DSH_SETTINGS = process.env.DSH_SETTINGS || path.join(os.homedir(), '.dsh', 'settings.yaml');
+// dsh 全局设置文件，用于临时切换默认模型。
+// 决策 B：若写作任务被关进专用 DSH_HOME，设置文件**必须跟着走**——否则回退路径改的是
+// GUI 的 settings.yaml，而子进程读的是新 home 的，**改了等于没改**（且会静默用默认模型）。
+// 显式设了 DSH_SETTINGS 时仍然最高优先。
+export const DSH_SETTINGS = process.env.DSH_SETTINGS || (() => {
+  const home = resolveTaskDshHome();
+  return home ? path.join(home, 'settings.yaml') : path.join(os.homedir(), '.dsh', 'settings.yaml');
+})();
+
+// 决策 B：启动时**如实打印**写作任务的 home 决策。
+// 为什么必须打印：实测 `DSH_HOME` 会随启动方式而变（从 DSH 派生的终端启动工坊时环境里已经带着它，
+// 从桌面快捷方式启动时没有）。不把决策写出来，"B 生没生效"就只能靠猜——
+// 而"看起来在隔离、其实没隔离"正是 2026-09-15 那次事故的形态。
+try {
+  const info = taskHomeInfo();
+  log({
+    level: 'info', layer: 'harness', kind: 'task_home_decision',
+    message: info.home
+      ? `写作任务使用专用 DSH_HOME：${info.home}`
+        + (info.overridesAmbient ? `（覆盖了环境里继承来的 ${info.ambient}）` : '')
+      : `写作任务沿用共享 DSH_HOME（专用 home 不可用：${info.path}）`,
+    context: { home: info.home || '', path: info.path, ambient: info.ambient, overrides_ambient: info.overridesAmbient },
+  });
+} catch { /* 日志失败不影响启动 */ }
 
 // dsh profile：novel-studio 的创作任务跑在哪个 profile 上。
 //

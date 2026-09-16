@@ -53,24 +53,50 @@ export function isRealCall(row) {
 }
 
 /**
- * 扫描会话目录，返回每条转录的统计。
- * @param {{sinceMs?: number, dirName?: string}} opts
+ * 要扫描的 harness home 列表（决策 B）。
+ *
+ * ⚠️ 这是 B 的**必要配套**，不是顺手改：写作任务被关进专用 `DSH_HOME` 后，
+ * 它的会话转录会写到**新 home** 下。若这里只扫 `~/.dsh`，审计会报"0 会话"——
+ * 即使真的花了钱。2026-09-15 那次事故的根因正是"以为在看着、其实没看着"，
+ * 所以宁可多扫一个目录，也不能让总闸失去视野。
  */
-export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR } = {}) {
-  const root = path.join(os.homedir(), '.dsh', 'sessions', dirName);
-  if (!fs.existsSync(root)) return { root, exists: false, rows: [] };
+export function harnessHomes(baseEnv = process.env) {
+  const homes = [];
+  const explicit = String(baseEnv.NOVELSTUDIO_DSH_HOME || '').trim();
+  if (explicit) homes.push(explicit);
+  homes.push(path.join(os.homedir(), '.dsh-novel'));   // 决策 B 的默认专用 home
+  homes.push(path.join(os.homedir(), '.dsh'));          // 共享 home（GUI 与历史转录）
+  return [...new Set(homes)];
+}
 
+/**
+ * 扫描会话目录，返回每条转录的统计。
+ * 决策 B 起会扫描**所有** harness home，并在每行标注它来自哪个 home。
+ * @param {{sinceMs?: number, dirName?: string, homes?: string[]}} opts
+ */
+export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, homes } = {}) {
+  const roots = (homes || harnessHomes()).map((h) => path.join(h, 'sessions', dirName));
   const rows = [];
-  for (const name of fs.readdirSync(root)) {
-    const dir = path.join(root, name);
-    if (!fs.statSync(dir).isDirectory()) continue;
-    for (const f of fs.readdirSync(dir)) {
-      if (!f.endsWith('.zstd')) continue;
-      const full = path.join(dir, f);
-      const st = fs.statSync(full);
-      if (st.mtimeMs < sinceMs) continue;
-      let text = '';
-      try { text = decodeZstdFrames(fs.readFileSync(full)); } catch { continue; }
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const name of fs.readdirSync(root)) {
+      const dir = path.join(root, name);
+      if (!fs.statSync(dir).isDirectory()) continue;
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.zstd')) continue;
+        const full = path.join(dir, f);
+        const st = fs.statSync(full);
+        if (st.mtimeMs < sinceMs) continue;
+        let text = '';
+        try { text = decodeZstdFrames(fs.readFileSync(full)); } catch { continue; }
+        rows.push({ text, dir, file: f, mtimeMs: st.mtimeMs, root });
+      }
+    }
+  }
+  if (!rows.length) return { root: roots.join(' | '), exists: false, rows: [] };
+  const out = [];
+  for (const item of rows) {
+    const { text, dir, file, mtimeMs, root } = item;
 
       let model = '', requests = 0, chunks = 0, texts = 0, reason = 0, toolCalls = 0;
       let assistantChars = 0, retries = 0, errorFinishes = 0;
@@ -139,10 +165,14 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR } = {
         }
         if (t === 'turn/start' && !firstTurn) firstTurn = o.time || 0;
       }
-      rows.push({
-        session: name,
-        file: f,
-        ts: new Date(st.mtimeMs).toISOString(),
+      out.push({
+        session: path.basename(dir),
+        file,
+        // 决策 B：标注这条转录来自哪个 home —— 专用 home 与共享 home 都要能看见，
+        // 且一眼分得清是哪一边的（否则"看不见"会伪装成"没发生"）。
+        home: path.basename(path.dirname(path.dirname(root))) || root,
+        root,
+        ts: new Date(mtimeMs).toISOString(),
         startTs: firstTurn ? new Date(firstTurn).toISOString() : '',
         model, requests, toolCalls,
         // 产出以**模型文本字符数**为准（不再是"chunk 个数"）。
@@ -152,10 +182,9 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR } = {
         tools: [...tools].slice(0, 8),
         userMsgs,
       });
-    }
   }
-  rows.sort((a, b) => a.ts.localeCompare(b.ts));
-  return { root, exists: true, rows };
+  out.sort((a, b) => a.ts.localeCompare(b.ts));
+  return { root: roots.join(' | '), exists: true, rows: out };
 }
 
 /** 便捷入口：自某时刻起真实调用的条数与明细。 */

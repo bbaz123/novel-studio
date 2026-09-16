@@ -213,6 +213,13 @@ export const PHASES = [
       // 否则每跑一次都会多出一个"没人认领"的文件——阶段映射会立刻报出来。
       '.p1-baseline/d7-orphan-manifest-*.json',
       '.p1-baseline/d7-purge-result-*.json',
+      // 决策 B：写作任务的专用 DSH_HOME（安装器 + 执行记录）
+      '.p1-baseline/install-novel-home.mjs',
+      '.p1-baseline/b-novel-home-*.json',
+      // 判断他人改法时用的会话导出分析工具
+      '.p1-baseline/extract-session-lines.mjs',
+      '.p1-baseline/scan-session-keywords.mjs',
+      '.p1-baseline/compare-runtime-trees.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
