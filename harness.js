@@ -61,21 +61,30 @@ export const DSH_SETTINGS = process.env.DSH_SETTINGS || (() => {
   return home ? path.join(home, 'settings.yaml') : path.join(os.homedir(), '.dsh', 'settings.yaml');
 })();
 
-// 决策 B：启动时**如实打印**写作任务的 home 决策。
+// 决策 B：**首次真正跑任务时**如实打印写作任务的 home 决策。
 // 为什么必须打印：实测 `DSH_HOME` 会随启动方式而变（从 DSH 派生的终端启动工坊时环境里已经带着它，
 // 从桌面快捷方式启动时没有）。不把决策写出来，"B 生没生效"就只能靠猜——
 // 而"看起来在隔离、其实没隔离"正是 2026-09-15 那次事故的形态。
-try {
-  const info = taskHomeInfo();
-  log({
-    level: 'info', layer: 'harness', kind: 'task_home_decision',
-    message: info.home
-      ? `写作任务使用专用 DSH_HOME：${info.home}`
-        + (info.overridesAmbient ? `（覆盖了环境里继承来的 ${info.ambient}）` : '')
-      : `写作任务沿用共享 DSH_HOME（专用 home 不可用：${info.path}）`,
-    context: { home: info.home || '', path: info.path, ambient: info.ambient, overrides_ambient: info.overridesAmbient },
-  });
-} catch { /* 日志失败不影响启动 */ }
+// ⚠️ 为什么**不能放在模块顶层**：第一版就是模块顶层 `log(...)`——任何 import harness.js 的
+// 工具/测试都会触发它：往 stdout 喷一行 `[logger:harness] …`，而且若进程注册了退出刷盘，
+// 会把日志写进**当前数据目录**（工具跑在真实目录下时就是真实库）。模块导入必须是零副作用——
+// 这是被实测抓出来的（用 NOVELSTUDIO_DATA_DIR 指向空目录 import 一次，立刻能看到输出）。
+let taskHomeDecisionLogged = false;
+function logTaskHomeDecisionOnce() {
+  if (taskHomeDecisionLogged) return;
+  taskHomeDecisionLogged = true;
+  try {
+    const info = taskHomeInfo();
+    log({
+      level: 'info', layer: 'harness', kind: 'task_home_decision',
+      message: info.home
+        ? `写作任务使用专用 DSH_HOME：${info.home}`
+          + (info.overridesAmbient ? `（覆盖了环境里继承来的 ${info.ambient}）` : '')
+        : `写作任务沿用共享 DSH_HOME（专用 home 不可用：${info.path}）`,
+      context: { home: info.home || '', path: info.path, ambient: info.ambient, overrides_ambient: info.overridesAmbient },
+    });
+  } catch { /* 日志失败不影响启动 */ }
+}
 
 // dsh profile：novel-studio 的创作任务跑在哪个 profile 上。
 //
@@ -451,6 +460,9 @@ function cleanupTaskSettings(taskSettings) {
 }
 
 export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) {
+  // 决策 B：首次真正执行任务时，把 home 决策打印**一次**（模块导入零副作用，见函数注释）。
+  logTaskHomeDecisionOnce();
+
   if (!isHarnessAvailable()) {
     throw new Error(`未找到 deepseek-harness：${HARNESS_DIR}`);
   }

@@ -24,8 +24,12 @@ gate-env.stop
 blackhole-*.jsonl
 .blackhole-*.jsonl
 
-# ʵ����ʱ����ڱ� settings + �ڶ�ת������ÿ���ܶ����ؽ��������
+# 实验临时产物（哨兵 settings + 黑洞转储）：每次跑都会重建，不入库
 .exp-settings/
 
-# �ع��������ʱ worktree��������ɾ�����˲Ż����£�
+# 回滚矩阵的临时 worktree（跑完自删；崩了才会留下）
 .revert-matrix/
+
+# 人工盲测（blind-ab.mjs）的输出目录：A.md / B.md / mapping.json / result.json
+# 都是临时对比材料，不入库——否则每跑一次就多 4 个"没人认领"的文件，阶段映射会报出来。
+.blind/

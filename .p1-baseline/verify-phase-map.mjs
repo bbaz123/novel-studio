@@ -220,6 +220,8 @@ export const PHASES = [
       '.p1-baseline/extract-session-lines.mjs',
       '.p1-baseline/scan-session-keywords.mjs',
       '.p1-baseline/compare-runtime-trees.mjs',
+      // 自审用：全库扫描非法 UTF-8（抓混编码损坏）
+      '.p1-baseline/check-utf8.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
