@@ -180,6 +180,7 @@ export const PHASES = [
       'docs/README.md',
       'docs/phase-map.md',
       'docs/pending-decisions.md',
+      'docs/final-acceptance-p0-p6.md',
       '.p1-baseline/README.md',
       '.p1-baseline/.gitignore',
       '.p1-baseline/verify-phase-map.mjs',
