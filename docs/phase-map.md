@@ -208,7 +208,7 @@
   - openviking-sync.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
 - **说明**：D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。
 - **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`、`.p1-baseline/revert-matrix.mjs`
-- **本阶段认领的文件**（23 个）：
+- **本阶段认领的文件**（24 个）：
   - `.p1-baseline/blind-ab.mjs`
   - `.p1-baseline/d7-orphan-manifest-20260916124031.json`
   - `.p1-baseline/d7-purge-orphans.mjs`
@@ -226,6 +226,7 @@
   - `.p1-baseline/test-sync-gate.mjs`
   - `.p1-baseline/test-task-settings.mjs`
   - `.p1-baseline/verify-auto-compress.mjs`
+  - `.p1-baseline/verify-guard-on-real-output.mjs`
   - `.p1-baseline/verify-named-jobs.mjs`
   - `ai/context/cache.mjs`
   - `ai/memory-compress-guard.mjs`
@@ -238,6 +239,7 @@
 - **回滚方式**：可单独撤，但会让若干验收工具失效（需同步修）
 - **阻断原因（推导得出）**：
   - .p1-baseline/audit-llm-calls.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0）import——撤掉会让该工具失效
+  - .p1-baseline/audit-llm-calls.mjs 被 .p1-baseline/verify-guard-on-real-output.mjs（验收工具，D8）import——撤掉会让该工具失效
   - .p1-baseline/blackhole.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0）import——撤掉会让该工具失效
   - .p1-baseline/blackhole.mjs 被 .p1-baseline/exp-concurrent-models.mjs（验收工具，D8）import——撤掉会让该工具失效
   - .p1-baseline/blackhole.mjs 被 .p1-baseline/exp-per-task-settings.mjs（验收工具，D8）import——撤掉会让该工具失效
@@ -277,7 +279,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**132** 个文件
+- 真实改动集：**133** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

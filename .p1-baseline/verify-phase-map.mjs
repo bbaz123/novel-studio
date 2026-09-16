@@ -200,6 +200,8 @@ export const PHASES = [
       'ai/memory-compress-guard.mjs',
       '.p1-baseline/test-memory-compress-guard.mjs',
       '.p1-baseline/probe-entity-variants.mjs',
+      // D8-#3 续：用**已付费的真实产出**验证护栏改版（零成本）
+      '.p1-baseline/verify-guard-on-real-output.mjs',
       // D8-#3：自动压缩开关的验收（含"不打开不花钱"的阴性对照）
       '.p1-baseline/verify-auto-compress.mjs',
       // D8-#8 后半：关键改动的人工盲测工具（花钱需显式确认）
