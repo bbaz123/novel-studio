@@ -1,6 +1,6 @@
 // DeepSeek Harness 桥接层
 // 通过 dsh profile 执行一次性 AI 创作任务，并支持临时切换默认模型。
-// profile 名由 DSH_PROFILE 决定（环境变量 NOVELSTUDIO_DSH_PROFILE，默认 headless）。
+// profile 名由 DSH_PROFILE 决定（环境变量 NOVELSTUDIO_DSH_PROFILE，默认 novel）。
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -61,19 +61,21 @@ export const DSH_SETTINGS = process.env.DSH_SETTINGS || path.join(os.homedir(), 
 // 会话共用全局 settings.yaml。为此新增了专用 profile `novel`（headless 的功能
 // 等价体：83 行组合树逐条等价、17 条 disable 全部真实生效，证据见 .p0-recon/）。
 //
-// 默认值刻意**仍是 headless**：P0..P5 全程隔离开发，线上行为不变；切换是 P6 的
-// 一次性动作。要让隔离实例或试运行使用专用 profile，设 NOVELSTUDIO_DSH_PROFILE=novel。
+// 【P6 已切换】默认值 = novel（2026-09-15 一次性切换，证据见 docs/p6-cutover-runbook.md）。
+// 回滚：把下面两处 'novel' 改回 'headless'，或跑
+//   node .p6-cutover/cutover.mjs --rollback data/backup-p6-<stamp>
+// 临时试运行其它 profile：设 NOVELSTUDIO_DSH_PROFILE=<名字>（不影响默认值）。
 const PROFILE_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 export const DSH_PROFILE = (() => {
   const raw = String(process.env.NOVELSTUDIO_DSH_PROFILE || '').trim();
-  if (!raw) return 'headless';
+  if (!raw) return 'novel';
   if (!PROFILE_NAME_RE.test(raw)) {
     log({
       level: 'warn', layer: 'harness', kind: 'invalid_profile',
-      message: 'NOVELSTUDIO_DSH_PROFILE 非法（仅允许字母/数字/点/下划线/连字符），已回退 headless',
+      message: 'NOVELSTUDIO_DSH_PROFILE 非法（仅允许字母/数字/点/下划线/连字符），已回退 novel',
       context: { value: raw }
     });
-    return 'headless';
+    return 'novel';
   }
   return raw;
 })();

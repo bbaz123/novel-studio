@@ -236,6 +236,10 @@ async function check() {
   console.log('\n将要改动的每一处：');
   for (const e of EDITS) console.log(`  · ${e.name}`);
   console.log(`\n确认令牌：${confirmToken()}`);
+  const printedOk = selfCheckPrintedCommand(confirmToken());
+  say(printedOk, printedOk
+    ? '自检：下面打印的执行命令能被本工具的解析器读懂（照抄即可用）'
+    : '自检失败：打印的命令解析不出来 —— 先修 arg() 再让人照抄');
   console.log(`执行命令：node .p6-cutover/cutover.mjs --execute --confirm=${confirmToken()}`);
 
   console.log('\n前置状态：');
@@ -409,10 +413,33 @@ function rollback(dir) {
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────────
-const arg = (n, d) => {
+/**
+ * 同时接受 `--name value` 与 `--name=value` 两种写法。
+ *
+ * ⚠️ 早先只支持前者，而 `--check` 打印给用户的命令是 `--execute --confirm=<令牌>`——
+ * **照着自己打印的命令跑会直接失败**（实测：`实收：--confirm=(空)`）。
+ * 工具打印的指令必须能被自己的解析器读懂，否则等于在骗使用者。
+ */
+export const arg = (n, d) => {
+  const pref = `${n}=`;
+  const eq = process.argv.find((a) => a.startsWith(pref));
+  if (eq) return eq.slice(pref.length);
   const i = process.argv.indexOf(n);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d;
 };
+
+/** 自检：把「将要打印的命令」喂回自己的解析器，确认拿得到同一个值。 */
+export function selfCheckPrintedCommand(token) {
+  const printed = `--execute --confirm=${token}`;
+  const saved = process.argv;
+  try {
+    process.argv = ['node', 'cutover.mjs', ...printed.split(' ')];
+    return arg('--confirm', '') === token;
+  } finally {
+    process.argv = saved;
+  }
+}
+
 const isMain = process.argv[1]
   && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (isMain) {

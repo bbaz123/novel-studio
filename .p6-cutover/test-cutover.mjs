@@ -26,15 +26,27 @@ function ok(name, cond, detail = '') {
   else { fails.push({ name, detail }); console.log(`  ✗ ${name}${detail ? '  — ' + detail : ''}`); }
 }
 
-console.log('【1. 与真实源码同步：锚点必须全部命中】');
+console.log('【1. 与真实源码同步：按当前状态分别断言】');
+// ⚠️ 这一节必须在**两种状态下都成立**：
+//   pre-cutover ：锚点全部命中（切换器与源码同步，随时可切）
+//   post-cutover：锚点**本就不该命中**（已经切过了），此时要断言的是"切换已完成"这件事
+// 2026-09-16 执行 P6 之后，本文件原先只断言前者，于是切换完成反而把测试搞红了——
+// 测试的前提必须跟着被验证对象的状态走，不能写死一种。
 const real = fs.readFileSync(HARNESS_JS, 'utf8');
 {
-  const r = applyEdits(real);
-  ok(`真实 harness.js 上 ${EDITS.length} 处锚点各命中 1 次`, r.ok === true,
-    r.ok ? '' : `「${r.failed?.name}」命中 ${r.failed?.found} 次 —— 源码漂移了，先修切换器`);
   const st = detectState(real);
   ok('真实文件处于可切换状态（pre/post，而非 mixed/unknown）',
     st === 'pre-cutover' || st === 'post-cutover', `实际 ${st}`);
+  if (st === 'pre-cutover') {
+    const r = applyEdits(real);
+    ok(`pre-cutover：${EDITS.length} 处锚点各命中 1 次（随时可切）`, r.ok === true,
+      r.ok ? '' : `「${r.failed?.name}」命中 ${r.failed?.found} 次 —— 源码漂移了，先修切换器`);
+  } else {
+    const r = applyEdits(real);
+    ok('post-cutover：锚点已不匹配（这正是"已切换"的证据）', r.ok === false);
+    ok('post-cutover：默认返回值是 novel', /if \(!raw\) return 'novel';/.test(real));
+    ok('post-cutover：非法值的兜底也回 novel', /已回退 novel/.test(real) && !/已回退 headless/.test(real));
+  }
 }
 
 console.log('\n【2. 行尾：CRLF 与 LF 都要能匹配（第一次预检就栽在 CRLF）】');
@@ -66,13 +78,21 @@ console.log('\n【3. 锚点漂移必须失败，不能静默无效】');
 
 console.log('\n【4. 幂等：已完成态再跑必须被拒绝】');
 {
+  // 幂等这条性质与"真实文件当前处于哪一态"无关，所以两种态都要能验。
   const applied = applyEdits(real);
   if (applied.ok) {
     const again = applyEdits(applied.text);
     ok('对 post-cutover 文本再跑 → ok:false', again.ok === false, again.ok ? '竟又成功了一次' : '');
     ok('detectState 识别 post-cutover', detectState(applied.text) === 'post-cutover');
   } else {
-    ok('（源已漂移，跳过幂等用例）', false, '上一条已失败');
+    // 已经切过了：用一段**合成**的 pre-cutover 文本验证同一条性质
+    const one = [EDITS[0]];
+    const first = applyEdits("  if (!raw) return 'headless';\n", one);
+    const second = applyEdits(first.text, one);
+    ok('已切换：用合成样本验证幂等（对 post-cutover 文本再跑 → ok:false）',
+      first.ok === true && second.ok === false, `first=${first.ok} second=${second.ok}`);
+    ok('已切换：detectState 对合成结果识别为 post-cutover', detectState(first.text) === 'post-cutover');
+    ok('真实文件本身已不是 pre-cutover（与第 1 节呼应）', detectState(real) === 'post-cutover');
   }
 }
 

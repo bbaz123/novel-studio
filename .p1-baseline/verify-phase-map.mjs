@@ -165,8 +165,8 @@ export const PHASES = [
       'ai/harness-env.mjs',
     ],
     evidence: [
-      '.p6-cutover/cutover.mjs', '.p6-cutover/snapshot.mjs', '.p6-cutover/README.md',
-      'docs/p6-cutover-runbook.md',
+      '.p6-cutover/cutover.mjs', '.p6-cutover/snapshot.mjs', '.p6-cutover/smoke.mjs',
+      '.p6-cutover/README.md', 'docs/p6-cutover-runbook.md',
     ],
     note: '切换器与快照工具本身是自足的、可单独移除；但 P6 还含 ai/harness-env.mjs，'
       + '而它被 harness.js 与 .p1-baseline/test-harness-env.mjs import → 整段仍无法单独撤回。'

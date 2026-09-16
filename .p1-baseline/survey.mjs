@@ -2,11 +2,20 @@
 /**
  * 数据库体检：确认作品/章节规模，用于选取基线数据。
  * 用法: node survey.mjs [dbPath]
+ *
+ * ⚠️ **只读打开**（2026-09-16 改）：这是纯诊断工具，只会 SELECT，
+ * 但此前用 `new DatabaseSync(path)` 默认是**读写**打开——在真实库上会拿写锁、
+ * 还可能创建 `-wal`/`-shm` 边车文件。诊断工具不该对数据有任何写权限。
  */
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
 
 const dbPath = process.argv[2] || '.p1-baseline/data/novel.db';
-const db = new DatabaseSync(dbPath);
+if (!fs.existsSync(dbPath)) {
+  console.error(`库不存在：${dbPath}`);
+  process.exit(2);
+}
+const db = new DatabaseSync(dbPath, { readOnly: true });
 
 const tables = db
   .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

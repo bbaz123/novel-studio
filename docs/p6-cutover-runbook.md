@@ -130,16 +130,33 @@ if (!raw) return 'headless';   →   if (!raw) return 'novel';
 ### S4 · 重启并验证
 
 ```powershell
-# 自设死端口（脚本内部已设 DEEPSEEK_BASE_URL=http://127.0.0.1:1），零计费：
-#   已证实该变量对 dsh 生效（黑洞端口实测收到 dsh 子进程的 POST /chat/completions）
+# 主实例（建议带 NOVELSTUDIO_OV_AUTOINDEX=0：D3 是"先只重建 work#2"，
+# 别让启动顺带把记忆库索引范围放大）
+#   $env:NOVELSTUDIO_OV_AUTOINDEX='0'; node server.js
+
+# ① 自设死端口（脚本内部已设 DEEPSEEK_BASE_URL=http://127.0.0.1:1），零计费：
+#    已证实该变量对 dsh 生效（黑洞端口实测收到 dsh 子进程的 POST /chat/completions）
 node .p0-recon\verify-harness-profile.mjs novel
-# 工具面 / 版本
+# ② 工具面 / 版本
 node .p1-baseline\verify-plugin-tools.mjs
-# 策略无绕过
+# ③ 策略无绕过
 node .p1-baseline\verify-ai-branches.mjs
-# 数据库：确认 ai_eval_events 已建、既有数据条数未变
+# ④ 数据库：确认 ai_eval_events 已建、既有数据条数未变
 node .p1-baseline\survey.mjs data/novel.db
+# ⑤ 真实写作冒烟（**会计费，需显式授权**；用临时作品做、验完即删）
+$env:NOVELSTUDIO_SMOKE_ALLOW_BILLING='1'
+node .p6-cutover/smoke.mjs --base http://127.0.0.1:3737
 ```
+
+**已执行（2026-09-16）**：①–⑤ 全部通过。
+
+- ① 结论「profile 参数在真实 spawn 路径上生效」；审计口径：**零计费**
+  （拿到的是 6 个错误结束块 + 5 次重试，模型文本 0 字）。
+- ② 15 个工具 / 0.8.2 一致；③ 0 处绕过。
+- ④ `ai_eval_events` 已建（26 张表）；既有 14 项行数**逐项未变**。
+- ⑤ **冒烟 7/7**：临时作品 → `/api/harness/run` → 作业 `done` → 产出 135 字正文 → 临时作品已删。
+  会话转录证明系统提示词含创作人设（`执行小说创作任务的 AI`，2318 字）⇒ 走的确实是 `novel` profile。
+  计费：**1 次真实调用、模型文本 367 字**。真实作品仍为 2 部 / 7 章，一行未变。
 
 然后启动主实例，做**一次真实写作冒烟**（这一步会产生 API 费用，**需你单独许可**）。
 

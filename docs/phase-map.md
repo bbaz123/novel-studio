@@ -182,11 +182,12 @@
   - ai/harness-env.mjs 被 .p1-baseline/test-harness-env.mjs（验收工具，X）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被**生产代码** harness.js（P0）import——撤掉会打断线上路径
 - **说明**：切换器与快照工具本身是自足的、可单独移除；但 P6 还含 ai/harness-env.mjs，而它被 harness.js 与 .p1-baseline/test-harness-env.mjs import → 整段仍无法单独撤回。 harness.js 的默认 profile 仍是 headless（未切换）。
-- **验收证据**：`.p6-cutover/cutover.mjs`、`.p6-cutover/snapshot.mjs`、`.p6-cutover/README.md`、`docs/p6-cutover-runbook.md`
-- **本阶段认领的文件**（9 个）：
+- **验收证据**：`.p6-cutover/cutover.mjs`、`.p6-cutover/snapshot.mjs`、`.p6-cutover/smoke.mjs`、`.p6-cutover/README.md`、`docs/p6-cutover-runbook.md`
+- **本阶段认领的文件**（10 个）：
   - `.p6-cutover/.gitignore`
   - `.p6-cutover/README.md`
   - `.p6-cutover/cutover.mjs`
+  - `.p6-cutover/smoke.mjs`
   - `.p6-cutover/snapshot.mjs`
   - `.p6-cutover/test-cutover.mjs`
   - `.p6-cutover/test-snapshot.mjs`
@@ -233,7 +234,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**105** 个文件
+- 真实改动集：**106** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

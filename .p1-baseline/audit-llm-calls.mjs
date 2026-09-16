@@ -47,9 +47,9 @@ export function decodeZstdFrames(buf) {
   return Buffer.concat(parts).toString('utf8');
 }
 
-/** 判定一条转录是否是「真实调用」：既发了请求，又收到了模型产出。 */
+/** 判定一条转录是否是「真实调用」：既发了请求，**又真的拿到了模型文本**。 */
 export function isRealCall(row) {
-  return row.requests > 0 && row.output > 0;
+  return row.requests > 0 && row.assistantChars > 0;
 }
 
 /**
@@ -73,6 +73,7 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR } = {
       try { text = decodeZstdFrames(fs.readFileSync(full)); } catch { continue; }
 
       let model = '', requests = 0, chunks = 0, texts = 0, reason = 0, toolCalls = 0;
+      let assistantChars = 0, retries = 0, errorFinishes = 0;
       let firstTurn = 0;
       const tools = new Set();
       const userMsgs = [];
@@ -85,9 +86,42 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR } = {
           const m = JSON.stringify(o).match(/"(?:model|modelId|model_id)"\s*:\s*"([^"]+)"/);
           if (m) model = m[1];
         }
-        if (t === 'assistant/chunk') chunks++;
-        if (t === 'text-chunks') texts++;
+        if (t === 'assistant/chunk') {
+          const c = o.data?.chunk;
+          // ⚠️ **不是所有 chunk 都是模型产出**：失败时 dsh 会发
+          // `{type:'finish', reason:{kind:'error', failure:{code:'TRANSPORT'}}}` 这种**错误结束块**，
+          // 然后带退避重试（实测一条失败会话里有 5 次 llm/retry + 6 个这种 chunk，但助手文本 0 字）。
+          // 早先一律 chunks++ 并计入"产出"，于是**失败重试被误报成真实计费调用**——
+          // 那会让套件总闸对着"死端口失败"的检查误亮红灯。现在只认带文本的 chunk。
+          if (c?.type === 'finish' && c?.reason?.kind === 'error') errorFinishes++;
+          else {
+            chunks++;
+            const txt = c?.text ?? o.data?.text ?? o.text ?? o.delta;
+            if (typeof txt === 'string' && txt) assistantChars += txt.length;
+          }
+        }
+        if (t === 'llm/retry') retries++;
+        if (t === 'text-chunks') {
+          texts++;
+          const arr = o.data?.chunks ?? o.chunks ?? o.data?.text ?? o.text;
+          if (Array.isArray(arr)) {
+            for (const x of arr) {
+              const s = typeof x === 'string' ? x : (x?.text ?? '');
+              if (s) assistantChars += s.length;
+            }
+          } else if (typeof arr === 'string') assistantChars += arr.length;
+        }
         if (t === 'reasoning-chunks') reason++;
+        if (t === 'assistant/message') {
+          const d = o.data || {};
+          const c = d.content ?? d.message?.content ?? o.content;
+          if (Array.isArray(c)) {
+            for (const x of c) {
+              const s = typeof x === 'string' ? x : (x?.text ?? '');
+              if (s) assistantChars += s.length;
+            }
+          } else if (typeof c === 'string') assistantChars += c.length;
+        }
         if (t === 'tool/call') {
           toolCalls++;
           const m = JSON.stringify(o).match(/"(?:name|tool|toolName)"\s*:\s*"([^"]+)"/);
@@ -110,7 +144,11 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR } = {
         file: f,
         ts: new Date(st.mtimeMs).toISOString(),
         startTs: firstTurn ? new Date(firstTurn).toISOString() : '',
-        model, requests, output: chunks + texts + reason, toolCalls,
+        model, requests, toolCalls,
+        // 产出以**模型文本字符数**为准（不再是"chunk 个数"）。
+        assistantChars,
+        textChunks: texts, chunks, reasoningEntries: reason,
+        retries, errorFinishes,
         tools: [...tools].slice(0, 8),
         userMsgs,
       });
@@ -153,11 +191,14 @@ if (isMain) {
   console.log(`会话目录: ${DIRNAME}`);
   console.log(`统计起点: ${new Date(SINCE).toISOString()}\n`);
   for (const r of rows) {
-    console.log(`${r.ts}  ${isRealCall(r) ? '★真实调用' : '（无请求产出）'}  model=${r.model || '?'} requests=${r.requests} 产出条目=${r.output} toolCalls=${r.toolCalls}`);
+    const tag = isRealCall(r)
+      ? '★真实调用'
+      : (r.requests > 0 ? `（发出请求但无模型文本${r.errorFinishes ? `：${r.errorFinishes} 个错误结束块、${r.retries} 次重试` : ''}）` : '（无请求）');
+    console.log(`${r.ts}  ${tag}  model=${r.model || '?'} requests=${r.requests} 模型文本=${r.assistantChars} 字 toolCalls=${r.toolCalls}`);
     console.log(`    起点=${r.startTs || '?'}  session=${r.session}`);
     if (r.tools.length) console.log(`    工具: ${r.tools.join(', ')}`);
     for (const u of r.userMsgs) console.log(`    用户消息: ${u.slice(0, 220)}`);
   }
-  console.log(`\n合计：会话 ${rows.length} 个，其中**确实发起并收到模型产出的** ${real.length} 个。`);
-  console.log('（requests=0 的会话是 dsh 启动即退出，没有网络请求，不计费。）');
+  console.log(`\n合计：会话 ${rows.length} 个，其中**确实拿到模型文本（=计费）的** ${real.length} 个。`);
+  console.log('判据：requests>0 **且** assistantChars>0。只发请求、拿到的是错误结束块（如 TRANSPORT 失败重试）不算计费。');
 }
