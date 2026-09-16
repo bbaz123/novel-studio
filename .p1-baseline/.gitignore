@@ -7,3 +7,19 @@ stress-data/
 logs/
 baselines*/*.json
 !baselines*/summary.json
+
+# ── 隔离实例的临时运行产物（2026-09-16 补）──────────────────────────────
+# ⚠️ 这条是补漏：早先只忽略了 data/ 与 stress-data/，**漏了 gate-data/**。
+# 结果 `git add -A` 把隔离实例的 SQLite 三件套（含 1.9MB 的 WAL）提交进了仓库——
+# 提交后才发现（`create mode 100644 .p1-baseline/gate-data/novel.db`）。
+# 教训：忽略清单要和"工具实际会在哪儿生成什么"对齐；新工具引入新目录时要同步加。
+# 与 .p6-cutover/snapshot.mjs 的 EXCLUDES 保持同一份语义（那边是快照的排除规则）。
+gate-data/
+suite-data/
+.rehearsal/
+.verify/
+.negctl*
+gate-env.json
+gate-env.stop
+blackhole-*.jsonl
+.blackhole-*.jsonl
