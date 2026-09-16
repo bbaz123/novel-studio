@@ -11,7 +11,7 @@
  *
  * 用法: node .p1-baseline/test-memory-compress-guard.mjs
  */
-import { checkCompression, mustKeepEntities, entityVariants, MIN_COMPRESSED_CHARS } from '../ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, mustKeepEntities, partitionByAppearance, entityVariants, MIN_COMPRESSED_CHARS } from '../ai/memory-compress-guard.mjs';
 
 let pass = 0;
 const fails = [];
@@ -143,9 +143,68 @@ console.log('\n【7. 接线：压缩路径真的用了护栏，且失败不落�
   const saveIdx = body.indexOf('saveStoryMemory(');
   const guardIdx = body.indexOf('checkCompression(');
   ok('顺序正确：先护栏、后落库', guardIdx > 0 && saveIdx > guardIdx, `guard@${guardIdx} save@${saveIdx}`);
-  ok('必须保留项取自角色与世界观数据', /mustKeepEntities\(\{ characters, worldEntries: worlds \}\)/.test(body));
+  ok('必须保留项取自**出场侧**的角色与世界观（不是整张表）',
+    /mustKeepEntities\(\{ characters: cast\.appearedChars, worldEntries: cast\.appearedWorlds \}\)/.test(body));
   ok('护栏结论落日志（通过与被拒都要留痕）',
     /memory_compress_ok/.test(body) && /memory_compress_rejected/.test(body));
+}
+
+console.log('\n【8. 按"出场没有"分两侧（用户 2026-09-16 规格；真实数据 23 个里只有 5 个出过场）】');
+{
+  const characters = [
+    { name: '岳宸炎' }, { name: '林晚萤' }, { name: '卫文安' },
+    { name: '乔明山（社里人称"乔半醒"）' }, { name: '白婆婆（本名白秀兰）' },
+    { name: '从未登场的甲' }, { name: '从未登场的乙' },
+  ];
+  const worldEntries = [{ title: '守护者协议' }, { title: '没出现过的设定' }];
+  const chapterText = '岳宸炎在教室醒来。林晚萤替他作伪证。班主任卫文安察觉异常。'
+    + '乔半醒每日探视。白婆婆复述塌前地声。守护者协议启动。';
+
+  const c = partitionByAppearance({ characters, worldEntries, chapterText });
+  ok('出场角色被正确识别（5 个）', c.appearedChars.length === 5,
+    c.appearedChars.map((x) => x.name).join('、'));
+  ok('从未出场的角色被分到另一侧（2 个）', c.absentChars.length === 2,
+    c.absentChars.map((x) => x.name).join('、'));
+  ok('别名也算出场（章节只写"乔半醒"或"白婆婆"）',
+    c.appearedChars.some((x) => x.name.startsWith('乔明山')) && c.appearedChars.some((x) => x.name.startsWith('白婆婆')));
+  ok('世界观同样分两侧', c.appearedWorlds.length === 1 && c.absentWorlds.length === 1,
+    `出场 ${c.appearedWorlds.map((w) => w.title)} / 未出场 ${c.absentWorlds.map((w) => w.title)}`);
+
+  // 两侧判据要能真的拦住东西——否则分了侧也没用。
+  const good = '岳宸炎与林晚萤、卫文安同行；乔半醒每日探视；白婆婆复述地声；守护者协议启动。'.repeat(6);
+  const strictOnCast = checkCompression({
+    compressed: good, minCoverage: 1,
+    mustKeep: mustKeepEntities({ characters: c.appearedChars, worldEntries: c.appearedWorlds }),
+  });
+  ok('只按"出场过的"核对 → 好摘要通过（旧做法拿整表核对会误判）', strictOnCast.ok === true,
+    JSON.stringify(strictOnCast.reasons));
+
+  const withGhost = good + '从未登场的甲也出现了。';
+  const inv = checkNoInvention({ compressed: withGhost, mustNotMention: c.absentChars.map((x) => x.name) });
+  ok('摘要里冒出未出场角色 → 被抓住', inv.ok === false && inv.invented.includes('从未登场的甲'),
+    JSON.stringify(inv.invented));
+  const inv2 = checkNoInvention({ compressed: good, mustNotMention: c.absentChars.map((x) => x.name) });
+  ok('没冒出来时不误报', inv2.ok === true, JSON.stringify(inv2.reasons));
+  ok('空压缩结果不算"无中生有"（那一侧由完整性检查负责）',
+    checkNoInvention({ compressed: '', mustNotMention: ['甲'] }).ok === true);
+}
+
+console.log('\n【9. 接线：两侧判据都接上了，且喂给模型的只有出场角色】');
+{
+  const fs = await import('node:fs');
+  const src = fs.readFileSync('server.js', 'utf8');
+  ok('导入了分侧与无中生有检查',
+    /partitionByAppearance/.test(src) && /checkNoInvention/.test(src));
+  const i = src.indexOf('async function compressStoryMemory(');
+  const body = src.slice(i, src.indexOf('\n}\n', i));
+  ok('按出场情况分侧', /partitionByAppearance\(\{ characters, worldEntries: worlds, chapterText \}\)/.test(body));
+  ok('提示词里**只喂出场过的角色**（否则等于一边告知一边罚它写）',
+    /characters\.filter\(\(c\) => appearedNames\.has\(c\.name\)\)/.test(body));
+  ok('提示词里明确写了"不要引入未在此列的角色"', /不要引入任何未在此列的角色/.test(body));
+  ok('完整性只核对出场侧', /mustKeep: mustKeepEntities\(\{ characters: cast\.appearedChars, worldEntries: cast\.appearedWorlds \}\)/.test(body));
+  ok('无中生有核对未出场侧', /mustNotMention: cast\.absentChars\.map\(\(c\) => c\.name\)/.test(body));
+  ok('两侧任一不过都拒绝落库', /if \(!guard\.ok \|\| !invention\.ok\)/.test(body));
+  ok('落库仍在两次检查之后', body.indexOf('saveStoryMemory(') > body.indexOf('checkNoInvention('));
 }
 
 console.log(`\n══════════════════════════════`);

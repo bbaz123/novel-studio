@@ -115,3 +115,56 @@ export function mustKeepEntities({ characters = [], worldEntries = [] } = {}) {
     ...worldEntries.map((w) => w?.title),
   ].map((s) => String(s ?? '').trim()).filter(Boolean);
 }
+
+/**
+ * 按"**在章节里出现过没有**"把实体分成两侧（用户 2026-09-16 的规格）。
+ *
+ * 为什么必须这么分：实测作品 #2 的角色表有 **23** 个名字，而章节正文里真正出现过的只有 **5** 个——
+ * 其余 18 个是设定卡里的配角/背景，故事里从没露过面。
+ * 拿整张表当"必须保留"，等于**逼模型去写没出场的人**：既造成假阳性（把好摘要判成丢人），
+ * 又与"没出现的一个都不许出现"直接冲突。
+ *
+ * 于是两侧各有各的判据：
+ *   · `appeared` —— 出现过的（主角与配角）**一个都不许丢**；
+ *   · `absent`  —— 从未出现的**一个都不许冒出来**。
+ *
+ * 判据是确定性的字符串出现检查（含别名变体），不调模型。
+ */
+export function partitionByAppearance({ characters = [], worldEntries = [], chapterText = '' } = {}) {
+  const hay = String(chapterText || '');
+  const appearedIn = (raw) => {
+    const variants = entityVariants(raw);
+    return (variants.length ? variants : [String(raw ?? '').trim()]).some((v) => v && hay.includes(v));
+  };
+  const chars = characters.filter((c) => c && String(c.name || '').trim());
+  const worlds = worldEntries.filter((w) => w && String(w.title || '').trim());
+  return {
+    appearedChars: chars.filter((c) => appearedIn(c.name)),
+    absentChars: chars.filter((c) => !appearedIn(c.name)),
+    appearedWorlds: worlds.filter((w) => appearedIn(w.title)),
+    absentWorlds: worlds.filter((w) => !appearedIn(w.title)),
+  };
+}
+
+/**
+ * 「无中生有」检查：摘要里**不得出现**从未出场的角色。
+ *
+ * 与 `checkCompression` 的完整性检查是一对：那边防"丢人"，这边防"编人"。
+ * 用户给的例外是"根据剧情需要出现"——但"剧情需不需要"机器判不了，
+ * 所以这里按**最严**处理（出现即失败），并在错误信息里说清怎么办：
+ * 若确实需要该角色登场，把它写进章节，它自然就进入 `appeared` 那一侧。
+ */
+export function checkNoInvention({ compressed, mustNotMention = [] } = {}) {
+  const text = String(compressed ?? '').trim();
+  const wanted = [...new Set(mustNotMention.map((k) => String(k ?? '').trim()).filter(Boolean))];
+  const invented = wanted.filter((raw) => {
+    const variants = entityVariants(raw);
+    return (variants.length ? variants : [raw]).some((v) => v && text.includes(v));
+  });
+  return {
+    ok: invented.length === 0,
+    invented,
+    checked: wanted.length,
+    reasons: invented.length ? [`记忆里出现了从未出场的角色：${invented.join('、')}`] : [],
+  };
+}

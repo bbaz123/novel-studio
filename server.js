@@ -11,7 +11,7 @@ import { ovClient, pendingQueueLength } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
-import { checkCompression, mustKeepEntities } from './ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, mustKeepEntities, partitionByAppearance } from './ai/memory-compress-guard.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -1145,10 +1145,21 @@ async function compressStoryMemory(workId, onChunk, signal) {
   const worlds = prepare('SELECT title, content FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
 
   const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content, 500)}`).join('\n');
-  const characterText = characters.map((c) => `【${c.name}】${c.identity || ''} ${c.personality || ''} ${c.status || ''}`).join('\n');
-  const worldText = worlds.map((w) => `【${w.title}】${w.content}`).join('\n');
 
-  const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节：\n${chapterText.slice(0, 6000)}\n\n角色：\n${characterText.slice(0, 3000)}\n\n世界观：\n${worldText.slice(0, 3000)}\n\n请只输出压缩后的记忆摘要。`;
+  // 决策 D8-#3（用户 2026-09-16 规格）：按"**在章节里出现过没有**"把角色分成两侧。
+  // 实测作品 #2：角色表 23 个，章节里真正出现过的只有 5 个。
+  // 旧做法拿整张表当"必须保留"，等于一边把 18 个没出场的人喂给模型、一边罚它写出来——
+  // 既造成假阳性，又与"没出现的一个都不许出现"冲突。
+  // 现在：**只把出场过的喂进提示词**，未出场的一律不提；护栏两侧各自核对。
+  const cast = partitionByAppearance({ characters, worldEntries: worlds, chapterText });
+  const appearedNames = new Set(cast.appearedChars.map((c) => c.name));
+  const appearedWorldTitles = new Set(cast.appearedWorlds.map((w) => w.title));
+  const characterText = characters.filter((c) => appearedNames.has(c.name))
+    .map((c) => `【${c.name}】${c.identity || ''} ${c.personality || ''} ${c.status || ''}`).join('\n');
+  const worldText = worlds.filter((w) => appearedWorldTitles.has(w.title))
+    .map((w) => `【${w.title}】${w.content}`).join('\n');
+
+  const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节：\n${chapterText.slice(0, 6000)}\n\n已出场角色（**只允许提到这些角色，不要引入任何未在此列的角色**）：\n${characterText.slice(0, 3000)}\n\n世界观：\n${worldText.slice(0, 3000)}\n\n请只输出压缩后的记忆摘要。`;
 
   // 记忆压缩是「读得多、写得少」的摘要任务。
   // 模型用 QUALITY_AI_MODEL：产出的长期记忆会喂给之后**每一章**的上下文，质量影响是累积的，
@@ -1161,27 +1172,38 @@ async function compressStoryMemory(workId, onChunk, signal) {
     { timeout: 10 * 60 * 1000, model: QUALITY_AI_MODEL, signal },
     typeof onChunk === 'function' ? onChunk : undefined);
 
-  // D8-#3：零损失护栏。压缩是**有损**操作，而长期记忆会喂给之后每一章——
+  // D8-#3：零损失护栏（**两侧**）。压缩是**有损**操作，而长期记忆会喂给之后每一章——
   // 丢一个角色或一条世界观，摘要读起来照样通顺，**不会报错**，是最难发现的一类损失。
-  // 所以这里做确定性检查（非空 + 字数下限 + 关键实体仍在），不通过就**拒绝落库**。
+  //   完整性：出场过的（主角+配角）一个都不许丢；
+  //   无中生有：从未出场的**一个都不许冒出来**（用户 2026-09-16 规格）。
   const guard = checkCompression({
     compressed: output,
-    mustKeep: mustKeepEntities({ characters, worldEntries: worlds }),
+    mustKeep: mustKeepEntities({ characters: cast.appearedChars, worldEntries: cast.appearedWorlds }),
   });
-  if (!guard.ok) {
+  const invention = checkNoInvention({
+    compressed: output,
+    mustNotMention: cast.absentChars.map((c) => c.name),
+  });
+  if (!guard.ok || !invention.ok) {
+    const reasons = [...guard.reasons, ...invention.reasons];
     log({
       level: 'warn', layer: 'ai', kind: 'memory_compress_rejected',
-      message: `记忆压缩被零损失护栏拒绝，**未落库**：${guard.reasons.join('；')}`,
-      context: { work_id: workId, length: guard.length, missing: guard.missing.slice(0, 20), checked: guard.checked }
+      message: `记忆压缩被零损失护栏拒绝，**未落库**：${reasons.join('；')}`,
+      context: {
+        work_id: workId, length: guard.length,
+        missing: guard.missing.slice(0, 20), invented: invention.invented.slice(0, 20),
+        checked: guard.checked, absent_checked: invention.checked,
+      }
     });
-    const err = new Error(`压缩结果未通过零损失护栏（${guard.reasons.join('；')}），已放弃本次压缩以免丢设定。可重试，或手动编辑长期记忆。`);
+    const err = new Error(`压缩结果未通过零损失护栏（${reasons.join('；')}），已放弃本次压缩以免污染长期记忆。`
+      + '可重试；若某个"未出场角色"确实该登场，请先把它写进章节——它进入出场名单后自然会被允许。');
     err.code = 'MEMORY_COMPRESS_GUARD';
     throw err;
   }
   log({
     level: 'info', layer: 'ai', kind: 'memory_compress_ok',
-    message: `记忆压缩通过零损失护栏（${guard.length} 字，核对 ${guard.checked} 个实体）`,
-    context: { work_id: workId, length: guard.length, checked: guard.checked }
+    message: `记忆压缩通过零损失护栏（${guard.length} 字；出场实体 ${guard.checked} 个全保留，未出场 ${invention.checked} 个均未出现）`,
+    context: { work_id: workId, length: guard.length, checked: guard.checked, absent_checked: invention.checked }
   });
   saveStoryMemory(workId, output, { source: 'compress' });
   return output;
