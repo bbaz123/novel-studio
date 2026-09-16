@@ -196,6 +196,10 @@ export const PHASES = [
       '.p1-baseline/quality-sentinel.mjs',
       // D8-#4：命名任务并入作业设施的验收（静态接线 + 活体三段：进度/取消/落库）
       '.p1-baseline/verify-named-jobs.mjs',
+      // D8-#3：记忆压缩的零损失护栏（实体变体 + 覆盖率下限）与其探针
+      'ai/memory-compress-guard.mjs',
+      '.p1-baseline/test-memory-compress-guard.mjs',
+      '.p1-baseline/probe-entity-variants.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',

@@ -269,10 +269,12 @@ run('质量信号哨兵（客观指标快照）', process.execPath,
   ['.p1-baseline/quality-sentinel.mjs', '--base', BASE],
   { requires: () => hasBase, skipReason: '需要活实例（哨兵复用服务端汇总口径，不自己写 SQL）' });
 
-// ── 5c. 命名任务并入作业设施（D8-#4）──────────────────────────────────
-// 静态接线部分零成本、永远跑；活体段（进度/取消/落库）会真的建作业，需显式授权。
+// D8-#4：命名任务的作业接线（静态部分零成本；活体段会真的建作业，需显式授权）
 run('命名任务的作业接线（静态）', process.execPath,
   ['.p1-baseline/verify-named-jobs.mjs']);
+// D8-#3：记忆压缩的零损失护栏（实体变体匹配 + 覆盖率下限；含真实数据教出来的假阳性回归）
+run('记忆压缩零损失护栏', process.execPath,
+  ['.p1-baseline/test-memory-compress-guard.mjs']);
 
 run('主成文路径与创作内核同源（逐字节）', process.execPath,
   ['.p1-baseline/verify-p3-unified.mjs', BASE, DB, CHAPTER],

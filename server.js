@@ -11,6 +11,7 @@ import { ovClient, pendingQueueLength } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
+import { checkCompression, mustKeepEntities } from './ai/memory-compress-guard.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -1156,6 +1157,29 @@ async function compressStoryMemory(workId, onChunk, signal) {
     prompt,
     { timeout: 10 * 60 * 1000, model: QUALITY_AI_MODEL, signal },
     typeof onChunk === 'function' ? onChunk : undefined);
+
+  // D8-#3：零损失护栏。压缩是**有损**操作，而长期记忆会喂给之后每一章——
+  // 丢一个角色或一条世界观，摘要读起来照样通顺，**不会报错**，是最难发现的一类损失。
+  // 所以这里做确定性检查（非空 + 字数下限 + 关键实体仍在），不通过就**拒绝落库**。
+  const guard = checkCompression({
+    compressed: output,
+    mustKeep: mustKeepEntities({ characters, worldEntries: worlds }),
+  });
+  if (!guard.ok) {
+    log({
+      level: 'warn', layer: 'ai', kind: 'memory_compress_rejected',
+      message: `记忆压缩被零损失护栏拒绝，**未落库**：${guard.reasons.join('；')}`,
+      context: { work_id: workId, length: guard.length, missing: guard.missing.slice(0, 20), checked: guard.checked }
+    });
+    const err = new Error(`压缩结果未通过零损失护栏（${guard.reasons.join('；')}），已放弃本次压缩以免丢设定。可重试，或手动编辑长期记忆。`);
+    err.code = 'MEMORY_COMPRESS_GUARD';
+    throw err;
+  }
+  log({
+    level: 'info', layer: 'ai', kind: 'memory_compress_ok',
+    message: `记忆压缩通过零损失护栏（${guard.length} 字，核对 ${guard.checked} 个实体）`,
+    context: { work_id: workId, length: guard.length, checked: guard.checked }
+  });
   saveStoryMemory(workId, output, { source: 'compress' });
   return output;
 }
