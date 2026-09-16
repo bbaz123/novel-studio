@@ -222,6 +222,8 @@ export const PHASES = [
       '.p1-baseline/compare-runtime-trees.mjs',
       // 自审用：全库扫描非法 UTF-8（抓混编码损坏）
       '.p1-baseline/check-utf8.mjs',
+      // 自审报告（本轮改动全量重审 + 犯错根因清单）
+      'docs/self-review-2026-09-16.md',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
