@@ -11,7 +11,7 @@
  *
  * 用法: node .p1-baseline/test-memory-compress-guard.mjs
  */
-import { checkCompression, checkNoInvention, mustKeepEntities, partitionByAppearance, entityVariants, MIN_COMPRESSED_CHARS } from '../ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance, entityVariants, MIN_COMPRESSED_CHARS } from '../ai/memory-compress-guard.mjs';
 
 let pass = 0;
 const fails = [];
@@ -203,8 +203,38 @@ console.log('\n【9. 接线：两侧判据都接上了，且喂给模型的只�
   ok('提示词里明确写了"不要引入未在此列的角色"', /不要引入任何未在此列的角色/.test(body));
   ok('完整性只核对出场侧', /mustKeep: mustKeepEntities\(\{ characters: cast\.appearedChars, worldEntries: cast\.appearedWorlds \}\)/.test(body));
   ok('无中生有核对未出场侧', /mustNotMention: cast\.absentChars\.map\(\(c\) => c\.name\)/.test(body));
-  ok('两侧任一不过都拒绝落库', /if \(!guard\.ok \|\| !invention\.ok\)/.test(body));
+  ok('完整性不过时拒绝落库；"无中生有"按策略处置（默认放行）',
+    /if \(!guard\.ok \|\| inventionAction === 'reject'\)/.test(body));
   ok('落库仍在两次检查之后', body.indexOf('saveStoryMemory(') > body.indexOf('checkNoInvention('));
+}
+
+console.log('\n【10. "无中生有"的处置策略：默认放行、严格可开（用户 2026-09-16 决定）】');
+{
+  // 用户规格：「没有出现的一个都不许出现**或者根据剧情需要出现**」——后半句是允许。
+  // "剧情需不需要"机器判不了，所以默认放行，但**必须留痕**（静默放行等于看不见越界）。
+  ok('没有越界 → none', inventionVerdict([]) === 'none');
+  // ⚠️ 这里必须**显式钉住 strict=false**：模块默认值取自环境变量
+  // （`NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION`），依赖它就等于让测试跟着外部配置漂移
+  // ——同一个错误在这个文件里已经犯过两次（覆盖率那次也是）。
+  ok('有越界 + 不严格 → allow', inventionVerdict(['甲', '乙'], { strict: false }) === 'allow');
+  ok('有越界 + strict → reject', inventionVerdict(['甲', '乙'], { strict: true }) === 'reject');
+  ok('空数组与 undefined 都不算越界',
+    inventionVerdict([]) === 'none' && inventionVerdict(undefined) === 'none');
+
+  // 检查本身仍然如实报告（放行是"处置"，不是"不检查"）。
+  const inv = checkNoInvention({ compressed: '甲乙丙丁都在这里出现了，写得还挺长的一段话。', mustNotMention: ['甲', '戊'] });
+  ok('检查仍然报告越界的具体名字', inv.ok === false && inv.invented.includes('甲') && !inv.invented.includes('戊'));
+
+  const fs = await import('node:fs');
+  const src = fs.readFileSync('server.js', 'utf8');
+  ok('导入了处置函数', /inventionVerdict/.test(src));
+  const i = src.indexOf('async function compressStoryMemory(');
+  const body = src.slice(i, src.indexOf('\n}\n', i));
+  ok('只有 strict 才拒绝', /inventionAction === 'reject'/.test(body));
+  ok('默认路径**记日志**而不是静默放行', /memory_compress_invented_allowed/.test(body));
+  ok('放行日志里带上具体是哪些角色', /invented: invention\.invented\.slice\(0, 20\)/.test(body));
+  ok('落库仍然在完整性检查之后（丢人依然硬失败）',
+    body.indexOf('saveStoryMemory(') > body.indexOf('if (!guard.ok'));
 }
 
 console.log(`\n══════════════════════════════`);

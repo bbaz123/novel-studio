@@ -147,12 +147,32 @@ export function partitionByAppearance({ characters = [], worldEntries = [], chap
 }
 
 /**
+ * 「无中生有」的处置策略（用户 2026-09-16 决定：**例外直接放行**）。
+ *
+ * 用户给的规格是「没有出现的一个都不许出现**或者根据剧情需要出现**」——
+ * 后半个分句是允许。而"剧情需不需要"机器判不了，所以：
+ *   · **默认放行**（`allow`）：把出现过的未出场角色**如实记进日志**，但不拦落库；
+ *   · 需要严格时可设 `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1` 改成拒绝。
+ *
+ * 刻意不静默：放行归放行，**摘要里多了谁必须留痕**——否则"允许例外"就变成了
+ * "看不见越界"，而这类污染是会被喂给之后每一章的。
+ */
+export const STRICT_NO_INVENTION = process.env.NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION === '1';
+
+/**
+ * @param {string[]} invented 摘要里出现的、从未出场的实体
+ * @returns {'none'|'allow'|'reject'}
+ */
+export function inventionVerdict(invented = [], { strict = STRICT_NO_INVENTION } = {}) {
+  if (!Array.isArray(invented) || invented.length === 0) return 'none';
+  return strict ? 'reject' : 'allow';
+}
+
+/**
  * 「无中生有」检查：摘要里**不得出现**从未出场的角色。
  *
  * 与 `checkCompression` 的完整性检查是一对：那边防"丢人"，这边防"编人"。
- * 用户给的例外是"根据剧情需要出现"——但"剧情需不需要"机器判不了，
- * 所以这里按**最严**处理（出现即失败），并在错误信息里说清怎么办：
- * 若确实需要该角色登场，把它写进章节，它自然就进入 `appeared` 那一侧。
+ * 注意本函数只**报告**，处置由 `inventionVerdict` 决定（默认放行，见上）。
  */
 export function checkNoInvention({ compressed, mustNotMention = [] } = {}) {
   const text = String(compressed ?? '').trim();

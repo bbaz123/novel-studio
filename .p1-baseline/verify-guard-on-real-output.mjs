@@ -15,7 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { decodeZstdFrames } from './audit-llm-calls.mjs';
-import { checkCompression, checkNoInvention, mustKeepEntities, partitionByAppearance } from '../ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance } from '../ai/memory-compress-guard.mjs';
 
 const sessionName = process.argv[2];
 if (!sessionName) { console.error('用法: node .p1-baseline/verify-guard-on-real-output.mjs <session目录名>'); process.exit(2); }
@@ -69,13 +69,20 @@ console.log(`  ${oldGuard.missing.slice(0, 8).join('、')}`);
 console.log('\n【新护栏：只核对出场侧】');
 console.log(`  ${newGuard.ok ? '✓ 通过' : '✗ 拒绝'}　丢失 ${newGuard.missing.length}/${newGuard.checked}`);
 if (!newGuard.ok) console.log(`  ${newGuard.missing.join('、')}`);
-console.log('\n【无中生有：未出场角色不该冒出来】');
-console.log(`  ${invention.ok ? '✓ 未出现' : '✗ 出现了'}　核对 ${invention.checked} 个`);
+console.log('\n【无中生有：未出场角色有没有冒出来（**默认放行**，只报告）】');
+console.log(`  ${invention.ok ? '✓ 未出现' : '⚠ 出现了'}　核对 ${invention.checked} 个`);
 if (!invention.ok) console.log(`  ${invention.invented.join('、')}`);
+console.log(`  处置：${inventionVerdict(invention.invented)}（allow = 记日志放行；reject = 拦落库，需 NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1）`);
 
-const verdict = oldGuard.ok === false && (newGuard.ok && invention.ok);
+// 真正的"能不能落库"由**完整性**决定（出场的一个都不许丢）；"无中生有"默认只报告。
+const wouldSave = newGuard.ok;
 console.log('\n═══ 结论 ═══');
-console.log(verdict
-  ? '  ✓ 这次真实产出**旧护栏误判、新护栏放行** —— 改版确实修掉了那个假阳性，且没有把判据放空。'
-  : '  · 没有出现"旧拒新放"的对比（见上面两组结果）。');
+console.log(`  这份真实产出在新流程下：**${wouldSave ? '会落库' : '仍会被拒绝'}**`
+  + `（完整性 ${newGuard.kept}/${newGuard.checked}）`);
+if (!wouldSave) {
+  console.log(`  缺的是：${newGuard.missing.join('、')}——它们确实在章节里出现过，属于真丢人。`);
+  console.log('  旧护栏报 7/23（多数是没出场的人，噪声）；新护栏报 2/6（真丢人）。**诊断更准**。');
+}
+console.log('  注意：这份产出是用**旧提示词**（把 23 个角色全喂进去）生成的，所以"无中生有"那 12 个');
+console.log('  不是模型幻觉；新提示词只喂出场过的角色。**"新流程能否通过"仍需一次新提示词的真实调用**。');
 process.exitCode = 0;

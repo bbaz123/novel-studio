@@ -11,7 +11,7 @@ import { ovClient, pendingQueueLength } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
-import { checkCompression, checkNoInvention, mustKeepEntities, partitionByAppearance } from './ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance } from './ai/memory-compress-guard.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -1184,8 +1184,13 @@ async function compressStoryMemory(workId, onChunk, signal) {
     compressed: output,
     mustNotMention: cast.absentChars.map((c) => c.name),
   });
-  if (!guard.ok || !invention.ok) {
-    const reasons = [...guard.reasons, ...invention.reasons];
+  // 决策（用户 2026-09-16）：完整性**硬失败**（出场的一个都不许丢）；
+  // "无中生有"**默认放行**——用户给的规格里"根据剧情需要出现"是允许，
+  // 而"剧情需不需要"机器判不了。放行不等于不管：如实记日志（供事后核对），
+  // 需要严格时用 NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1 改回拒绝。
+  const inventionAction = inventionVerdict(invention.invented);
+  if (!guard.ok || inventionAction === 'reject') {
+    const reasons = [...guard.reasons, ...(inventionAction === 'reject' ? invention.reasons : [])];
     log({
       level: 'warn', layer: 'ai', kind: 'memory_compress_rejected',
       message: `记忆压缩被零损失护栏拒绝，**未落库**：${reasons.join('；')}`,
@@ -1195,15 +1200,22 @@ async function compressStoryMemory(workId, onChunk, signal) {
         checked: guard.checked, absent_checked: invention.checked,
       }
     });
-    const err = new Error(`压缩结果未通过零损失护栏（${reasons.join('；')}），已放弃本次压缩以免污染长期记忆。`
-      + '可重试；若某个"未出场角色"确实该登场，请先把它写进章节——它进入出场名单后自然会被允许。');
+    const err = new Error(`压缩结果未通过零损失护栏（${reasons.join('；')}），已放弃本次压缩以免污染长期记忆。可重试。`);
     err.code = 'MEMORY_COMPRESS_GUARD';
     throw err;
   }
+  if (inventionAction === 'allow') {
+    // 放行但要留痕：这一类越界会被喂给之后每一章，看不见就等于没法事后发现。
+    log({
+      level: 'warn', layer: 'ai', kind: 'memory_compress_invented_allowed',
+      message: `压缩结果提到了 ${invention.invented.length} 个未出场角色，按既定策略**放行**（未拦落库）`,
+      context: { work_id: workId, invented: invention.invented.slice(0, 20), absent_checked: invention.checked }
+    });
+  }
   log({
     level: 'info', layer: 'ai', kind: 'memory_compress_ok',
-    message: `记忆压缩通过零损失护栏（${guard.length} 字；出场实体 ${guard.checked} 个全保留，未出场 ${invention.checked} 个均未出现）`,
-    context: { work_id: workId, length: guard.length, checked: guard.checked, absent_checked: invention.checked }
+    message: `记忆压缩通过零损失护栏（${guard.length} 字；出场实体 ${guard.checked} 个全保留，未出场 ${invention.checked} 个中 ${invention.invented.length} 个被提及但按策略放行）`,
+    context: { work_id: workId, length: guard.length, checked: guard.checked, absent_checked: invention.checked, invented_count: invention.invented.length }
   });
   saveStoryMemory(workId, output, { source: 'compress' });
   return output;
