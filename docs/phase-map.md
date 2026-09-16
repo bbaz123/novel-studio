@@ -203,7 +203,7 @@
   - .p1-baseline/blackhole.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0）import——撤掉会让该工具失效
 - **说明**：验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——但注意 X 内部彼此 import（verify-all ↔ 各工具），且被 .p0-recon 的线路层工具引用。
 - **验收证据**：`.p1-baseline/verify-all.mjs`、`.p1-baseline/README.md`、`docs/README.md`
-- **本阶段认领的文件**（28 个）：
+- **本阶段认领的文件**（29 个）：
   - `.p1-baseline/.gitignore`
   - `.p1-baseline/README.md`
   - `.p1-baseline/audit-llm-calls.mjs`
@@ -222,6 +222,7 @@
   - `.p1-baseline/verify-all.mjs`
   - `.p1-baseline/verify-harness-gate.mjs`
   - `.p1-baseline/verify-layer-constants.mjs`
+  - `.p1-baseline/verify-main-instance.mjs`
   - `.p1-baseline/verify-memory-hint.mjs`
   - `.p1-baseline/verify-model-slot.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -235,7 +236,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**107** 个文件
+- 真实改动集：**108** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

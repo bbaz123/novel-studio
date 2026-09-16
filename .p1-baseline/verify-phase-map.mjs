@@ -207,6 +207,8 @@ export const PHASES = [
       // 已被 P0/P2–P5 认领的共享文件里（harness.js / server.js / public/app.js），
       // 所以这里只需认领新增的工具本身——与 D5 把事故证据归入 X 同一处理。
       '.p1-baseline/verify-model-slot.mjs',
+      // 主实例重启后的对照检查（只读、零计费）：证明"代码提交了"≠"实例生效了"。
+      '.p1-baseline/verify-main-instance.mjs',
     ],
     evidence: ['.p1-baseline/verify-all.mjs', '.p1-baseline/README.md', 'docs/README.md'],
     note: '验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——'
