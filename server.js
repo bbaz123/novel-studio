@@ -9,7 +9,7 @@ import { htmlToPlain } from './text-utils.js';
 import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
 import { ovClient, pendingQueueLength } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
-import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId } from './ai/context/layers.mjs';
+import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -1751,6 +1751,9 @@ function rollbackMemory(versionId) {
 
 // ---------- 场景化创作上下文（ST 式装配） ----------
 // mode: full（默认，整章代写/分析）| continuation（接龙，重视前文尾巴）| fragment（片段补写）
+// 注：语义召回的缺口判据 `recallGapReason` 住在 ai/context/layers.mjs（内核单点，
+// 可离线单测），这里只消费它——三处使用点（装配 + 两个响应端点）必须同源。
+
 async function buildNovelContext(workId, chapterId, mode = 'full') {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
@@ -1911,6 +1914,18 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
   } catch (_) {
     semanticRecall = { enabled: true, status: 'error', query: '', hits: [] };
   }
+  // 决策 D8-#5：召回层不可用时**不得静默消失**。
+  // 旧行为：status !== 'ok' 时 recallLayer = null，该层直接不存在 —— 模型不知道自己本该
+  // 有一层召回，作者也看不出来（只有 API 响应里的 semantic_recall.status 留了痕）。
+  // 现在：**期望有召回却没拿到**时发一层**显式占位**，把"缺了什么、为什么缺、怎么自己取回"
+  // 写进上下文。这与 I4「凡裁剪必可查回」是同一条纪律：不允许静默丢信息。
+  // 判据与两个响应端点同源（recallGapReason，模块级）。
+  const recallGap = recallGapReason(semanticRecall);
+  const recallGapText = recallGap
+    ? `（本次未能取到「相关记忆检索」结果：${recallGap}。`
+      + '需要旧章正文、设定词条或角色卡的原文时，请用 novel_lookup（其余）或 novel_memory_read（长期记忆）'
+      + '主动查回；不要因为上面的分层里没写，就当作该设定不存在。）'
+    : '';
   const recallLayer = semanticRecall && semanticRecall.status === 'ok' && semanticRecall.text
     ? { label: '相关记忆检索（语义召回）', text: semanticRecall.text, cap: 1400 }
     : null;
@@ -1932,7 +1947,7 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     L('work', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`),
     L('outline', outlineText),
     L('memory', memoryBody),
-    recallLayer ? L('recall', recallLayer.text) : null,
+    recallLayer ? L('recall', recallLayer.text) : (recallGapText ? L('recall', recallGapText) : null),
     L('events', eventsText),
     L('foreshadows', foreshadowText),
     ...(isSettingsMode ? [] : [
@@ -1976,8 +1991,12 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     semantic_recall: semanticRecall ? {
       enabled: semanticRecall.enabled,
       status: semanticRecall.status,
+      // D8-#5：本轮是否构成"期望有召回却没拿到"，以及上下文里插了什么占位说明。
+      // 界面可以据此如实提示作者，而不是让缺口只存在于 API 的一个 status 字段里。
+      gap: Boolean(recallGap),
+      gap_reason: recallGap,
       hits: semanticRecall.hits || []
-    } : { enabled: false, status: 'unknown', hits: [] },
+    } : { enabled: false, status: 'unknown', gap: false, gap_reason: '', hits: [] },
     assembled,
     // P2 新增（additive，旧消费方不受影响）：
     //   context_manifest  逐层裁剪清单——零损失审计的依据（每层原始长 / 采用长 / 占用 / 被裁字数）
@@ -3173,7 +3192,15 @@ async function handleAPI(req, res, pathname, query) {
 
     return sendJSON(res, 200, {
       ...ctx,
-      semantic_recall: { enabled: recall.enabled, status: recall.status, hits: recall.hits || [] },
+      semantic_recall: {
+        enabled: recall.enabled,
+        status: recall.status,
+        // D8-#5：与 buildNovelContext 同源（recallGapReason）——界面看到的缺口判定必须与
+        // 实际插进提示词的占位一致，否则会出现"界面说正常、模型却收到了缺口说明"。
+        gap: Boolean(recallGapReason(recall)),
+        gap_reason: recallGapReason(recall),
+        hits: recall.hits || []
+      },
       // 提示词使用的分层文本（前端 aiContextBlock 直接采用它），以及配套的裁剪清单
       assembled: budgeted ? budgeted.assembled : '',
       context_manifest: budgeted ? budgeted.context_manifest : [],

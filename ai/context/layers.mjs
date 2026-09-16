@@ -111,6 +111,30 @@ export function retrievalOf(layerId) {
   return RETRIEVAL[layerId] || { tool: null, note: '未声明查回路径' };
 }
 
+/**
+ * 决策 D8-#5：语义召回"期望有却没拿到"的缺口原因（没有缺口则返回空串）。
+ *
+ * 为什么这条判据住在内核模块而不是 server.js 里：
+ * 它同时决定**三件事**——装配时是否往上下文插显式占位层、`/api/novel/context` 与
+ * `/api/ai_context` 是否向界面报告缺口。三处必须同源，否则会出现
+ * "上下文里插了占位、界面却说一切正常"这种自相矛盾。放在这里还能被**离线单测**。
+ *
+ * 刻意**不**把这两种算作缺口：
+ *   - `disabled`：配置主动停用（是意图，不是意外）；
+ *   - `empty`：查询为空，本来就没有可检索的东西。
+ * 给它们插占位只会让每轮上下文多一层噪声，而噪声会让真正重要的缺口提示被忽略。
+ */
+export const RECALL_GAP_CN = {
+  'no-hits': '检索没有命中（可能索引还没建，或本作品确实没有相关内容）',
+  unavailable: '记忆服务当前不可用',
+  error: '检索过程出错',
+};
+
+/** @param {{enabled?:boolean,status?:string}} recall getSemanticRecall 的返回值 */
+export function recallGapReason(recall) {
+  return recall && recall.enabled === true ? (RECALL_GAP_CN[recall.status] || '') : '';
+}
+
 /** 总预算（正文+标题+提示语 的合计上界）。 */
 export const TOTAL_BUDGET = { settings: 18000, default: 26000 };
 

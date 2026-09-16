@@ -81,11 +81,11 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - ai/context/layers.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
+  - ai/context/layers.mjs 被 .p1-baseline/test-recall-gap.mjs（验收工具，X）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-all.mjs（验收工具，X）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-invariants.mjs（验收工具，P2）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-layer-constants.mjs（验收工具，X）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/verify-retrieval-map.mjs（验收工具，X）import——撤掉会让该工具失效
-  - ai/context/layers.mjs 被 .p1-baseline/verify-retrieval.mjs（验收工具，P3）import——撤掉会让该工具失效
 - **说明**：层规格是新增模块；但**不能单独撤回**——装配器（P2）与 server.js 都 import 它，撤掉会当场打断它们。
 - **验收证据**：`docs/context-contract.md`、`.p1-baseline/README.md`、`.p1-baseline/context-floor.mjs`、`.p1-baseline/make-stress.mjs`
 - **本阶段认领的文件**（14 个）：
@@ -203,7 +203,7 @@
   - .p1-baseline/blackhole.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0）import——撤掉会让该工具失效
 - **说明**：验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——但注意 X 内部彼此 import（verify-all ↔ 各工具），且被 .p0-recon 的线路层工具引用。
 - **验收证据**：`.p1-baseline/verify-all.mjs`、`.p1-baseline/README.md`、`docs/README.md`
-- **本阶段认领的文件**（30 个）：
+- **本阶段认领的文件**（32 个）：
   - `.p1-baseline/.gitignore`
   - `.p1-baseline/README.md`
   - `.p1-baseline/audit-llm-calls.mjs`
@@ -212,6 +212,7 @@
   - `.p1-baseline/compare-memory-hint.mjs`
   - `.p1-baseline/diff-log-noise.mjs`
   - `.p1-baseline/diff-real-db.mjs`
+  - `.p1-baseline/exp-per-task-settings.mjs`
   - `.p1-baseline/gate-env.mjs`
   - `.p1-baseline/incident-evidence-app-log-2026-09-15.md`
   - `.p1-baseline/incident-evidence-app-log-2026-09-15.raw.txt`
@@ -219,6 +220,7 @@
   - `.p1-baseline/read-dsh-session.mjs`
   - `.p1-baseline/test-gate-assert.mjs`
   - `.p1-baseline/test-harness-env.mjs`
+  - `.p1-baseline/test-recall-gap.mjs`
   - `.p1-baseline/verify-all.mjs`
   - `.p1-baseline/verify-harness-gate.mjs`
   - `.p1-baseline/verify-layer-constants.mjs`
@@ -237,7 +239,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**109** 个文件
+- 真实改动集：**111** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

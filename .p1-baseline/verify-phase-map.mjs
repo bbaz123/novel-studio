@@ -210,6 +210,10 @@ export const PHASES = [
       '.p1-baseline/verify-model-slot.mjs',
       // 主实例重启后的对照检查（只读、零计费）：证明"代码提交了"≠"实例生效了"。
       '.p1-baseline/verify-main-instance.mjs',
+      // 决策 D8-#2 的前置实验：证明 --patch 能重定向单个任务的 settings 文档。
+      '.p1-baseline/exp-per-task-settings.mjs',
+      // 决策 D8-#5 的离线单测：召回层不可用时不得静默消失（含变异体阴性对照）。
+      '.p1-baseline/test-recall-gap.mjs',
     ],
     evidence: ['.p1-baseline/verify-all.mjs', '.p1-baseline/README.md', 'docs/README.md'],
     note: '验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——'

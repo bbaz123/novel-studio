@@ -171,6 +171,8 @@ run('装配回归：差异须恰好为已刻画的「压缩提示挪位」（压
 run('装配器单元测试（边界与溢出分支）', process.execPath, ['.p1-baseline/test-assembler.mjs']);
 run('AI 全分支核对（0 处绕过策略）', process.execPath, ['.p1-baseline/verify-ai-branches.mjs']);
 run('插件工具面与版本一致', process.execPath, ['.p1-baseline/verify-plugin-tools.mjs']);
+// D8-#5：召回层不可用时不得静默消失（缺口判据真值表 + 变异体阴性对照 + 三处接线同源）
+run('召回缺口不得静默（占位层与端点同源）', process.execPath, ['.p1-baseline/test-recall-gap.mjs']);
 
 // ── 4b. I4 的**静态**保证：可截断层必须真有查回路径（零成本，默认跑）────────
 // 端到端那条（verify-retrieval）是数据相关的：只查"当前数据里实际被裁的层"。
