@@ -114,6 +114,15 @@ return `${delta}\n\n【此前进度】${base}`;   // 注释：新事件置顶、
 - 只与**不晚于该采纳**的最近一份草稿配对（避免配到下一次生成的草稿）；
 - 测一次就写回，之后再次保存不会重复测量（幂等，已实测）。
 
+**删作品时连带清理埋点（2026-09-16 决议 D6·C-①）**：`ai_eval_events` 的 `work_id`/`chapter_id`
+建表时是**裸列**，没有像其它二十余张作品域表那样写 `ON DELETE CASCADE`。后果：删作品后埋点行留下，
+任何作品视角都够不到，而 `GET /api/ai/eval`（不带 `work_id`）会把它们算进**全局**采纳率与平均编辑距离。
+现在 `server.js` 在 `deleteRow('works', …)` **之前**调用 `purgeEvalEventsOfWork()`
+（必须在之前：章节级联删除后就解析不出 `chapter_id`），删 `work_id = ?` 或
+`chapter_id IN (该作品章节)` 两类行。SQLite 不能给已有表补外键，故用显式 DELETE。
+验证：`verify-eval-metric.mjs` 用「全局聚合回到基线」判定（空库与有历史的库上都成立）；
+阴性对照（摘掉清理调用）报 `基线 total=0 → 现在 4（差 4 行未清）`。
+
 **算法**（`ai/edit-distance.mjs`，纯模块、可离线单测）：
 
 | 情形 | 算法 | 说明 |

@@ -995,6 +995,38 @@ function measureAdoptEditDistance(chapterId, finalContent) {
   }
 }
 
+/**
+ * 删作品时连带清理它的 AI 埋点（决策 D6·C-①）。
+ *
+ * 为什么需要显式删：`ai_eval_events` 建表时 `work_id` / `chapter_id` 写的是裸 INTEGER，
+ * 没有外键、也就没有级联——而库里其它二十余张作品域表全都是 `REFERENCES works(id) ON DELETE CASCADE`。
+ * 于是删作品后埋点行会留下：任何作品视角都够不到，而**全局聚合**（`/api/ai/eval` 不带 work_id）
+ * 会把它们算进采纳率与平均编辑距离 → 指标被已不存在的作品带偏，且表无界增长。
+ *
+ * SQLite 不支持给已有表补外键（`ALTER TABLE` 做不到），所以这里用显式 DELETE，
+ * 与"重建表迁移"相比无需动 schema、可回滚。
+ *
+ * ⚠️ 调用时机：必须在 `deleteRow('works', id)` **之前**——章节随作品级联删除后，
+ * `chapter_id IN (SELECT ... FROM chapters ...)` 就查不到任何东西了。
+ *
+ * @returns {number} 实际删掉的行数（失败静默返回 0：埋点清理绝不能挡住删作品）
+ */
+function purgeEvalEventsOfWork(workId) {
+  try {
+    const r = prepare(`
+      DELETE FROM ai_eval_events
+      WHERE work_id = ?
+         OR chapter_id IN (SELECT id FROM chapters WHERE work_id = ?)
+    `).run(workId, workId);
+    const n = Number(r.changes) || 0;
+    if (n) log({ level: 'info', layer: 'ai', kind: 'eval_purged', message: `删除作品时连带清理 AI 埋点 ${n} 行`, context: { work_id: workId } });
+    return n;
+  } catch (e) {
+    log({ level: 'warn', layer: 'ai', kind: 'eval_purge_failed', message: `AI 埋点清理失败（已忽略，不影响删除）：${e.message}`, error: e, dedupMs: 60000 });
+    return 0;
+  }
+}
+
 function summarizeAIEval(workId) {
   const where = workId ? 'WHERE work_id = ?' : '';
   const args = workId ? [workId] : [];
@@ -3886,6 +3918,11 @@ async function handleAPI(req, res, pathname, query) {
       }
       if (method === 'DELETE' && id) {
         const old = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
+        // P5 埋点的连带清理（决策 D6·C-①）：`ai_eval_events` 的 work_id/chapter_id 是**裸列**，
+        // 没有像其它二十余张作品域表那样写 `ON DELETE CASCADE`。不显式删就会留下孤儿行：
+        // 谁也够不到它们，而 `GET /api/ai/eval`（不带 work_id）会把它们算进全局聚合，把指标带偏。
+        // ⚠️ 必须在 deleteRow **之前**删：章节随作品级联消失后，就再也解析不出 chapter_id 了。
+        if (resource === 'works') purgeEvalEventsOfWork(Number(id));
         const removed = deleteRow(resource, id);
         if (!removed) return sendError(res, 404, 'Not found');
         if (old?.work_id) touchWork(old.work_id);

@@ -187,6 +187,8 @@ export const PHASES = [
       'ai/context/README.md',
       '.p1-baseline/diff-real-db.mjs',
       '.p1-baseline/diff-log-noise.mjs',
+      '.p1-baseline/incident-evidence-app-log-2026-09-15.md',
+      '.p1-baseline/incident-evidence-app-log-2026-09-15.raw.txt',
       '.p1-baseline/census.mjs',
       '.p1-baseline/probe-live.mjs',
       '.p1-baseline/read-dsh-session.mjs',
@@ -301,11 +303,17 @@ function git(args) {
   });
 }
 
-/** 真实改动集：已跟踪改动 + 未跟踪源码（沿用快照工具的排除规则）。 */
-export function changedFiles() {
+/** 真实改动集：相对某个**基线提交**的改动 + 未跟踪源码（沿用快照工具的排除规则）。 */
+export function changedFiles(base) {
   const set = new Set();
-  for (const rel of git(['diff', '--name-only', 'HEAD']).split('\n').map((s) => s.trim()).filter(Boolean)) {
-    set.add(rel.replace(/\\/g, '/'));
+  const args = base ? ['diff', '--name-only', base] : ['diff', '--name-only', 'HEAD'];
+  for (const rel of git(args).split('\n').map((s) => s.trim()).filter(Boolean)) {
+    const p = rel.replace(/\\/g, '/');
+    // ⚠️ 排除规则必须作用于**两支**来源。早先只过滤"未跟踪"那一支，
+    // 于是 D1 把 `baselines*/summary.json` 提交进来之后，它们突然成了 21 个"无归属改动"——
+    // 实测撞到过。派生数据无论是否已提交，都不该算进"阶段的改动面"。
+    if (isExcluded(p)) continue;
+    set.add(p);
   }
   const out = git(['status', '--porcelain', '-uall']);
   for (const line of out.split('\n')) {
@@ -317,6 +325,23 @@ export function changedFiles() {
     set.add(rel);
   }
   return [...set].sort();
+}
+
+/**
+ * 默认基线：**当前分支与主线的分叉点**（`git merge-base HEAD <main>`）。
+ *
+ * 为什么不能用 HEAD：D1 把整个重构提交之后，`git diff HEAD` 只剩当天的新改动，
+ * 于是 P0/P1 的文件"消失"在改动集之外，推导就把它们误判成 `independent`——
+ * 实测撞到过（提交前 P0=shared，提交后突然=independent）。
+ * 用分叉点则天然表达"这次重构改了哪些东西"，且**不写死提交号**（不会腐烂）。
+ * 主线分支名可用 `--main <name>` 覆盖；拿不到时退回 HEAD 并在输出里说明。
+ */
+export function defaultBase(mainBranch = 'main') {
+  try {
+    return git(['merge-base', 'HEAD', mainBranch]).trim();
+  } catch {
+    return '';
+  }
 }
 
 /** 生成文档正文（文档由数据派生，避免手写漂移）。 */
@@ -396,12 +421,19 @@ export function renderDoc(phases, changed, verdicts) {
 // ── CLI ────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (isMain) {
-  const changed = changedFiles();
+  const argOf = (n, d = '') => { const i = process.argv.indexOf(n); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
+  const MAIN_BRANCH = argOf('--main', 'main');
+  const BASE = argOf('--since', '') || defaultBase(MAIN_BRANCH);
+  const changed = changedFiles(BASE);
   let bad = 0;
   const say = (ok, text) => { if (!ok) bad++; console.log(`  ${ok ? '✓' : '✗'} ${text}`); };
 
   console.log('═══ 阶段映射核对 ═══\n');
-  console.log(`真实改动集：${changed.length} 个文件（已跟踪改动 + 未跟踪源码，沿用快照的排除规则）\n`);
+  console.log(`基线：${BASE ? `${BASE.slice(0, 8)}（与 ${MAIN_BRANCH} 的分叉点${argOf('--since') ? '，由 --since 指定' : ''}）` : 'HEAD（拿不到分叉点，退回 HEAD）'}`);
+  console.log(`真实改动集：${changed.length} 个文件\n`);
+  if (changed.length === 0) {
+    console.log('（与基线相比没有改动——没有可归属的东西。若你刚把分支合进主线，这是正常的。）');
+  }
 
   // 1) 完整性：每个改动都要有归属
   const orphans = changed.filter((f) => !PHASES.some((p) => p.files.some((pat) => matchesPattern(f, pat))));

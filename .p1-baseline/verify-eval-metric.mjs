@@ -43,6 +43,9 @@ const check = (name, cond, detail = '') => {
 
 console.log(`目标实例：${BASE}\n`);
 
+// 全局埋点基线：D6 的判据要拿它比对（"删作品后回到基线"）。
+const baseGlobal = (await api('GET', '/api/ai/eval')).json || { total: 0 };
+
 // 建临时作品 + 章节
 const work = await api('POST', '/api/works', { title: '编辑距离验证·临时作品', description: '用完即删' });
 const wid = work.json?.id ?? work.json?.work_id;
@@ -119,8 +122,17 @@ console.log('\n【无采纳行时，保存正文不应凭空产生测量】');
   await api('DELETE', `/api/works/${wid2}`);
 }
 
-// 清理
-await api('DELETE', `/api/works/${wid}`);
+console.log('\n【D6：删作品时连带删埋点（不留孤儿行）】');
+{
+  // 用**全局**聚合来判：`ai_eval_events` 没有外键级联，若不在删作品时显式清理，
+  // 上面那些临时作品的埋点行会留下，并被全局聚合算进去（指标被已不存在的作品带偏）。
+  // 判据用「回到基线」而不是绝对值，因此在空库与有历史的库上都成立。
+  await api('DELETE', `/api/works/${wid}`);
+  const after = (await api('GET', '/api/ai/eval')).json;
+  check('两个临时作品的埋点行已随作品删除而清除（全局 total 回到基线）',
+    after.total === baseGlobal.total,
+    `基线 total=${baseGlobal.total} → 现在 ${after.total}（差 ${after.total - baseGlobal.total} 行未清）`);
+}
 
 console.log(`\n══════════════════════════════`);
 console.log(`编辑距离端到端验证：通过 ${pass} / 失败 ${fails.length}`);
