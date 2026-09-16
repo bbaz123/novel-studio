@@ -205,9 +205,10 @@
   - openviking-sync.js 被 .p1-baseline/probe-recall-direct.mjs（验收工具，P1）import——撤掉会让该工具失效
   - openviking-sync.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
 - **说明**：D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。
-- **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`
-- **本阶段认领的文件**（7 个）：
+- **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`、`.p1-baseline/revert-matrix.mjs`
+- **本阶段认领的文件**（8 个）：
   - `.p1-baseline/exp-per-task-settings.mjs`
+  - `.p1-baseline/revert-matrix.mjs`
   - `.p1-baseline/test-context-cache.mjs`
   - `.p1-baseline/test-recall-gap.mjs`
   - `.p1-baseline/test-sync-gate.mjs`
@@ -258,7 +259,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**116** 个文件
+- 真实改动集：**117** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

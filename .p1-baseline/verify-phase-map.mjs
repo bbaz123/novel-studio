@@ -184,10 +184,13 @@ export const PHASES = [
       '.p1-baseline/test-recall-gap.mjs',
       '.p1-baseline/test-sync-gate.mjs',
       '.p1-baseline/test-context-cache.mjs',
+      // D8-#1：回滚矩阵（实测哪些提交能单独 revert；自带阴性对照）
+      '.p1-baseline/revert-matrix.mjs',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
       '.p1-baseline/test-context-cache.mjs', '.p1-baseline/exp-per-task-settings.mjs',
+      '.p1-baseline/revert-matrix.mjs',
     ],
     note: 'D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，'
       + 'ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。'

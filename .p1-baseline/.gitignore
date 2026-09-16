@@ -26,3 +26,6 @@ blackhole-*.jsonl
 
 # 实验临时产物（哨兵 settings + 黑洞转储）：每次跑都会重建，不入库
 .exp-settings/
+
+# 回滚矩阵的临时 worktree（跑完自删；崩了才会留下）
+.revert-matrix/
