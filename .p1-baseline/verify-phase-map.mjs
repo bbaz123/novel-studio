@@ -204,6 +204,13 @@ export const PHASES = [
       '.p1-baseline/verify-auto-compress.mjs',
       // D8-#8 后半：关键改动的人工盲测工具（花钱需显式确认）
       '.p1-baseline/blind-ab.mjs',
+      // D7：孤儿记忆目录清理（干跑默认；--execute 需令牌；删前后对活目录逐文件哈希）
+      '.p1-baseline/d7-purge-orphans.mjs',
+      '.p1-baseline/probe-d7-and-cast.mjs',
+      // D7 的留档证据：清单（删之前）与执行结果（删之后）。用通配认领，
+      // 否则每跑一次都会多出一个"没人认领"的文件——阶段映射会立刻报出来。
+      '.p1-baseline/d7-orphan-manifest-*.json',
+      '.p1-baseline/d7-purge-result-*.json',
     ],
     evidence: [
       '.p1-baseline/test-recall-gap.mjs', '.p1-baseline/test-sync-gate.mjs',
