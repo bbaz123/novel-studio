@@ -1,0 +1,4 @@
+# 本目录归档的是历史文件的「原始字节」，必须与原件逐字节一致：
+#   - 关闭换行符归一化（否则 manifest.json 里的 sha256 会对不上）
+#   - 不受仓库根 .gitattributes 的 `* text=auto eol=lf` 影响
+* -text

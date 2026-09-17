@@ -1,0 +1,785 @@
+{
+  "createdAt": "2026-09-15T14:55:44.072Z",
+  "head": "ca1cdf96f6f5ff58049e273b58377979c3b6769b",
+  "coreAutocrlf": "true",
+  "patchBytes": 120477,
+  "patchSha256": "497d9924ec520dba222517b36e4f7e268971f535a61a35b0af2bf668a911668b",
+  "restoreNote": "changes.patch 供阅读/git apply；**字节级还原请用 files/ 覆盖回仓库根**（core.autocrlf 生效时 git apply 会把 CRLF 归一成 LF）。",
+  "entries": [
+    {
+      "path": ".p0-recon/.gitignore",
+      "kind": "untracked-new",
+      "sha256": "512f8b989677b5a5daa967f1e3f259adef8780b1d2f04eeff767c20a4dafd181",
+      "size": 260
+    },
+    {
+      "path": ".p0-recon/README.md",
+      "kind": "untracked-new",
+      "sha256": "48772d450e7cf042497873c23972fd1159de583d03b7916d6d0f253f4f9399dd",
+      "size": 10454
+    },
+    {
+      "path": ".p0-recon/capture-dsh-request.mjs",
+      "kind": "untracked-new",
+      "sha256": "977b91b30d89ec203595fe464f4451ad38bfd45bd0fdcbedcee4b4417994aaf7",
+      "size": 9552
+    },
+    {
+      "path": ".p0-recon/compare-composed.mjs",
+      "kind": "untracked-new",
+      "sha256": "dc002c3a27f0178e7aae17f8e158661418a184c3097e997fbd46c35e1794d4e1",
+      "size": 8238
+    },
+    {
+      "path": ".p0-recon/headless-sim.p6.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/headless-sim.p6.txt",
+      "kind": "untracked-new",
+      "sha256": "2db27c3299cb4e1d3db40f7a121e49b837c6a3bb1ca17181a29bb3a05082fa9f",
+      "size": 26574
+    },
+    {
+      "path": ".p0-recon/headless.composed.txt",
+      "kind": "untracked-new",
+      "sha256": "13893851ad9ba104de73d9f2d6f1592536206cd6f25b4f66d1b435918bd8c722",
+      "size": 28134
+    },
+    {
+      "path": ".p0-recon/headless.help.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/headless.help.txt",
+      "kind": "untracked-new",
+      "sha256": "49f6f2d4a5d40bfc6d0f3dd7f6f18799f5401d8e65dcc6377042494992220640",
+      "size": 311
+    },
+    {
+      "path": ".p0-recon/headless.srcrepo.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/headless.srcrepo.txt",
+      "kind": "untracked-new",
+      "sha256": "5035792976a7fb65478e4d4193ac56f782f3d92d89e9fe9b3ea6dd2b15eadca3",
+      "size": 14176
+    },
+    {
+      "path": ".p0-recon/negative-control.patch.yml",
+      "kind": "untracked-new",
+      "sha256": "85406daf906aa2e345e99b89559901581d52894bd7cd732bdd591541f6034895",
+      "size": 405
+    },
+    {
+      "path": ".p0-recon/negctl.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/negctl.out.txt",
+      "kind": "untracked-new",
+      "sha256": "49f6f2d4a5d40bfc6d0f3dd7f6f18799f5401d8e65dcc6377042494992220640",
+      "size": 311
+    },
+    {
+      "path": ".p0-recon/novel.bundle.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/novel.bundle.txt",
+      "kind": "untracked-new",
+      "sha256": "35d1077a7eecf19ae1235fda01c75da86bc6270b6be0b69c4637d92c7c3d8c8d",
+      "size": 13721
+    },
+    {
+      "path": ".p0-recon/novel.help.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/novel.help.txt",
+      "kind": "untracked-new",
+      "sha256": "49f6f2d4a5d40bfc6d0f3dd7f6f18799f5401d8e65dcc6377042494992220640",
+      "size": 311
+    },
+    {
+      "path": ".p0-recon/novel.p3.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/novel.p3.txt",
+      "kind": "untracked-new",
+      "sha256": "2db27c3299cb4e1d3db40f7a121e49b837c6a3bb1ca17181a29bb3a05082fa9f",
+      "size": 26574
+    },
+    {
+      "path": ".p0-recon/novel.srcrepo.err.txt",
+      "kind": "untracked-new",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": ".p0-recon/novel.srcrepo.txt",
+      "kind": "untracked-new",
+      "sha256": "9d765dfacf4c172ae08ff69d7275d3f83ace21531cf0718e0a386d6e59fc7e85",
+      "size": 14143
+    },
+    {
+      "path": ".p0-recon/verify-harness-profile.mjs",
+      "kind": "untracked-new",
+      "sha256": "9c71194b3527fd898b98494532bed29781d4e5063369eaf43b217f77016d3e14",
+      "size": 3817
+    },
+    {
+      "path": ".p1-baseline/.gitignore",
+      "kind": "untracked-new",
+      "sha256": "67e657a4351850441cf9ddd81c5de7e06a5e4619f089d0823786c5ea69be5e96",
+      "size": 404
+    },
+    {
+      "path": ".p1-baseline/README.md",
+      "kind": "untracked-new",
+      "sha256": "dd6466d4354f95ae7e1db8a6d184693ee38baf8366c3c57188e060626c78458e",
+      "size": 17149
+    },
+    {
+      "path": ".p1-baseline/audit-llm-calls.mjs",
+      "kind": "untracked-new",
+      "sha256": "da3190a679aa76a0ccc54e665e7df7e687304203a99dd5fb941093c72c9c0263",
+      "size": 7361
+    },
+    {
+      "path": ".p1-baseline/blackhole.mjs",
+      "kind": "untracked-new",
+      "sha256": "f1c0156592192878fe45c780c2f9182309b39a10437814bc21429d71d545aea5",
+      "size": 5330
+    },
+    {
+      "path": ".p1-baseline/capture-baseline.mjs",
+      "kind": "untracked-new",
+      "sha256": "d2c23df5395a9d061bebf5ce307568806bac54e13b98300961edf90d0607a49d",
+      "size": 8122
+    },
+    {
+      "path": ".p1-baseline/census.mjs",
+      "kind": "untracked-new",
+      "sha256": "6e65f86c80865b16ff6b9ddff5be6b9469a186cdf76d069c87cb39a323cf3d9a",
+      "size": 4643
+    },
+    {
+      "path": ".p1-baseline/compare-baseline.mjs",
+      "kind": "untracked-new",
+      "sha256": "32f1d48f2cb64a8726d3f4fa7fa78fb6ade326dc66b654a733ec67de19a2d24b",
+      "size": 4450
+    },
+    {
+      "path": ".p1-baseline/compare-memory-hint.mjs",
+      "kind": "untracked-new",
+      "sha256": "5325d9c2c0279ac6e1503554139818800d3365fc70cb8c2b38a9afa41c565494",
+      "size": 4366
+    },
+    {
+      "path": ".p1-baseline/context-floor.mjs",
+      "kind": "untracked-new",
+      "sha256": "59ce78415e3f6f0aa65af8caa0332922a89f8faf81b938e992806958fc70abb4",
+      "size": 8366
+    },
+    {
+      "path": ".p1-baseline/diff-log-noise.mjs",
+      "kind": "untracked-new",
+      "sha256": "5f950eb9f2027c95be19700cf641554f444d88b4a18b180497c329aaba256402",
+      "size": 4565
+    },
+    {
+      "path": ".p1-baseline/diff-real-db.mjs",
+      "kind": "untracked-new",
+      "sha256": "62ba09aedf5c101d49c0b0be88b207bf9608f3e2c4bf91fb997f5165b12891e8",
+      "size": 3482
+    },
+    {
+      "path": ".p1-baseline/gate-env.mjs",
+      "kind": "untracked-new",
+      "sha256": "609cf2bc6ccc9ca5d9362d2cd897e75e21e6c7802ebbf7078cad21e061588729",
+      "size": 8386
+    },
+    {
+      "path": ".p1-baseline/make-stress.mjs",
+      "kind": "untracked-new",
+      "sha256": "837ae0ddc6d5b47d0d0bf4f60f8003f53ac9474c85cc637042cf66baf273a66a",
+      "size": 10065
+    },
+    {
+      "path": ".p1-baseline/probe-live.mjs",
+      "kind": "untracked-new",
+      "sha256": "0dc117b3a73eaa034864e000de91692985fb29b7a6b9ed097d7e5bd309eb170e",
+      "size": 3095
+    },
+    {
+      "path": ".p1-baseline/probe-ov-find.mjs",
+      "kind": "untracked-new",
+      "sha256": "fdbc7e56237e6a0c0c07e5fab2427b810f9cf39954d004f3d1a76215ed90d2bf",
+      "size": 2446
+    },
+    {
+      "path": ".p1-baseline/probe-ov-recall-chain.mjs",
+      "kind": "untracked-new",
+      "sha256": "a1b97cd21fdc1a270cc6d492492baa54ea27599d28083a7cee5b551ce3db8840",
+      "size": 2648
+    },
+    {
+      "path": ".p1-baseline/probe-recall-direct.mjs",
+      "kind": "untracked-new",
+      "sha256": "232c0fece2cdc5e53dba0b1a31eb99777da50180a0b3e948947361f64467c7e9",
+      "size": 1602
+    },
+    {
+      "path": ".p1-baseline/probe-recall-query.mjs",
+      "kind": "untracked-new",
+      "sha256": "dd2c9edba3f966c46b830932d458298ce8538ffdee82b9fc1c7306e9bc577071",
+      "size": 4888
+    },
+    {
+      "path": ".p1-baseline/probe-recall.mjs",
+      "kind": "untracked-new",
+      "sha256": "41b714ccb449dda62fa827a4e8add83e9e3427cebfdd6fe8dcc1093afe0d3868",
+      "size": 2482
+    },
+    {
+      "path": ".p1-baseline/probe-retrieval.mjs",
+      "kind": "untracked-new",
+      "sha256": "f4ba474dbf19cf03d5ac9eab3202deb6e20a25b207376b5c47c8b468780aed3c",
+      "size": 3169
+    },
+    {
+      "path": ".p1-baseline/read-dsh-session.mjs",
+      "kind": "untracked-new",
+      "sha256": "d78055f7b9985d92fb425b8728763e7b0556a7892a24d940188f5dadfe5ad096",
+      "size": 5621
+    },
+    {
+      "path": ".p1-baseline/schema-dump.mjs",
+      "kind": "untracked-new",
+      "sha256": "17b284376034e50a7ce0c881ac10f0b05474d5f80aee7dd78f15859df88879ac",
+      "size": 974
+    },
+    {
+      "path": ".p1-baseline/survey.mjs",
+      "kind": "untracked-new",
+      "sha256": "32a5e3377f310477097be5f365ef1233265eecb90f0e806238ee3db069040d06",
+      "size": 5045
+    },
+    {
+      "path": ".p1-baseline/test-assembler.mjs",
+      "kind": "untracked-new",
+      "sha256": "ce5ae1f2987fbc4d73f69f5c7226909c7a6faa84f5a973b806a75c17c72edda7",
+      "size": 9909
+    },
+    {
+      "path": ".p1-baseline/test-edit-distance.mjs",
+      "kind": "untracked-new",
+      "sha256": "b40211fc35f7ee872661a17cf7ab28d7fdbf9dbec35aa25d55955bf04819da80",
+      "size": 5715
+    },
+    {
+      "path": ".p1-baseline/test-gate-assert.mjs",
+      "kind": "untracked-new",
+      "sha256": "d0d742466229758fd33db7cb94493a985a521facfbdc25629305d428c0a58554",
+      "size": 9770
+    },
+    {
+      "path": ".p1-baseline/test-harness-env.mjs",
+      "kind": "untracked-new",
+      "sha256": "b23c6bbfa105f3730e9bed2b30a0634014312feec037eb20ba82e1e532a1145c",
+      "size": 3995
+    },
+    {
+      "path": ".p1-baseline/test-model-switch-gate.mjs",
+      "kind": "untracked-new",
+      "sha256": "06558598aef8c4bb2ecb28c9aabc769b4d48f228ab445dbbe465959e4c9ac870",
+      "size": 4945
+    },
+    {
+      "path": ".p1-baseline/verify-ai-branches.mjs",
+      "kind": "untracked-new",
+      "sha256": "e8ef9014c7bf437fcd8ee99488989db97040f70535d33ac10824fb5e33aba180",
+      "size": 6255
+    },
+    {
+      "path": ".p1-baseline/verify-all.mjs",
+      "kind": "untracked-new",
+      "sha256": "f61c7b04fa3a1dca513cc313413124e37a7746f365abaa1e21862f00f4d0233b",
+      "size": 23949
+    },
+    {
+      "path": ".p1-baseline/verify-eval-metric.mjs",
+      "kind": "untracked-new",
+      "sha256": "766100b8357fb10481856f0ea17ab0a78cf2251edc6ad5197f76210f94f275eb",
+      "size": 6264
+    },
+    {
+      "path": ".p1-baseline/verify-harness-gate.mjs",
+      "kind": "untracked-new",
+      "sha256": "29ceec755f9f31594f9d3844b8562eaadb829ed3991ca09de64b6ee471007053",
+      "size": 19989
+    },
+    {
+      "path": ".p1-baseline/verify-invariants.mjs",
+      "kind": "untracked-new",
+      "sha256": "3168b0fc303302e89d9d8eaabf2f733995e071b176ee189c608fad9ea06d90ca",
+      "size": 6857
+    },
+    {
+      "path": ".p1-baseline/verify-layer-constants.mjs",
+      "kind": "untracked-new",
+      "sha256": "54e7f3c8525cb41190b3975d3e893bab8c03bcf46c6a452781e77f67e5076160",
+      "size": 6535
+    },
+    {
+      "path": ".p1-baseline/verify-memory-hint.mjs",
+      "kind": "untracked-new",
+      "sha256": "c582cfffb7d8eac9226cf973067f40b5afd91126338980fa19f0c6404e631ed4",
+      "size": 5372
+    },
+    {
+      "path": ".p1-baseline/verify-p3-unified.mjs",
+      "kind": "untracked-new",
+      "sha256": "b891e66c21279f342b89be7d9ea531c3ada4b837d557be7e8c798d40d4e3419a",
+      "size": 3472
+    },
+    {
+      "path": ".p1-baseline/verify-phase-map.mjs",
+      "kind": "untracked-new",
+      "sha256": "357782c0c29a0a23b43ce728de9bfc58d2efe2a4879ac273d4a1d86310534f35",
+      "size": 22500
+    },
+    {
+      "path": ".p1-baseline/verify-plugin-tools.mjs",
+      "kind": "untracked-new",
+      "sha256": "25e571723d2ad6de89dc9ca84d102c6768a0ff406e6832debdb33110db3063a7",
+      "size": 2702
+    },
+    {
+      "path": ".p1-baseline/verify-retrieval-map.mjs",
+      "kind": "untracked-new",
+      "sha256": "2a76bac14d43cb300773a3d501b747cc1eaf20b8dd911a2118dfa4e5f5d7da58",
+      "size": 5308
+    },
+    {
+      "path": ".p1-baseline/verify-retrieval.mjs",
+      "kind": "untracked-new",
+      "sha256": "d7632b758ccf18e37adc8b0b89eb5e08c95d2515623844faf2fc29189ebe2313",
+      "size": 9117
+    },
+    {
+      "path": ".p6-cutover/.gitignore",
+      "kind": "untracked-new",
+      "sha256": "7a1deadfc1f2ccd8733e2cdc5ea0aba9111bfbb87dc78ff51b937df47481f282",
+      "size": 350
+    },
+    {
+      "path": ".p6-cutover/README.md",
+      "kind": "untracked-new",
+      "sha256": "de4f1736b06161c8bffd3a6be29a457c64c6dbac3ed920aba2a019f61684d0f9",
+      "size": 6284
+    },
+    {
+      "path": ".p6-cutover/cutover.mjs",
+      "kind": "untracked-new",
+      "sha256": "1dde0fc3a2a576aa92323c261615e19893e471caaaddea3864bd41078bd0199b",
+      "size": 21200
+    },
+    {
+      "path": ".p6-cutover/snapshot.mjs",
+      "kind": "untracked-new",
+      "sha256": "c384e952c0bb614bd4a3deae1d75ca34436214800bf75e1ea3aae1ae94582c0d",
+      "size": 17271
+    },
+    {
+      "path": ".p6-cutover/test-cutover.mjs",
+      "kind": "untracked-new",
+      "sha256": "6939a9cc39d63406d811655c9b5f370475b650d4c11d33634cfd4e47c67254fc",
+      "size": 7036
+    },
+    {
+      "path": ".p6-cutover/test-snapshot.mjs",
+      "kind": "untracked-new",
+      "sha256": "f556101c56e45bfb061b5c67226ca4c369f8b0d750176c6f903c126305f32594",
+      "size": 5987
+    },
+    {
+      "path": "ai/README.md",
+      "kind": "untracked-new",
+      "sha256": "a2f7bed58f6a70cd5b6004cc986c9ee21407e8833c639b2fd097c27e56c8ab8e",
+      "size": 1987
+    },
+    {
+      "path": "ai/context/README.md",
+      "kind": "untracked-new",
+      "sha256": "d592511de8c205fb6ac456b0c42f4a182280fbcfe20109fefda5ff7150d1a23e",
+      "size": 2231
+    },
+    {
+      "path": "ai/context/assembler.mjs",
+      "kind": "untracked-new",
+      "sha256": "2b0b36587f322aaa0825b742ae481c4d6c7a4ff82aca383c1d5373deb75032f9",
+      "size": 7118
+    },
+    {
+      "path": "ai/context/layers.mjs",
+      "kind": "untracked-new",
+      "sha256": "b4285232bf079768497582bd0acef12e7bf60bfbe896746c6e3e06832fc0d4f9",
+      "size": 13027
+    },
+    {
+      "path": "ai/edit-distance.mjs",
+      "kind": "untracked-new",
+      "sha256": "c43dd4ae57cd96235a3c86792e57f4abe2d6963c6da1061b81d8a43de700a6c7",
+      "size": 4291
+    },
+    {
+      "path": "ai/harness-env.mjs",
+      "kind": "untracked-new",
+      "sha256": "100c75d1726f7c1a319256f764318df5c4bc0846f6141855cbdfd985a6769a95",
+      "size": 2183
+    },
+    {
+      "path": "ai/policy.mjs",
+      "kind": "untracked-new",
+      "sha256": "4e78e6ecd558fcd6770e8de9b0800442efd6c20df28512542b9ad9724bb66215",
+      "size": 3472
+    },
+    {
+      "path": "docs/README.md",
+      "kind": "untracked-new",
+      "sha256": "2e8ff6d94dfc2a6cf62b892139247059ca8e526dc2885a9ed0ad29e85917ffaa",
+      "size": 5599
+    },
+    {
+      "path": "docs/ai-core.md",
+      "kind": "untracked-new",
+      "sha256": "c5683ae54ec646ea5976bb259d149c8e24bfb5c514751f2a4876b0cc1bc00b9e",
+      "size": 8518
+    },
+    {
+      "path": "docs/context-contract.md",
+      "kind": "untracked-new",
+      "sha256": "b791d1a871117e1031b510a3f4094d408f5cae8bdb1ecac6d9563afb601f9d06",
+      "size": 20334
+    },
+    {
+      "path": "docs/p2-assembler-verification.md",
+      "kind": "untracked-new",
+      "sha256": "dbb226a3b383d861be0466bf3169f56587f541855ef79566136f40e04b77afc5",
+      "size": 6214
+    },
+    {
+      "path": "docs/p3-retrieval-verification.md",
+      "kind": "untracked-new",
+      "sha256": "7b184ad81aa8da3a2f9cf9417c45256b009b57f6a433acee20e684d0c026ed07",
+      "size": 7497
+    },
+    {
+      "path": "docs/p4-policy-verification.md",
+      "kind": "untracked-new",
+      "sha256": "b6642c9158cb3530ddaa34d21c8da5d90cd2e216b12b43b910ebc245d5ca92e0",
+      "size": 11411
+    },
+    {
+      "path": "docs/p5-memory-eval-verification.md",
+      "kind": "untracked-new",
+      "sha256": "aca3eba9fdb406f7881f866c41b063510777def63873aca30fcea1d01a16f66c",
+      "size": 10854
+    },
+    {
+      "path": "docs/p6-cutover-runbook.md",
+      "kind": "untracked-new",
+      "sha256": "f8bdbb539661bfcf1ec913bacb49bcf6f1bbfb7fb4b6f7b1e321678ffe85cf3b",
+      "size": 12255
+    },
+    {
+      "path": "docs/pending-decisions.md",
+      "kind": "untracked-new",
+      "sha256": "ed6c18e0619805a00f68e9550b23da01a6d3a161cfe7a6f087b20888cd43b2e0",
+      "size": 8322
+    },
+    {
+      "path": "docs/phase-map.md",
+      "kind": "untracked-new",
+      "sha256": "af83027d57bedb06992fb7bb0fdf6c4bd167dcd1fe5708364485490776159c4e",
+      "size": 13594
+    },
+    {
+      "path": "docs/self-review-p0-p6.md",
+      "kind": "untracked-new",
+      "sha256": "5240181fe2aac55cd50c3fcd6eee5154110234f431d22ace7c87d0914a48a41e",
+      "size": 15457
+    },
+    {
+      "path": "harness-plugins/novel-writing/cordis.patch.yml",
+      "kind": "untracked-new",
+      "sha256": "c84d700f2f9f20c9ab6f2d06e03f6a0535686aa8f324cf2e9c3a0c94292a90a2",
+      "size": 5047
+    },
+    {
+      "path": "harness-plugins/novel-writing/install-profile.mjs",
+      "kind": "untracked-new",
+      "sha256": "bc0f0c184bca9a280182d61aac7278b78da81f63911f6e41c0d9995968c1eecd",
+      "size": 12770
+    },
+    {
+      "path": "harness-plugins/novel-writing/package.json",
+      "kind": "untracked-new",
+      "sha256": "f40c4f072d1c45f571422c5ae57e266389759b8b812e3805e9536dae39d9baf6",
+      "size": 486
+    },
+    {
+      "path": "README.md",
+      "kind": "tracked-modified",
+      "sha256": "735d7fd7c431125dbc5406745704ff2c85dad4f910be53771490ed0daffec9c5",
+      "size": 32765
+    },
+    {
+      "path": "db.js",
+      "kind": "tracked-modified",
+      "sha256": "7359a52744b2723c2ba78c335ccd97ea7244566f4cc9e5c24a0ef43b641f190f",
+      "size": 22973
+    },
+    {
+      "path": "harness-plugins/novel-writing/ENGINE.md",
+      "kind": "tracked-modified",
+      "sha256": "b1b8af9f325a222669d373a4e0f52e60d0cc0df3a92df86219a3bd15395ee2a1",
+      "size": 18917
+    },
+    {
+      "path": "harness-plugins/novel-writing/NATIVE_PLUGIN_GUIDE.md",
+      "kind": "tracked-modified",
+      "sha256": "9b9aa89152f5423af2bc6abb7391d01539d6fe1a36c1e698e3909a72df1e18df",
+      "size": 3912
+    },
+    {
+      "path": "harness-plugins/novel-writing/README.md",
+      "kind": "tracked-modified",
+      "sha256": "0cc3373e1a111817f00a572356935fdc923f1189b077e5d2c5a9dbea50d03dd0",
+      "size": 14710
+    },
+    {
+      "path": "harness-plugins/novel-writing/agent.cordis.yml",
+      "kind": "tracked-modified",
+      "sha256": "1cb8ff5a4463e2a5b7761112cfc9023a2fac0d7109e5816eea3c816fd23919eb",
+      "size": 5838
+    },
+    {
+      "path": "harness-plugins/novel-writing/headless-cordis.patch.yml",
+      "kind": "tracked-modified",
+      "sha256": "d5ca544b9e35bb4fba9ddf45c5fdaf07017d2ecfbe05ad0fd4d78fa331ca5c04",
+      "size": 4740
+    },
+    {
+      "path": "harness-plugins/novel-writing/install.ps1",
+      "kind": "tracked-modified",
+      "sha256": "d1bd37327d327a7998ae9cc493773a6f24c21bc0036c6ca26b92729600ab22a0",
+      "size": 7993
+    },
+    {
+      "path": "harness-plugins/novel-writing/novel-tools.mjs",
+      "kind": "tracked-modified",
+      "sha256": "59aa2d0c679a2a69c79d8f1730c530ca335b7ddfe9fd3433b802ecc51987173f",
+      "size": 39876
+    },
+    {
+      "path": "harness-plugins/novel-writing/plugin.json",
+      "kind": "tracked-modified",
+      "sha256": "49666f2b1daf7157b6232a92d18e1bf669ec6243f80e22511b80fdfd40ca32ad",
+      "size": 4083
+    },
+    {
+      "path": "harness.js",
+      "kind": "tracked-modified",
+      "sha256": "2477bc819024620a8542afb37c39685a66662ab176123f1556bbe7b3133392d5",
+      "size": 25982
+    },
+    {
+      "path": "public/app.js",
+      "kind": "tracked-modified",
+      "sha256": "ef08fd7f10aa4edf3ca9f540084874804f83cd2db937d0eb844cfed15bb37588",
+      "size": 406012
+    },
+    {
+      "path": "server.js",
+      "kind": "tracked-modified",
+      "sha256": "d2bb04f4536526b6454b82f413ad5e8df45126408e8d34fbf105fcdff751994e",
+      "size": 205370
+    }
+  ],
+  "excluded": [
+    {
+      "path": "data/",
+      "reason": "运行时数据目录（数据库含 API Key 与作品正文，绝不可打包）",
+      "files": 138,
+      "bytes": 9904703,
+      "digest": "8bf28283fa2140af"
+    },
+    {
+      "path": ".p0-recon/scratch-data",
+      "reason": "探测临时数据目录（可再建）",
+      "files": 1,
+      "bytes": 17328,
+      "digest": "8dca99fe76660e6b"
+    },
+    {
+      "path": ".p0-recon/head-snapshot",
+      "reason": "HEAD 对照实验的临时快照（可再生成）"
+    },
+    {
+      "path": ".p1-baseline/baselines",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）",
+      "files": 21,
+      "bytes": 618671,
+      "digest": "dfd0fdb4715b5262"
+    },
+    {
+      "path": ".p1-baseline/data",
+      "reason": "真实库副本三件套（可再复制）",
+      "files": 4,
+      "bytes": 1399532,
+      "digest": "0c50d51f6839bbb6"
+    },
+    {
+      "path": ".p1-baseline/stress-data",
+      "reason": "压力数据副本（可由 make-stress.mjs 重建）",
+      "files": 4,
+      "bytes": 2945017,
+      "digest": "11a1ef4b19fad2c9"
+    },
+    {
+      "path": ".p1-baseline/gate-data",
+      "reason": "闸门验证的隔离数据目录（用完即删）"
+    },
+    {
+      "path": ".p1-baseline/.rehearsal",
+      "reason": "彩排临时树"
+    },
+    {
+      "path": ".p6-cutover/.rehearsal",
+      "reason": "彩排临时树"
+    },
+    {
+      "path": ".p6-cutover/.verify",
+      "reason": "本工具的比对临时树",
+      "files": 0,
+      "bytes": 0,
+      "digest": "e3b0c44298fc1c14"
+    },
+    {
+      "path": ".p6-cutover/.negctl",
+      "reason": "阴性对照的临时快照"
+    },
+    {
+      "path": "node_modules/",
+      "reason": "依赖（可由 pnpm install 重建）",
+      "files": 2,
+      "bytes": 814,
+      "digest": "2714355e530284f6"
+    }
+  ],
+  "skippedFiles": [
+    {
+      "path": ".p1-baseline/baselines-p2-stress/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p2/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p2b-stress/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p2b/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p2final-stress/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p2final/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p3-real/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p3/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p4-real/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p4/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p5-real/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-p5/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-post-const/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-post-hint/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-pre-const/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-pre-hint/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-real-post-const/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-real-post-hint/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-real-pre-const/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines-stress/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    },
+    {
+      "path": ".p1-baseline/baselines/summary.json",
+      "reason": "装配基线 JSON（可由 capture-baseline.mjs 重抓；回归证据）"
+    }
+  ]
+}
