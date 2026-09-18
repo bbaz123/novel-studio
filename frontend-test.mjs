@@ -252,7 +252,7 @@ globalThis.__probe = {
   tooltipHtmlFor,
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
-  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, aiContextTruncated, directAIWrite,
+  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
   performToolbarAIWrite
 };
 `;
@@ -855,8 +855,76 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   sandbox.toast = realToast;
 }
 
-// --- 8) 派生式护栏：浏览器脚本不得调用"只存在于服务端"的函数 ---
-// 它来自一个真实缺陷：v0.9.3 的提交里 public/app.js 有三处 `plainText(editor.innerHTML)`，
+// --- 12) 批量生成：红线自检结果必须**告知**作者（此前完全没读 scan，作者永远不知道命中多少） ---
+// 关键点有两个：① 扫的是**成文 + 补足合并后**的全文（不是 harness 单次 job 的 output）；
+//            ② 三种口径（命中 / 通过 / 不可用）要分别说得出口，不能含糊成一句"完成"。
+{
+  const runBatch = async ({ scanTotal = 2, scanThrows = false } = {}) => {
+    const toasts = [];
+    const calls = [];
+    const saved = {
+      api: sandbox.api, toast: sandbox.toast, runHarnessJob: sandbox.runHarnessJob,
+      loadWorkData: sandbox.loadWorkData, render: sandbox.render, reportClientLog: sandbox.reportClientLog,
+      refreshProposalBadge: sandbox.refreshProposalBadge
+    };
+    P.state.workId = 2;
+    P.state.work = { id: 2, title: '测试作品', default_chapter_words: 8 };
+    P.state.currentChapterId = 107;
+    P.state.chapters = [{ id: 107, title: '第107章', target_words: 8, content: '' }];
+    containers['#editor-content'] = containers['#editor-content'] || mkEl('editor-content');
+    sandbox.toast = (m) => { toasts.push(String(m)); };
+    sandbox.api = async (url, opts = {}) => {
+      calls.push({ url: String(url), body: opts.body });
+      if (String(url).includes('/novel/empty_chapters')) return { chapters: [{ id: 107, title: '第107章', target_words: 8 }] };
+      if (String(url).includes('/novel/scan')) {
+        if (scanThrows) throw new Error('扫描服务不可用');
+        return { ok: true, total: scanTotal, hits: scanTotal ? [{ kind: 'phrase', pattern: '嘴角勾起', note: '', count: scanTotal }] : [] };
+      }
+      return { ok: true };
+    };
+    // harness 侧：蓝图一次 + 成文一次 + 补足一次（补足是为了验证"扫的是合并后的全文"）
+    let harnessCalls = 0;
+    sandbox.runHarnessJob = async () => {
+      harnessCalls += 1;
+      if (harnessCalls === 1) return { output: '【蓝图】{"scene_goal":"开场","target_words":8}' };
+      if (harnessCalls === 2) return { output: '【成文】正文第一段。' };
+      return { output: '【成文】续写片段。' };
+    };
+    sandbox.loadWorkData = async () => {};
+    sandbox.render = async () => {};
+    sandbox.refreshProposalBadge = async () => {};
+    sandbox.reportClientLog = () => {};
+    await P.batchGenerateChapters(1);
+    Object.assign(sandbox, saved);
+    const scanCall = calls.find((c) => c.url.includes('/novel/scan'));
+    const finalToast = toasts[toasts.length - 1] || '';
+    return { calls, toasts, finalToast, harnessCalls, scannedText: scanCall && scanCall.body && scanCall.body.text };
+  };
+
+  const hit = await runBatch({ scanTotal: 2 });
+  check('109a 批量生成会对**合并后的全文**跑红线自检（成文+补足都在）',
+    String(hit.scannedText || '').includes('正文第一段') && String(hit.scannedText || '').includes('续写片段'),
+    JSON.stringify(hit.scannedText));
+  check('109b 命中时收尾 toast 如实报出命中数与章名',
+    hit.finalToast.includes('红线自检命中 2 处') && hit.finalToast.includes('第107章'), hit.finalToast);
+  check('109c 命中时仍保留提案去处指路', hit.finalToast.includes('待确认提案'), hit.finalToast);
+
+  const clean = await runBatch({ scanTotal: 0 });
+  check('109d 零命中时报"通过"，不谎报命中也不省略', clean.finalToast.includes('红线自检通过'), clean.finalToast);
+
+  const broken = await runBatch({ scanThrows: true });
+  check('109e 扫描不可用时如实说明，且不影响写回', broken.finalToast.includes('红线自检不可用') && broken.finalToast.includes('已写入正文'), broken.finalToast);
+  check('109f 三种口径互斥（同一次运行只出现其中一种说法）', (() => {
+    const markers = ['红线自检命中', '红线自检通过', '红线自检不可用'];
+    const n = (t) => markers.filter((m) => t.includes(m)).length;
+    // ⚠️ 不能用 `!clean.includes('命中')`：'未命中反 AI 腔词句' 里也含"命中"两个字（第一版就是这么假失败的）。
+    return n(hit.finalToast) === 1 && n(clean.finalToast) === 1 && n(broken.finalToast) === 1
+      && hit.finalToast.includes('红线自检命中') && clean.finalToast.includes('红线自检通过')
+      && broken.finalToast.includes('红线自检不可用');
+  })(), JSON.stringify([hit.finalToast.slice(0, 30), clean.finalToast.slice(0, 30), broken.finalToast.slice(0, 30)]));
+}
+
+// --- 8) 派生式护栏：浏览器脚本不得调用"只存在于服务端"的函数 ---// 它来自一个真实缺陷：v0.9.3 的提交里 public/app.js 有三处 `plainText(editor.innerHTML)`，
 // 而那个提交从未在任何地方定义 plainText（前端从来没有过这个函数）→ 点「查看上次审稿」
 // 必抛 ReferenceError。node --check、接口套件、当时的前端断言**全都看不见**它：
 // 语法合法、路径没被断言覆盖。所以这里把判据做成**派生**的：

@@ -6941,6 +6941,12 @@ async function batchGenerateChapters(count) {
     stage: '批量生成'
   };
   let done = 0;
+  // 每章的**全文**红线自检结果（成文 + 补足合并后），最后汇总给作者。
+  // 为什么不用 harness 任务自带的 job.scan：那是对**单次 job 的 output** 算的
+  // （成文 job 只有正文本体、补足 job 只有续写片段），而写回的是合并后的全文 ——
+  // 交互路径正是因此自己重扫一次。扫描是本地正则，零 AI 成本。
+  // 缺失它时，批量生成的章节命中了多少反 AI 腔词句，作者永远不知道（红线自检没有别的展示面）。
+  const scanRows = [];
   for (const ch of targets) {
     done += 1;
     const label = `批量生成 · 第 ${done}/${targets.length} 章（${ch.title}）`;
@@ -6971,6 +6977,24 @@ async function batchGenerateChapters(count) {
         if (!more.trim()) break;
         article = `${article}\n\n${more}`;
       }
+      // 3) 全文确定性红线扫描（本地正则、零成本）：结果只做**告知**，不改变写回内容。
+      // ⚠️ 失败不阻塞写回（与交互路径同一条纪律）。
+      try {
+        const fullScan = await api('/novel/scan', {
+          method: 'POST',
+          body: { work_id: state.workId, text: article, skip_dialogue: true }
+        });
+        const total = Number(fullScan.total) || 0;
+        scanRows.push({ title: ch.title, total });
+        reportClientLog({
+          level: total > 0 ? 'warn' : 'info',
+          kind: 'batch_redline_scan',
+          message: `[批量生成] ${ch.title} 红线自检命中 ${total} 处`
+            + (total > 0 ? `：${(fullScan.hits || []).slice(0, 3).map((h) => `${h.pattern}×${h.count}`).join('、')}` : '')
+        });
+      } catch (e) {
+        reportClientLog({ level: 'warn', kind: 'batch_redline_scan_failed', message: `[批量生成] ${ch.title} 红线自检不可用：${e.message}` });
+      }
       // 4) 写回章节（旧稿自动存历史版本）
       await api('/novel/chapter_save', {
         method: 'POST',
@@ -6988,7 +7012,23 @@ async function batchGenerateChapters(count) {
       return;
     }
   }
-  toast(`批量生成完成：${done} 章已写入正文。AI 提交的事件/记忆提案可在「长期记忆 → 待确认提案」处理`, 'success');
+  // 收尾：把本批的**红线自检**结果如实报出来（命中/通过/不可用三种口径，不要含糊成一句"完成"）。
+  // 提案去哪儿的指路保持不变（提案按设计要作者逐条确认，且 `/novel/proposals` 是该作品的全部待确认项，
+  // 逐章展示只会重复同一份清单）。
+  const scannedTotal = scanRows.reduce((n, r) => n + r.total, 0);
+  let scanLine;
+  if (!scanRows.length) {
+    scanLine = '红线自检不可用（不影响正文，可在参考面板「红线」里手工核对）';
+  } else if (scannedTotal === 0) {
+    scanLine = `红线自检通过（${scanRows.length} 章均未命中反 AI 腔词句）`;
+  } else {
+    const detail = scanRows.filter((r) => r.total > 0).slice(0, 3).map((r) => `${r.title} ${r.total} 处`).join('、');
+    const more = scanRows.filter((r) => r.total > 0).length > 3 ? ' 等' : '';
+    scanLine = `红线自检命中 ${scannedTotal} 处（${detail}${more}）`;
+  }
+  toast(`批量生成完成：${done} 章已写入正文。${scanLine}。AI 提交的事件/记忆提案可在「长期记忆 → 待确认提案」处理`,
+    scannedTotal > 0 ? 'error' : 'success');
+  await refreshProposalBadge(); // 本批可能新增提案：角标立刻反映，别等下次进那个面板
   await loadWorkData(true);
   await render();
 }
