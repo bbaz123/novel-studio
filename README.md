@@ -3,6 +3,7 @@
 >
 > 重构前的代码在 [`refactor/main`](https://github.com/bbaz123/novel-studio) ，
 > 想跑一个稳定版本，请前往main分支。
+
 Novel Studio 是一个本地运行的小说创作管理工具，用于管理多部作品的设定、剧情线、大纲、正文写作，并把 AI 辅助创作能力整合进一个清爽的界面。
 
 它不需要安装任何 npm 第三方依赖，使用 Node.js 内置能力与本地 SQLite 数据库即可运行。你的作品数据、API Key 默认只保存在本机。
