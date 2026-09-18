@@ -10,7 +10,7 @@
 ```js
 export const name = 'novel-tools'        // 插件名（行 id 用）
 export const inject = ['tools']          // 依赖 dsh 的 tools 注册表服务
-export const PLUGIN_VERSION = '0.8.1'    // 与 plugin.json 的 version 保持一致（plugin.json 是真源）
+export const PLUGIN_VERSION = '0.9.0'    // 与 plugin.json 的 version 保持一致（plugin.json 是真源）
 
 export function apply(ctx, config) {
   // config 来自行配置（agent.cordis.yml / cordis.patch.yml 里的 config 字段）
@@ -33,10 +33,18 @@ export function apply(ctx, config) {
      （`proposeMode()` 为 true 时传 `proposed: true`）。
 3. **人设**（`agent.cordis.yml` 与 `cordis.patch.yml`）：在创作纪律里补一句该工具的使用时机，
    两个文件的人设保持同一纪律文本。
-4. **清单与文档**：`plugin.json` 的 tools/engineEndpoints 补一行；README 工具表补一行；本文档验收步骤补断言。
-5. **测试**：在 `test/smoke.mjs` 里对新端点补一段断言。
-6. **发布**：本仓库 `git commit` 后重跑 `install.ps1`。bundle 方式是 junction 引用本目录，
-   仓库改动**立即生效**（无复制步骤）；`install.ps1` 只需在新增 profile 或清理旧痕迹时执行。
+4. **清单与文档**：`plugin.json` 的 `tools` 补一行；README 工具表补一行；本文档验收步骤补断言。
+   端点若被工具**真正调用**，同步补进 `plugin.json` 的 `engineEndpoints`——`verify-plugin-tools.mjs`
+   会做「代码调用了但清单没声明」的对账，那才是真漂移方向（反向的"声明了但没调用"是正常的：
+   清单也收录前端/其它调用方用的引擎端点）。
+5. **版本**：`plugin.json.version` 是唯一真源。改完把 `package.json` 与 `novel-tools.mjs` 的
+   `PLUGIN_VERSION` 一起升——三处不一致会被 `verify-plugin-tools.mjs` 判失败。
+6. **测试**：在 `test/smoke.mjs` 里对新端点补一段断言（它自起隔离服务 + 临时库，
+   零成本、不碰真实数据、不需要 dsh 或 API Key）。
+7. **发布**：本仓库 `git commit`。bundle 走 junction 引用本目录，**仓库改动立即生效**（无复制步骤），
+   重启 novel-studio 即可；只有**新增 profile**或**迁移旧安装**时才需要跑 `install.ps1`。
+   ⚠️ 但 **GUI preset 那份是副本**（`~/.dsh/.agent-presets/novel-writing/`）：改了 `agent.cordis.yml`
+   或 `novel-tools.mjs`、想让 **GUI 交互会话**也用上，必须重跑一次 `install.ps1`。
 
 ## 改动注意
 
@@ -48,8 +56,12 @@ export function apply(ctx, config) {
   病态正则会拖慢每次扫描。
 - **安全**：新端点若是写操作，走 `handleAPI` 顶部的 `isLocalRequest` 统一防护；
   读端点注意不要泄露 `api_configs.api_key` 等敏感字段。
-- **上下文预算**：`buildNovelContext` 的分层预算表在 server.js 内，新层加入时给它一个上限，
-  并确认总预算收敛逻辑（TOTAL_BUDGET/FLEX_ORDER）仍把红线层放在保底位。
+- **上下文预算**：⚠️ P1–P2 重构后层规格**已不在 server.js 里**——唯一真源是
+  `ai/context/layers.mjs` 的 `LAYERS`（每层的 cap / kind / 收缩属性）与 `RETRIEVAL`（查回路径）。
+  新层加在那里，**并且必须同时声明查回路径**（不变量 I4：做不到查回的层**不允许裁剪**），
+  否则 `.p1-baseline/verify-retrieval.mjs` 会报缺口。总预算与**可执行下限由 `computeFloor()` 自动核算**，
+  不要手写常量——历史失误：settings 预算曾设成 12,000，而各层 cap 之和已超过它，**收敛永远压不到**。
+  改完必须重抓基线对照（`capture-baseline.mjs` → `compare-baseline.mjs`），任何差异都要能解释。
 
 ## 版本
 

@@ -8,6 +8,6 @@
     "dev": "node --watch server.js"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   }
 }

@@ -49,6 +49,40 @@
 | `data/` | 真实库的**副本**（三件套 + checkpoint），供隔离实例使用 |
 | `stress-data/` | 副本 + 压力作品的独立库 |
 
+### 一之二、D8 及之后新增的工具（2026-09-16 起）
+
+上表是 P1–P6 的常驻工具；D8（不足清单修复）与之后的几轮又加了一批。**它们都默认零成本**，
+其中"会 spawn dsh"的几条带自设授权闸（见 §六）。
+
+| 文件 | 作用 |
+|---|---|
+| `test-recall-gap.mjs` | **D8-#5** 召回层不可用时**不得静默消失**：缺口判据真值表 + 变异体阴性对照（"永远静默"必须被抓）+ 三处接线同源 |
+| `test-sync-gate.mjs` | **D8-#6** 建/删作品的**同步竞态**：阴性对照是摘掉闸门后**真的复现**"删除之后继续写满" |
+| `test-context-cache.mjs` | **D8-#7** 缓存按**外部可观测状态**失效，而不是靠 120s TTL 猜；阴性对照命中陈旧的"召回为空" |
+| `test-task-settings.mjs` / `exp-per-task-settings.mjs` | **D8-#2** 每任务独立 settings（吞吐 1→2）：补丁内容/参数顺序/回退接线 + 并发端到端实验 |
+| `test-memory-compress-guard.mjs` | **D8-#3** 记忆压缩零损失护栏（别名变体 + 覆盖率下限；夹具坑有注释告诫） |
+| `verify-auto-compress.mjs` | **D8-#3** 自动压缩开关：含「**不打开就不花钱**」的阴性对照（保存章节后作业数不变） |
+| `verify-guard-on-real-output.mjs` | 用**已付费的真实产出**回归护栏改版（零成本二次利用，不重复花钱） |
+| `quality-sentinel.mjs` | **D8-#8** 质量信号哨兵（客观指标；**只调端点不自己写 SQL**；带样本量闸：新增 <10 条拒绝下结论） |
+| `blind-ab.mjs` | **D8-#8 后半** 人工盲测 A/B（三道闸；花钱需显式确认） |
+| `verify-named-jobs.mjs` | **D8-#4** 命名任务并入作业设施：静态接线 + 活体三段（有进度/可取消/可落库） |
+| `revert-matrix.mjs` | **D8-#1** 回滚矩阵（临时 worktree 里逐个 `git revert`，自带阴性对照）；默认只跑 `--self-test` |
+| `d7-purge-orphans.mjs` / `probe-d7-and-cast.mjs` | **D7** 孤儿记忆目录清理（默认干跑、令牌确认、删前后对活目录逐文件哈希） |
+| `install-novel-home.mjs` | **决策 B** 写作任务专用 `DSH_HOME` 的迁移器（默认干跑；源 home 逐文件哈希核对未变） |
+| `probe-ov-indexed-at.mjs` | D8-#7 的补证探针：确认外部信号 `ov_indexed_at` 在真实库里确实有值 |
+| `probe-entity-variants.mjs` | 实体别名变体拆分的探针（真实库数据，零成本） |
+| `check-utf8.mjs` | **编码类缺陷**定点检查：① 非法 UTF-8（git 按字节存，不会报错）；② **含非 ASCII 的 `.ps1` 必须带 UTF-8 BOM**——PS 5.1 把无 BOM 文件按 ANSI 读，中文会吞掉后续 ASCII 字节，脚本静默变成语法错误。`--self-test` 跑判据自身的阴性对照 |
+| `test-agent-memory-guard.mjs` | **D8-#3 续（2026-09-18）**：**模型自压缩**也走同一零损失护栏——判据真值表（作者手改/delta/提案路径都不设闸）、变异体对照、跨模块字面量契约 |
+| `compare-runtime-trees.mjs` / `extract-session-lines.mjs` / `scan-session-keywords.mjs` | 判定他人改法时用的会话导出分析工具（只读） |
+| `diff-real-db.mjs` | 真实库"一行未失"的差集方向归因 |
+| `probe-ov-find.mjs` / `probe-recall.mjs` / `probe-retrieval.mjs` | 检索链路的分步探针（`probe-*` 一族） |
+
+> `verify-phase-map.mjs` 有两处 2026-09-18 的修复值得记一笔（都是"工具自身在说谎"）：
+> ① 基线改为**候选 ref**（`main` → `origin/main`）——本地 `main` 被刻意删除后它会退回 HEAD，
+> 而那个基线**系统性偏乐观**（把 shared 报成可独立回滚）；
+> ② git 调用加 `-c core.quotePath=false`——否则**非 ASCII 路径**被八进制转义，
+> 任何中文名文件都会被判成"没有归属"。
+
 > 目录名的历史包袱：P2 起这里实际是「**上下文契约与验收工具**」的常驻目录，
 > 不只是 P1 的基线。P2 的阶段报告在 `docs/p2-assembler-verification.md`。
 

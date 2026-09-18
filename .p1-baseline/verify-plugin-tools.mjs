@@ -42,13 +42,26 @@ console.log('  ' + declared.join(', '));
 const actual = registered.map((t) => t.name);
 const onlyActual = actual.filter((n) => !declared.includes(n));
 const onlyDeclared = declared.filter((n) => !actual.includes(n));
-const versionOk = mod.PLUGIN_VERSION === manifest.version;
+// 版本是**三处**而不是两处：漏掉 package.json（bundle 包）会让人以为"升级了"其实没有。
+const pkgVersion = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf8')).version;
+const versions = { PLUGIN_VERSION: mod.PLUGIN_VERSION, 'plugin.json': manifest.version, 'package.json': pkgVersion };
+const versionOk = new Set(Object.values(versions)).size === 1;
 
+// 端点对账：**只查「代码调用了但清单没声明」这一个方向**（那才是真漂移）。
+// 反方向（声明了但工具没调用）是正常的——engineEndpoints 也收录前端等其它调用方用的引擎端点。
+const src = fs.readFileSync(path.join(pluginDir, 'novel-tools.mjs'), 'utf8');
+const usedPaths = new Set([...src.matchAll(/jfetch\(\s*[`'"]([^`'"]+)[`'"]/g)].map((m) => m[1].split('?')[0]));
+const declaredPaths = (manifest.engineEndpoints || [])
+  .map((e) => e.replace(/^[A-Z/]+ /, '').split('?')[0].replace(/\|.*$/, ''));
+const undeclaredCalls = [...usedPaths].filter((u) => !declaredPaths.some((d) => u.startsWith(d)));
+
+console.log(`\n端点对账：代码调用 ${usedPaths.size} 个，清单声明 ${manifest.engineEndpoints.length} 条`);
 console.log('');
 if (onlyActual.length) console.log(`✗ 实际注册但未在 plugin.json 声明：${onlyActual.join(', ')}`);
 if (onlyDeclared.length) console.log(`✗ plugin.json 声明但未注册：${onlyDeclared.join(', ')}`);
-if (!versionOk) console.log(`✗ 版本不一致：PLUGIN_VERSION=${mod.PLUGIN_VERSION} vs plugin.json=${manifest.version}`);
+if (!versionOk) console.log(`✗ 版本不一致：${JSON.stringify(versions)}`);
+if (undeclaredCalls.length) console.log(`✗ 代码调用了但 engineEndpoints 未声明：${undeclaredCalls.join(', ')}`);
 
-const ok = !onlyActual.length && !onlyDeclared.length && versionOk && registered.length > 0;
-console.log(ok ? '✓ 工具面与清单一致，版本一致' : '✗ 存在漂移');
+const ok = !onlyActual.length && !onlyDeclared.length && versionOk && !undeclaredCalls.length && registered.length > 0;
+console.log(ok ? `✓ 工具面／版本／端点声明三者一致（${registered.length} 个工具）` : '✗ 存在漂移');
 process.exitCode = ok ? 0 : 1;

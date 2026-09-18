@@ -171,6 +171,14 @@ run('装配回归：差异须恰好为已刻画的「压缩提示挪位」（压
 run('装配器单元测试（边界与溢出分支）', process.execPath, ['.p1-baseline/test-assembler.mjs']);
 run('AI 全分支核对（0 处绕过策略）', process.execPath, ['.p1-baseline/verify-ai-branches.mjs']);
 run('插件工具面与版本一致', process.execPath, ['.p1-baseline/verify-plugin-tools.mjs']);
+// 编码类缺陷定点检查（2026-09-18 扩了两处覆盖）：
+//   A 非法 UTF-8（git 按字节存，不会报错）；B **含非 ASCII 的 .ps1 必须带 BOM**
+//   ——PS 5.1 把无 BOM 文件按 ANSI 读，中文会吞掉后续 ASCII 字节，脚本静默变成语法错误。
+//   之前的扫描连 .ps1 都不在扩展名表里，所以没拦住本轮的 install.ps1 BOM 丢失。
+run('编码检查（非法 UTF-8 + .ps1 的 BOM 约定）', process.execPath, ['.p1-baseline/check-utf8.mjs']);
+run('编码检查判据自检（含阴性对照）', process.execPath, ['.p1-baseline/check-utf8.mjs', '--self-test']);
+// D8-#3 续：**模型自压缩**也走零损失护栏（判据真值表 + 变异体对照 + 跨模块字面量契约）
+run('模型自压缩的零损失护栏', process.execPath, ['.p1-baseline/test-agent-memory-guard.mjs']);
 // D8-#5：召回层不可用时不得静默消失（缺口判据真值表 + 变异体阴性对照 + 三处接线同源）
 run('召回缺口不得静默（占位层与端点同源）', process.execPath, ['.p1-baseline/test-recall-gap.mjs']);
 // D8-#6：「建完立刻删」不得留下孤儿记忆目录（真实时序 + 摘掉闸门的阴性对照）

@@ -40,7 +40,7 @@
   - harness.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
 - **说明**：harness.js 同时被 P4/P6 改过；profile 本身的回滚是卸掉 novel profile 与 bundle 接线（install-profile.mjs 反向操作）。
 - **验收证据**：`.p0-recon/README.md`、`.p0-recon/verify-harness-profile.mjs`、`.p0-recon/compare-composed.mjs`、`.p0-recon/novel.p3.txt`、`.p0-recon/capture-dsh-request.mjs`
-- **本阶段认领的文件**（35 个）：
+- **本阶段认领的文件**（36 个）：
   - `.p0-recon/.gitignore`
   - `.p0-recon/README.md`
   - `.p0-recon/capture-dsh-request.mjs`
@@ -75,6 +75,7 @@
   - `harness-plugins/novel-writing/novel-tools.mjs`
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
+  - `harness-plugins/novel-writing/test/smoke.mjs`
   - `harness.js`
 
 ### P1 · 冻结上下文契约 + 基线 + 压力数据
@@ -181,6 +182,7 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X）import——撤掉会让该工具失效
+  - ai/harness-env.mjs 被 .p1-baseline/test-agent-memory-guard.mjs（验收工具，D8）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/test-harness-env.mjs（验收工具，X）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被**生产代码** harness.js（P0）import——撤掉会打断线上路径
 - **说明**：切换器与快照工具本身是自足的、可单独移除；但 P6 还含 ai/harness-env.mjs，而它被 harness.js 与 .p1-baseline/test-harness-env.mjs import → 整段仍无法单独撤回。 harness.js 的默认 profile 仍是 headless（未切换）。
@@ -208,7 +210,7 @@
   - openviking-sync.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
 - **说明**：D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。
 - **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`、`.p1-baseline/revert-matrix.mjs`
-- **本阶段认领的文件**（31 个）：
+- **本阶段认领的文件**（32 个）：
   - `.p1-baseline/b-novel-home-20260916131653.json`
   - `.p1-baseline/blind-ab.mjs`
   - `.p1-baseline/check-utf8.mjs`
@@ -226,6 +228,7 @@
   - `.p1-baseline/quality-sentinel.mjs`
   - `.p1-baseline/revert-matrix.mjs`
   - `.p1-baseline/scan-session-keywords.mjs`
+  - `.p1-baseline/test-agent-memory-guard.mjs`
   - `.p1-baseline/test-context-cache.mjs`
   - `.p1-baseline/test-memory-compress-guard.mjs`
   - `.p1-baseline/test-recall-gap.mjs`
@@ -252,7 +255,7 @@
   - .p1-baseline/blackhole.mjs 被 .p1-baseline/exp-per-task-settings.mjs（验收工具，D8）import——撤掉会让该工具失效
 - **说明**：验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——但注意 X 内部彼此 import（verify-all ↔ 各工具），且被 .p0-recon 的线路层工具引用。
 - **验收证据**：`.p1-baseline/verify-all.mjs`、`.p1-baseline/README.md`、`docs/README.md`
-- **本阶段认领的文件**（30 个）：
+- **本阶段认领的文件**（34 个）：
   - `.p1-baseline/.gitignore`
   - `.p1-baseline/README.md`
   - `.p1-baseline/audit-llm-calls.mjs`
@@ -279,14 +282,18 @@
   - `README.md`
   - `ai/README.md`
   - `ai/context/README.md`
+  - `assets/screenshot-writing.png`
   - `docs/README.md`
   - `docs/final-acceptance-p0-p6.md`
   - `docs/pending-decisions.md`
   - `docs/phase-map.md`
+  - `docs/新手入门.md`
+  - `package.json`
+  - `start-novel-studio.cmd`
 
 ## 三、归属核对
 
-- 真实改动集：**140** 个文件
+- 真实改动集：**146** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

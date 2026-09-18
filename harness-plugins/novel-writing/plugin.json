@@ -1,7 +1,7 @@
 {
   "name": "novel-writing",
-  "version": "0.8.2",
-  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核（上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化）。",
+  "version": "0.9.0",
+  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核。0.9.0 起按 P0–P6 重构后的内核对齐——标准 dsh bundle（junction 引用工坊仓库，无副本）、专用 profile `novel` + 专用 DSH_HOME，并把内核的硬规则接进模型侧：**模型自压缩也走同一零损失护栏**（出场角色一个都不许丢，拒绝时返回缺失名单与 delta 逃生口）、语义召回缺口显式占位、上下文预算与查回路径（I1–I7）写进人设。（内核能力：上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化。）",
   "integration": "builtin",
   "host": "novel-studio",
   "dshPlugin": {
@@ -25,7 +25,7 @@
     { "name": "novel_style_contract", "description": "读取当前写作红线清单。" },
     { "name": "novel_event_add", "description": "事件/伏笔/状态变化入账（伏笔状态、回收关联、幂等去重；headless 先落提案）。" },
     { "name": "novel_memory_read", "description": "读取完整长期记忆摘要（上下文里的该层按预算截断到 2200 字）。" },
-    { "name": "novel_memory_update", "description": "长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案）。" },
+    { "name": "novel_memory_update", "description": "长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案）。传 summary 时服务端会用零损失护栏核对：出场过的角色与世界观词条一个都不能丢、未出场的不要写进去；被拒会返回缺失名单，补齐后重交一次，装不下就改传 delta。" },
     { "name": "novel_blueprint", "description": "保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），落库后随上下文带入并作为一致性核对锚点。" },
     { "name": "novel_review", "description": "保存成文的审稿报告（总评/问题清单/优点），作者在工坊界面确认清单并按清单修稿。" },
     { "name": "novel_chapter_save", "description": "成稿写回章节正文（旧稿自动存历史版本，返回红线扫描）。" }

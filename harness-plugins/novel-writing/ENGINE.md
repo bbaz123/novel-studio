@@ -47,13 +47,20 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
   共用 `POST /api/novel/foreshadows/:id/status`；
 - `novel_context` 的【未闭合伏笔】层与 `novel_foreshadows`、`novel_consistency` 共用这一状态。
 
-### 3. 分层上下文预算
+### 3. 分层上下文预算（P1–P2 重构后：**规格已单点机读**）
 
-`buildNovelContext` 每层独立上限（作品 900 / 大纲 2800 / 记忆 2200 / **语义召回 1400** / 事件 1800 / 伏笔 1200 /
-场景 1200 / **蓝图 1500** / 前文衔接 1600–4000 / 角色卡 4000 / 关系 800 / 世界观 3000 / 红线 4000），
-整块结果再按 26000 字总预算收敛（弹性层依次收缩，红线层不动；收敛按**层名定位**，
-旧实现按下标定位会在人物关系层为空时误伤红线层——v0.8.0 已修复）；
-记忆超过 1200 字压缩提示线时在上下文里标注，提醒模型优先压缩。
+> ⚠️ 本节**刻意不再重抄各层数字**——上一版就是把 cap 表抄进文档，重构后整段失效。
+> 唯一真源是 `ai/context/layers.mjs` 的 `LAYERS`（**13 层**，分 `fixed` / `flex` / `cond` / `entity` 四类）
+> 与 `RETRIEVAL`（查回路径）；契约与不变量见 `docs/context-contract.md`，逐条验收见 `.p1-baseline/verify-retrieval.mjs`。
+
+- **零损失层**（`fixed`：作品 / 长期记忆 / 最近事件 / 未闭合伏笔 / 写作红线）**永不参与收敛收缩**；
+  角色卡是 `entity` 类，正文边界由 `buildCharacterCards` 的 5 级降级决定，**每卡的名字/身份/性格/当前状态必保**。
+- 总预算 full/continuation/fragment **26,000** / settings **18,000**；**可执行下限由 `computeFloor()` 自动核算**
+  （当前 full 20,547 / settings 17,356），不再手写常量。历史失误：settings 预算曾设成 12,000，
+  而各层 cap 之和已超过它 → **收敛永远压不到，等于没有预算**。
+- 压到下限仍超预算时，装配器产出**显式 `overflow` 标记**（不静默超限），以及 `manifest`（逐层裁剪清单）。
+- **凡裁剪必可查回**（不变量 I4）：做不到查回的层**不允许裁剪**；模型侧入口见 §五。
+- 记忆超过 1200 字压缩提示线时在上下文里标注，提醒模型优先压缩。
 
 ### 3f. OpenViking 语义召回层（v0.8.0）
 
@@ -67,6 +74,14 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 - 六类数据（章节/记忆/事件/词条/角色卡/大纲）由工坊增量同步进记忆库（写操作 2s 防抖、
   离线 pending 队列重放）；`POST /api/novel/semantic_index` 全量重建，
   `GET/PUT /api/novel/semantic` 查看/开关语义召回；`NOVELSTUDIO_OV_DISABLED=1` 整体停用。
+- **缺口不再静默（D8-#5）**：期望有召回却拿不到时（OpenViking 不可用/未就绪），
+  改发一层**显式占位**「相关记忆检索：本次不可用，原因=X」，而不是整层消失——
+  否则模型与作者都不知道「本该有一层召回但没来」。
+  判据单点在 `layers.mjs` 的 `recallGapReason`，两个响应端点同步回传 `gap` / `gap_reason`。
+  ⚠️ 主动停用（`disabled`）与查询为空（`empty`）**不算缺口**：那是意图不是意外，插占位只会制造噪声，
+  而噪声会让真正的缺口提示被忽略。
+- 缓存版本纳入**外部可观测状态**（`ov_indexed_at:<workId>`，D8-#7）：索引一完成缓存立刻失效，
+  TTL 退回纯兜底（10 分钟）——旧实现靠 120s TTL 猜"外部异步建索引完了没有"。
 
 ### 3c. 出场角色评分制与角色卡核心保底（v0.8.0）
 
@@ -147,12 +162,62 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 - 记忆版本界面：长期记忆页「🕘 历史版本」——版本列表、一键回滚（自动再记回滚快照）、
   「对比当前」句子级差异预览（红=旧有、绿=新增）。
 
-### 5. 模型切换竞态修复（harness.js）
+### 5. 模型切换：从"改写全局文件 + 互斥"改为"每任务一份 settings"（D8-#2）
 
-dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并发任务互相覆盖；
-现改为：进程内互斥串行化「改 → 跑 → 还原」+ CAS 还原（文件仍等于我们写入的内容才恢复）。
+dsh 的默认模型只存在于**进程级**的 `settings.yaml`，而 headless CLI **没有任务级模型参数**
+（`.p0-recon/headless.help.txt` 实抓）。历史实现因此只能"改写全局文件 → 跑 → CAS 还原"，
+再靠进程内互斥串行化——结果是**服务端允许 2 并发，界面路径的实际吞吐只有 1**。
 
-### 6. 本地安全
+现在改走「**每任务一份独立 settings 文档** + `dsh --patch` 指过去」（`ai/task-settings.mjs`）：
+不碰任何全局状态，因此**不需要互斥，吞吐回到 2**。建立失败时**回退**到旧的全局改写 + 互斥路径，
+行为与历史一致——「等待模型槽位」的界面提示保留为这条回退路径的安全网（D4）。
+
+⚠️ 有一件事必须跟着走：专用 `DSH_HOME`（决策 B）启用后，**设置文件也要跟着走**。
+否则回退路径改的是 GUI 的 `settings.yaml`，而子进程读的是新 home 的——**改了等于没改**，
+还会静默以默认模型运行。`harness.js` 的 `DSH_SETTINGS` 因此改为跟随 `resolveTaskDshHome()`。
+
+证据：`.p1-baseline/exp-concurrent-models.mjs`（两个并发任务各自读到自己的模型、
+全局 `settings.yaml` **逐字节未变**、零计费）与 `.p1-baseline/test-task-settings.mjs`。
+
+### 6. 模型自压缩的零损失护栏（D8-#3 续 · 2026-09-18）
+
+**这条是"AI 能力结合"的核心：服务端有规则，还要让模型真的按规则行动。**
+
+长期记忆是**有损压缩**的产物，而它会喂给之后每一章——丢一个角色，摘要读起来照样通顺、
+**不会报错**，是最难发现的一类损失。护栏按「章节正文里出现过没有」确定性分**两侧**：
+
+| 侧 | 判据 | 违反后果 |
+| --- | --- | --- |
+| **出场过的**（主角+配角，含别名变体） | `checkCompression` | **一个都不许丢** → 拒绝落库，并**指名**缺失名单 |
+| **从未出场的**被提及 | `checkNoInvention` + `inventionVerdict` | **默认放行**（用户规格「根据剧情需要出现」是允许），但**如实记日志**；要严格时设 `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1` |
+
+**两个入口共用同一份判据**（`ai/memory-compress-guard.mjs`）：
+
+1. **服务端自动压缩作业**（`compressStoryMemory`，开关默认关闭）；
+2. **模型自压缩**（`novel_memory_update` 传 `summary`）——**这是本次新增的一条**。
+   此前护栏只管第 1 条，而人设恰恰教模型走第 2 条，于是那条路**完全没有护栏**。
+
+判据的接线是**纯函数** `needsAgentMemoryGuard(body)`（同模块导出），语义为
+「工具显式标记来源（`guard:'agent'`）**且**传了 `summary`」——刻意不写成 handler 里的字符串比较，
+这样它能离线断言真值表，而不是去读 server.js 的**代码形状**（形状型断言在本项目已失效三次）。
+
+| 输入 | 设闸？ | 为什么 |
+| --- | --- | --- |
+| 工具标记 + `summary` | ✅ | 模型自压缩，正是要防的场景 |
+| 工具标记 + 只传 `delta` | ❌ | `delta` 经 `mergeMemoryDraft` 是**纯拼接**（不截断），丢不了东西 |
+| 带 `proposed:true` | ❌ | 提案先落提案表、不碰正式账本，等作者确认时才走正式写入 |
+| **无标记**（作者在界面手改） | ❌ | **作者的意图优先**——用机器判据挡住作者的手是本末倒置 |
+
+被拒时返回 **409**（不是 400：这不是格式错，而是内容没过**可修正**的质量闸），错误文本带
+**缺失名单 + `delta` 逃生口**，模型一轮内即可改正——重试就是钱，所以人设里**先**把规则讲清楚，
+让模型第一次就写对。
+
+> 为什么要 "先讲规则"：护栏只保证**不丢**，不保证**不返工**。把规则写进人设与工具描述
+> （`cordis.patch.yml` 与 `agent.cordis.yml` 两侧同步）才能让护栏很少被触发。
+> 验收：`.p1-baseline/test-agent-memory-guard.mjs`（28/28，含"作者手改不被拦"的阴性对照）
+> 与 `test/smoke.mjs` 的 7b 组（端到端：409 拒绝且**数据库一个字未改** / 齐全通过 / 作者路径放行 / delta 放行）。
+
+### 7. 本地安全
 
 - 服务端不再返回 `Access-Control-Allow-Origin: *`：跨源页面无法读取 API Key 与作品数据；
 - 浏览器跨源写请求（Origin 非 localhost/127.0.0.1）一律 403；
@@ -186,7 +251,13 @@ dsh 默认模型存于全局 settings.yaml。旧实现直接改写文件，并�
 | `GET /api/story_memory/versions?work_id=` | 记忆版本历史（每作品保留最近 200 个） |
 | `POST /api/story_memory/rollback` | 回滚到指定记忆版本 |
 | `POST /api/harness/run` | 启动 dsh 任务（注入身份 + 提案模式 env，202 job_id） |
-| `GET /api/harness/job?id=` | 任务状态（output/scan/proposals） |
+| `POST /api/harness/job` | **命名任务**作业入口（D8-#4：生成小说 / 记忆压缩并入作业设施，有进度、可取消、可落库） |
+| `GET /api/harness/job?id=` | 任务状态（output/scan/proposals/stage/model_slot） |
+| `GET /api/harness/recoverable` / `recovered` | 可恢复 / 已恢复任务（服务重启后仍能把结果取回） |
+| `POST /api/harness/cancel` | 取消任务（`taskkill /T` 杀进程树——只杀直接子进程的话，dsh 孙进程会继续回连工坊提交提案） |
+| `GET /api/harness/status` | 运行状态：`model_load: {busy, waiters}` 与 `concurrency`（D4，界面据此显示「等待模型槽位」） |
+| `GET /api/ai/policy` | 模型与思考强度策略快照（`ai/policy.mjs` 单点，前端取同一份，不再各存常量） |
+| `GET/POST /api/ai/eval` | AI 效果埋点：POST 记一条行为信号，GET 取聚合（采纳率 / 编辑距离 / 上下文成本；D8-#8 哨兵调它，不自己写 SQL） |
 
 ## 四、dsh 侧挂载（install.ps1 自动完成）
 
@@ -209,8 +280,19 @@ PowerShell 入口（支持 `-Profile <名>` / `-DryRun` / `-Uninstall`）。
 > 旧的区块片段文件 `headless-cordis.patch.yml` 已弃用，仅为对照保留。
 
 **专用 profile**：P0 起本插件装在专用 profile 上（`~/.dsh/profiles/novel/`），与 GUI 及其它
-dsh 用途解耦。用哪个 profile 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFILE` 决定；当前默认仍是
-`headless`，切换到 `novel` 是 P6 的一次性动作。
+dsh 用途解耦。用哪个 profile 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFILE` 决定；
+**P6 已执行，默认值就是 `novel`**（2026-09-15 一次性切换，证据见 `docs/p6-cutover-runbook.md`，
+切换前备份在 `data/backup-p6-*`）。零成本挂载验证（死端口，不出网）见 README「验证」。
+
+**专用 DSH_HOME（决策 B）**：写作任务的 `DSH_HOME` 指向 `~/.dsh-novel`，与 GUI 的 `~/.dsh` 分开。
+原因是 dsh **每次启动 profile** 都会重建 `$DSH_HOME/profiles/node_modules` 这层共享镜像
+（`healProfilesModuleFallback`，源码注释明写 *"moved installations are re-pointed"*）——
+两代运行时共存时**谁后启动谁把它改指过去**，GUI 会被打回旧版。分开 home 是**消除**碰撞，
+而不是让碰撞变得无害。目录不存在时自动退回共享 home（不会把任务打挂）。
+
+启动时会打印「写作任务使用专用 DSH_HOME：…（覆盖了环境里继承来的 …）」——**这行是有意打的**：
+`DSH_HOME` 会随**启动方式**而变（从 DSH 派生的终端启动时环境里已带着它，桌面快捷方式没有），
+不说明的话「B 到底生没生效」只能靠猜。要换位置设 `NOVELSTUDIO_DSH_HOME`；要回到共用就删掉 `~/.dsh-novel`。
 
 ## 五、已知边界与后续
 
@@ -224,8 +306,9 @@ dsh 用途解耦。用哪个 profile 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFI
   长期记忆 → `novel_memory_read`；事件账本 → `novel_events`；伏笔 → `novel_foreshadows(status=all)`；
   写作红线 → `novel_style_contract`；其余（世界观 / 蓝图 / 人物关系 / 角色 / 章节）→ `novel_lookup`。
   **新增会被裁剪的层时，必须同时给它声明查回路径**，否则 verify-retrieval 会报缺口。
-- 记忆 delta 是“安全拼接”约定，语义压缩由模型在调用 `novel_memory_update` 时完成；
-  直接 `PUT /api/story_memory` 传 delta 会得到待压缩的追加文本。
+- 记忆 delta 是“安全拼接”约定（`mergeMemoryDraft` 纯拼接、不截断，因此**丢不了东西**，不设闸）；
+  语义压缩由模型在调用 `novel_memory_update` 时完成，**并受零损失护栏核对**（见 §二.6）。
+  直接 `PUT /api/story_memory` 传 delta（不带 `guard:'agent'`）会得到待压缩的追加文本。
 - `novel_consistency` 只做确定性清单装配，冲突判断由模型在同一轮内完成（工具返回清单文本）。
 - 提案表暂无自动过期策略：pending 提案长期不处理会累积；后续可在 UI 加“一键清理”。
 

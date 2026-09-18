@@ -10,11 +10,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM Verify Node version >= 22 (node:sqlite requirement).
-node -e "process.exit(parseInt(process.versions.node.split('.')[0],10)>=22?0:1)" >nul 2>&1
+REM Verify the built-in node:sqlite is actually usable.
+REM A version *number* check is not enough: node:sqlite exists from 22.5 but stayed
+REM behind --experimental-sqlite until 22.13, so 22.5-22.12 users would pass a
+REM ">= 22" check and then crash on startup. Probing the capability is exact.
+node -e "try{require('node:sqlite')}catch(e){process.exit(1)}" >nul 2>&1
 if errorlevel 1 (
-  echo [Novel Studio] Node.js 22+ is required. Current version:
+  echo [Novel Studio] Node.js 22.13 or newer is required - built-in node:sqlite is unavailable.
+  echo   Current version:
   node -v
+  echo   Note: Node 22.5-22.12 ships node:sqlite but keeps it behind --experimental-sqlite.
   pause
   exit /b 1
 )

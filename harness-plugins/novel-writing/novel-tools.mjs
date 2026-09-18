@@ -30,7 +30,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.8.2'
+export const PLUGIN_VERSION = '0.9.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -489,13 +489,15 @@ export function apply(ctx, config) {
   register('novel_memory_update', [
     '把一段创作后“已发生的故事进展”并入作品长期记忆（自动写版本快照，可在 novel-studio 回滚）。',
     '两种用法：1) 你已看过旧摘要，自行把“旧摘要+新进展”合并压缩为 ≤800 字的新摘要，传 summary；2) 只传 delta 让服务端简单追加（会用【此前进度】分段，提示后续压缩）。',
+    '⚠ 零损失纪律（传 summary 时服务端会用确定性护栏核对，不通过直接拒绝落库）：**出场过的角色与世界观词条一个都不能丢**，也**不要写入从未出场的角色**。'
+      + '名字可用 novel_lookup / novel_memory_read 核对。被拒时会返回缺失名单——按名单补齐后重交一次即可；若确实装不下，改传 delta（安全追加，不会丢人）。',
     '若上下文里的长期记忆已超过 1200 字压缩提示线，本次应优先传压缩后的 summary。',
     '提交前请保证内容反映正文已确认发生的事件，而不是计划。',
     '提案模式说明：由 novel-studio 网页启动的任务，本调用会先写成提案，由作者在工坊界面确认后写入——这是正常行为，不要重复调用。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
-    summary: { type: 'string', description: '合并压缩后的完整新摘要（与 delta 二选一）' },
-    delta: { type: 'string', description: '本次进展的增量描述（与 summary 二选一）' },
+    summary: { type: 'string', description: '合并压缩后的完整新摘要（与 delta 二选一）；须保留全部出场角色与世界观词条' },
+    delta: { type: 'string', description: '本次进展的增量描述（与 summary 二选一）；安全追加，摘要装不下全员时用它' },
     note: { type: 'string', description: '备注（如“第12章后”）' },
   }, async (args) => {
     const workId = envId(args, 'work_id')
@@ -509,7 +511,12 @@ export function apply(ctx, config) {
         delta: args.summary ? undefined : args.delta || '',
         source: 'auto',
         note: args.note || 'dsh 创作插件提交',
-        proposed: proposeMode()
+        proposed: proposeMode(),
+        // 显式标记来源：服务端据此对「模型自压缩」启用零损失护栏。
+        // ⚠️ 字面量必须与 ai/memory-compress-guard.mjs 的 AGENT_GUARD_MARKER 一致——
+        // 本模块**不能** import 它（会被 install.ps1 复制到 agent-presets，旁边没有 ai/），
+        // 两侧一致性由 .p1-baseline/test-agent-memory-guard.mjs 断言。
+        guard: 'agent'
       },
     })
     if (data.proposed) return `长期记忆更新已记为提案 #${data.proposal_id}（作者在 novel-studio 界面确认后写入并留版本快照）`

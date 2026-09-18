@@ -290,6 +290,71 @@ try {
     ok('记忆版本快照 / 压缩提示 / 回滚');
   }
 
+  // 7b. 模型自压缩的零损失护栏（D8-#3 续）：出口在 PUT /api/story_memory
+  //     背景：护栏此前只管服务端自动压缩；而插件人设教的正是"模型自行压缩后调
+  //     novel_memory_update 交上来"——那条路此前没有护栏，丢一个角色照样静默落库。
+  {
+    const gWork = (await jfetch('/api/works', { method: 'POST', body: { title: '护栏验证作品' } })).data;
+    const gCh = (await jfetch('/api/chapters', {
+      method: 'POST',
+      body: { work_id: gWork.id, title: '护栏章', summary: '沈砚与林晚在拾线坊碰头。' }
+    })).data;
+    const save = await jfetch('/api/novel/chapter_save', {
+      method: 'POST',
+      body: {
+        work_id: gWork.id,
+        chapter_id: gCh.id,
+        content: '沈砚推开拾线坊的木门，林晚已经在里面等他。两人压低声音交换了几句，随即分开。'
+      }
+    });
+    assert.ok(save.status >= 200 && save.status < 300, `写回正文应成功，实际 ${save.status}`);
+    for (const name of ['沈砚', '林晚（社里人称“晚姐”）', '秦五']) {
+      const c = await jfetch('/api/characters', { method: 'POST', body: { work_id: gWork.id, name } });
+      assert.ok(c.status >= 200 && c.status < 300, `建角色 ${name} 应成功，实际 ${c.status}`);
+    }
+    // 夹具要求：含出场角色、字数过 100（避开"过短"分支）；
+    // ⚠️ 删除时必须用 /g —— 只换第一处的话名字还在，判据不会触发（写夹具最容易犯的错）。
+    const FIX = '沈砚与林晚在拾线坊交换了线索，约定三天后再见。'.repeat(6);
+    const before = (await jfetch(`/api/story_memory?work_id=${gWork.id}`)).data.summary;
+
+    // ① 模型自压缩丢了出场角色 → 必须拒绝，且数据库里一个字都没改
+    const rej = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, summary: FIX.replace(/林晚/g, '那位记者'), guard: 'agent' }
+    });
+    assert.equal(rej.status, 409, `丢失出场角色应 409，实际 ${rej.status} ${JSON.stringify(rej.data)}`);
+    assert.ok(/林晚/.test(rej.data.error || ''), '拒绝原因应指名缺失的角色，模型才能一轮改好');
+    assert.ok(/delta/.test(rej.data.error || ''), '拒绝原因应给出逃生口（delta 安全追加）');
+    const after = (await jfetch(`/api/story_memory?work_id=${gWork.id}`)).data.summary;
+    assert.equal(after, before, '被拒的写入绝不能落库');
+    ok('护栏：模型自压缩丢出场角色 → 409 拒绝，且记忆未被改写（零损失）');
+
+    // ② 出场角色齐全 → 通过（提到未出场角色按既定策略放行，不拦）
+    const acc = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, summary: FIX + '（另外，秦五也被提及。）', guard: 'agent' }
+    });
+    assert.equal(acc.status, 200, `出场角色齐全应通过，实际 ${acc.status} ${JSON.stringify(acc.data)}`);
+    assert.ok(acc.data.version_id > 0, '通过时应留版本快照');
+    ok('护栏：出场角色齐全 → 通过并留版本快照（未出场角色按策略放行）');
+
+    // ③ ★ 阴性对照：同一条 PUT、同一份内容，**不带标记**（= 作者在界面手改）→ 不得设闸
+    const author = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, summary: FIX.replace(/林晚/g, '那位记者') }
+    });
+    assert.equal(author.status, 200, `作者手改不应被护栏拦住，实际 ${author.status} ${JSON.stringify(author.data)}`);
+    ok('护栏：作者手改（无标记）不被拦 —— 机器判据不挡作者的手');
+
+    // ④ 工具标记 + 只传 delta（纯拼接，丢不了东西）→ 不设闸
+    const dl = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, delta: '本章新进展：两人约好三天后再见。', guard: 'agent' }
+    });
+    assert.equal(dl.status, 200, `delta 追加不应被拦，实际 ${dl.status}`);
+    ok('护栏：工具标记 + 只传 delta → 安全追加，不设闸');
+  }
+
   // 8. 一致性核对清单
   {
     const r = await jfetch('/api/novel/consistency', {

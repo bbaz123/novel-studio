@@ -204,6 +204,10 @@ export const PHASES = [
       '.p1-baseline/verify-guard-on-real-output.mjs',
       // D8-#3：自动压缩开关的验收（含"不打开不花钱"的阴性对照）
       '.p1-baseline/verify-auto-compress.mjs',
+      // D8-#3 续（2026-09-18）：**模型自压缩**也走同一零损失护栏。
+      // 判据真值表 + 变异体对照 + 跨模块字面量契约；人设/工具描述的同步改动
+      // 落在 P0 认领的插件文件里（所以那条路仍然只能整体回滚）。
+      '.p1-baseline/test-agent-memory-guard.mjs',
       // D8-#8 后半：关键改动的人工盲测工具（花钱需显式确认）
       '.p1-baseline/blind-ab.mjs',
       // D7：孤儿记忆目录清理（干跑默认；--execute 需令牌；删前后对活目录逐文件哈希）
@@ -272,6 +276,17 @@ export const PHASES = [
       '.p1-baseline/verify-model-slot.mjs',
       // 主实例重启后的对照检查（只读、零计费）：证明"代码提交了"≠"实例生效了"。
       '.p1-baseline/verify-main-instance.mjs',
+      // 插件完全适配时**附带**修掉的"Node 门槛"一致性缺陷（上一轮列出但未处理）：
+      // 启动器原本只比主版本 ≥22，而 node:sqlite 到 22.13 才免 --experimental-sqlite,
+      // 于是 22.5~22.12 会**通过检查再崩在启动**。现在改为**直接探测能力**
+      //（比任何数字比较都准，且不随版本表腐烂），engines 同步到 >=22.13.0。
+      'package.json',
+      'start-novel-studio.cmd',
+      // 新手引导改造轮（ae53e73 / 9c2b423）：面向 GitHub 访客的入口文档与真实截图。
+      // 它们此前一直没被认领——因为**中文文件名**曾被 git 八进制转义、匹配不上任何模式
+      //（见上面 git() 里的 core.quotePath 修复），属于"清单漏记"而非"不该记"。
+      'docs/新手入门.md',
+      'assets/screenshot-writing.png',
     ],
     evidence: ['.p1-baseline/verify-all.mjs', '.p1-baseline/README.md', 'docs/README.md'],
     note: '验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——'
@@ -366,7 +381,12 @@ function git(args) {
   // 「warning: in the working copy of 'server.js', CRLF will be replaced...」。
   // 这些警告会**污染套件汇总表里的证据行**（它取的是最后一行）——实测过，非常误导。
   // stdio[1]='pipe' 保证仍能拿到 stdout。
-  return execFileSync('git', args, {
+  //
+  // ⚠️ `-c core.quotePath=false` 是必须的（2026-09-18 修）：git 默认把**非 ASCII 路径**
+  // 按八进制转义输出（`docs/新手入门.md` → `"docs//346/226/260/…"`），
+  // 而 stripQuotes 只剥引号、不反转义，于是**任何中文名文件都会被判成"没有归属"**。
+  // 这个缺陷一直在，只是直到 X 认领的目录里真的出现中文名文件才暴露出来。
+  return execFileSync('git', ['-c', 'core.quotePath=false', ...args], {
     cwd: REPO, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
@@ -406,11 +426,19 @@ export function changedFiles(base) {
  * 主线分支名可用 `--main <name>` 覆盖；拿不到时退回 HEAD 并在输出里说明。
  */
 export function defaultBase(mainBranch = 'main') {
-  try {
-    return git(['merge-base', 'HEAD', mainBranch]).trim();
-  } catch {
-    return '';
+  // ⚠️ 2026-09-18：候选里**必须**包含 `origin/<main>`。
+  // 本地 `main` 分支已被刻意删除（加固：让磁盘上不存在"可误切回重构前"的检出目标），
+  // 于是 `git merge-base HEAD main` 直接 fatal，工具退回 HEAD —— 而那个基线
+  // **系统性偏乐观**：P0/P1 的文件落在改动集之外，推导会把本该 shared 的阶段报成
+  // "可独立回滚"（本文件上面那段注释记的正是这个假阴性，实测又撞了一次）。
+  // 有远端就一定能拿到分叉点，不该因为"本地分支被删"而让回滚判定失真。
+  for (const ref of [...new Set([mainBranch, `origin/${mainBranch}`, `refs/remotes/origin/${mainBranch}`])]) {
+    try {
+      const mb = git(['merge-base', 'HEAD', ref]).trim();
+      if (mb) return mb;
+    } catch { /* 该 ref 不存在，试下一个 */ }
   }
+  return '';
 }
 
 /** 生成文档正文（文档由数据派生，避免手写漂移）。 */

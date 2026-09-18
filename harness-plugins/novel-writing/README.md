@@ -30,7 +30,8 @@ novel-studio/
 
 前置条件：
 
-- **Node.js 22.5+**（工坊本体用内置 `node:sqlite`，**无需 `npm install`**）
+- **Node.js 22.13+**（工坊本体用内置 `node:sqlite`，**无需 `npm install`**。
+  ⚠️ **22.5–22.12 会起不来**：`node:sqlite` 到 [v22.13.0](https://nodejs.org/docs/latest-v22.x/api/sqlite.html) 才不再需要 `--experimental-sqlite`；旧文档写的「22.5+」是错的）
 - 一份**已构建的 DeepSeek Harness（dsh）仓库** + 目标 profile（插件要装进它的 profile）
 - Windows（`install.ps1` 是 PowerShell 脚本；插件模块本身是跨平台纯 ESM，无第三方依赖）
 
@@ -57,7 +58,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel -Uninstall
 ```
 
-`-Profile` 省略时默认 `headless`（与 `harness.js` 的默认值一致）。安装做的事：
+`-Profile` 省略时默认 **`novel`**——与 `harness.js` 的默认值一致（P6 起后台写作任务跑在
+**专用 profile `novel`** 上，不再用共享的 `headless`）。装到别的 profile 用 `-Profile <名字>`。
+安装做的事：
 
 1. 把 GUI preset 复制到 `~/.dsh/.agent-presets/novel-writing/`；
 2. 让目标 profile 在 `dsh.profile.bundles` 里列出 `novel-writing`，并在它的 `node_modules`
@@ -139,8 +142,27 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 - **伏笔闭环**：`novel_foreshadows` 查欠账 → 正文显式呼应 → `novel_event_add(resolves_event_id=…)`
   自动把旧伏笔标记 resolved；作者确认废弃/恢复时用 `novel_foreshadow_update` 直接改状态；
   `novel_context` 里始终带【未闭合伏笔】层。
-- **分层上下文预算**：每层独立上限、红线/角色卡保底、总量收敛截断，超长记忆标注压缩提示，
-  不再一刀切盲截。
+- **分层上下文预算（P1–P2 重构后）**：层规格是**单点机读**的（`ai/context/layers.mjs` 的 `LAYERS`，
+  13 层分 `fixed`/`flex`/`cond`/`entity` 四类，`fixed` 为**零损失层、永不参与收敛**）；
+  总预算 full/continuation/fragment **26,000** / settings **18,000**，**可执行下限由 `computeFloor()`
+  自动核算**（当前 20,547 / 17,356）——不再手写常量。压到下限仍超预算时**显式报 `overflow`**，
+  不静默超限。契约的不变量 I1–I7 见 `docs/context-contract.md`。
+- **凡裁剪必可查回（I4）**：每个会被裁剪的层都在 `RETRIEVAL` 里声明**查回路径**（用哪个工具能取回原文），
+  并由 `verify-retrieval` 实测；做不到查回的层**不允许裁剪**。模型侧入口：长期记忆 → `novel_memory_read`、
+  事件账本 → `novel_events`、伏笔 → `novel_foreshadows(status=all)`、红线 → `novel_style_contract`、
+  其余（世界观/蓝图/人物关系/角色/章节）→ `novel_lookup`。
+- **语义召回缺口不静默（D8-#5）**：`buildNovelContext` 在「长期记忆」之后装配【相关记忆检索（语义召回）】层；
+  期望有召回却拿不到时（OpenViking 不可用/未就绪），改为发一层**显式占位**（「本次不可用，原因=X」），
+  而不是整层消失。两个响应端点同步回传 `gap`/`gap_reason`，判据单点在 `layers.mjs` 的 `recallGapReason`。
+  主动停用（`disabled`）与查询为空（`empty`）**不算缺口**——那是意图不是意外，插占位只会制造噪声。
+- **长期记忆压缩的零损失护栏（D8-#3）**：压缩是**有损**操作，而长期记忆会喂给之后每一章——
+  丢一个角色，摘要照样通顺、**不会报错**。判据按「章节正文里出现过没有」确定性分**两侧**：
+  ① **出场过的**（主角+配角，含别名变体）一个都不许丢 → **拒绝落库**并指名缺失名单；
+  ② **从未出场的**若被提及 → **默认放行但如实记日志**（用户规格「根据剧情需要出现」是允许），
+  需要严格时设 `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1`。
+  两个入口共用同一份判据 `ai/memory-compress-guard.mjs`：服务端自动压缩作业，
+  以及**模型自压缩**（`novel_memory_update` 传 `summary`，靠 `guard:'agent'` 标记来源）。
+  **作者在工坊界面手改长期记忆不带该标记，不受影响**。
 - **多关键词加权检索**：`/api/search` 支持多关键词 AND 匹配、名称/标题加权排序、片段定位；
   前端高亮命中关键词并按类型分组展示。
 - **红线扫描与风格契约**：默认 28 条反 AI 腔红线，作品级可覆盖（`PUT /api/novel/redlines`）；
@@ -159,13 +181,35 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 - 请求体上限 32MB（EPUB 导入用）；红线正则长度上限 500、豁免词单个上限 100；非法 JSON/非 JSON 响应显式报错。
 - 蓝图/审稿/正文写回等写类端点校验 `work_id` 与章节归属，防止串作品误写。
 
-## v0.9.3 更新：设定轻量装配 + headless 瘦身（本版重点）
+## 插件 0.9.0 更新：按 P0–P6 重构后的内核**完全适配** + AI 能力结合（2026-09-18）
+
+> 版本号有两套，别混：**插件版本**在 `plugin.json`（当前 **0.9.0**，三处必须同步——`plugin.json` /
+> `package.json` / `novel-tools.mjs` 的 `PLUGIN_VERSION`）；下面各节标题里的 `v0.9.3` / `v0.8.0`
+> 是**工坊本体版本**（根 `package.json`），讲的是服务端能力。
+
+- **文档与清单按重构后的实现逐条对齐**：Node 门槛修正为 **22.13+**、默认 profile 改为 **`novel`**、
+  卸载语义改为 bundle+junction、预算改由 `computeFloor()` 自动核算、模型切换机制改写、端点真相修正。
+- **AI 能力结合——模型侧真的按内核规则行动，而不只是"服务端有规则"**：
+  - **模型自压缩纳入零损失护栏**：此前护栏只保护服务端自动压缩作业，而人设恰恰教模型
+    「自行压缩成 ≤800 字再调 `novel_memory_update`」——**那条路没有护栏**，丢一个角色照样静默落库。
+    现在两个入口共用 `ai/memory-compress-guard.mjs` 的同一份判据；不通过返回
+    **409 + 缺失名单 + `delta` 逃生口**，模型一轮内即可改正。
+  - **护栏规则写进人设与工具描述**（`cordis.patch.yml` 与 `agent.cordis.yml` 两侧同步），
+    让模型**第一次就写对**，而不是靠被拒后重试——重试就是钱。
+  - **召回缺口占位层的含义写进人设**：模型看到「相关记忆检索：本次不可用」时知道这是
+    **这一层没来**，而不是"没有相关记忆"，会改用 `novel_lookup` / `novel_memory_read` / `novel_events` 查证。
+- **成本纪律**：本次改造**未新增任何工具**（工具面仍是 15 个）；人设净增约 240 字；
+  护栏只在本地 SQLite 上做索引查询，**不进 AI 计费路径**，happy path 零额外调用。
+  验收：离线单测 `.p1-baseline/test-agent-memory-guard.mjs`（28/28，含阴性对照）、
+  插件冒烟 `test/smoke.mjs` **36/36**（新增 4 组护栏端到端断言，其中"作者手改不被拦"是关键阴性对照）。
+
+## 工坊 v0.9.3 更新：设定轻量装配 + headless 瘦身（本版重点）
 
 - **`novel_context` 新增 `settings` 模式**：设定类生成（世界观 / 角色卡 / 大纲 / 长期记忆等）只去掉「当前场景 / 本章蓝图 / 前后章衔接」三层，质量层（红线、角色卡、世界观词条、长期记忆、事件账本、未闭合伏笔）零丢失，省下的上下文留给真正要产出的内容。
 - **profile 瘦身**：`cordis.patch.yml` 关闭与创作无关的通用能力——`agent-instructions`（省 ~4.1k）、`tool-pwsh`（最大的单个工具 schema）、`workflow` / `subagent` / `subagent-fork` / `subagent-control` / `subagent-list-agents`、`todo` / `goal` / `jobs` / `ralph`、`plan-mode`、`web`、`skill` / `skill-filesystem`、`session-title-llm`；`novel_*` 工具与 read / write / edit / glob / grep、persona、OpenViking 记忆插件全部保留。这 17 条已用组合树对账验证「声明即生效、无静默失效」（见 `.p0-recon/README.md`）。
 - **冒烟测试扩至 32 组**：新增 `settings` 模式轻量装配断言（验证质量层不丢失）。
 
-## v0.8.0 更新：上下文质量与性能
+## 工坊 v0.8.0 更新：上下文质量与性能
 
 - **评分制出场角色**：出场角色不再「按名字前 8 兜底」，改为评分制选择——剧情线关联 > 正文/摘要命中次数 > 蓝图·作者注·最近事件提及 > 最近章节摘要出场 > 人物关系网；上限 16，兜底按最近出场优先。
 - **别名与整词命中**：角色卡新增「别名/称呼」字段（`characters.aliases`，可界面编辑），上下文与一致性核对都按正式名+别名命中；单字 CJK 名称要求词边界，杜绝「云」命中「云彩/李云」类子串误报。
@@ -174,20 +218,46 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 - **角色状态闭环**：`novel_consistency` 为每个出场角色附带相关最近事件，供 AI 判断状态是否过时；AI 用 `novel_event_add(kind="character")` 记录状态变化，作者在角色面板「⏱ 状态事件」一键同步为当前状态。
 - **上下文缓存与性能**：`/api/novel/context` 装配结果内存缓存（任何写操作经 `touchWork` 自动失效）；长章节只按需转换头部/尾部纯文本（`plainTextHead/Tail`），不再整章全文剥标签；补齐剧情线角色与人物关系索引；dsh 工具 GET 连接失败自动重试一次；冒烟测试新增出场角色选择断言与大作品（120 章+50 角色）装配基线。
 
+## 运行宿主（P0–P6 重构后）
+
+| 项 | 值 | 说明 |
+| --- | --- | --- |
+| dsh profile | **`novel`（专用）** | 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFILE` 决定；默认已从共享的 `headless` 切到 `novel`（P6） |
+| dsh home | **`~/.dsh-novel`（专用）** | 决策 B：写作任务的 `DSH_HOME` 与 GUI 分开，**消除混版碰撞**。首次启动自建 `profiles/node_modules` 镜像；目录不存在时自动退回共享 home，不会把任务打挂 |
+| 插件接入 | **bundle + junction** | profile 的 `dsh.profile.bundles` 列出 `novel-writing`，其 `node_modules/novel-writing` 是指向工坊仓库的 junction——**仓库即唯一来源，没有副本** |
+| 创作内核 | 工坊仓库的 `ai/` | `ai/context/layers.mjs`（层规格）、`ai/context/assembler.mjs`（装配器）、`ai/policy.mjs`（模型策略**单点**）、`ai/harness-env.mjs`（子进程环境契约）、`ai/memory-compress-guard.mjs`（零损失护栏） |
+
+启动时会打印一行「写作任务使用专用 DSH_HOME：…」——**这行是有意打的**：`DSH_HOME` 会随**启动方式**
+而变（从 DSH 派生的终端启动时环境里已经带着它，从桌面快捷方式启动时没有），不显式说明的话
+「B 到底生没生效」只能靠猜。要换位置设 `NOVELSTUDIO_DSH_HOME`；要回到共用就删掉 `~/.dsh-novel`。
+
+> ⚠️ **改完人设或工具后怎么让它生效**：后台任务走 bundle+junction，改仓库即生效，
+> 但 `harness.js` 是**启动时加载**的 → 重启工坊服务（`npm start`）才看得到；
+> 而 GUI preset（`~/.dsh/.agent-presets/novel-writing/`）那份 `agent.cordis.yml` 是**副本**，
+> 要让 GUI 会话也用上新纪律，得重跑一次 `install.ps1`。
+
 ## 卸载 / 回退
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel -Uninstall
 ```
 
-- 删除 `~/.dsh/.agent-presets/novel-writing`（GUI preset）
-- 从 `~/.dsh/profiles/headless/cordis.patch.yml` 中整段移除本插件区块（保留其它 patch 条目）
+P0 起是 **bundle 安装**，所以卸载是「拆接线」而不是「删补丁区块」：
+
+- 删除 `~/.dsh/.agent-presets/novel-writing`（GUI preset，先带时间戳备份）
+- 从目标 profile 的 `package.json` 里移除 `dsh.profile.bundles` 中的 `novel-writing`，
+  并删掉它 `node_modules` 下指向本目录的 **junction**（由 `install-profile.mjs --uninstall` 完成）
+- **不改写** profile 自己的 `cordis.patch.yml`——P0 起它回归为干净的用户层，安装脚本不再碰它
 - 工坊服务端的新表/新列向后兼容（旧功能不受影响），建议保留
+
+> 只有从**旧版**（区块合并 + 复制 `novel-tools.mjs`）升级上来时才需要跑 `install.ps1`：
+> 它会识别并清理那两类旧痕迹（带备份）。bundle 走 junction，之后改仓库代码**立即生效**。
 
 ## 环境要求
 
 - Windows（安装脚本为 PowerShell；模块为纯 ESM JS，无第三方依赖）
-- Node.js 22.5+（novel-studio 本体）+ 已构建的 deepseek-harness（dsh）仓库 + headless profile
+- **Node.js 22.13+**（novel-studio 本体；22.5–22.12 会因 `node:sqlite` 需要 `--experimental-sqlite` 而起不来）
+- 已构建的 deepseek-harness（dsh）仓库 + **专用 profile `novel`**（见上文「运行宿主」）
 - novel-studio 本地服务（http://127.0.0.1:3737，`PORT` 可覆盖；dsh 工具通过 `NOVELSTUDIO_BASE_URL` 自动定位）
 - 应用本体仓库：<https://github.com/bbaz123/novel-studio>
 - 创作插件仓库（发布镜像）：<https://github.com/bbaz123/novel-writing-plugin>

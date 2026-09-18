@@ -1,8 +1,8 @@
 {
   "name": "novel-writing",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "private": true,
-  "description": "Novel Studio 创作内核的 dsh bundle：创作人设（system-prompt 覆写）+ novel_* 工具集 + headless 专用瘦身。作为 bundle 被 profile 的 dsh.profile.bundles 引用，patch 层来自本包的 cordis.patch.yml，不再依赖安装脚本做区块合并。",
+  "description": "Novel Studio 创作内核的 dsh bundle：创作人设（system-prompt 覆写）+ novel_* 工具集 + 写作专用瘦身。作为 bundle 被 profile 的 dsh.profile.bundles 引用（当前默认 profile = novel），patch 层来自本包的 cordis.patch.yml，不依赖安装脚本做区块合并。",
   "type": "module",
   "main": "novel-tools.mjs",
   "dsh": {

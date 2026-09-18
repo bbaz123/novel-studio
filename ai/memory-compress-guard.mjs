@@ -188,3 +188,73 @@ export function checkNoInvention({ compressed, mustNotMention = [] } = {}) {
     reasons: invented.length ? [`记忆里出现了从未出场的角色：${invented.join('、')}`] : [],
   };
 }
+
+/**
+ * 「**模型自压缩**」的整份判据（D8-#3 续，2026-09-18）。
+ *
+ * ── 为什么需要它 ──────────────────────────────────────────────────────────────
+ * 护栏此前只保护**服务端自动压缩**那一条路（`compressStoryMemory`）。而插件的人设
+ * 恰恰教模型「参考旧摘要自行压缩合并为 ≤800 字新摘要后调 `novel_memory_update`」——
+ * 那条路此前**没有护栏**：模型丢掉一个角色照样静默落库，而这段摘要会喂给之后每一章。
+ * 把判据收在这里，是为了它**可离线单测**，且服务端与工具侧只有一份判据。
+ *
+ * 两侧与自动压缩**完全一致**（刻意复用同一对函数，避免判据抄两份后漂移）：
+ *   · 完整性：**出场过的**（主角+配角，含别名变体）一个都不许丢 → 拒绝落库；
+ *   · 无中生有：从未出场的被提及 → 默认放行（`allow`），严格模式才拒绝。
+ *
+ * ⚠️ `strictInvention` / `minCoverage` 做成**参数**而不是只读模块级常量：测试必须能把
+ *    策略显式钉住，否则用例会随调用方的环境变量漂移（这个坑在 D8 里犯过两次）。
+ */
+export function agentMemoryUpdateVerdict({
+  characters = [],
+  worldEntries = [],
+  chapterText = '',
+  summary = '',
+  minChars = MIN_COMPRESSED_CHARS,
+  minCoverage = MIN_ENTITY_COVERAGE,
+  strictInvention = STRICT_NO_INVENTION,
+} = {}) {
+  const cast = partitionByAppearance({ characters, worldEntries, chapterText });
+  const guard = checkCompression({
+    compressed: summary,
+    mustKeep: mustKeepEntities({ characters: cast.appearedChars, worldEntries: cast.appearedWorlds }),
+    minChars,
+    minCoverage,
+  });
+  const invention = checkNoInvention({
+    compressed: summary,
+    mustNotMention: cast.absentChars.map((c) => c.name),
+  });
+  const inventionAction = inventionVerdict(invention.invented, { strict: strictInvention });
+  const reasons = [...guard.reasons, ...(inventionAction === 'reject' ? invention.reasons : [])];
+  return { ok: reasons.length === 0, reasons, guard, invention, inventionAction, cast };
+}
+
+/**
+ * 工具侧用来标记「这次写入来自 AI 自压缩」的字段值。
+ *
+ * ⚠️ 插件（`harness-plugins/novel-writing/novel-tools.mjs`）**不能** import 本文件：
+ *    它同时会被 `install.ps1` 复制到 `~/.dsh/.agent-presets/novel-writing/`，
+ *    那份副本旁边没有 `ai/` 目录，相对导入会直接崩。所以两边靠**字面量契约**对齐，
+ *    并由 `.p1-baseline/test-agent-memory-guard.mjs` 断言两侧一致。
+ */
+export const AGENT_GUARD_MARKER = 'agent';
+
+/**
+ * 这次长期记忆写入**要不要过护栏**（纯判据，四种输入各有明确语义）。
+ *
+ * 为什么不是一个简单的 `body.guard === 'agent'`：
+ *   · `proposed` —— 提案先落提案表、不碰正式账本，等作者确认时**再**走正式写入，
+ *     那时才该设闸。在这里拦等于让模型没法提案。
+ *   · 无标记 —— 作者在工坊界面手改长期记忆走的是同一条 `PUT /api/story_memory`。
+ *     作者的意图优先，**不在本防区**：用机器判据挡住作者的手是本末倒置。
+ *   · 只有 `summary` —— `delta` 经 `mergeMemoryDraft` 是**纯拼接**（不截断），丢不了东西。
+ *
+ * 判据写成纯函数而不是散在 handler 里，是为了它**可离线断言语义**——
+ * 而不是去读 server.js 的代码形状（形状型断言在本项目已失效三次）。
+ */
+export function needsAgentMemoryGuard(body = {}) {
+  if (!body || body.proposed === true) return false;
+  if (body.guard !== AGENT_GUARD_MARKER) return false;
+  return Boolean(String(body.summary ?? '').trim());
+}

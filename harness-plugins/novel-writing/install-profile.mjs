@@ -57,17 +57,51 @@ autoInstallPeers: false
 `;
 
 function parseArgs(argv) {
-  const out = { profile: '', dryRun: false, uninstall: false, bundleDir: '' };
+  const out = { profile: '', dryRun: false, uninstall: false, bundleDir: '', home: '' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--profile') out.profile = argv[++i] ?? '';
     else if (a === '--bundle-dir') out.bundleDir = argv[++i] ?? '';
+    else if (a === '--home') out.home = argv[++i] ?? '';
     else if (a === '--dry-run') out.dryRun = true;
     else if (a === '--uninstall') out.uninstall = true;
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error(`未知参数：${a}`);
   }
   return out;
+}
+
+// ── 目标 dsh home 的解析（2026-09-18 新增）──────────────────────────────────
+// ⚠️ 必须与 `ai/harness-env.mjs` 的语义一致：决策 B 之后，**写作任务的 DSH_HOME 是
+// `~/.dsh-novel`**（`resolveTaskDshHome()` 在它含 `profiles/` 时返回它）。
+// 本脚本此前把 home 写死成 `~/.dsh`，于是 `install.ps1 -Profile novel` 会去接线一个
+// **应用已经不再使用**的位置，还照样打印「✔ 接线完成」——失败得很像成功。
+//
+// 为什么不去 import `../../ai/harness-env.mjs`：本目录会被镜像成独立发布仓库
+// （README 里那个 novel-writing-plugin），那份副本旁边没有 `ai/`，相对导入会把安装器打挂。
+// 所以这里保留一份**极小的**解析，并由 `.p1-baseline/test-agent-memory-guard.mjs`
+// 断言两侧的常量一致（跨模块字面量契约，同 `AGENT_GUARD_MARKER` 的处理）。
+const DEDICATED_HOME_ENV = 'NOVELSTUDIO_DSH_HOME';
+const DEFAULT_DEDICATED_HOME = '.dsh-novel';
+const SHARED_HOME = '.dsh';
+
+/**
+ * 解析本次要接线到哪个 dsh home。优先级与 `resolveTaskDshHome()` 一致：
+ * `--home` → `$NOVELSTUDIO_DSH_HOME` → `~/.dsh-novel`（须含 `profiles/`）→ `~/.dsh`。
+ * 「须含 profiles/」这一条与运行时**刻意相同**：既是判据，也避免把插件接到一个空目录上。
+ */
+export function resolveTargetHome(cliHome = '', env = process.env, homedir = os.homedir()) {
+  const explicit = String(cliHome || '').trim();
+  if (explicit) return { home: explicit, why: '--home 指定' };
+  const fromEnv = String(env[DEDICATED_HOME_ENV] || '').trim();
+  if (fromEnv && fs.existsSync(path.join(fromEnv, 'profiles'))) {
+    return { home: fromEnv, why: `环境变量 ${DEDICATED_HOME_ENV}` };
+  }
+  const dedicated = path.join(homedir, DEFAULT_DEDICATED_HOME);
+  if (fs.existsSync(path.join(dedicated, 'profiles'))) {
+    return { home: dedicated, why: '专用 home（决策 B，写作任务实际使用）' };
+  }
+  return { home: path.join(homedir, SHARED_HOME), why: '共享 home（专用 home 不存在，已退回）' };
 }
 
 const log = (msg) => console.log(msg);
@@ -221,7 +255,7 @@ function main() {
     process.exit(1);
   }
 
-  const dshHome = path.join(os.homedir(), '.dsh');
+  const { home: dshHome, why: homeWhy } = resolveTargetHome(args.home);
   const profileDir = path.join(dshHome, 'profiles', args.profile);
   const manifestPath = path.join(profileDir, 'package.json');
   const patchPath = path.join(profileDir, 'cordis.patch.yml');
@@ -229,6 +263,7 @@ function main() {
   const copiedTools = path.join(profileDir, 'novel-tools.mjs');
 
   log(`==> ${BUNDLE_NAME} bundle ${args.uninstall ? '撤销接线' : '接线'}：profile=${args.profile}`);
+  log(`    dsh home : ${dshHome}（${homeWhy}）`);
   log(`    profile 目录: ${profileDir}`);
   log(`    bundle  目录: ${bundleDir}`);
 
@@ -293,4 +328,15 @@ function main() {
   log(`    dsh --profile ${args.profile} --dump-config      # 组合树应包含 novel-tools`);
 }
 
-main();
+// 入口守卫（2026-09-18 新增）：只有**直接运行**本文件时才执行 main()。
+// 此前是无条件 `main()`——意味着任何 `import` 都会**真的去改 profile 接线**。
+// 于是 `resolveTargetHome()` 这类纯函数没法离线单测（import 一次就装一次）。
+// 判据用 realpath 比较，避免 Windows 上大小写/短路径/符号链接造成的误判。
+const invokedDirectly = (() => {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const norm = (p) => { try { return fs.realpathSync(p).toLowerCase(); } catch { return path.resolve(p).toLowerCase(); } };
+  return norm(entry) === norm(fileURLToPath(import.meta.url));
+})();
+
+if (invokedDirectly) main();

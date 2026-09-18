@@ -9,32 +9,39 @@
 #   profile 侧的具体接线由同目录的 install-profile.mjs 完成（零依赖 node 脚本）。
 #
 # 两个安装点：
-#   1) GUI agent preset  ~/.dsh/.agent-presets/novel-writing/（dsh 交互会话用）
-#   2) dsh profile       ~/.dsh/profiles/<Profile>/（novel-studio 后台任务用）
+#   1) GUI agent preset  ~/.dsh/.agent-presets/novel-writing/（dsh 交互会话用；GUI 就跑在 ~/.dsh 下）
+#   2) dsh profile       <任务 dsh home>/profiles/<Profile>/（novel-studio 后台任务用）
+#      ⚠️ 任务 home **不一定是 ~/.dsh**：决策 B 之后是专用 home `~/.dsh-novel`。
+#      解析优先级由 install-profile.mjs 的 resolveTargetHome() 负责，并打印实际用了哪个；
+#      本脚本因此**不再自己拼 profile 路径**（拼错过：会去接线一个应用已不用的位置）。
 #
 # 用法：
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1                  # 默认 headless profile
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel   # 专用 profile
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1                  # 默认 novel profile（与 harness.js 的默认值一致）
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile headless # 旧版共享 profile
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun          # 预演，不写文件
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Profile novel -Uninstall
 param(
   [switch]$DryRun,
   [switch]$Uninstall,
-  [string]$Profile = 'headless'
+  [string]$Profile = 'novel'
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $dshHome = Join-Path $env:USERPROFILE '.dsh'
 $presetDest = Join-Path $dshHome '.agent-presets\novel-writing'
-$profileDir = Join-Path $dshHome "profiles\$Profile"
+# 注意：**不要**在这里拼 profile 路径。任务 home 可能是 ~/.dsh-novel（决策 B），
+# 真实落点由 install-profile.mjs 的 resolveTargetHome() 决定（它会打印出来）。
 
 if ($Profile -notmatch '^[A-Za-z0-9._-]{1,64}$') {
   Write-Error "非法 -Profile：$Profile（仅允许字母/数字/点/下划线/连字符，1-64 字符）"
   exit 1
 }
 
-# 版本号随 plugin.json 的 version 字段（运行时读取，不再硬编码）。
-$script:Version = ([System.IO.File]::ReadAllText((Join-Path $root 'plugin.json')) | ConvertFrom-Json).version
+# 版本号与工具清单都从 plugin.json 读——**清单是真源**。
+# 硬编码的清单漂移过：旧版这里只列了 13 个工具，而实际注册 15 个（漏了 novel_events 与 novel_memory_read）。
+$script:Manifest = [System.IO.File]::ReadAllText((Join-Path $root 'plugin.json')) | ConvertFrom-Json
+$script:Version = $script:Manifest.version
+$script:ToolNames = @($script:Manifest.tools | ForEach-Object { $_.name })
 
 $srcTools = Join-Path $root 'novel-tools.mjs'
 $srcAgent = Join-Path $root 'agent.cordis.yml'
@@ -175,4 +182,4 @@ Say '  1) 若升级了 novel-studio 服务端文件（db.js/server.js/harness.js
 Say '  2) 打开 novel-studio 使用 AI 创作即可，无需在 dsh 里手动选 preset。'
 Say "  3) 验证：dsh --profile $Profile --dump-config   # 组合树应含 novel-tools 条目"
 Say "     或实跑一次：dsh --profile $Profile `"只输出一行：你当前可用的全部工具名称，用逗号分隔`""
-Say '     期望出现：novel_context, novel_works, novel_lookup, novel_scan, novel_style_contract, novel_event_add, novel_memory_update, novel_foreshadows, novel_foreshadow_update, novel_consistency, novel_blueprint, novel_review, novel_chapter_save'
+Say "     期望出现（共 $($script:ToolNames.Count) 个，清单来自 plugin.json）：$($script:ToolNames -join ', ')"

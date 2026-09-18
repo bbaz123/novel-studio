@@ -11,7 +11,7 @@ import { ovClient, pendingQueueLength } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
-import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance } from './ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance, agentMemoryUpdateVerdict, needsAgentMemoryGuard } from './ai/memory-compress-guard.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -1223,6 +1223,21 @@ async function compressStoryMemory(workId, onChunk, signal) {
 
 // 🐞 运行追踪：长期记忆压缩是长任务（内含 AI 调用），单独成节点便于归因耗时。
 compressStoryMemory = traceFn('compressStoryMemory（压缩长期记忆）', compressStoryMemory, { kind: 'fn', slowMs: 3000 });
+
+// ---------- 模型自压缩的零损失护栏（D8-#3 续 · 2026-09-18）----------
+// 上面那条护栏只保护**服务端自动压缩**。而插件人设教的恰恰是「模型自行把旧摘要+进展
+// 压缩成 ≤800 字，再调 novel_memory_update 交上来」——**那条路此前没有护栏**：
+// 模型丢掉一个角色照样静默落库，而这段记忆会喂给之后每一章，且摘要读起来照样通顺。
+// 现在两条路共用同一份判据（`agentMemoryUpdateVerdict` 在 ai/memory-compress-guard.mjs），
+// 靠工具显式标记来源（`guard:'agent'`）区分——**作者在界面手改不带标记，不受影响**。
+// 判据只取名字/标题，不拉正文：这是本地 SQLite 的索引查询，纳秒级，不进 AI 计费路径。
+function agentMemoryGuardOf(workId, summary) {
+  const chapters = prepare('SELECT title, summary, substr(content, 1, 1500) AS content FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const characters = prepare('SELECT name FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
+  const worldEntries = prepare('SELECT title FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content, 500)}`).join('\n');
+  return agentMemoryUpdateVerdict({ characters, worldEntries, chapterText, summary });
+}
 
 // ---------- 出场角色选择（评分制 · v0.8.0） ----------
 // 解决旧实现的三个遗漏源：①兜底只取“按名字前 8”与剧情无关；②名字子串误命中、漏别名；
@@ -3401,6 +3416,35 @@ async function handleAPI(req, res, pathname, query) {
     let summary = asString(body.summary, '');
     if (!summary && body.delta) {
       summary = mergeMemoryDraft(getStoryMemory(workId), asString(body.delta, ''));
+    }
+    // D8-#3 续：**模型自压缩**也走同一零损失护栏。判据是纯函数（needsAgentMemoryGuard），
+    // 语义为「工具显式标记来源 + 传了 summary」；作者手改、delta 追加、提案路径都不设闸。
+    if (needsAgentMemoryGuard(body)) {
+      const verdict = agentMemoryGuardOf(workId, summary);
+      if (!verdict.ok) {
+        log({
+          level: 'warn', layer: 'ai', kind: 'memory_update_guard_rejected',
+          message: `模型提交的长期记忆未通过零损失护栏，**未落库**：${verdict.reasons.join('；')}`,
+          context: {
+            work_id: workId, length: verdict.guard.length,
+            missing: verdict.guard.missing.slice(0, 20),
+            invented: verdict.invention.invented.slice(0, 20),
+            checked: verdict.guard.checked
+          }
+        });
+        // 409 而不是 400：这不是请求格式错，而是内容没过**可修正**的质量闸——
+        // 错误文本必须带上缺失名单与逃生口，模型才能在一轮内改好（多花一轮就是成本）。
+        return sendError(res, 409,
+          `长期记忆未通过零损失护栏（未落库）：${verdict.reasons.join('；')}。`
+          + '请把上述出场角色/世界观词条补回摘要后重交一次；若确实装不下，改传 delta（安全追加，不会丢人）。');
+      }
+      if (verdict.inventionAction === 'allow') {
+        log({
+          level: 'warn', layer: 'ai', kind: 'memory_update_invented_allowed',
+          message: `模型提交的长期记忆提到了 ${verdict.invention.invented.length} 个未出场角色，按既定策略**放行**（未拦落库）`,
+          context: { work_id: workId, invented: verdict.invention.invented.slice(0, 20) }
+        });
+      }
     }
     const result = saveStoryMemory(workId, summary, {
       source: body.source || 'manual',
