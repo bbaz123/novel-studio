@@ -859,13 +859,21 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
 // 关键点有两个：① 扫的是**成文 + 补足合并后**的全文（不是 harness 单次 job 的 output）；
 //            ② 三种口径（命中 / 通过 / 不可用）要分别说得出口，不能含糊成一句"完成"。
 {
-  const runBatch = async ({ scanTotal = 2, scanThrows = false } = {}) => {
+  // 直连通道的可控桩：`directReply(prompt)` 返回内容 → 直连成功；返回 '' / null → 直连不可用（走回退）。
+  // `truncated` 模拟"上下文被预算截断"（此时**不允许**走直连：只有慢通道能取回被裁掉的原文）。
+  const runBatch = async ({
+    scanTotal = 2, scanThrows = false,
+    directReply = () => null, truncated = false
+  } = {}) => {
     const toasts = [];
     const calls = [];
+    const harnessPrompts = [];
+    const directPrompts = [];
     const saved = {
       api: sandbox.api, toast: sandbox.toast, runHarnessJob: sandbox.runHarnessJob,
       loadWorkData: sandbox.loadWorkData, render: sandbox.render, reportClientLog: sandbox.reportClientLog,
-      refreshProposalBadge: sandbox.refreshProposalBadge
+      refreshProposalBadge: sandbox.refreshProposalBadge,
+      directAIWrite: sandbox.directAIWrite, aiContextTruncated: sandbox.aiContextTruncated
     };
     P.state.workId = 2;
     P.state.work = { id: 2, title: '测试作品', default_chapter_words: 8 };
@@ -873,6 +881,12 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     P.state.chapters = [{ id: 107, title: '第107章', target_words: 8, content: '' }];
     containers['#editor-content'] = containers['#editor-content'] || mkEl('editor-content');
     sandbox.toast = (m) => { toasts.push(String(m)); };
+    sandbox.aiContextTruncated = () => truncated;
+    sandbox.directAIWrite = async (messages) => {
+      const prompt = String((messages && messages[0] && messages[0].content) || '');
+      directPrompts.push(prompt);
+      return directReply(prompt);
+    };
     sandbox.api = async (url, opts = {}) => {
       calls.push({ url: String(url), body: opts.body });
       if (String(url).includes('/novel/empty_chapters')) return { chapters: [{ id: 107, title: '第107章', target_words: 8 }] };
@@ -884,11 +898,15 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     };
     // harness 侧：蓝图一次 + 成文一次 + 补足一次（补足是为了验证"扫的是合并后的全文"）
     let harnessCalls = 0;
-    sandbox.runHarnessJob = async () => {
+    sandbox.runHarnessJob = async (body) => {
       harnessCalls += 1;
-      if (harnessCalls === 1) return { output: '【蓝图】{"scene_goal":"开场","target_words":8}' };
-      if (harnessCalls === 2) return { output: '【成文】正文第一段。' };
-      return { output: '【成文】续写片段。' };
+      const prompt = String((body && body.prompt) || '');
+      harnessPrompts.push(prompt);
+      // ⚠️ 按**提示词特征**分派，不按调用序号：蓝图改走直连后，harness 的第一次调用就是"成文"，
+      //    序号派发会让下面所有断言跟着错位（顺序一变就假通过）。
+      if (isBlueprintPrompt(prompt)) return { output: '【蓝图】{"scene_goal":"开场","target_words":8}' };
+      if (isContinuationPrompt(prompt)) return { output: '【成文】续写片段。' };
+      return { output: '【成文】正文第一段。' };
     };
     sandbox.loadWorkData = async () => {};
     sandbox.render = async () => {};
@@ -898,8 +916,12 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     Object.assign(sandbox, saved);
     const scanCall = calls.find((c) => c.url.includes('/novel/scan'));
     const finalToast = toasts[toasts.length - 1] || '';
-    return { calls, toasts, finalToast, harnessCalls, scannedText: scanCall && scanCall.body && scanCall.body.text };
+    return { calls, toasts, finalToast, harnessCalls, harnessPrompts, directPrompts, scannedText: scanCall && scanCall.body && scanCall.body.text };
   };
+  // 蓝图提示词与续写提示词的判别串（分别取自 buildAIWritingBlueprintPrompt 的 auto 分支与
+  // buildAIWritingContinuationPrompt 的首行）——用结构特征而不是"第几次调用"，避免顺序一变就假通过。
+  const isBlueprintPrompt = (p) => p.includes('【蓝图】') && p.includes('批量自动模式');
+  const isContinuationPrompt = (p) => p.includes('继续写本章正文');
 
   const hit = await runBatch({ scanTotal: 2 });
   check('109a 批量生成会对**合并后的全文**跑红线自检（成文+补足都在）',
@@ -922,6 +944,50 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       && hit.finalToast.includes('红线自检命中') && clean.finalToast.includes('红线自检通过')
       && broken.finalToast.includes('红线自检不可用');
   })(), JSON.stringify([hit.finalToast.slice(0, 30), clean.finalToast.slice(0, 30), broken.finalToast.slice(0, 30)]));
+
+  // --- 13) 批量生成的**通道策略**：中间产物走直连、成文轮保留精写内核 ---
+  // 这一组的价值在于钉住"提速"本身：慢通道每任务固定开销 ≈17–18 秒（README 实测），
+  // 把蓝图/小缺口补足搬出慢通道就是实打实的省时；同时钉住它**没有**顺手改掉成文轮
+  // （成文轮承担事件/记忆入账与一致性核对，改直连等于悄悄降质量）。
+  const directBlueprint = '【蓝图】{"scene_goal":"直连开场","plot_points":"一","hook":"钩"}';
+  const blueprintViaDirect = await runBatch({
+    scanTotal: 0,
+    directReply: (p) => (isBlueprintPrompt(p) ? directBlueprint : null)
+  });
+  const blueprintFallback = await runBatch({ scanTotal: 0, directReply: () => null });
+  // ⚠️ 断言用**相对口径**（比回退路径少一次慢通道任务），不写死绝对次数：补足轮会跑满 2 轮，
+  //    绝对次数会随补足策略变化而漂移，那种断言会在无害改动后假失败。
+  check('110a 蓝图走直连时**不再占用慢通道**（慢通道任务数比回退路径正好少一次）',
+    !blueprintViaDirect.harnessPrompts.some(isBlueprintPrompt)
+      && blueprintViaDirect.directPrompts.some(isBlueprintPrompt)
+      && blueprintFallback.harnessCalls - blueprintViaDirect.harnessCalls === 1,
+    JSON.stringify({ viaDirect: blueprintViaDirect.harnessCalls, fallback: blueprintFallback.harnessCalls }));
+  check('110b 蓝图走直连时，蓝图内容仍然落库（直连产物被正常解析）',
+    blueprintViaDirect.calls.some((c) => c.url.includes('/novel/chapter_blueprint')
+      && c.body && c.body.blueprint && c.body.blueprint.scene_goal === '直连开场'),
+    JSON.stringify(blueprintViaDirect.calls.filter((c) => c.url.includes('blueprint')).map((c) => c.body)));
+
+  check('110c 直连不可用（空回复）时蓝图回退慢通道，且慢通道拿到的是蓝图提示词',
+    blueprintFallback.harnessPrompts.some(isBlueprintPrompt) && blueprintFallback.harnessCalls === 4,
+    JSON.stringify({ harness: blueprintFallback.harnessCalls }));
+
+  const truncatedRun = await runBatch({ scanTotal: 0, truncated: true, directReply: () => directBlueprint });
+  check('110d 上下文被预算截断时蓝图**不走直连**（只有慢通道能取回被裁掉的原文）',
+    !truncatedRun.directPrompts.some(isBlueprintPrompt) && truncatedRun.harnessPrompts.some(isBlueprintPrompt),
+    JSON.stringify({ direct: truncatedRun.directPrompts.length }));
+
+  const contDirect = await runBatch({
+    scanTotal: 0,
+    directReply: (p) => (isBlueprintPrompt(p) ? directBlueprint : (isContinuationPrompt(p) ? '【成文】直连续写片段。' : null))
+  });
+  check('110e 小缺口补足走直连，且扫描的是"成文+直连续写"合并后的全文',
+    !contDirect.harnessPrompts.some(isContinuationPrompt)
+      && contDirect.directPrompts.some(isContinuationPrompt)
+      && String(contDirect.scannedText || '').includes('直连续写片段'),
+    JSON.stringify({ harnessPrompts: contDirect.harnessPrompts.length, scanned: String(contDirect.scannedText || '').slice(0, 40) }));
+
+  check('110f 收尾 toast 报出本批实际耗时（让"提速有没有生效"当场可核对）',
+    hit.finalToast.includes('用时') && hit.finalToast.includes('/章'), hit.finalToast);
 }
 
 // --- 8) 派生式护栏：浏览器脚本不得调用"只存在于服务端"的函数 ---// 它来自一个真实缺陷：v0.9.3 的提交里 public/app.js 有三处 `plainText(editor.innerHTML)`，

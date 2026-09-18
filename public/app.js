@@ -6947,18 +6947,46 @@ async function batchGenerateChapters(count) {
   // 交互路径正是因此自己重扫一次。扫描是本地正则，零 AI 成本。
   // 缺失它时，批量生成的章节命中了多少反 AI 腔词句，作者永远不知道（红线自检没有别的展示面）。
   const scanRows = [];
+  // 每章的实际耗时：收尾如实报出"这一批到底跑了多久"，让"提速有没有生效"当场可核对
+  // （而不是只能事后翻日志猜——日志里长任务此前根本不会被打成 slow，见 logger.js 的阈值口径）。
+  const chapterMs = [];
+  // 批量生成的通道策略（与交互路径 performToolbarAIWrite 同一条纪律）：
+  //   **中间产物走直连，成文轮保留精写内核**。
+  // ⚠️ 成文轮**刻意不改直连**，即使那样每章还能再省 ≈17 秒：它同时承担事件/记忆入账与一致性核对
+  //   （精写内核的 novel_* 工具），批量时没有人在旁边盯着；改直连就必须另造一条入账链路，
+  //   而那条链路会与下一章的作业抢服务端的 2 个并发槽（抢不到就是 429，提案静默丢失）。
+  //   在"不影响质量"的前提下，这里的取舍是只把中间产物搬出慢通道，质量链路一个字节不动。
   for (const ch of targets) {
     done += 1;
     const label = `批量生成 · 第 ${done}/${targets.length} 章（${ch.title}）`;
+    const chapterStartedAt = Date.now();
     try {
       // 切到该章上下文（AI 上下文/角色卡/世界观）
       state.currentChapterId = ch.id;
       await loadAIContext();
       const target = resolveTargetWords();
       const initial = buildAIWritingInitialRequest(`根据作品大纲与剧情推进，撰写本章完整正文（不需要提问，直接按蓝图成文）`);
-      // 1) 自动蓝图（不弹确认，直接落库）
-      const bpData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingBlueprintPrompt(initial, [], target, true) }, `${label} · 蓝图`);
-      let bp = parseAIWritingOutput(bpData.output || '').blueprint || null;
+      // 1) 自动蓝图（不弹确认，直接落库）：**直连优先**，与交互路径同一条纪律。
+      //    依据是本项目自己的实测（README「写作路径提速（实测驱动）」）：慢通道每个任务多花
+      //    ≈17–18 秒冷启动固定开销（同一条真实蓝图提示词 19.1s vs 47.3s）。蓝图是中间产物，
+      //    随后会作为【本章蓝图】内联进成文提示词，因此搬出慢通道不改变成文质量。
+      //    两种必须回退的情况：① 上下文被预算截断——只有慢通道能用 novel_lookup 取回被裁掉的原文；
+      //    ② 直连不可用/空回复（directAIWrite 内部已对"思考吃光 max_tokens"重试过一次）。
+      const blueprintPrompt = buildAIWritingBlueprintPrompt(initial, [], target, true);
+      let bpRaw = '';
+      if (!aiContextTruncated()) {
+        bpRaw = (await directAIWrite([{ role: 'user', content: blueprintPrompt }], {
+          model: policyModel('fast'), maxTokens: 8192
+        })) || '';
+        if (!bpRaw.trim()) {
+          reportClientLog({ level: 'warn', kind: 'batch_blueprint_direct_fallback', message: `[批量生成] ${ch.title} 蓝图直连不可用，回退精写内核` });
+        }
+      }
+      if (!bpRaw.trim()) {
+        const bpData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: blueprintPrompt }, `${label} · 蓝图`);
+        bpRaw = bpData.output || '';
+      }
+      let bp = parseAIWritingOutput(bpRaw).blueprint || null;
       if (bp && Object.keys(bp).length) {
         try {
           await api('/novel/chapter_blueprint', { method: 'PUT', body: { chapter_id: ch.id, blueprint: bp, target_words: 0 } });
@@ -6968,16 +6996,29 @@ async function batchGenerateChapters(count) {
       const proseData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingProsePrompt(initial, bp, target) }, `${label} · 成文`);
       let article = parseAIWritingOutput(proseData.output || '').finalText || '';
       if (!article.trim()) throw new Error('AI 没有返回正文内容');
-      // 3) 字数补足
+      // 3) 字数补足：大小缺口分开处理（与交互路径同一条判据）——
+      //    小缺口（<15%）直连秒级补足，大缺口才劳驾精写内核（那 17 秒换"能补够"是值得的）。
       let rounds = 0;
       while (plainLength(article) < target && rounds < 2) {
         rounds += 1;
-        const cont = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingContinuationPrompt(article, target) }, `${label} · 补足（${rounds}/2）`);
-        const more = parseAIWritingOutput(cont.output || '').finalText || '';
+        const gap = Math.max(0, target - plainLength(article));
+        const contPrompt = buildAIWritingContinuationPrompt(article, target);
+        let more = '';
+        if (gap <= Math.max(200, Math.ceil(target * 0.15))) {
+          const reply = await directAIWrite([{ role: 'user', content: contPrompt }], {
+            model: policyModel('fast'),
+            maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))
+          });
+          more = parseAIWritingOutput(reply || '').finalText || '';
+        }
+        if (!more.trim()) {
+          const cont = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: contPrompt }, `${label} · 补足（${rounds}/2）`);
+          more = parseAIWritingOutput(cont.output || '').finalText || '';
+        }
         if (!more.trim()) break;
         article = `${article}\n\n${more}`;
       }
-      // 3) 全文确定性红线扫描（本地正则、零成本）：结果只做**告知**，不改变写回内容。
+      // 4) 全文确定性红线扫描（本地正则、零成本）：结果只做**告知**，不改变写回内容。
       // ⚠️ 失败不阻塞写回（与交互路径同一条纪律）。
       try {
         const fullScan = await api('/novel/scan', {
@@ -6995,12 +7036,13 @@ async function batchGenerateChapters(count) {
       } catch (e) {
         reportClientLog({ level: 'warn', kind: 'batch_redline_scan_failed', message: `[批量生成] ${ch.title} 红线自检不可用：${e.message}` });
       }
-      // 4) 写回章节（旧稿自动存历史版本）
+      // 5) 写回章节（旧稿自动存历史版本）
       await api('/novel/chapter_save', {
         method: 'POST',
         body: { chapter_id: ch.id, content: textToParagraphsHtml(article), summary: (bp?.scene_goal || '').slice(0, 200) }
       });
       toast(`第 ${done}/${targets.length} 章已写入：${ch.title}`, 'success');
+      chapterMs.push(Date.now() - chapterStartedAt);
     } catch (e) {
       if (e.cancelled) {
         toast(`批量生成已停止：完成 ${done - 1}/${targets.length} 章（已完成的章节保留）`, 'success');
@@ -7012,7 +7054,14 @@ async function batchGenerateChapters(count) {
       return;
     }
   }
-  // 收尾：把本批的**红线自检**结果如实报出来（命中/通过/不可用三种口径，不要含糊成一句"完成"）。
+  // 收尾：耗时 + 红线自检结果如实报出来（命中/通过/不可用三种口径，不要含糊成一句"完成"）。
+  // 耗时口径说明：`totalMs` 含本章的上下文装配、直连/慢通道往返与写回，是这个批量函数**真实**的墙钟耗时；
+  // 报出来是为了让"提速有没有生效"当场可核对，而不是只能事后翻日志猜。
+  const totalMs = chapterMs.reduce((n, ms) => n + ms, 0);
+  const mmss = (ms) => (ms >= 60000 ? `${Math.floor(ms / 60000)} 分 ${Math.round((ms % 60000) / 1000)} 秒` : `${Math.round(ms / 1000)} 秒`);
+  const timeLine = chapterMs.length
+    ? `用时 ${mmss(totalMs)}（平均 ${mmss(Math.round(totalMs / chapterMs.length))}/章）`
+    : '';
   // 提案去哪儿的指路保持不变（提案按设计要作者逐条确认，且 `/novel/proposals` 是该作品的全部待确认项，
   // 逐章展示只会重复同一份清单）。
   const scannedTotal = scanRows.reduce((n, r) => n + r.total, 0);
@@ -7026,7 +7075,7 @@ async function batchGenerateChapters(count) {
     const more = scanRows.filter((r) => r.total > 0).length > 3 ? ' 等' : '';
     scanLine = `红线自检命中 ${scannedTotal} 处（${detail}${more}）`;
   }
-  toast(`批量生成完成：${done} 章已写入正文。${scanLine}。AI 提交的事件/记忆提案可在「长期记忆 → 待确认提案」处理`,
+  toast(`批量生成完成：${done} 章已写入正文${timeLine ? `，${timeLine}` : ''}。${scanLine}。AI 提交的事件/记忆提案可在「长期记忆 → 待确认提案」处理`,
     scannedTotal > 0 ? 'error' : 'success');
   await refreshProposalBadge(); // 本批可能新增提案：角标立刻反映，别等下次进那个面板
   await loadWorkData(true);
