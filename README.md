@@ -1,3 +1,10 @@
+> **注意：仓库已重构，你正在看的 `main` 是重构前的版本（v0.9.3）。**
+>
+> 重构后的代码在 [`refactor/p0-p6`](https://github.com/bbaz123/novel-studio/tree/refactor/p0-p6) 分支，
+> 比这里领先 30 个提交，装法和项目结构都变了——看[它的 README](https://github.com/bbaz123/novel-studio/blob/refactor/p0-p6/README.md)，
+> 或者 `git clone -b refactor/p0-p6 https://github.com/bbaz123/novel-studio.git`。
+> 只想跑一个稳定版本，照下面这页做就行，不必管分支。
+
 # Novel Studio · 小说创作工坊
 
 Novel Studio 是一个本地运行的小说创作管理工具，用于管理多部作品的设定、剧情线、大纲、正文写作，并把 AI 辅助创作能力整合进一个清爽的界面。
@@ -10,10 +17,6 @@ Novel Studio 是一个本地运行的小说创作管理工具，用于管理多�
 | --- | --- | --- |
 | 应用本体 | <https://github.com/bbaz123/novel-studio> | 工坊主程序（本仓库），创作插件源码内置在 `harness-plugins/novel-writing/`，与工坊同仓维护、一起升级 |
 | 创作插件 | <https://github.com/bbaz123/novel-writing-plugin> | novel-writing 插件（DeepSeek Harness 创作内核）的独立发布镜像，内容与上面 `harness-plugins/novel-writing/` 同步 |
-
-> 🌿 **版本与分支说明**：本仓库**最新代码在 `refactor/p0-p6` 分支**（含 AI 内核重构 P0–P6，比这里的 `main` 领先 30 个提交）。
-> **本页描述的是 `main` 上的已发布版本 v0.9.3**；安装步骤与项目结构与最新分支略有差异，属正常。
-> 想要最新版本：`git clone -b refactor/p0-p6 https://github.com/bbaz123/novel-studio.git`；只想稳定使用，就照本页的步骤走，下载默认分支即可。
 
 **第一次用？直接看下面的「⚡ 三步跑起来」**——3 分钟就能开始写。每一步的细节与排错见「🚀 安装与运行（详细步骤）」和 **[docs/新手入门.md](docs/新手入门.md)**。
 
