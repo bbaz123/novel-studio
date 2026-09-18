@@ -42,7 +42,7 @@
 
 ```powershell
 # ① 活实例 → 解锁 I4 可查回、主成文路径同源、编辑距离端到端、压缩提示自发现
-node .p1-baseline/gate-env.mjs --data-dir .p1-baseline/stress-data   # 前台；六项隔离变量一次配齐
+node .p1-baseline/gate-env.mjs --data-dir .p1-baseline/stress-data   # 前台；隔离变量一次配齐（八项，见 runbook §八）
 # ② 显式授权 → 解锁两条会真的 spawn dsh 的检查（零计费，且自带跑后审计）
 #    $env:NOVELSTUDIO_ALLOW_HARNESS_SPAWN='1'
 # ③ 闸门并发验证 → 另需 --gate-base 且 NOVELSTUDIO_GATE_CONFIRMED_ISOLATED=1

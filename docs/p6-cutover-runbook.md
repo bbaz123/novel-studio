@@ -232,7 +232,7 @@ node .p1-baseline/gate-env.mjs      # 前台：黑洞 LLM 端点 + 隔离实例�
 node .p1-baseline/gate-env.mjs --stop   # 收工（清 marker；Ctrl+C 亦可）
 ```
 
-配方六项，各挡一类污染：
+配方见下表（八项，各挡一类污染；数量以 `gate-env.mjs` 里真正设的 env 为准——写死数字会漂）：
 
 | 环境变量 | 挡住的污染 |
 |---|---|

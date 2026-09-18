@@ -714,6 +714,27 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     check('107k 章节标题查不到时退回 #id（不显示 undefined）',
       P.chapterTitleOf(999) === '#999' && P.chapterTitleOf(107) === '第107章',
       `${P.chapterTitleOf(999)} / ${P.chapterTitleOf(107)}`);
+    // ⚠️ 第五轮重审抓到的第二个真缺陷：编辑器只在写作视图存在，切到总览/设定等视图后
+    // `#editor-content` 被卸载；旧实现此时**静默返回空串**（违背"取不到就报错"的契约），
+    // 而「接回进度」等待期间切视图正好命中 → 补丁全落空 → 把模型原始输出当修稿稿。
+    {
+      const savedEditor = containers['#editor-content'];
+      // ⚠️ 只删 containers 不够：mkEl 会把元素同时登记进 `registered`，
+      // 而 `$()` 的兜底顺序正是 containers → registered（第一版这里没删后者，于是编辑器照样被找到）。
+      const savedRegistered = registered.get('#editor-content');
+      delete containers['#editor-content'];
+      registered.delete('#editor-content');
+      const calls2 = [];
+      const realApi3 = sandbox.api;
+      sandbox.api = async (url) => { calls2.push(String(url)); return { id: 108, content: '<p>库里那一章的正文</p>' }; };
+      const fallbackBase = await P.revisionBaseArticle(108); // 108 就是当前章，但编辑器不在 DOM
+      sandbox.api = realApi3;
+      containers['#editor-content'] = savedEditor;
+      if (savedRegistered) registered.set('#editor-content', savedRegistered);
+      check('107l 编辑器不在 DOM 时退回库里正文，而不是静默给空底稿',
+        fallbackBase === P.editorPlainText('<p>库里那一章的正文</p>') && calls2.some((u) => u.includes('/chapters/108')),
+        JSON.stringify({ fallbackBase, calls2 }));
+    }
   }
 
   // 付费调用的前置校验：底稿为空时**一次调用都不许发**。
@@ -773,12 +794,14 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   containers['#editor-content'].innerHTML = '<p>原文</p>';
   containers['#editor-content'].dataset = { chapterId: '107' };
   let resultOpened = 0;
+  const resultArgs = [];
+  const applyArgs = [];
   const realShowResult = sandbox.showAIWritingResult;
   const realApply = sandbox.applyAIWritingArticle;
   const realToast = sandbox.toast;
   const toastMsgs = [];
-  sandbox.showAIWritingResult = async () => { resultOpened += 1; return null; };
-  sandbox.applyAIWritingArticle = async () => {};
+  sandbox.showAIWritingResult = async (...a) => { resultOpened += 1; resultArgs.push(a); return null; };
+  sandbox.applyAIWritingArticle = async (...a) => { applyArgs.push(a); };
   sandbox.toast = (m, t) => { toastMsgs.push(String(m)); return realToast(m, t); };
   const clientLogs = [];
   const realReport = sandbox.reportClientLog;
@@ -802,6 +825,31 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     `err=${degradeErr} errModal=${errModalShown} toasts=${JSON.stringify(toastMsgs.slice(0, 2))}`);
   check('108 该降级路径确实走到了结果弹窗', resultOpened === 1,
     `opened=${resultOpened} cardInv=${cardInv} directInv=${directInv} directCalls=${directCalls.length} logs=${JSON.stringify(clientLogs.slice(0, 2))} trunc=${P.aiContextTruncated()} ctx=${JSON.stringify(P.state.aiContext).slice(0, 60)}`);
+  // ⚠️ 第五轮重审抓到的真缺陷：三处 showAIWritingResult 都没传 meta.chapterId，
+  // 于是 pendingAIArticle.chapterId 取的是"弹窗出现那一刻打开的章"——写作要跑几分钟，
+  // 期间切章就会让后续「先审稿再应用 → 修稿 → 合并」把这一章的稿写进另一章。
+  // 这里断言结果弹窗拿到的是**入口捕获的章号**（本例 state.currentChapterId = 107）。
+  const metaArg = resultArgs[0] && resultArgs[0][5];
+  check('108f 结果弹窗拿到入口捕获的章号（不是弹窗出现时的当前章）',
+    !!metaArg && Number(metaArg.chapterId) === 107, JSON.stringify(metaArg));
+  // 应用动作也必须写回同一章：让"写作期间切章"真的发生（在结果弹窗打开的那一刻改当前章），
+  // 断言应用动作拿到的仍是入口捕获的 107 —— 这正是缺陷现场（旧实现会写 999）。
+  {
+    const beforeApply = applyArgs.length;
+    P.state.currentChapterId = 107;   // 入口时还在 107
+    sandbox.showAIWritingResult = async (...a) => {
+      resultOpened += 1; resultArgs.push(a);
+      P.state.currentChapterId = 999;  // 模拟：弹窗打开的这一刻，作者已经切到别的章
+      return 'replace';
+    };
+    stub.blueprintAsProse = true;
+    await P.performToolbarAIWrite('续写本章');
+    stub.blueprintAsProse = false;
+    const call = applyArgs[beforeApply];
+    check('108g 写作期间切章后，应用动作仍写回发起写作的那一章',
+      !!call && String(call[2]) === '107', JSON.stringify(call && call[2]));
+    P.state.currentChapterId = 107;
+  }
   sandbox.showAIWritingResult = realShowResult;
   sandbox.applyAIWritingArticle = realApply;
   sandbox.toast = realToast;

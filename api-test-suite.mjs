@@ -192,6 +192,10 @@ async function main() {
     const txt = '《导入测试集》\n\n第一章 初入\n这里是第一章正文。\n\n第二章 远行\n这里是第二章正文。\n\n第三章 归来\n这里是第三章正文。';
     const r3 = await api('POST', '/api/import', { body: { title: '导入测试集', text: txt } });
     record('G3 TXT 导入自动拆章 201', r3.status === 201 && r3.json?.chapters === 3, `chapters=${r3.json?.chapters}`);
+    // ⚠️ 前提断言（第五轮重审补）：J 段的清理断言数 = 作品数 × 2，而分母 `results.length` 会跟着缩水 ——
+    // 少了这一条，导入失败时 J 段少跑 2 条断言、汇总会打出一行完美的「176/176 通过, 0 失败, 0 跳过」，
+    // 谁也不会发现"少测了"。**分母能缩小的汇总 = 沉默的假绿。**
+    record('G3b 导入返回了 work_id（否则 J 段会少 2 条断言而无声通过）', Boolean(r3.json?.work_id), String(r3.json?.work_id));
     if (r3.json?.work_id) created.works.push(r3.json.work_id);
     const r4 = await api('POST', '/api/import', { body: { base64: '!!!not-base64!!!' } });
     record('G4 非法 base64 导入 400', r4.status === 400);
@@ -374,6 +378,8 @@ async function main() {
     // 「封卷后写入」。（这正是本断言先前误报 after=7 的原因。）
     const lateSessionFile = `trace-${startedLate.json?.session_id}.jsonl`;
     const lw = await api('POST', '/api/works', { body: { title: '迟到写入验证' }, headers: { 'X-Trace-Op': 'suite-late-op' } });
+    // 同上：这条作品也决定 J 段 2 条清理断言是否存在，必须显式断言，不能让分母悄悄缩小。
+    record('I3ah 迟到写入用的作品创建成功（否则 J 段少 2 条断言而无声通过）', Boolean(lw.json?.id), String(lw.json?.id));
     if (lw.json?.id) created.works.push(lw.json.id);
     await new Promise((r) => setTimeout(r, 300));
     await api('POST', '/api/debug/stop');

@@ -91,7 +91,7 @@ node .p1-baseline/gate-env.mjs --stop
 
 | 约束 | 实际 |
 |---|---|
-| 全程隔离实例开发 | ✓ 隔离配方六项（`gate-env.mjs`），所有会 spawn dsh / 建任务的检查都在隔离实例上跑 |
+| 全程隔离实例开发 | ✓ 隔离配方（`gate-env.mjs`，八项变量，清单见 runbook §八），所有会 spawn dsh / 建任务的检查都在隔离实例上跑 |
 | 主实例 3737 与真实库**不动** | ✓ 开发全程未动。**唯一一次生产动作**：D4 完成后经你明确批准重启 3737（用于让排队提示生效），重启前后做了对照检查（`verify-main-instance.mjs` 6/6） |
 | 真实库未被写入 | ✓ 套件内「真实库未被写入（app_logs 差集归因）」通过；`data/novel.db` 的 mtime 自 09-15 20:47 起未变 |
 | 每阶段独立**验收** | ✓ 每阶段一份验证文档（P2/P3/P4/P5 + P0 的 `.p0-recon/README.md` + P6 runbook） |

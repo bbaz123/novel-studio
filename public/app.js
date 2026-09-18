@@ -3108,7 +3108,12 @@ async function revisionBaseArticle(chapterId) {
   const target = Number(chapterId) || null;
   const current = Number(state.currentChapterId) || null;
   const editor = $('#editor-content');
-  if (!target || target === current) return editor ? editorPlainText(editor.innerHTML) : '';
+  if (!target) return editor ? editorPlainText(editor.innerHTML) : '';
+  // 目标章就是当前章**且编辑器在 DOM 里** → 用编辑器（含未保存改动，最准）。
+  // ⚠️ 编辑器只在写作视图存在：切到总览/设定/日志等视图后 `#editor-content` 被卸载，
+  // 此时若还走编辑器分支就会**静默拿到空串**（契约是"取不到就抛错，由调用方明确告知，不猜"）——
+  // 「接回进度」等待期间切视图正好命中这条路（第五轮重审抓到）。所以这里退回库里的正文。
+  if (target === current && editor) return editorPlainText(editor.innerHTML);
   const row = await api(`/chapters/${target}`);
   return row && row.content ? editorPlainText(row.content) : '';
 }
@@ -3180,6 +3185,12 @@ async function finalizeHarnessOutput(r) {
       base = await revisionBaseArticle(chapterId);
     } catch (e) {
       toast('取不到该章正文，无法生成差异预览（可切到该章后重试取回）：' + e.message, 'error');
+      return;
+    }
+    // 底稿为空就到此为止：空底稿下补丁一条也命中不了，而"回退整章重写"会把模型输出
+    // （补丁式时就是那段 JSON）当成正文展示并允许合并 —— 宁可什么都不做。
+    if (!base.trim()) {
+      toast('这一章还没有正文，无法生成修稿差异预览（先写入正文再重试取回）', 'error');
       return;
     }
     // 修稿产出有两种形态：补丁式（新的默认，输出 JSON）与整章重写（兜底/历史任务）。
@@ -6652,12 +6663,18 @@ async function performToolbarAIWrite(requirement) {
   if (btn) btn.disabled = true;
   // 🐞 运行追踪：记录本次写作是被取消还是正常结束，用于收尾时的操作状态。
   let traceWriteCancelled = false;
+  // ⚠️ 章号在**入口**定下来，并一路传给结果弹窗与"应用"动作。
+  // 一次 AI 写作 2–6 分钟（蓝图→成文→质检→补足多轮），期间切章是正常操作；
+  // 而结果弹窗打开时若现读 state.currentChapterId，就会把"这一章写出来的稿子"记成另一章的，
+  // 后面的「先审稿再应用 → 按清单修稿 → 合并到正文」会把 A 章的稿整篇写进 B 章（旧稿只进历史版本）。
+  // （第五轮重审抓到：三处 showAIWritingResult 都没传 meta.chapterId。）
+  const writeChapterId = Number(state.currentChapterId) || null;
   const jobBase = {
     timeout: longAiTimeout(),
     model: policyModel('fast'),
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
-    chapter_id: state.currentChapterId || undefined,
+    chapter_id: writeChapterId || undefined,
     mode: 'continuation',
     // 归属标记：刷新/重启后据此把产出当「成文」处理（落草稿 + 打开结果弹窗）。
     kind: 'prose',
@@ -6819,20 +6836,20 @@ async function performToolbarAIWrite(requirement) {
           });
           proseData.scan = { enabled: true, total: fullScan.total || 0, hits: fullScan.hits || [] };
         } catch (_) { /* 扫描失败不阻塞交付 */ }
-        const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target, proseData && proseData.job_id);
+        const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target, proseData && proseData.job_id, { chapterId: writeChapterId });
         if (mode === null) return;
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
-        await applyAIWritingArticle(mode, article);
+        await applyAIWritingArticle(mode, article, writeChapterId);
         if (needsLedger) scheduleLedgerProposalJob(article); // 不阻塞交付，后台整理提案
         return;
       }
 
       if (parsed.finalText) {
         // 模型跳过蓝图直接给了正文（降级路径，兼容旧行为）
-        const mode = await showAIWritingResult(parsed.finalText, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id);
+        const mode = await showAIWritingResult(parsed.finalText, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, { chapterId: writeChapterId });
         if (mode === null) return;
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
-        await applyAIWritingArticle(mode, parsed.finalText);
+        await applyAIWritingArticle(mode, parsed.finalText, writeChapterId);
         return;
       }
 
@@ -6849,10 +6866,10 @@ async function performToolbarAIWrite(requirement) {
       }
 
       // 兜底：按最终结果处理
-      const mode = await showAIWritingResult(raw, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id);
+      const mode = await showAIWritingResult(raw, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, { chapterId: writeChapterId });
       if (mode === null) return;
       if (mode === 'regenerate') return performToolbarAIWrite(requirement);
-      await applyAIWritingArticle(mode, raw);
+      await applyAIWritingArticle(mode, raw, writeChapterId);
       return;
     }
 

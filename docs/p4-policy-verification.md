@@ -128,7 +128,7 @@ P4 未触碰装配器：
                      ✓ 黑洞端点收到本次连接（POST /chat/completions → 127.0.0.1:<黑洞端口>）
 ```
 
-隔离环境由 `.p1-baseline/gate-env.mjs` 一条命令搭建（黑洞 LLM 端点 + 隔离实例 + 六项环境变量），
+隔离环境由 `.p1-baseline/gate-env.mjs` 一条命令搭建（黑洞 LLM 端点 + 隔离实例 + 八项环境变量，清单见 runbook §八），
 `verify-harness-gate.mjs` 设四道闸（前置授权 / 响应体文案 / 跑后审计 / 黑洞连接证明）。
 **该检查默认拒绝运行**，需要显式授权 —— 原因与事故经过见 `.p1-baseline/README.md` §六。
 
@@ -238,4 +238,4 @@ node .p1-baseline/gate-env.mjs --stop           # 收工
 > 成本纪律与事故经过见 `.p1-baseline/README.md` §六。要点：
 > `DEEPSEEK_BASE_URL` 指向黑洞端点**确实生效**（黑洞日志收到 `POST /chat/completions` 即证据），
 > 但历史事故的真因是**测试打到了没设该变量的实例或进程**——所以必须用 `gate-env.mjs`
-> 一次配齐六项变量，并以「黑洞收到连接」作为通过的前提。
+> 一次配齐八项变量（清单见 runbook §八），并以「黑洞收到连接」作为通过的前提。
