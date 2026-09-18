@@ -306,9 +306,13 @@
   - logger.js 被**生产代码** harness.js（P0）import——撤掉会打断线上路径
   - logger.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
 - **说明**：本会话改动落在已被 P0–P6/D8 认领的共享文件里（server.js / public/app.js / harness.js / ai/policy.mjs / db.js），所以**不能单独回滚**：撤掉 openviking.js 会打断 server.js 的启动路径，撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。
-- **验收证据**：`.p1-baseline/test-policy-tiers.mjs`、`env-tools-test.mjs`、`docs/self-review-2026-09-18.md`
-- **本阶段认领的文件**（15 个）：
+- **验收证据**：`.p1-baseline/test-policy-tiers.mjs`、`env-tools-test.mjs`、`.p1-baseline/test-harness-pool.mjs`、`.p1-baseline/mutation-check-harness-pool.mjs`、`docs/self-review-2026-09-18.md`
+- **本阶段认领的文件**（19 个）：
+  - `.p1-baseline/fake-llm.mjs`
+  - `.p1-baseline/mutation-check-harness-pool.mjs`
+  - `.p1-baseline/test-harness-pool.mjs`
   - `.p1-baseline/test-policy-tiers.mjs`
+  - `ai/harness-pool.mjs`
   - `api-test-suite.mjs`
   - `debug-trace.js`
   - `docs/CHANGELOG.md`
@@ -326,7 +330,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**160** 个文件
+- 真实改动集：**164** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

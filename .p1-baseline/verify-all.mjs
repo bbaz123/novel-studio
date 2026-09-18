@@ -200,6 +200,11 @@ run('回滚矩阵工具自检（认得出冲突才算可用）', process.execPat
 // D8-#2：每任务独立 settings（补丁内容 + 参数顺序 + 回退路径接线）
 run('每任务独立 settings（吞吐回到 2 的前提）', process.execPath,
   ['.p1-baseline/test-task-settings.mjs']);
+// 常驻 dsh 热备池：协议层（NDJSON/JSON-RPC、会话隔离、终态、超时/取消/进程死亡）+ 池策略
+// （热备命中、后台补位、LRU、空闲回收、关闭竞态）。注入进程内假 dsh，**不需要 dsh、零成本**。
+// 变异锚点用同目录的 mutation-check-harness-pool.mjs 单独跑（它会改文件再还原，不进默认套件）。
+run('常驻热备池（协议 + 池策略，注入假 dsh）', process.execPath,
+  ['.p1-baseline/test-harness-pool.mjs']);
 
 // ── 4b. I4 的**静态**保证：可截断层必须真有查回路径（零成本，默认跑）────────
 // 端到端那条（verify-retrieval）是数据相关的：只查"当前数据里实际被裁的层"。

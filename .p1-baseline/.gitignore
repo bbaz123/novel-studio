@@ -23,8 +23,10 @@ gate-env.json
 gate-env.stop
 blackhole-*.jsonl
 .blackhole-*.jsonl
-
-# 实验临时产物（哨兵 settings + 黑洞转储）：每次跑都会重建，不入库
+# 假 LLM 端点的请求日志：每次验收都会重建，且**刻意记录请求形状**（模型/流式/字数），
+# 属于临时证据而不是资产。⚠️ 补这条的原因与上面 gate-data/ 同源：新工具引入新产物，
+# 忽略清单没跟上，`git add -A` 就会把它的运行残留提交进来。
+fake-llm*.jsonl
 .exp-settings/
 
 # 回滚矩阵的临时 worktree（跑完自删；崩了才会留下）

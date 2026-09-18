@@ -318,10 +318,21 @@ export const PHASES = [
       'docs/p4-policy-verification.md',
       // 本会话第四轮重审的报告（与 OpenViking 上的同名报告同源）
       'docs/self-review-2026-09-18.md',
+      // —— 常驻 dsh 热备池：把每任务 ≈17–18 秒冷启动从"串行等待"改成"后台重叠" ——
+      // 协议层与池策略刻意不 spawn、不碰文件系统，所以能注入**进程内假 dsh** 离线断言
+      // （不需要 dsh、零成本）；变异锚点由同目录的 mutation-check 实际执行。
+      'ai/harness-pool.mjs',
+      '.p1-baseline/test-harness-pool.mjs',
+      '.p1-baseline/mutation-check-harness-pool.mjs',
+      // 零成本假 LLM 端点：黑洞端点只能证明"请求真的发出去了"，证明不了"任务能跑完"。
+      // 这个会**真的回一个应答**，于是"常驻池端到端跑通"可以在零计费下被验收。
+      '.p1-baseline/fake-llm.mjs',
     ],
     evidence: [
       '.p1-baseline/test-policy-tiers.mjs',
       'env-tools-test.mjs',
+      '.p1-baseline/test-harness-pool.mjs',
+      '.p1-baseline/mutation-check-harness-pool.mjs',
       'docs/self-review-2026-09-18.md',
     ],
     rollback: 'shared',
