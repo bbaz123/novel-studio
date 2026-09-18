@@ -4615,51 +4615,81 @@ async function streamAIDirectWrite(body, stageLabel) {
       progress.note('正在停止生成…');
       controller.abort();
     });
-    const resp = await fetch('/api/ai/write_stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(traceHeaders() || {}) },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    if (!resp.ok || !resp.body) {
-      let msg = `直连通道请求失败（${resp.status}）`;
-      try { const d = await resp.json(); msg = d?.error || d?.message || msg; } catch (_) { /* 保留默认 */ }
-      throw new Error(msg);
-    }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buf = '';
-    let full = '';
-    let completed = false;
-    let lastPaint = 0;
-    const paint = () => {
-      const now = Date.now();
-      if (now - lastPaint < 250) return; // 节流：250ms 刷一次进度卡，避免高频重排
-      lastPaint = now;
-      progress.update(full.slice(-600), `AI 写作（2/3 成文）· 正在生成正文（已 ${plainLength(full)} 字）…`);
-    };
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data:')) continue;
-        let evt;
-        try { evt = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
-        if (typeof evt.delta === 'string') { full += evt.delta; paint(); }
-        else if (evt.done) {
-          completed = true;
-          if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
-          return { text: String(evt.text || full), scan: evt.scan || null, proposals: null, via: 'direct' };
-        } else if (evt.error) throw new Error(evt.error);
+    // 单次流式尝试。**不发 done 时不抛错**，而是返回 complete:false —— 由下面决定
+    // "能不能重试"与"该不该回退"，这样空回复重试与"半截流"是两条不同的出口。
+    const attempt = async (reqBody) => {
+      const resp = await fetch('/api/ai/write_stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(traceHeaders() || {}) },
+        body: JSON.stringify(reqBody),
+        signal: controller.signal
+      });
+      if (!resp.ok || !resp.body) {
+        let msg = `直连通道请求失败（${resp.status}）`;
+        try { const d = await resp.json(); msg = d?.error || d?.message || msg; } catch (_) { /* 保留默认 */ }
+        throw new Error(msg);
       }
-    }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      let full = '';
+      let lastPaint = 0;
+      const paint = () => {
+        const now = Date.now();
+        if (now - lastPaint < 250) return; // 节流：250ms 刷一次进度卡，避免高频重排
+        lastPaint = now;
+        progress.update(full.slice(-600), `AI 写作（2/3 成文）· 正在生成正文（已 ${plainLength(full)} 字）…`);
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          let evt;
+          try { evt = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+          if (typeof evt.delta === 'string') { full += evt.delta; paint(); }
+          else if (evt.done) {
+            if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
+            return { text: String(evt.text || full), scan: evt.scan || null, complete: true };
+          } else if (evt.error) throw new Error(evt.error);
+        }
+      }
+      if (cancelled) throw cancelledErr();
+      return { text: full, scan: null, complete: false };
+    };
+
+    let result = await attempt(body);
     if (cancelled) throw cancelledErr();
-    if (completed) return { text: full, scan: null, proposals: null, via: 'direct' };
-    throw new Error('流式连接中断，未收到完成信号（可重试或改用精写内核）');
+    // 空回复重试（与 directAIWrite 同一条纪律、同一份实测依据，见 directAIWrite 上方注释）：
+    // 长提示词下 flash 的**思考 token 会把 max_tokens 吃光**、content 返回空（finish_reason=length）。
+    // 成文轮是全链路最长的一次生成，恰恰最容易撞上。此前这里**直接报错**，而且报得很隐蔽：
+    // 调用方拿到的是一个 `text` 为空但**真值**的对象，`if (!proseData)` 判不出来，
+    // 于是"可恢复的空回复"变成"整章白等 + 报错"，连回退精写内核都走不到。
+    // 现在压低思考预算（low）+ 放宽输出上限重试一次；仍为空才抛错，让调用方的既有回退分支接管。
+    if (!String(result.text || '').trim()) {
+      reportClientLog({ level: 'warn', kind: 'ai_write_stream_empty_retry', message: '[AI] 成文流式直连返回空内容（思考可能吃光输出预算），改为低思考预算 + 更大上限重试一次' });
+      const baseMax = Number(body.max_tokens) || 4096;
+      result = await attempt({
+        ...body,
+        reasoning_effort: 'low',
+        max_tokens: Math.min(16384, Math.max(8192, baseMax * 2))
+      });
+      if (cancelled) throw cancelledErr();
+    }
+    if (!String(result.text || '').trim()) {
+      const err = new Error(result.complete
+        ? '直连通道返回空内容（思考可能吃光了输出预算），已重试一次仍为空'
+        : '流式连接中断，未收到完成信号（可重试或改用精写内核）');
+      err.emptyReply = true;
+      throw err;
+    }
+    // 半截流（收到了正文但没等到 done）**保持原语义**：抛错，绝不把残缺正文当成品交付。
+    if (!result.complete) throw new Error('流式连接中断，未收到完成信号（可重试或改用精写内核）');
+    return { text: result.text, scan: result.scan, proposals: null, via: 'direct' };
   } catch (e) {
     if (e.name === 'AbortError') throw cancelled ? cancelledErr() : new Error('流式生成连接中断');
     throw e;
@@ -5692,6 +5722,13 @@ function buildAIWritingProsePrompt(initial, blueprint, targetWords) {
     : '';
   return [
     `你是资深中文网络小说创作助手。请根据已确认的章节蓝图，输出本章完整正文。`,
+    // 2026-09-18：**成文轮此前漏了内联写作纪律**（蓝图轮 5643 / 审稿轮 6104 都有，只有成文轮没有）。
+    // 后果是不对称的：慢通道成文靠插件人设补齐纪律，而直连成文（交互路径的默认通道）既没有人设、
+    // 也没有内联纪律 —— 只有装配上下文里的【写作风格红线】**词表**，"用具体动作/感官细节/对话
+    // 潜台词替代模板句"这条**行为**纪律根本没进提示词。README 说的"两条通道纪律对齐"因此
+    // 只在蓝图轮与审稿轮成立。这里补上，两条通道才真正同源（同一份常量，不另写一份）。
+    WRITING_DISCIPLINE,
+    ``,
     `【本章蓝图 · 写作必须遵守】`,
     bpText || '（未提供蓝图，按用户需求自由成文）',
     ``,

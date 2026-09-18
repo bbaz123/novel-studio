@@ -252,7 +252,8 @@ globalThis.__probe = {
   tooltipHtmlFor,
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
-  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
+  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
+  streamAIDirectWrite,
   performToolbarAIWrite
 };
 `;
@@ -988,6 +989,80 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
 
   check('110f 收尾 toast 报出本批实际耗时（让"提速有没有生效"当场可核对）',
     hit.finalToast.includes('用时') && hit.finalToast.includes('/章'), hit.finalToast);
+}
+
+// --- 14) 成文轮（正文写作的主链路）：① 内联写作纪律；② 空回复必须重试而不是白等/报错 ---
+// 这两条都来自"正文写作"这条主链路，而不是批量/审稿等旁路。
+{
+  // ① 纪律内联：成文轮此前是唯一漏掉 WRITING_DISCIPLINE 的一轮（蓝图轮/审稿轮都有），
+  //    于是直连成文既没有插件人设、也没有内联纪律 —— 只有上下文里的红线**词表**。
+  const prosePrompt = P.buildAIWritingProsePrompt('需求文本', { scene_goal: '开场' }, 2000);
+  check('111a 成文提示词内联了写作纪律（与蓝图轮/审稿轮同源，不再只有红线词表）',
+    prosePrompt.includes('【写作纪律（务必遵守）】') && prosePrompt.includes('感官细节'),
+    prosePrompt.slice(0, 120));
+
+  // ② 空回复重试：/api/ai/write_stream 在"思考吃光 max_tokens"时会回 done + text:''，
+  //    旧实现把空的 text 包成一个**真值对象**返回 → 调用方 `if (!proseData)` 判不出来 →
+  //    既不重试也不回退，直接报"AI 没有返回正文内容"，整章白等。
+  const savedFetch = sandbox.fetch;
+  const savedTextDecoder = sandbox.TextDecoder;
+  const savedReport = sandbox.reportClientLog;
+  sandbox.TextDecoder = class { decode(bytes) { return bytes ? Buffer.from(bytes).toString('utf8') : ''; } };
+  sandbox.reportClientLog = () => {};
+  const sse = (frames) => {
+    const bytes = Buffer.from(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join(''), 'utf8');
+    let sent = false;
+    return {
+      ok: true, status: 200,
+      body: { getReader: () => ({ read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })) }) },
+      json: async () => ({}), text: async () => ''
+    };
+  };
+  const runStream = async (script) => {
+    const bodies = [];
+    let i = 0;
+    sandbox.fetch = async (url, opts = {}) => {
+      bodies.push(JSON.parse(String(opts.body || '{}')));
+      const frames = script[Math.min(i, script.length - 1)];
+      i += 1;
+      return String(url).includes('/api/ai/write_stream') ? sse(frames) : { ok: true, status: 200, json: async () => ({}), text: async () => '{}' };
+    };
+    P.state.aiTaskRunning = false;
+    let outcome = null;
+    try {
+      outcome = { ok: true, value: await P.streamAIDirectWrite({ config_id: 1, messages: [{ role: 'user', content: 'x' }], max_tokens: 4096 }, '测试成文') };
+    } catch (e) {
+      outcome = { ok: false, error: e };
+    }
+    return { bodies, outcome };
+  };
+
+  const retried = await runStream([
+    [{ done: true, text: '' }],
+    [{ delta: '重试后拿到的正文' }, { done: true, text: '重试后拿到的正文' }]
+  ]);
+  check('111b 空回复会重试一次，且重试请求换成了低思考预算 + 更大输出上限',
+    retried.bodies.length === 2
+      && retried.bodies[1].reasoning_effort === 'low'
+      && Number(retried.bodies[1].max_tokens) > Number(retried.bodies[0].max_tokens),
+    JSON.stringify(retried.bodies.map((b) => ({ e: b.reasoning_effort, m: b.max_tokens }))));
+  check('111c 重试成功时用重试结果交付（不再整章白等、也不再报错）',
+    retried.outcome.ok && retried.outcome.value.text === '重试后拿到的正文',
+    JSON.stringify(retried.outcome.ok ? retried.outcome.value : String(retried.outcome.error)));
+
+  const alwaysEmpty = await runStream([[{ done: true, text: '' }]]);
+  check('111d 两次都空才抛错（错误带 emptyReply，让调用方回退精写内核而不是就地失败）',
+    !alwaysEmpty.outcome.ok && alwaysEmpty.outcome.error.emptyReply === true && alwaysEmpty.bodies.length === 2,
+    JSON.stringify({ calls: alwaysEmpty.bodies.length, msg: String(alwaysEmpty.outcome.error && alwaysEmpty.outcome.error.message) }));
+
+  const partial = await runStream([[{ delta: '半截正文' }]]);
+  check('111e 半截流（有正文但没等到 done）仍抛错——绝不把残缺正文当成品交付',
+    !partial.outcome.ok && /未收到完成信号/.test(String(partial.outcome.error && partial.outcome.error.message)),
+    String(partial.outcome.error && partial.outcome.error.message));
+
+  sandbox.fetch = savedFetch;
+  sandbox.TextDecoder = savedTextDecoder;
+  sandbox.reportClientLog = savedReport;
 }
 
 // --- 8) 派生式护栏：浏览器脚本不得调用"只存在于服务端"的函数 ---// 它来自一个真实缺陷：v0.9.3 的提交里 public/app.js 有三处 `plainText(editor.innerHTML)`，
