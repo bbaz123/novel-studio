@@ -2995,10 +2995,11 @@ async function restoreChapterDraft() {
     return;
   }
   // 结构化报告：复用正常审稿弹窗，「按确认清单修稿」以当前正文为底稿。
+  // 这条路径的审稿报告是从**当前章**读出来的，所以章号就是当前章（显式带上，别让它去猜）。
   const editor = $('#editor-content');
   const article = editor ? editorPlainText(editor.innerHTML) : '';
   state.pendingReview = {
-    info: { article, scan: null, proposals: null, targetWords: resolveTargetWords() },
+    info: { article, scan: null, proposals: null, targetWords: resolveTargetWords(), chapterId: Number(state.currentChapterId) || null },
     review: report
   };
   showReviewReport(report);
@@ -3088,6 +3089,33 @@ async function fetchHarnessJobResult(jobId) {
 }
 
 /**
+ * 生成差异预览 / 审稿用的**底稿正文**。
+ *
+ * 为什么要按章取：修稿要跑几分钟，作者完全可能在这期间切到别的章，
+ * 而"接回进度 / 取回结果"是按**章**归属的。用"当前编辑器正文"当底稿会有两个后果：
+ *   ① 拿 B 章的段落去匹配 A 章的补丁 —— anchor 全落空，或更糟：在同文库的其它章里
+ *      恰好命中相同段落，于是差异预览显示的是别处的改动；
+ *   ② 合并时把 A 章的修稿稿写进 B 章（B 章原文只留在历史版本里）。
+ * 规则：目标章 == 当前打开的章 → 用编辑器（含未保存改动，最准）；
+ *       否则用**库里那一章已保存的正文**（取不到就抛错，由调用方明确告知，不猜）。
+ */
+async function revisionBaseArticle(chapterId) {
+  const target = Number(chapterId) || null;
+  const current = Number(state.currentChapterId) || null;
+  const editor = $('#editor-content');
+  if (!target || target === current) return editor ? editorPlainText(editor.innerHTML) : '';
+  const row = await api(`/chapters/${target}`);
+  return row && row.content ? editorPlainText(row.content) : '';
+}
+
+// 章节标题查询（差异预览与提示文案用）。查不到时退回 `#id`，绝不显示 undefined。
+function chapterTitleOf(id) {
+  const n = Number(id) || null;
+  if (!n) return '';
+  return state.chapters.find((c) => c.id === n)?.title || `#${n}`;
+}
+
+/**
  * 把一条 harness 产出按语义落地。
  * - 成文类：**落成章节草稿**并打开「AI 写作结果」弹窗，绝不自动覆盖正文；
  * - 审稿：解析后存 chapter_reviews 并打开审稿报告弹窗；
@@ -3120,10 +3148,16 @@ async function finalizeHarnessOutput(r) {
       return;
     }
     if (rstage === 'salvaged') toast('审稿报告格式有瑕疵，已尽力抢救出可读部分（可能少一两条）', 'error');
-    const editor = $('#editor-content');
-    const article = editor ? editorPlainText(editor.innerHTML) : '';
+    // 底稿按任务自带的 chapter_id 取：作者可能是"看着 B 章取回 A 章的审稿"，
+    // 用当前编辑器正文会让随后的「修稿」拿着 B 章的段落去套 A 章的清单。
+    let article = '';
+    try {
+      article = await revisionBaseArticle(chapterId);
+    } catch (e) {
+      toast('取不到该章正文，审稿报告仍可查看，但「按清单修稿」会有风险：' + e.message, 'error');
+    }
     state.pendingReview = {
-      info: { article, scan: null, proposals: null, targetWords: resolveTargetWords() },
+      info: { article, scan: null, proposals: null, targetWords: resolveTargetWords(), chapterId },
       review: report
     };
     showReviewReport(report);
@@ -3133,8 +3167,16 @@ async function finalizeHarnessOutput(r) {
   }
 
   if (kind === 'revision') {
-    const editor = $('#editor-content');
-    const base = r.fallbackArticle || (editor ? editorPlainText(editor.innerHTML) : '');
+    // 补丁的 anchor 是对着**某一章**的正文生成的，所以底稿必须取自那一章（见 revisionBaseArticle）。
+    let base = String(r.fallbackArticle || '');
+    if (!base.trim()) {
+      try {
+        base = await revisionBaseArticle(chapterId);
+      } catch (e) {
+        toast('取不到该章正文，无法生成差异预览（可切到该章后重试取回）：' + e.message, 'error');
+        return;
+      }
+    }
     // 修稿产出有两种形态：补丁式（新的默认，输出 JSON）与整章重写（兜底/历史任务）。
     // 这里必须两种都认——否则刷新后接回进度，会把 JSON 当成正文塞进差异预览。
     const patched = tryApplyRevisionOutput(output, base);
@@ -3152,7 +3194,8 @@ async function finalizeHarnessOutput(r) {
     }
     // 接回进度这条路径**不知道**作者勾选了几条（任务元数据里没存清单），只知道实际改好了几处。
     // 所以只传 applied，让标题按「实际改好 N 处」措辞——不再借用"按 N 条清单修改"的口径。
-    showReviewDiff(base, revised, { applied: (patched && patched.applied ? patched.applied.length : 0), notes });
+    // chapterId：把差异预览绑定到任务自带的章号，合并时不再依赖"当前打开的章"。
+    showReviewDiff(base, revised, { applied: (patched && patched.applied ? patched.applied.length : 0), notes, chapterId });
     // 修稿结果已交付（差异预览已打开），标记任务已应用，恢复条不再重复提示。
     markJobApplied(r.job_id);
     await refreshChapterRecovery(chapterId);
@@ -5971,7 +6014,9 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
       });
       resolve(action);
     };
-    state.pendingAIArticle = { article, scan, proposals, targetWords };
+    // chapterId 一起带上：随后可能的「先审稿再应用」→ 审稿 → 按清单修稿 → 差异合并，
+    // 全链路都按这一章归属；否则作者在慢任务期间切章，修订稿会被合并进别的章。
+    state.pendingAIArticle = { article, scan, proposals, targetWords, chapterId: draftChapterId };
     state.pendingAIProposals = Array.isArray(proposals) && proposals.length
       ? { workId: state.workId || state.work?.id || null, proposals }
       : null;
@@ -6084,6 +6129,10 @@ function diffParagraphs(oldText, newText) {
 
 // 审稿主流程：审稿报告 → 确认清单 → 修稿 → 差异预览 → 合并。
 async function runArticleReview(info) {
+  // ⚠️ 章号在**入口**就定下来：后面每一步（审稿任务、报告落库、按清单修稿、差异合并）
+  // 都用它，而不是每次现读 state.currentChapterId —— 审稿+修稿合计几分钟，
+  // 期间作者切章是完全正常的操作，现读会把后续所有写操作挪到另一章上。
+  const reviewChapterId = Number(info && info.chapterId) || Number(state.currentChapterId) || null;
   const jobBase = {
     timeout: longAiTimeout(),
     // 质量优先：审稿报告决定后续修稿方向。2026-09-18 起"质量优先"由思考强度表达
@@ -6092,7 +6141,7 @@ async function runArticleReview(info) {
     reasoning_effort: policyEffortForTier('quality') || undefined,
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
-    chapter_id: state.currentChapterId || undefined,
+    chapter_id: reviewChapterId || undefined,
     mode: 'full',
     // 归属标记：刷新/重启后据此把产出送回正确的「审稿」处理路径。
     kind: 'review',
@@ -6125,13 +6174,13 @@ async function runArticleReview(info) {
     }
     const parsedOK = !!report;
     if (!report) report = { summary: '', issues: [], strengths: [] };
-    if (state.currentChapterId) {
+    if (reviewChapterId) {
       try {
         // 解析成功存结构化报告；解析失败把原文一起存下（状态 raw），保证几分钟的等待一定有产物可回看。
         const saved = await api('/novel/review', {
           method: 'PUT',
           body: {
-            chapter_id: state.currentChapterId,
+            chapter_id: reviewChapterId,
             report,
             raw_text: parsedOK ? '' : rawOutput.slice(0, 200000),
             status: parsedOK ? 'parsed' : 'raw'
@@ -6149,7 +6198,7 @@ async function runArticleReview(info) {
     // 抢救出来的报告要主动说明，避免用户以为 AI 真的漏报了几条。
     if (stage === 'salvaged') toast('审稿报告格式有瑕疵，已尽力抢救出可读部分（可能少一两条）', 'error');
     markJobApplied(reviewData && reviewData.job_id);
-    state.pendingReview = { info, review: report };
+    state.pendingReview = { info: { ...info, chapterId: reviewChapterId }, review: report };
     showReviewReport(report);
   } catch (e) {
     if (!e.cancelled) toast('审稿失败：' + e.message, 'error');
@@ -6192,6 +6241,9 @@ async function refineByChecklist() {
     return;
   }
   closeModal();
+  // 章号跟着**审稿那一章**走（info.chapterId 由 runArticleReview 写入）：
+  // 修稿跑几分钟，期间切章不该改变这次修稿的归属。
+  const revisionChapterId = Number(info && info.chapterId) || Number(state.currentChapterId) || null;
   const jobBase = {
     timeout: longAiTimeout(),
     // 质量优先：这一步直接产出修好的正文，是交付物本身 —— 由思考强度表达（同 V4.1 Flash）。
@@ -6199,7 +6251,7 @@ async function refineByChecklist() {
     reasoning_effort: policyEffortForTier('quality') || undefined,
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
-    chapter_id: state.currentChapterId || undefined,
+    chapter_id: revisionChapterId || undefined,
     mode: 'full'
   };
   try {
@@ -6214,7 +6266,8 @@ async function refineByChecklist() {
       showReviewDiff(info.article, patched.text, {
         checklist: confirmed.length,
         applied: patched.applied.length,
-        notes: patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40))
+        notes: patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40)),
+        chapterId: revisionChapterId
       });
       markJobApplied(refinedData && refinedData.job_id);
       toast(patched.unresolved.length ? `已改 ${patched.applied.length} 处；${patched.unresolved.length} 处未能定位` : `已按清单改好 ${patched.applied.length} 处`, patched.unresolved.length ? 'error' : 'success');
@@ -6228,7 +6281,7 @@ async function refineByChecklist() {
     );
     const revised = parseAIWritingOutput(fullData.output || '').finalText || '';
     if (!revised.trim()) throw new Error('修稿结果为空');
-    showReviewDiff(info.article, revised, { checklist: confirmed.length });
+    showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId });
     markJobApplied(fullData && fullData.job_id);
   } catch (e) {
     if (!e.cancelled) toast('修稿失败：' + e.message, 'error');
@@ -6349,8 +6402,12 @@ function tryApplyRevisionOutput(output, baseArticle) {
 //    两条路径给出的数不同（正常流程知道清单条数；"接回进度"只知道改好几处），
 //    用一个参数位表达两种量，必然出现「标题说按 0 条清单修改、正文说 2 条没定位」这种自相矛盾
 //    （2026-09-18 第四轮重审抓到）。
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [] } = {}) {
-  state.pendingReviewDiff = { newText };
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null } = {}) {
+  // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
+  // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
+  const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
+  state.pendingReviewDiff = { newText, chapterId: targetChapterId };
+  const viewingOther = Boolean(targetChapterId) && Number(state.currentChapterId) !== targetChapterId;
   const ops = diffParagraphs(oldText, newText);
   const body = ops.map((op) => {
     if (op.t === 'same') return `<div class="diff-p">${esc(op.x)}</div>`;
@@ -6364,6 +6421,7 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
     title,
     body: `
       <div class="muted mb-8"><span class="diff-add-inline">绿色</span>=修稿新增/改写，<span class="diff-del-inline">红色</span>=旧稿被删改。确认无误后合并到正文。</div>
+      ${viewingOther ? `<div class="redline-scan warn">⚠️ 这份修稿属于《${esc(chapterTitleOf(targetChapterId))}》，你现在打开的是《${esc(chapterTitleOf(state.currentChapterId))}》。点「合并到正文」会写回《${esc(chapterTitleOf(targetChapterId))}》——当前这一章不会被改动。</div>` : ''}
       ${notes.length ? `<div class="redline-scan warn">⚠️ 有 ${notes.length} 条改动没能自动定位，已保持原样、需要你手工处理：${notes.map((n) => esc(String(n).slice(0, 60))).join('；')}</div>` : ''}
       <div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`,
     footer: `
@@ -6374,18 +6432,23 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
 }
 
 async function mergeReviewDiff() {
-  const { newText } = state.pendingReviewDiff || {};
+  const { newText, chapterId } = state.pendingReviewDiff || {};
+  // 合并目标 = 差异预览绑定的那一章（不再是"当前打开的章"）。
+  const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   state.pendingReviewDiff = null;
-  if (!newText || !state.currentChapterId) return;
+  if (!newText || !targetChapterId) return;
+  const elsewhere = Number(state.currentChapterId) !== targetChapterId;
   try {
     // F-16：审稿合并走 POST /novel/chapter_save（后端自动备份旧稿历史版本），与编辑器 PUT 通道区分。
     await api('/novel/chapter_save', {
       method: 'POST',
-      body: { chapter_id: state.currentChapterId, content: textToParagraphsHtml(newText) }
+      body: { chapter_id: targetChapterId, content: textToParagraphsHtml(newText) }
     });
     applySelectedProposals();
     closeModal();
-    toast('审稿修稿已合并到正文（旧稿已存历史版本）', 'success');
+    toast(elsewhere
+      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本）`
+      : '审稿修稿已合并到正文（旧稿已存历史版本）', 'success');
     await loadWorkData(true);
     await render();
   } catch (e) {

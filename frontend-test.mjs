@@ -252,7 +252,7 @@ globalThis.__probe = {
   tooltipHtmlFor,
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
-  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, aiContextTruncated, directAIWrite,
+  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, aiContextTruncated, directAIWrite,
   performToolbarAIWrite
 };
 `;
@@ -654,6 +654,66 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     check('107c 未定位提示不再泄漏 Markdown 字面量（**）', !opened[0].body.includes('**'));
     check('107d 未定位条数与正文一致（不再出现标题/正文互斥）',
       opened[0].body.includes('有 1 条改动没能自动定位'), '');
+  }
+
+  // 跨章归属（第四轮重审的遗留项）：修稿要跑几分钟，期间切章是正常操作。
+  // 旧实现按"当前打开的章"合并 → 把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
+  {
+    P.state.chapters = [{ id: 107, title: '第107章' }, { id: 108, title: '第108章' }];
+    P.state.currentChapterId = 108;
+    const modals = [];
+    const realOpen = sandbox.openModal;
+    sandbox.openModal = (o) => { modals.push({ title: String(o.title || ''), body: String(o.body || '') }); };
+    P.showReviewDiff('甲。', '乙。', { applied: 1, chapterId: 107 });
+    sandbox.openModal = realOpen;
+    check('107e 差异预览把章号绑定到"修稿那一章"（不是当前打开的章）',
+      Number(P.state.pendingReviewDiff && P.state.pendingReviewDiff.chapterId) === 107,
+      String(P.state.pendingReviewDiff && P.state.pendingReviewDiff.chapterId));
+    check('107f 看的不是那一章时，弹窗明确说明会写回哪一章',
+      modals[0].body.includes('第107章') && modals[0].body.includes('第108章'),
+      modals[0].body.slice(0, 70));
+
+    // 合并：必须写回 107（当前打开的是 108）
+    const calls = [];
+    const msgs = [];
+    const saved = {
+      api: sandbox.api, toast: sandbox.toast, applySelectedProposals: sandbox.applySelectedProposals,
+      loadWorkData: sandbox.loadWorkData, render: sandbox.render, closeModal: sandbox.closeModal
+    };
+    sandbox.api = async (url, opts = {}) => { calls.push({ url: String(url), body: opts.body }); return { ok: true }; };
+    sandbox.toast = (m) => { msgs.push(String(m)); };
+    sandbox.applySelectedProposals = () => {};
+    sandbox.loadWorkData = async () => {};
+    sandbox.render = async () => {};
+    sandbox.closeModal = () => {};
+    P.state.pendingReviewDiff = { newText: '乙。', chapterId: 107 };
+    await P.mergeReviewDiff();
+    Object.assign(sandbox, saved);
+    const mergeCall = calls.find((c) => c.url.includes('/novel/chapter_save'));
+    check('107g 合并写回的是修稿所属的那一章（不是当前打开的章）',
+      !!mergeCall && Number(mergeCall.body && mergeCall.body.chapter_id) === 107,
+      JSON.stringify(mergeCall && mergeCall.body && mergeCall.body.chapter_id));
+    check('107h 跨章合并后明确告知写到了哪一章', msgs.some((m) => m.includes('第107章')), msgs.join(' | ').slice(0, 70));
+
+    // 底稿按章取：目标章 ≠ 当前章 → 取那一章已保存的正文；相等 → 用编辑器（不额外请求）
+    const editor = mkEl('editor-content');
+    editor.innerHTML = '<p>当前章正文</p>';
+    containers['#editor-content'] = editor;
+    const fetchCalls = [];
+    const realApi2 = sandbox.api;
+    sandbox.api = async (url) => { fetchCalls.push(String(url)); return { id: 107, content: '<p>目标章正文</p>' }; };
+    const otherBase = await P.revisionBaseArticle(107);
+    const sameBase = await P.revisionBaseArticle(108);
+    sandbox.api = realApi2;
+    check('107i 目标章不是当前章时：取那一章已保存的正文当补丁底稿',
+      otherBase === P.editorPlainText('<p>目标章正文</p>') && fetchCalls.some((u) => u.includes('/chapters/107')),
+      JSON.stringify({ otherBase, fetchCalls }));
+    check('107j 目标章就是当前章时：用编辑器正文（含未保存改动），不发多余请求',
+      sameBase === P.editorPlainText(editor.innerHTML) && !fetchCalls.some((u) => u.includes('/chapters/108')),
+      JSON.stringify({ sameBase }));
+    check('107k 章节标题查不到时退回 #id（不显示 undefined）',
+      P.chapterTitleOf(999) === '#999' && P.chapterTitleOf(107) === '第107章',
+      `${P.chapterTitleOf(999)} / ${P.chapterTitleOf(107)}`);
   }
 }
 

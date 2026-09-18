@@ -108,6 +108,12 @@ if (isMain) {
     NOVELSTUDIO_OPENVIKING_PEER_ID: 'novelstudio-isolation-test',
     DEEPSEEK_BASE_URL: `http://127.0.0.1:${bh.port}`,
     DEEPSEEK_API_KEY: SENTINEL_KEY,
+    // 把 OpenViking 的两个配置文件也挪进隔离目录：
+    // 否则「写入全局 ovcli.conf」这个端点指向作者真实的 ~/.openviking/ovcli.conf，
+    // api-test-suite 的 M26–M29 只能跳过（它对不可还原的写入绝不下手）——
+    // 于是那 4 条断言长期是"未执行"，而汇总看起来像"全通过"。
+    OPENVIKING_CLI_CONFIG_FILE: path.join(dataDir, 'ovcli.conf'),
+    OPENVIKING_CONFIG_FILE: path.join(dataDir, 'ov.conf'),
   };
 
   console.log('═══ 隔离环境 ═══');
@@ -116,6 +122,7 @@ if (isMain) {
   console.log(`  黑洞 LLM 端点 : 127.0.0.1:${bh.port}（永不响应）`);
   console.log(`  黑洞连接日志  : ${bhLog}`);
   console.log(`  OpenViking    : 服务端停用 + 任务侧 peer=novelstudio-isolation-test`);
+  console.log(`  OV 配置文件   : 两个 env 覆盖点都指向 ${dataDir}（避免测试写到作者主目录）`);
   console.log(`  API Key 兜底  : 已置哨兵值（未实测，仅为二次保险）`);
 
   const child = spawn(process.execPath, ['server.js'], {

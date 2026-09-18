@@ -18,6 +18,14 @@ function record(name, pass, detail = '') {
   results.push({ name, pass: !!pass, detail });
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
 }
+// ⚠️ 「跳过」必须与「通过」分开计数（2026-09-18 第四轮重审补）：
+// 旧实现用 `record(name, true)` 记跳过，于是「178/178 通过」里混着从未执行的分支
+// （例如实例已存 Key 时的 clear_api_key 路径、非隔离实例上的全局配置写入）——
+// 读者会以为这些路径被验证过。跳过不是通过，也不是失败。
+function recordSkip(name, detail = '') {
+  results.push({ name, pass: true, skip: true, detail });
+  console.log(`SKIP  ${name}${detail ? '  — ' + detail : ''}`);
+}
 async function api(method, path, { body, headers = {}, raw = false } = {}) {
   const opts = { method, headers: { ...headers } };
   if (body !== undefined) {
@@ -590,108 +598,122 @@ async function main() {
     record('M6 环境自检里没有明文密钥', !/"api_key"\s*:\s*"[^"]/.test(envBefore.text) && !/"root_api_key"\s*:\s*"[^"]/.test(envBefore.text), envBefore.text.slice(0, 80));
     record('M7 OpenViking 状态与状态卡同源（两个接口给出同一个地址）', env.openviking?.endpoint === ov.endpoint && env.openviking?.endpoint_source === ov.endpoint_source, `env=${env.openviking?.endpoint} card=${ov.endpoint}`);
 
-    // M8 — 手填 dsh 路径的三条判据：空=清空、假仓库=拒绝、dsh 形状=接受
-    const fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-fake-repo-'));
-    fs.writeFileSync(path.join(fakeRepo, 'package.json'), JSON.stringify({ name: 'not-dsh', version: '1.0.0' }));
-    const badRepo = await api('PUT', '/api/env/dsh_repo', { body: { dir: fakeRepo } });
-    record('M8 只有 package.json、没有 dsh 布局的目录被拒绝', badRepo.status === 400, `status=${badRepo.status} ${String(badRepo.json?.error || '').slice(0, 60)}`);
-    record('M9 缺少 dir 字段被拒绝', (await api('PUT', '/api/env/dsh_repo', { body: {} })).status === 400);
+    // ⚠️ 还原动作必须放 finally（2026-09-18 第四轮重审补）：本段会写 ov_endpoint / dsh_repo，
+    // 两者都持久化在 app_settings 里，而"测完整项还原"原来写在流程末尾 —— 中途任何一个 api()
+    // 抛错/超时，还原那几行就永远执行不到，把**作者自己的实例**（甚至 3737 生产实例）留在测试值上。
+    let fakeRepo = '';
+    let dshLike = '';
+    try {
+      // M8 — 手填 dsh 路径的三条判据：空=清空、假仓库=拒绝、dsh 形状=接受
+      fakeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-fake-repo-'));
+      fs.writeFileSync(path.join(fakeRepo, 'package.json'), JSON.stringify({ name: 'not-dsh', version: '1.0.0' }));
+      const badRepo = await api('PUT', '/api/env/dsh_repo', { body: { dir: fakeRepo } });
+      record('M8 只有 package.json、没有 dsh 布局的目录被拒绝', badRepo.status === 400, `status=${badRepo.status} ${String(badRepo.json?.error || '').slice(0, 60)}`);
+      record('M9 缺少 dir 字段被拒绝', (await api('PUT', '/api/env/dsh_repo', { body: {} })).status === 400);
 
-    const dshLike = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-dsh-like-'));
-    fs.mkdirSync(path.join(dshLike, 'apps', 'cli'), { recursive: true });
-    fs.writeFileSync(path.join(dshLike, 'package.json'), JSON.stringify({ name: 'deepseek-harness-lookalike', scripts: {} }));
-    const okRepo = await api('PUT', '/api/env/dsh_repo', { body: { dir: dshLike } });
-    record('M10 dsh 形状的目录被接受并立即生效', okRepo.status === 200 && okRepo.json?.dsh?.source === 'workshop' && okRepo.json?.dsh?.dir === dshLike, `status=${okRepo.status} source=${okRepo.json?.dsh?.source}`);
-    const envAfterRepo = await api('GET', '/api/env/tools');
-    record('M11 保存的 dsh 路径被后续检测读到（不是只写内存）', envAfterRepo.json?.dsh?.override === dshLike && envAfterRepo.json?.dsh?.source === 'workshop', `override=${envAfterRepo.json?.dsh?.override}`);
-    // 还原：作者原本填过就写回原值，没填过就清空（两条都是可读回来、可验证的）
-    const restoreRepo = await api('PUT', '/api/env/dsh_repo', { body: { dir: origDshRepo } });
-    const envRestored = await api('GET', '/api/env/tools');
-    record('M12 dsh 路径已还原到测试前状态', restoreRepo.status === 200 && envRestored.json?.dsh?.override === origDshRepo, `now=${envRestored.json?.dsh?.override}`);
+      dshLike = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-dsh-like-'));
+      fs.mkdirSync(path.join(dshLike, 'apps', 'cli'), { recursive: true });
+      fs.writeFileSync(path.join(dshLike, 'package.json'), JSON.stringify({ name: 'deepseek-harness-lookalike', scripts: {} }));
+      const okRepo = await api('PUT', '/api/env/dsh_repo', { body: { dir: dshLike } });
+      record('M10 dsh 形状的目录被接受并立即生效', okRepo.status === 200 && okRepo.json?.dsh?.source === 'workshop' && okRepo.json?.dsh?.dir === dshLike, `status=${okRepo.status} source=${okRepo.json?.dsh?.source}`);
+      const envAfterRepo = await api('GET', '/api/env/tools');
+      record('M11 保存的 dsh 路径被后续检测读到（不是只写内存）', envAfterRepo.json?.dsh?.override === dshLike && envAfterRepo.json?.dsh?.source === 'workshop', `override=${envAfterRepo.json?.dsh?.override}`);
+      // 还原：作者原本填过就写回原值，没填过就清空（两条都是可读回来、可验证的）
+      const restoreRepo = await api('PUT', '/api/env/dsh_repo', { body: { dir: origDshRepo } });
+      const envRestored = await api('GET', '/api/env/tools');
+      record('M12 dsh 路径已还原到测试前状态', restoreRepo.status === 200 && envRestored.json?.dsh?.override === origDshRepo, `now=${envRestored.json?.dsh?.override}`);
 
-    // M13–M16 OpenViking 设置写入：只动 endpoint（可读回、可还原），不碰 Key
-    const saved = await api('PUT', '/api/novel/openviking', { body: { endpoint: 'http://127.0.0.1:1933' } });
-    record('M13 保存地址后立即生效（来源变为工坊内设置）', saved.status === 200 && saved.json?.endpoint_source === 'workshop' && saved.json?.endpoint === 'http://127.0.0.1:1933', `status=${saved.status} source=${saved.json?.endpoint_source}`);
-    record('M14 保存响应如实回报 applied 字段', Array.isArray(saved.json?.applied) && saved.json.applied.includes('endpoint'), JSON.stringify(saved.json?.applied));
-    const reread = await api('GET', '/api/novel/openviking');
-    record('M15 重新读取仍是工坊内设置（真的落了库）', reread.json?.workshop?.endpoint === 'http://127.0.0.1:1933' && reread.json?.endpoint_source === 'workshop', `workshop=${reread.json?.workshop?.endpoint}`);
+      // M13–M16 OpenViking 设置写入：只动 endpoint（可读回、可还原），不碰 Key
+      const saved = await api('PUT', '/api/novel/openviking', { body: { endpoint: 'http://127.0.0.1:1933' } });
+      record('M13 保存地址后立即生效（来源变为工坊内设置）', saved.status === 200 && saved.json?.endpoint_source === 'workshop' && saved.json?.endpoint === 'http://127.0.0.1:1933', `status=${saved.status} source=${saved.json?.endpoint_source}`);
+      record('M14 保存响应如实回报 applied 字段', Array.isArray(saved.json?.applied) && saved.json.applied.includes('endpoint'), JSON.stringify(saved.json?.applied));
+      const reread = await api('GET', '/api/novel/openviking');
+      record('M15 重新读取仍是工坊内设置（真的落了库）', reread.json?.workshop?.endpoint === 'http://127.0.0.1:1933' && reread.json?.endpoint_source === 'workshop', `workshop=${reread.json?.workshop?.endpoint}`);
 
-    // M16 空 Key = 不改动（契约）：表单里留空不能被当成"清除"
-    const blankKey = await api('PUT', '/api/novel/openviking', { body: { api_key: '   ' } });
-    record('M16 空白 api_key 不被当成清除', blankKey.status === 200 && !(blankKey.json?.applied || []).includes('api_key') && blankKey.json?.workshop?.has_api_key === hadSavedKey, `applied=${JSON.stringify(blankKey.json?.applied)}`);
+      // M16 空 Key = 不改动（契约）：表单里留空不能被当成"清除"
+      const blankKey = await api('PUT', '/api/novel/openviking', { body: { api_key: '   ' } });
+      record('M16 空白 api_key 不被当成清除', blankKey.status === 200 && !(blankKey.json?.applied || []).includes('api_key') && blankKey.json?.workshop?.has_api_key === hadSavedKey, `applied=${JSON.stringify(blankKey.json?.applied)}`);
 
-    // M17 显式清除：仅在当前没有已保存 Key 时执行，避免毁掉作者的凭证
-    if (!hadSavedKey) {
-      const cleared = await api('PUT', '/api/novel/openviking', { body: { clear_api_key: true } });
-      record('M17 显式 clear_api_key 生效且被回报', cleared.status === 200 && (cleared.json?.applied || []).includes('clear_api_key') && cleared.json?.workshop?.has_api_key === false, `applied=${JSON.stringify(cleared.json?.applied)}`);
-    } else {
-      record('M17 跳过：该实例已保存 OpenViking Key（清除不可还原，故不测）', true, 'had_saved_key=true');
+      // M17 显式清除：仅在当前没有已保存 Key 时执行，避免毁掉作者的凭证
+      if (!hadSavedKey) {
+        const cleared = await api('PUT', '/api/novel/openviking', { body: { clear_api_key: true } });
+        record('M17 显式 clear_api_key 生效且被回报', cleared.status === 200 && (cleared.json?.applied || []).includes('clear_api_key') && cleared.json?.workshop?.has_api_key === false, `applied=${JSON.stringify(cleared.json?.applied)}`);
+      } else {
+        recordSkip('M17 显式 clear_api_key（该实例已保存 Key，清除不可还原，故不执行）', 'had_saved_key=true');
+      }
+
+      // 还原 endpoint 到测试前状态
+      const restoreEp = await api('PUT', '/api/novel/openviking', { body: { endpoint: origEndpoint } });
+      const finalState = await api('GET', '/api/novel/openviking');
+      record('M18 OpenViking 地址已还原到测试前状态', restoreEp.status === 200 && finalState.json?.workshop?.endpoint === origEndpoint, `now="${finalState.json?.workshop?.endpoint}" was="${origEndpoint}"`);
+
+      // M19–M22 打开目录：参数是枚举键，不是路径
+      const badTarget = await api('POST', '/api/env/open_folder', { body: { target: 'C:\\Windows' } });
+      record('M19 路径形式的 target 被拒绝（白名单只认枚举键）', badTarget.status === 400, `status=${badTarget.status}`);
+      record('M20 空 target 被拒绝', (await api('POST', '/api/env/open_folder', { body: {} })).status === 400);
+      const dry = await api('POST', '/api/env/open_folder', { body: { target: 'data', dry_run: true } });
+      record('M21 dry_run 回显目录但不真的打开', dry.status === 200 && dry.json?.opened === false && dry.json?.dir === env.server?.data_dir, `dir=${dry.json?.dir}`);
+      const dryPlugin = await api('POST', '/api/env/open_folder', { body: { target: 'plugin', dry_run: true } });
+      record('M22 插件源码目录存在且可被枚举', dryPlugin.status === 200 && String(dryPlugin.json?.dir || '').includes('novel-writing'), `dir=${dryPlugin.json?.dir}`);
+
+      // M23–M25 地址归一化与校验：小白最可能填「127.0.0.1:1933」（没有协议头）
+      const noScheme = await api('PUT', '/api/novel/openviking', { body: { endpoint: '127.0.0.1:1933' } });
+      record('M23 缺协议的地址被自动补成 http://', noScheme.status === 200 && noScheme.json?.endpoint === 'http://127.0.0.1:1933', `endpoint=${noScheme.json?.endpoint}`);
+      const badEndpoint = await api('PUT', '/api/novel/openviking', { body: { endpoint: 'http://' } });
+      record('M24 非法地址被拒绝', badEndpoint.status === 400, `status=${badEndpoint.status} ${String(badEndpoint.json?.error || '').slice(0, 50)}`);
+      const afterBad = await api('GET', '/api/novel/openviking');
+      record('M25 被拒绝的地址没有污染已保存的值', afterBad.json?.workshop?.endpoint === 'http://127.0.0.1:1933', `now=${afterBad.json?.workshop?.endpoint}`);
+
+      // M26–M30 「写入全局配置」：只在**目标文件位于隔离数据目录内**时才跑。
+      // 真实实例上这个端点的目标是作者主目录的 ~/.openviking/ovcli.conf —— 那是不可还原的改动，
+      // 套件绝不能在那种环境里碰它（隔离实例通过 OPENVIKING_CLI_CONFIG_FILE 把目标挪进数据目录）。
+      const cliPath = String(env.openviking?.config_paths?.cli || '');
+      const dataDir = String(env.server?.data_dir || '');
+      const isolatedTarget = cliPath && dataDir
+        && path.resolve(cliPath).toLowerCase().startsWith(path.resolve(dataDir).toLowerCase());
+      if (isolatedTarget) {
+        const w1 = await api('POST', '/api/novel/openviking/global_config', { body: {} });
+        const text1 = fs.readFileSync(cliPath, 'utf8');
+        record('M26 全局配置写入成功且改动如实回报', w1.status === 200 && w1.json?.ok === true && (w1.json?.changed || []).includes('url'), `status=${w1.status} changed=${JSON.stringify(w1.json?.changed)}`);
+        record('M27 写入后目标文件真的被更新', (() => { try { return JSON.parse(text1).url === 'http://127.0.0.1:1933'; } catch { return false; } })());
+        // 换一个地址再写一次：此时文件**已存在**，必须生成备份（这才是「可还原」的证据）
+        await api('PUT', '/api/novel/openviking', { body: { endpoint: 'http://127.0.0.1:1944' } });
+        const w2 = await api('POST', '/api/novel/openviking/global_config', { body: {} });
+        record('M28 二次写入生成备份且内容等于上一版', Boolean(w2.json?.backup) && fs.existsSync(w2.json.backup) && fs.readFileSync(w2.json.backup, 'utf8') === text1, `backup=${w2.json?.backup}`);
+        record('M29 还原说明里带出备份路径', String(w2.json?.restore_hint || '').includes(String(w2.json?.backup || '\u0000')), String(w2.json?.restore_hint || '').slice(0, 80));
+      } else {
+        recordSkip('M26 全局配置写入（目标不在隔离数据目录内，不可还原，故不执行）', `cli=${cliPath}`);
+        recordSkip('M27 写入后文件真的被更新（同上）');
+        recordSkip('M28 二次写入生成备份（同上）');
+        recordSkip('M29 还原说明带出备份路径（同上）');
+      }
+
+      // M30 收尾还原：本段对 ov_endpoint 的所有写入都必须回到测试前的值
+      await api('PUT', '/api/novel/openviking', { body: { endpoint: origEndpoint } });
+      const endState = await api('GET', '/api/novel/openviking');
+      record('M30 OpenViking 地址已还原（本段改过的值不会留在实例上）', endState.json?.workshop?.endpoint === origEndpoint, `now="${endState.json?.workshop?.endpoint}" was="${origEndpoint}"`);
+
+      // M31 策略快照必须把"质量档的补偿参数"下发给前端：两档同模型之后，
+      // 前端拿不到 effort_by_tier 就等于质量档退化成快档（2026-09-18 决策，见 ai/policy.mjs）。
+      const pol = await api('GET', '/api/ai/policy');
+      record('M31 策略快照含档位→强度与长任务超时',
+        pol.status === 200
+        && pol.json?.models?.fast === 'deepseek-flash'
+        && pol.json?.models?.quality === 'deepseek-flash'
+        && pol.json?.effort_by_tier?.quality === 'high'
+        && pol.json?.effort_by_tier?.fast === ''
+        && Number(pol.json?.long_ai_timeout_ms) >= 30 * 60 * 1000,
+        `models=${JSON.stringify(pol.json?.models)} effort=${JSON.stringify(pol.json?.effort_by_tier)} timeout=${pol.json?.long_ai_timeout_ms}`);
+
+    } finally {
+      // 无条件还原：还原失败只打印，不再抛 —— 否则会顶掉真正的失败原因。
+      try { await api('PUT', '/api/novel/openviking', { body: { endpoint: origEndpoint } }); }
+      catch (e) { console.log(`  ! 还原 ov_endpoint 失败：${e.message}`); }
+      try { await api('PUT', '/api/env/dsh_repo', { body: { dir: origDshRepo } }); }
+      catch (e) { console.log(`  ! 还原 dsh_repo 失败：${e.message}`); }
+      try { fs.rmSync(fakeRepo, { recursive: true, force: true }); fs.rmSync(dshLike, { recursive: true, force: true }); }
+      catch { /* 临时目录清理失败不影响结论 */ }
     }
-
-    // 还原 endpoint 到测试前状态
-    const restoreEp = await api('PUT', '/api/novel/openviking', { body: { endpoint: origEndpoint } });
-    const finalState = await api('GET', '/api/novel/openviking');
-    record('M18 OpenViking 地址已还原到测试前状态', restoreEp.status === 200 && finalState.json?.workshop?.endpoint === origEndpoint, `now="${finalState.json?.workshop?.endpoint}" was="${origEndpoint}"`);
-
-    // M19–M22 打开目录：参数是枚举键，不是路径
-    const badTarget = await api('POST', '/api/env/open_folder', { body: { target: 'C:\\Windows' } });
-    record('M19 路径形式的 target 被拒绝（白名单只认枚举键）', badTarget.status === 400, `status=${badTarget.status}`);
-    record('M20 空 target 被拒绝', (await api('POST', '/api/env/open_folder', { body: {} })).status === 400);
-    const dry = await api('POST', '/api/env/open_folder', { body: { target: 'data', dry_run: true } });
-    record('M21 dry_run 回显目录但不真的打开', dry.status === 200 && dry.json?.opened === false && dry.json?.dir === env.server?.data_dir, `dir=${dry.json?.dir}`);
-    const dryPlugin = await api('POST', '/api/env/open_folder', { body: { target: 'plugin', dry_run: true } });
-    record('M22 插件源码目录存在且可被枚举', dryPlugin.status === 200 && String(dryPlugin.json?.dir || '').includes('novel-writing'), `dir=${dryPlugin.json?.dir}`);
-
-    // M23–M25 地址归一化与校验：小白最可能填「127.0.0.1:1933」（没有协议头）
-    const noScheme = await api('PUT', '/api/novel/openviking', { body: { endpoint: '127.0.0.1:1933' } });
-    record('M23 缺协议的地址被自动补成 http://', noScheme.status === 200 && noScheme.json?.endpoint === 'http://127.0.0.1:1933', `endpoint=${noScheme.json?.endpoint}`);
-    const badEndpoint = await api('PUT', '/api/novel/openviking', { body: { endpoint: 'http://' } });
-    record('M24 非法地址被拒绝', badEndpoint.status === 400, `status=${badEndpoint.status} ${String(badEndpoint.json?.error || '').slice(0, 50)}`);
-    const afterBad = await api('GET', '/api/novel/openviking');
-    record('M25 被拒绝的地址没有污染已保存的值', afterBad.json?.workshop?.endpoint === 'http://127.0.0.1:1933', `now=${afterBad.json?.workshop?.endpoint}`);
-
-    // M26–M30 「写入全局配置」：只在**目标文件位于隔离数据目录内**时才跑。
-    // 真实实例上这个端点的目标是作者主目录的 ~/.openviking/ovcli.conf —— 那是不可还原的改动，
-    // 套件绝不能在那种环境里碰它（隔离实例通过 OPENVIKING_CLI_CONFIG_FILE 把目标挪进数据目录）。
-    const cliPath = String(env.openviking?.config_paths?.cli || '');
-    const dataDir = String(env.server?.data_dir || '');
-    const isolatedTarget = cliPath && dataDir
-      && path.resolve(cliPath).toLowerCase().startsWith(path.resolve(dataDir).toLowerCase());
-    if (isolatedTarget) {
-      const w1 = await api('POST', '/api/novel/openviking/global_config', { body: {} });
-      const text1 = fs.readFileSync(cliPath, 'utf8');
-      record('M26 全局配置写入成功且改动如实回报', w1.status === 200 && w1.json?.ok === true && (w1.json?.changed || []).includes('url'), `status=${w1.status} changed=${JSON.stringify(w1.json?.changed)}`);
-      record('M27 写入后目标文件真的被更新', (() => { try { return JSON.parse(text1).url === 'http://127.0.0.1:1933'; } catch { return false; } })());
-      // 换一个地址再写一次：此时文件**已存在**，必须生成备份（这才是「可还原」的证据）
-      await api('PUT', '/api/novel/openviking', { body: { endpoint: 'http://127.0.0.1:1944' } });
-      const w2 = await api('POST', '/api/novel/openviking/global_config', { body: {} });
-      record('M28 二次写入生成备份且内容等于上一版', Boolean(w2.json?.backup) && fs.existsSync(w2.json.backup) && fs.readFileSync(w2.json.backup, 'utf8') === text1, `backup=${w2.json?.backup}`);
-      record('M29 还原说明里带出备份路径', String(w2.json?.restore_hint || '').includes(String(w2.json?.backup || '\u0000')), String(w2.json?.restore_hint || '').slice(0, 80));
-    } else {
-      record('M26 跳过：全局配置目标不在隔离数据目录内（不可还原，故不测）', true, `cli=${cliPath}`);
-      record('M27 同上（跳过）', true);
-      record('M28 同上（跳过）', true);
-      record('M29 同上（跳过）', true);
-    }
-
-    // M30 收尾还原：本段对 ov_endpoint 的所有写入都必须回到测试前的值
-    await api('PUT', '/api/novel/openviking', { body: { endpoint: origEndpoint } });
-    const endState = await api('GET', '/api/novel/openviking');
-    record('M30 OpenViking 地址已还原（本段改过的值不会留在实例上）', endState.json?.workshop?.endpoint === origEndpoint, `now="${endState.json?.workshop?.endpoint}" was="${origEndpoint}"`);
-
-    // M31 策略快照必须把"质量档的补偿参数"下发给前端：两档同模型之后，
-    // 前端拿不到 effort_by_tier 就等于质量档退化成快档（2026-09-18 决策，见 ai/policy.mjs）。
-    const pol = await api('GET', '/api/ai/policy');
-    record('M31 策略快照含档位→强度与长任务超时',
-      pol.status === 200
-      && pol.json?.models?.fast === 'deepseek-flash'
-      && pol.json?.models?.quality === 'deepseek-flash'
-      && pol.json?.effort_by_tier?.quality === 'high'
-      && pol.json?.effort_by_tier?.fast === ''
-      && Number(pol.json?.long_ai_timeout_ms) >= 30 * 60 * 1000,
-      `models=${JSON.stringify(pol.json?.models)} effort=${JSON.stringify(pol.json?.effort_by_tier)} timeout=${pol.json?.long_ai_timeout_ms}`);
-
-    try { fs.rmSync(fakeRepo, { recursive: true, force: true }); fs.rmSync(dshLike, { recursive: true, force: true }); } catch { /* 临时目录清理失败不影响结论 */ }
   }
 
   console.log('\n== J. 清理测试数据 ==');
@@ -709,7 +731,10 @@ async function main() {
   }
 
   const failed = results.filter((r) => !r.pass);
-  console.log(`\n==== 汇总: ${results.length - failed.length}/${results.length} 通过, ${failed.length} 失败 ====`);
+  const skipped = results.filter((r) => r.skip);
+  const passed = results.length - failed.length - skipped.length;
+  console.log(`\n==== 汇总: ${passed}/${results.length} 通过, ${failed.length} 失败, ${skipped.length} 跳过 ====`);
+  if (skipped.length) console.log('跳过项（**未执行**，不计入通过）:', skipped.map((s) => s.name).join('; '));
   if (failed.length) console.log('失败项:', failed.map((f) => f.name).join('; '));
   process.exitCode = failed.length ? 1 : 0;
 }
