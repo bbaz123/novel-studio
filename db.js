@@ -2,6 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 模型名从策略表单点取用：这里此前写死了 'deepseek-flash' 字面量，而 verify-ai-branches 的
+// 扫描清单只有三个文件（不含 db.js）——于是"改分工"时建库默认值与迁移 SQL 会静默留在旧名上。
+import { MODELS, LEGACY_MODEL_NAMES } from './ai/policy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // NOVELSTUDIO_DATA_DIR：冒烟测试/多实例部署时重定向数据库目录（默认 data/）。
@@ -165,7 +168,7 @@ CREATE TABLE IF NOT EXISTS api_configs (
   name TEXT NOT NULL,
   base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com',
   api_key TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT 'deepseek-flash',
+  model TEXT NOT NULL DEFAULT '${MODELS.fast}',
   temperature REAL NOT NULL DEFAULT 0.8,
   max_tokens INTEGER NOT NULL DEFAULT 4096,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -408,16 +411,18 @@ for (const [table, cols] of TS_COLUMNS) {
   }
 }
 
-// 已下线模型名一次性改写：deepseek-chat / deepseek-reasoner 官方已于 2026-07-24 停止服务，
-// 存量配置若仍指向它们，任何 AI 调用都会直接被服务端拒绝。这里统一改写为当前默认模型
-// （deepseek-flash，即 V4.1 Flash），避免升级后功能静默失效。
+// 存量模型名一次性改写（清单来自 ai/policy.mjs 的 LEGACY_MODEL_NAMES——单一出处）：
+//   ① deepseek-chat / deepseek-reasoner 官方已于 2026-07-24 停止服务，任何调用都会被直接拒绝；
+//   ② deepseek-v4-pro —— 2026-09-18 用户决定：质量档统一为 V4.1 Flash（见 ai/policy.mjs 文件头），
+//      存量配置若仍指向上一代 Pro，就会与界面/文档里"推荐 V4.1 Flash"的说法不一致。
+// 统一改写为**策略表里的当前默认模型**（不再是写死的名字）。
 try {
   const fixed = db.prepare(`
-    UPDATE api_configs SET model = 'deepseek-flash', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    WHERE lower(model) IN ('deepseek-chat', 'deepseek-reasoner')
-  `).run();
+    UPDATE api_configs SET model = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE lower(model) IN (${LEGACY_MODEL_NAMES.map(() => '?').join(', ')})
+  `).run(MODELS.fast, ...LEGACY_MODEL_NAMES);
   if (fixed.changes) {
-    console.warn(`[db] 已将 ${fixed.changes} 条 API 配置中已下线的模型名改写为 deepseek-flash`);
+    console.warn(`[db] 已将 ${fixed.changes} 条 API 配置里已下线/已收敛的模型名改写为 ${MODELS.fast}`);
   }
 } catch (_) { /* 表不存在或字段缺失时忽略 */ }
 

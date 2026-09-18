@@ -24,7 +24,7 @@ import { createSyncGate } from './ai/sync-gate.mjs';
 
 // 协议前缀运行时拼接（避免源码中出现的字面 URI 触发 dsh 的 URI 防护误判）。
 const OV_PROTO = 'viking:' + '//';
-export const OV_ROOT = OV_PROTO + 'user/default/resources/novel-studio';
+const OV_ROOT = OV_PROTO + 'user/default/resources/novel-studio';
 
 // 环境总闸：NOVELSTUDIO_OV_DISABLED=1 时整个 OpenViking 集成停用
 // （冒烟测试/隔离环境用，避免把测试数据写进真实共享记忆库）。
@@ -326,7 +326,7 @@ async function safeRemove(uri, recursive = false) {
 
 // ---------- 全量同步（初始导入 / 重建索引） ----------
 
-export function collectWorkOperations(workId) {
+function collectWorkOperations(workId) {
   const ops = [];
   const work = lookupRow('works', workId);
   if (!work) return null;
@@ -590,7 +590,10 @@ export async function getSemanticRecall(workId, chapter) {
         text: items.map((i) => `【${i.label}】（相关度 ${i.score}%）\n${i.text}`).join('\n\n')
       }
     : { enabled: true, status: 'no-hits', query, hits: [] };
-  recallCache.set(key, { at: Date.now(), payload });
+  // ⚠️ 必须走 recallCacheSet：直接 recallCache.set 会绕过容量回收，
+  // 于是 RECALL_CACHE_MAX=256 只约束了"没有命中"的空结果，最占内存的成功条目反而无上限
+  // （8 段命中 × 300 字，长作品多章节时会一直涨）。2026-09-18 审计发现并修正。
+  recallCacheSet(key, payload);
   return payload;
 }
 

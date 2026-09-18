@@ -36,9 +36,9 @@ function resolveDataDir(env = process.env) {
   return path.join(__dirname, 'data');
 }
 export const DATA_DIR = resolveDataDir();
-export const LOG_DIR = path.join(DATA_DIR, 'logs');
+const LOG_DIR = path.join(DATA_DIR, 'logs');
 
-export const LEVELS = ['debug', 'info', 'warn', 'slow', 'error'];
+const LEVELS = ['debug', 'info', 'warn', 'slow', 'error'];
 export const LAYERS = ['server', 'db', 'harness', 'ai', 'openviking', 'sync', 'plugin', 'frontend', 'process'];
 // 远端上报（前端/插件进程）只允许这两个层级，保证 layer 语义可信。
 export const REMOTE_LAYERS = ['frontend', 'plugin'];
@@ -356,7 +356,7 @@ export async function timedAsync(layer, label, promiseFactory, thresholdMs = SLO
 
 // ---------- 事件循环滞后监测：检测主线程卡顿（阻塞） ----------
 let lagMonitorStarted = false;
-export function startLagMonitor({
+function startLagMonitor({
   intervalMs = 1000,
   warnMs = 400,
   errorMs = 1500,
@@ -394,7 +394,7 @@ export function startLagMonitor({
 // ---------- 进程级兜底：崩溃/未处理拒绝/退出 ----------
 let processGuardsInstalled = false;
 let exitHandler = null;
-export function installProcessGuards(onExit) {
+function installProcessGuards(onExit) {
   if (processGuardsInstalled) return;
   processGuardsInstalled = true;
   exitHandler = typeof onExit === 'function' ? onExit : null;
@@ -441,7 +441,7 @@ export function installProcessGuards(onExit) {
 }
 
 // ---------- 保留策略 ----------
-export function pruneLogs() {
+function pruneLogs() {
   // 数据库：保留最新 MAX_DB_ROWS 条，且删除超过 MAX_DB_AGE_DAYS 天的行。
   if (logDb && !dbInitFailed) {
     try {

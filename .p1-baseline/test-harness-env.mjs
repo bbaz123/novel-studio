@@ -11,6 +11,8 @@
  * 用法: node .p1-baseline/test-harness-env.mjs
  */
 import { harnessChildEnv, selfBaseUrl, DEFAULT_PORT, dedicatedHomePath, dedicatedHomeUsable, resolveTaskDshHome, taskHomeInfo, DEDICATED_HOME_ENV, DEFAULT_DEDICATED_HOME } from '../ai/harness-env.mjs';
+// 设置文件路径的取得方式住在 harness.js（要跟着专用 home 走）；这里做语义断言而非源码形状断言。
+import { dshSettingsPath } from '../harness.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -113,13 +115,26 @@ console.log('\n【6. 决策 B：写作任务的专用 DSH_HOME】');
 
 console.log('\n【7. 接线：harness.js 的设置文件必须跟着专用 home 走】');
 {
-  const src = fs.readFileSync(new URL('../harness.js', import.meta.url), 'utf8');
-  ok('导入了 resolveTaskDshHome', /resolveTaskDshHome/.test(src));
-  // 这是 B 的必要配套：不跟着走的话，回退路径改的是 GUI 的 settings.yaml，
-  // 而子进程读的是新 home 的 —— 改了等于没改，且会静默用默认模型。
-  ok('DSH_SETTINGS 在专用 home 生效时指向该 home',
-    /DSH_SETTINGS\s*=\s*process\.env\.DSH_SETTINGS\s*\|\|\s*\(\(\)\s*=>\s*\{[\s\S]{0,200}resolveTaskDshHome\(\)/.test(src));
-  ok('显式设 DSH_SETTINGS 时仍最高优先', /process\.env\.DSH_SETTINGS\s*\|\|/.test(src));
+  // ⚠️ 2026-09-18 修正：这一段原本**按源码形状**匹配旧常量名 `DSH_SETTINGS`，于是在把它改成
+  // 函数 `dshSettingsPath()`（每次现算）之后，断言就静默失效了——形状断言在无害重构后假失败
+  // 会磨损红灯信任（本项目记过这条）。现在改成**语义断言**：真调那个函数，看它跟随哪一层。
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-settings-'));
+  const home = path.join(root, 'dsh-novel');
+  fs.mkdirSync(path.join(home, 'profiles'), { recursive: true });
+  const prevHome = process.env.NOVELSTUDIO_DSH_HOME;
+  const prevSettings = process.env.DSH_SETTINGS;
+  try {
+    delete process.env.DSH_SETTINGS;
+    process.env.NOVELSTUDIO_DSH_HOME = home;
+    ok('专用 home 生效时，设置文件指向该 home（否则回退路径改的是 GUI 的 settings.yaml）',
+      dshSettingsPath() === path.join(home, 'settings.yaml'), dshSettingsPath());
+    process.env.DSH_SETTINGS = path.join(root, 'explicit.yaml');
+    ok('显式设 DSH_SETTINGS 时仍最高优先', dshSettingsPath() === path.join(root, 'explicit.yaml'), dshSettingsPath());
+  } finally {
+    if (prevHome === undefined) delete process.env.NOVELSTUDIO_DSH_HOME; else process.env.NOVELSTUDIO_DSH_HOME = prevHome;
+    if (prevSettings === undefined) delete process.env.DSH_SETTINGS; else process.env.DSH_SETTINGS = prevSettings;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 console.log('\n【8. 接线：审计工具必须能看见专用 home，否则总闸会变瞎】');

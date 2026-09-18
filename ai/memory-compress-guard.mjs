@@ -35,7 +35,7 @@ export const MIN_COMPRESSED_CHARS = 100;
  * 默认取最严的一侧——因为**丢掉的配角不会报错**，只会在此后每一章里静默缺席。
  * 可用环境变量 `NOVELSTUDIO_COMPRESS_MIN_COVERAGE` 放宽（0~1），无需改代码。
  */
-export const MIN_ENTITY_COVERAGE = (() => {
+const MIN_ENTITY_COVERAGE = (() => {
   const v = Number(process.env.NOVELSTUDIO_COMPRESS_MIN_COVERAGE);
   return Number.isFinite(v) && v > 0 && v <= 1 ? v : 1;
 })();
@@ -157,7 +157,7 @@ export function partitionByAppearance({ characters = [], worldEntries = [], chap
  * 刻意不静默：放行归放行，**摘要里多了谁必须留痕**——否则"允许例外"就变成了
  * "看不见越界"，而这类污染是会被喂给之后每一章的。
  */
-export const STRICT_NO_INVENTION = process.env.NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION === '1';
+const STRICT_NO_INVENTION = process.env.NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION === '1';
 
 /**
  * @param {string[]} invented 摘要里出现的、从未出场的实体

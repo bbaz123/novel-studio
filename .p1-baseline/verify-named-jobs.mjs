@@ -71,10 +71,43 @@ console.log('【静态接线】');
   // 若运行体不把 abort `signal` 透传给底层的 harness 调用，作业的"取消"就只是
   // 设了个标志位——子进程照跑，作业**永远停在 running**。
   check('两条运行体都把 abort signal 透传下去（否则取消按钮形同虚设）',
-    /generateNovelFromHarness\(String\(body\.prompt \|\| ''\)\.trim\(\), body\.model \|\| undefined, onChunk, signal\)/.test(srv)
+    /generateNovelFromHarness\(String\(body\.prompt \|\| ''\)\.trim\(\), body\.model \|\| undefined, onChunk, signal[,)]/.test(srv)
     && /compressStoryMemory\(Number\(body\.work_id\), onChunk, signal\)/.test(srv));
-  check('底层 harness 调用真的接住了 signal',
-    /model: model \|\| undefined, signal \}/.test(srv) && /model: QUALITY_AI_MODEL, signal \}/.test(srv));
+  // ⚠️ 用 `[^}]*` + `signal\s*\}` 而不是精确串：调用参数会增加（本轮就加了 reasoningEffort），
+  // 且格式化会把 `signal` 与 `}` 拆到两行。**精确串断言在"参数变多"时假失败**，
+  // 而它真正要钉的是"signal 有没有被接住"。本轮实测：旧精确串在本会话改动后已变红
+  // （compressStoryMemory 插入了 reasoningEffort 一行），却没人复跑这条校验器 —— 见自审报告。
+  check('底层 harness 调用真的接住了 signal（参数顺序可增，signal 必须在）',
+    /model: model \|\| undefined,[^}]*signal\s*\}/.test(srv) && /model: QUALITY_AI_MODEL,[^}]*signal\s*\}/.test(srv));
+
+  // ⚠️ 2026-09-18 第四轮重审抓到的真实缺陷的回归护栏：
+  // 前端「AI 自动创建小说」按质量档发 reasoning_effort:'high'，而 /harness/job 入口**根本没读它**，
+  // 字段被静默丢掉 → 模型档位合并后质量档失去唯一的补偿信号（"质量优先"名存实亡）。
+  // 这类"发了但没人接"的字段不会报错、界面也看不出来，只能靠断言钉住。
+  //
+  // ⚠️⚠️ 断言必须**限定在 /harness/job 这一段**：`normalizeReasoningEffort(body.reasoning_effort)`
+  // 与「非法思考强度」在 /harness/run 里也各有一份，全局匹配会被**另一条路由**满足——
+  // 命名任务这层再丢掉强度，断言照样全绿。本轮的变异测试正是这样抓到这条盲区的
+  // （把 job 段的代码删掉，A1/A2/A3 三条仍绿）。切片锚点：job 段 → 紧随其后的 run 段。
+  const jobSlice = (() => {
+    const a = srv.indexOf("segments[2] === 'job'");
+    const b = srv.indexOf("segments[2] === 'run'");
+    return a >= 0 && b > a ? srv.slice(a, b) : '';
+  })();
+  // 前提断言：切片必须真的取到目标段。否则"空串不含关键词"会让下面几条同时变红，
+  // 报错指向的是切片失效而不是功能缺失（两者要能分开）。
+  check('/harness/job 段落已正确定位（断言作用域前提）',
+    jobSlice.length > 200 && /NAMED_TASKS/.test(jobSlice) && /未知的命名任务/.test(jobSlice),
+    `slice=${jobSlice.length} 字`);
+  check('/harness/job 入口读取并校验 reasoning_effort',
+    /normalizeReasoningEffort\(body\.reasoning_effort\)/.test(jobSlice) && /非法思考强度/.test(jobSlice));
+  check('命名任务入口把思考强度透传给作业与运行体（质量档不许在这一层丢）',
+    /reasoningEffort: reasoningEffort \|\| undefined,/.test(jobSlice)
+    && /generateNovelFromHarness\(String\(body\.prompt \|\| ''\)\.trim\(\), body\.model \|\| undefined, onChunk, signal, reasoningEffort \|\| undefined\)/.test(jobSlice));
+  check('两个生成小说的入口口径一致（旧的同步路由也不再丢强度）',
+    /generateNovelFromHarness\(body\.prompt, body\.model, undefined, undefined, effort\)/.test(srv));
+  check('底层生成小说的 harness 调用带上了强度（不是只在入口收下就完）',
+    /timeout: LONG_AI_TIMEOUT_MS, model: model \|\| undefined, reasoningEffort: reasoningEffort \|\| undefined, signal \}/.test(srv));
 
   check('前端不再直连两个同步端点',
     !app.includes("'/harness/generate_novel'") && !app.includes("'/story_memory/compress'"));

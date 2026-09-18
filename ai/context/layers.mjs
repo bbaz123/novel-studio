@@ -106,11 +106,6 @@ export const RETRIEVAL = {
                  gap: '端点返回红线规则全量；work.style_positive（正向风格契约）不在其中' },
 };
 
-/** 某层的查回路径声明（缺省视为未声明）。 */
-export function retrievalOf(layerId) {
-  return RETRIEVAL[layerId] || { tool: null, note: '未声明查回路径' };
-}
-
 /**
  * 决策 D8-#5：语义召回"期望有却没拿到"的缺口原因（没有缺口则返回空串）。
  *
@@ -150,7 +145,7 @@ export function capOf(layer, mode = 'full') {
 }
 
 /** 按 id 取层规格（单点来源的入口：调用方不要再抄一遍常量）。 */
-export function layerById(layerId) {
+function layerById(layerId) {
   return LAYERS.find((l) => l.id === layerId) || null;
 }
 
@@ -176,7 +171,7 @@ export function entityCapOfId(layerId) {
 }
 
 /** 某层是否在给定模式下出现。 */
-export function presentIn(layer, mode) {
+function presentIn(layer, mode) {
   if (mode === 'settings' && layer.skipInSettings) return false;
   return true;
 }

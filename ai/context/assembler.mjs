@@ -131,18 +131,4 @@ export function assemble(layers, options = {}) {
   return { text: joined, manifest, overflow, shrinkLog, stats };
 }
 
-/**
- * 把 manifest 渲染成人可读的裁剪清单（供日志、验收报告、UI 展示）。
- * 零损失审计的依据：清单里每一条 `dropped > 0` 的层，都必须能通过工具查回原文。
- */
-export function describeManifest(manifest, { onlyTruncated = false } = {}) {
-  const rows = onlyTruncated ? manifest.filter((m) => m.truncated) : manifest;
-  const lines = rows.map((m) => {
-    const mark = m.truncated ? '✂' : m.empty ? '∅' : ' ';
-    const cap = m.declaredCap === null ? '∞' : m.declaredCap;
-    return `${mark} ${m.label.padEnd(24)} cap=${String(cap).padStart(5)} 正文=${String(m.bodyLength).padStart(6)} 采用=${String(m.emitted).padStart(6)} 占用=${String(m.renderedLength).padStart(6)}${m.dropped > 0 ? ` 裁掉=${m.dropped}` : ''}`;
-  });
-  return lines.join('\n');
-}
-
 export { computeFloor };

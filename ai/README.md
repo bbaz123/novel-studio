@@ -14,7 +14,11 @@
 | `sync-gate.mjs` | **在途同步 ↔ 移除**的顺序闸：登记在途、协作式取消、排空后才允许删目录。修掉「建完立刻删」留下孤儿记忆目录的竞态（D8-#6） |
 | `task-settings.mjs` | **每任务一份独立 settings**（D8-#2）：生成指向独立副本的 `--patch` 补丁层 + 组装子进程参数（纯函数，参数顺序在此收口）。它让切模型不再有全局副作用，因而不再需要互斥——吞吐从 1 回到 2 |
 | `context/README.md` | 装配层的改动须知 |
-| `policy.mjs` | **模型与思考强度的唯一来源**：档位→模型、强度白名单、工作台档位→强度、归一化函数 |
+| `policy.mjs` | **模型与思考强度的唯一来源**：档位→模型、档位→强度（`EFFORT_BY_TIER`）、强度白名单、工作台档位→强度、长任务统一超时（`LONG_AI_TIMEOUT_MS`）、旧名清理清单（`LEGACY_MODEL_NAMES`）、归一化函数 |
+
+> ⚠️ **2026-09-18 变更**：两档模型已统一为 V4.1 Flash（`deepseek-flash`），「质量优先」改由
+> `EFFORT_BY_TIER.quality = 'high'` 表达。决策理由与"不要改回 v4-pro"的说明写在 `policy.mjs` 文件头；
+> 单测在 `.p1-baseline/test-policy-tiers.mjs`。
 
 ## 两条铁律
 
@@ -32,8 +36,11 @@
    # I4 端到端：逐个被裁层实际调用查回端点
    node .p1-baseline/verify-retrieval.mjs <base> <db> <workId> <chapterId>
 
-   # 模型取值是否全部经策略解析
+   # 模型取值是否全部经策略解析（扫 public/app.js、server.js、harness.js、db.js）
    node .p1-baseline/verify-ai-branches.mjs
+
+   # 档位→模型/强度/长任务超时 是否仍符合 2026-09-18 的决策（含 db.js 同源、超时不被 clamp 截短）
+   node .p1-baseline/test-policy-tiers.mjs
 
    # 装配结果有没有变（与旧基线逐字节对照）
    node .p1-baseline/capture-baseline.mjs --base <base> --db <db> --out <dir>

@@ -3,32 +3,50 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 // 模型分工策略 —— **真源在服务端 `ai/policy.mjs`**，经 GET /api/ai/policy 下发，
-// 由下面的 policyModel()/policyEffort() 在调用时解析。本文件不再写死模型字面量。
+// 由下面的 policyModel()/policyEffort()/policyEffortForTier() 在调用时解析。本文件不再写死模型字面量。
 //
 //   fast（DEFAULT_AI_MODEL）—— 快而省的环节：提问/澄清、质检轮、入账整理、润色/扩写/
 //                              细纲/性格校对、**章节正文成文**、批量生成、创作工作台三档。
-//                              理由：V4.1 Flash 在这类任务上能力足够且单价低 3–7 倍。
-//   quality（QUALITY_AI_MODEL）—— 结果会喂给之后每一章的环节，按「质量优先」基线不省：
-//                              AI 审稿、AI 修稿、**设定生成的成文轮**、AI 自动创建小说、
-//                              长期记忆压缩（后者在 server.js）。
+//   quality（QUALITY_AI_MODEL）—— 结果会喂给之后每一章的环节：AI 审稿、AI 修稿、
+//                              **设定生成的成文轮**、AI 自动创建小说、长期记忆压缩（后者在 server.js）。
+//
+// ⚠️ 2026-09-18：两档**模型相同**（都是 V4.1 Flash = `deepseek-flash`），差别改由**思考强度**表达
+//    （`effort_by_tier.quality = 'high'`）。所以质量档的调用点必须同时带上 reasoning_effort，
+//    否则它就和快档毫无区别 —— 那不是"质量优先"，只是"少花算力"。详见 ai/policy.mjs 文件头。
 //
 // ⚠️ 注释更正（P4）：此前这里写的是「QUALITY 管成文轮」，与实现不符——
 //    **章节正文成文实际走 fast**（见 performToolbarAIWrite / streamAIDirectWrite）。
 //    走 quality 的只有「设定生成」的成文轮（runGenAskLoop 的 harness 分支）。
-//    这处偏差是 2026-09-13 复盘中「注释只写了主路径」的同类问题，已按实现改正。
 //
 // 该分工只作用于已显式固定模型的功能；API 配置里的 model 仅对未固定模型的功能生效
 // （当前为连接测试，以及仅供 API 调用的 /api/ai/generate_novel）。
 //
 // 下面两个常量退化为**策略快照未就绪时的兜底值**——正常路径不会用到它们。
 const DEFAULT_AI_MODEL = 'deepseek-flash';
-const QUALITY_AI_MODEL = 'deepseek-v4-pro';
+const QUALITY_AI_MODEL = 'deepseek-flash';
+// 兜底：策略快照未就绪时质量档的思考强度（与 policy.mjs 的 EFFORT_BY_TIER.quality 一致）
+const QUALITY_AI_EFFORT = 'high';
+// 兜底：长 AI 任务超时（与 policy.mjs 的 LONG_AI_TIMEOUT_MS 一致）
+const LONG_AI_TIMEOUT_FALLBACK_MS = 30 * 60 * 1000;
 
 // 档位 → 模型名。优先用服务端下发的策略；未就绪/取不到时退回兜底常量。
 function policyModel(tier) {
   const models = state.aiPolicy && state.aiPolicy.models;
   if (models && models[tier]) return models[tier];
   return tier === 'quality' ? QUALITY_AI_MODEL : DEFAULT_AI_MODEL;
+}
+
+// 档位 → 思考强度（质量档的"质量优先"就靠它）。返回空串表示不下发该字段。
+function policyEffortForTier(tier) {
+  const table = state.aiPolicy && state.aiPolicy.effort_by_tier;
+  if (table && Object.prototype.hasOwnProperty.call(table, tier)) return table[tier];
+  return tier === 'quality' ? QUALITY_AI_EFFORT : '';
+}
+
+// 长 AI 任务的统一超时（审稿/修稿/创建小说/流水线/记忆压缩）。快照未就绪时退回同一档兜底值。
+function longAiTimeout() {
+  const v = Number(state.aiPolicy && state.aiPolicy.long_ai_timeout_ms);
+  return Number.isFinite(v) && v > 0 ? v : LONG_AI_TIMEOUT_FALLBACK_MS;
 }
 
 // 工作台档位 → 思考强度，同样以服务端策略为准。
@@ -57,6 +75,8 @@ const state = {
   apiConfigs: [],
   activeConfigId: Number(localStorage.getItem('ns_active_config')) || null,
   apiTestResults: {}, // N-07：连接测试结果驻留显示（config_id → {ok, at, msg}）
+  ovStatus: null, // AI 设置页「OpenViking 记忆库」卡的状态（GET /novel/openviking）
+  envTools: null, // AI 设置页「工具与环境清单」卡的检测结果（GET /env/tools）
   // 专项 A：默认两栏（编辑器更宽、参考面板收起，需要时再切三栏）
   editorLayout: localStorage.getItem('ns_editor_layout') || 'two',
   // 参考面板：当前页签 + 词条预览默认折叠为标题（专项 A）
@@ -372,6 +392,113 @@ function toast(message, type = '') {
   setTimeout(() => el.remove(), ms);
 }
 
+// ---------- 界面内帮助文案（唯一来源） ----------
+// 为什么集中成一张表：同一段解释往往要在"标题旁的小字""悬停气泡""设置卡说明"三处出现，
+// 抄三份必然分叉（P0–P6 复盘里 F8：常量被抄三份，改一处漏两处，且不会报错）。
+// 用法：
+//   helpDot('sillytavern') → 标题旁的小问号，鼠标悬停/键盘聚焦显示解释
+//   fieldHelp('chapter_note') → 字段下方的一行小字（不悬停也能看到）
+//   HELP_TEXT[key].body → 需要更完整解释的地方直接取用
+const HELP_TEXT = {
+  sillytavern: {
+    title: 'SillyTavern 设置',
+    body: 'SillyTavern 是另一个开源 AI 聊天/角色扮演前端，本项目借用了它的一套做法：把角色的"人设、说话口吻示例、系统提示"和"世界观条目"当成可复用的素材喂给模型。这里的设置只影响 AI 写作时喂给模型的角色与世界观素材，不影响你的正文和作品数据。'
+  },
+  chapter_note: {
+    title: '章节作者注',
+    body: '只对本章生效的写作指示（例如"这一章节奏要快，别写景"）。它会随本章的上下文一起交给 AI，不写也不影响使用；跨章通用的要求请写在"作品作者注"里。'
+  },
+  work_note: {
+    title: '作品作者注',
+    body: '整本书通用的写作指示（例如"全程第一人称、不用网络流行语"）。每一章的 AI 写作都会带上它。'
+  },
+  plotline: {
+    title: '剧情线',
+    body: '按"故事里的一条线"来组织章节：主线一条、支线若干。看的是"这条线走到哪了"。适合追踪多线并行、谁和谁的故事在推进。'
+  },
+  outline: {
+    title: '大纲',
+    body: '把卷、章、剧情线摆成一棵树（思维导图），看的是"整本书的结构长什么样"。'
+  },
+  plotline_vs_outline: {
+    title: '剧情线和大纲是什么关系？',
+    body: '两者是同一批章节的两种看法，不是两套数据：剧情线 = 按"线索"横着看（这条线走到哪了），大纲 = 按"卷/章"竖着看（整本书的结构）。同一章可以既属于某条剧情线、又挂在某个卷下。改一边不会丢另一边。'
+  },
+  long_memory: {
+    title: '长期记忆（故事摘要）',
+    body: '写给 AI 看的"前情提要"：已经发生过什么、人物状态变成什么样。写新章节时 AI 会参考它。它可以由你手写，也可以让 AI 起草或自动压缩旧章节。'
+  },
+  event_ledger: {
+    title: '事件账本 / 伏笔',
+    body: '按时间记的事件流水：谁在哪一章做了什么。伏笔是其中的特殊事件，可以标"已埋下 / 已回收"，用来防止写着写着忘了收。它和长期记忆的分工：账本是明细，长期记忆是提炼后的摘要。'
+  },
+  blueprint: {
+    title: '章节蓝图',
+    body: 'AI 动笔前先跟你确认的一份"本章要写什么"的计划（场景、出场人物、要达到的效果）。确认后 AI 才按它成文，避免一次性跑偏整章。'
+  },
+  redline: {
+    title: '红线（反 AI 腔规则）',
+    body: '你设定的禁用表达/句式清单。AI 成文后会自动扫一遍并报告命中，是确定性的检查，不依赖模型自觉。'
+  },
+  context_preview: {
+    title: '上下文',
+    body: 'AI 这次动笔前"实际看到的全部资料"。本工具会按用途分层装配（设定 / 角色 / 伏笔 / 语义召回…），并给出预算与裁剪清单——命中与相关度都能在这里核对。'
+  },
+  direct_channel: {
+    title: '直连通道',
+    body: '直接调用你在 AI 设置里配置的模型 API，秒级响应。润色、扩写、细纲、性格校对这类单轮短任务走它。'
+  },
+  slow_channel: {
+    title: '慢通道（走创作内核）',
+    body: '通过 DeepSeek Harness（dsh）跑的多阶段创作任务：会读角色卡、世界观、红线，先出蓝图再成文。较慢，但更完整。需要在「本地创作内核」卡里配好 dsh。'
+  },
+  openviking: {
+    title: 'OpenViking 记忆库',
+    body: '一个可选的本地记忆服务：把作品数据向量化，让 AI 能"语义召回"很久以前写过的设定与情节。不装、不开都不影响手动写作，AI 写作也只是少一层召回。'
+  },
+  openviking_key: {
+    title: '这里的 Key 是什么？',
+    body: '是 OpenViking 服务自己的访问令牌（它默认监听本机 127.0.0.1:1933，多数本地安装并不校验），不是模型服务商的 Key。填在工坊里只对工坊生效；要让 dsh 侧的写作任务也用同一份，点右边的"写入全局配置"。'
+  },
+  dsh: {
+    title: 'DeepSeek Harness（dsh）',
+    body: '驱动"AI 创作内核"的程序，是 AI 写作 / 创作工作台 / 自动创建小说的运行环境。它是可选的：不装也能手动写作，只是这些功能用不了。'
+  },
+  dsh_repo: {
+    title: '为什么要填 dsh 仓库路径？',
+    body: '工坊要调用 dsh 来完成深度创作，就得知道它装在哪。按顺序自动找：环境变量 NOVELSTUDIO_DSH_REPO → 这里填的路径 → 环境变量 DSH_HOME → 工坊仓库隔壁的 deepseek-harness。找不到时填一次即可，下次启动仍然有效。'
+  },
+  tool_list: {
+    title: '这张清单是什么？',
+    body: '本工坊的完整能力由几个互相独立的本机工具拼成。这张表逐项告诉你：它是干什么的、你现在装没装（真的去磁盘看了）、不装会少什么功能、去哪儿装。只有 Node.js 是必需的。'
+  },
+  model_policy: {
+    title: '为什么改这里的模型名有时不生效？',
+    body: '成文、审稿、设定生成等关键环节用的是程序内置策略（快而省的环节用 flash，质量优先的环节用 v4-pro），不受这里的模型下拉影响；下拉只对连接测试等少数功能生效。要调整分工需改 ai/policy.mjs。'
+  }
+};
+
+// 标题旁的小问号：悬停或键盘聚焦（Tab 到）都能看到解释。
+function helpDot(key) {
+  const item = HELP_TEXT[key];
+  if (!item) return '';
+  return `<span class="help-dot" data-help="${esc(key)}" data-help-title="${esc(item.title)}" tabindex="0" role="note" aria-label="说明：${esc(item.title)}">?</span>`;
+}
+
+// 字段下方的小字（不悬停也看得见的一句话说明）。
+function fieldHelp(key, text) {
+  const item = HELP_TEXT[key];
+  const body = text || (item ? item.body : '');
+  if (!body) return '';
+  return `<div class="field-help"${item ? ` data-help="${esc(key)}"` : ''}>${esc(body)}</div>`;
+}
+
+// 给任意元素套原生 title（悬停提示），文案同样取自 HELP_TEXT —— 不另抄一份。
+function helpTitle(key) {
+  const item = HELP_TEXT[key];
+  return item ? ` title="${esc(item.title + '：' + item.body)}"` : '';
+}
+
 // 小说设定各实体弹窗的保存动作 → AI 生成回填类型映射。
 const GEN_FILL_KIND_BY_ACTION = {
   'save-plotline': 'plotline',
@@ -443,6 +570,10 @@ function closeModal() {
     state.pendingToolbarAIWrite = null;
     resolve(null);
   }
+  // N6：这两个此前漏在 closeModal 之外——取消后残留闭包（pendingAIApply 还攥着已脱离文档的 editor）。
+  // 所有 pending* 都必须在同一个边界收口，否则"某条路径忘了清"就变成长期泄漏。
+  state.pendingAIApply = null;
+  state.pendingReviewDiff = null;
   $('#modal-root').innerHTML = '';
 }
 
@@ -467,6 +598,59 @@ function stripHtml(html = '') {
   const div = document.createElement('div');
   div.innerHTML = html;
   return div.textContent || '';
+}
+
+// ---------- 编辑器 HTML → 纯文本（保留段落边界） ----------
+// 与上面的 stripHtml 分工不同，**不要互相替换**：
+//   stripHtml  → 只用来数字数（段落塌成一行无所谓）
+//   editorPlainText → 用来当"正文文本"交给 AI 或做差异比对（段落边界是语义的一部分）
+// 为什么必须保留段落：修稿的差异预览按段落切分（diffParagraphs 用 /\n{2,}/ 分段），
+// 一旦把段落压成一行，整章会变成"一个段落"，差异比对随即失去意义。
+//
+// 为什么用 DOMParser：实体解码（&nbsp; &amp; 中文标点）交给浏览器原生解析器，比正则剥标签
+// 更准；也不引第三方库（与本文件 F-03 的消毒器同一思路）。
+const TEXT_BLOCK_TAGS = new Set(['P', 'DIV', 'LI', 'UL', 'OL', 'BLOCKQUOTE', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TR', 'TABLE', 'SECTION', 'ARTICLE', 'FIGURE', 'FIGCAPTION', 'HR', 'ADDRESS', 'DD', 'DT']);
+const TEXT_SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+
+// 纯函数：吃任何形如 {nodeType, tagName, childNodes, nodeValue} 的节点树（因此可离线断言）。
+function htmlNodeToText(root) {
+  if (!root || !root.childNodes) return '';
+  const out = [];
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) { out.push(String(child.nodeValue || '').replace(/\s+/g, ' ')); continue; }
+      if (child.nodeType !== 1) continue; // 注释等一律丢弃
+      const tag = String(child.tagName || '').toUpperCase();
+      if (TEXT_SKIP_TAGS.has(tag)) continue;
+      if (tag === 'BR') { out.push('\n'); continue; }
+      walk(child);
+      if (TEXT_BLOCK_TAGS.has(tag)) out.push('\n\n');
+    }
+  };
+  walk(root);
+  return out.join('')
+    .replace(/[ \t]*\n[ \t]*/g, '\n') // 行首行尾空格
+    .replace(/\n{3,}/g, '\n\n')       // 至多留一个空行（diffParagraphs 按 \n{2,} 分段）
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function defaultParseHtml(src) {
+  if (typeof DOMParser === 'undefined') return null;
+  return new DOMParser().parseFromString(src, 'text/html');
+}
+
+/**
+ * 把编辑器里的 HTML 转成纯文本。
+ * parseHtml 可注入：DOM 桩里没有真的 HTML 解析器，注入一个假解析器才能把这条路径真正测到。
+ * 解析器不可用时**原样返回**而不是给空串——空串会让审稿/修稿静默对着空白跑。
+ */
+function editorPlainText(html = '', parseHtml = defaultParseHtml) {
+  const raw = String(html || '');
+  if (!raw.trim()) return '';
+  const doc = parseHtml ? parseHtml(`<div data-ns-root="1">${raw}</div>`) : null;
+  const root = doc && doc.querySelector ? doc.querySelector('[data-ns-root="1"]') : null;
+  return root ? htmlNodeToText(root) : raw;
 }
 
 // 把服务端返回的最新记录更新到本地 state，减少不必要的全量重新拉取，提升操作速度。
@@ -1905,6 +2089,7 @@ async function renderSettingsBoard(content, tab) {
       <div>
         <h1 class="page-title">📘 小说设定</h1>
         <div class="page-sub">剧情线、大纲、设定、角色与长期记忆都在这里集中管理</div>
+        ${fieldHelp('plotline_vs_outline')}
       </div>
     </div>
     <div class="board-tabs">
@@ -2022,7 +2207,7 @@ async function renderPlot(content) {
     <div class="plot-container">
       <div class="panel plot-list-panel">
         <div class="row mb-8">
-          <h3 style="margin:0">剧情线</h3>
+          <h3 style="margin:0">剧情线 ${helpDot('plotline')}</h3>
           <div class="grow"></div>
           <button class="btn small secondary" data-action="ai-gen-plotlines-new" title="AI 生成剧情线（可一次生成多条）">✨ AI</button>
           <button class="btn small" data-action="new-plotline">＋</button>
@@ -2212,7 +2397,7 @@ async function renderOutline(content) {
   content.innerHTML = `
     <div class="page-head">
       <div>
-        <h1 class="page-title">大纲</h1>
+        <h1 class="page-title">大纲 ${helpDot('outline')}</h1>
         <div class="page-sub">思维导图式查看重要节点与细分剧情，点击节点展开</div>
       </div>
       <div class="page-actions">
@@ -2293,9 +2478,9 @@ async function renderWriting(content) {
           </div>
           <span class="toolbar-sep"></span>
           <div class="toolbar-group" title="AI 生成">
-            <button class="btn small" data-action="toolbar-ai-write">✍️ AI 写作</button>
-            <button class="btn small secondary" data-action="toolbar-ai-polish">✨ 润色</button>
-            <button class="btn small secondary" data-action="toolbar-ai-expand">📖 扩写</button>
+            <button class="btn small" data-action="toolbar-ai-write"${helpTitle('slow_channel')}>✍️ AI 写作</button>
+            <button class="btn small secondary" data-action="toolbar-ai-polish"${helpTitle('direct_channel')}>✨ 润色</button>
+            <button class="btn small secondary" data-action="toolbar-ai-expand"${helpTitle('direct_channel')}>📖 扩写</button>
           </div>
           <span class="toolbar-sep"></span>
           <div class="toolbar-group" title="文档操作">
@@ -2317,9 +2502,9 @@ async function renderWriting(content) {
         <div class="reference-tabs">
           <button class="active" data-action="ref-tab" data-tab="terms">设定</button>
           <button data-action="ref-tab" data-tab="characters">角色</button>
-          <button data-action="ref-tab" data-tab="foreshadows">伏笔</button>
-          <button data-action="ref-tab" data-tab="redlines">红线</button>
-          <button data-action="ref-tab" data-tab="context">上下文</button>
+          <button data-action="ref-tab" data-tab="foreshadows"${helpTitle('event_ledger')}>伏笔</button>
+          <button data-action="ref-tab" data-tab="redlines"${helpTitle('redline')}>红线</button>
+          <button data-action="ref-tab" data-tab="context"${helpTitle('context_preview')}>上下文</button>
           <button data-action="ref-tab" data-tab="ai">AI</button>
           <span class="grow"></span>
           <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
@@ -2811,7 +2996,7 @@ async function restoreChapterDraft() {
   }
   // 结构化报告：复用正常审稿弹窗，「按确认清单修稿」以当前正文为底稿。
   const editor = $('#editor-content');
-  const article = editor ? plainText(editor.innerHTML) : '';
+  const article = editor ? editorPlainText(editor.innerHTML) : '';
   state.pendingReview = {
     info: { article, scan: null, proposals: null, targetWords: resolveTargetWords() },
     review: report
@@ -2936,7 +3121,7 @@ async function finalizeHarnessOutput(r) {
     }
     if (rstage === 'salvaged') toast('审稿报告格式有瑕疵，已尽力抢救出可读部分（可能少一两条）', 'error');
     const editor = $('#editor-content');
-    const article = editor ? plainText(editor.innerHTML) : '';
+    const article = editor ? editorPlainText(editor.innerHTML) : '';
     state.pendingReview = {
       info: { article, scan: null, proposals: null, targetWords: resolveTargetWords() },
       review: report
@@ -2948,14 +3133,26 @@ async function finalizeHarnessOutput(r) {
   }
 
   if (kind === 'revision') {
-    const revised = parseAIWritingOutput(output).finalText || output;
+    const editor = $('#editor-content');
+    const base = r.fallbackArticle || (editor ? editorPlainText(editor.innerHTML) : '');
+    // 修稿产出有两种形态：补丁式（新的默认，输出 JSON）与整章重写（兜底/历史任务）。
+    // 这里必须两种都认——否则刷新后接回进度，会把 JSON 当成正文塞进差异预览。
+    const patched = tryApplyRevisionOutput(output, base);
+    let revised = '';
+    let notes = [];
+    if (patched && patched.ok) {
+      revised = patched.text;
+      notes = patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40));
+    } else {
+      revised = parseAIWritingOutput(output).finalText || output;
+    }
     if (!revised.trim()) {
       toast('修稿结果为空，无法应用', 'error');
       return;
     }
-    const editor = $('#editor-content');
-    const base = r.fallbackArticle || (editor ? plainText(editor.innerHTML) : '');
-    showReviewDiff(base, revised, 0);
+    // 接回进度这条路径**不知道**作者勾选了几条（任务元数据里没存清单），只知道实际改好了几处。
+    // 所以只传 applied，让标题按「实际改好 N 处」措辞——不再借用"按 N 条清单修改"的口径。
+    showReviewDiff(base, revised, { applied: (patched && patched.applied ? patched.applied.length : 0), notes });
     // 修稿结果已交付（差异预览已打开），标记任务已应用，恢复条不再重复提示。
     markJobApplied(r.job_id);
     await refreshChapterRecovery(chapterId);
@@ -2973,7 +3170,7 @@ async function finalizeHarnessOutput(r) {
   }
   await refreshChapterRecovery(chapterId);
   await render();
-  const mode = await showAIWritingResult(article, null, null, resolveTargetWords(), r.job_id);
+  const mode = await showAIWritingResult(article, null, null, resolveTargetWords(), r.job_id, { chapterId });
   // 取回场景下的模式处理要显式：applyAIWritingArticle 只处理 insert/replace/append，
   // 'regenerate'/'null' 在这里是静默 no-op —— 用户点了按钮却没反应，等于丢输入。
   if (mode === null) return; // 用户取消
@@ -2981,7 +3178,7 @@ async function finalizeHarnessOutput(r) {
     toast('请从「AI 写作」重新发起生成；本版结果已存为草稿，可随时取回', 'info');
     return;
   }
-  await applyAIWritingArticle(mode, article);
+  await applyAIWritingArticle(mode, article, chapterId);
 }
 
 // ---------- terms view ----------
@@ -3169,16 +3366,16 @@ async function renderST(content) {
   content.innerHTML = `
     <div class="page-head">
       <div>
-        <h1 class="page-title">🧩 SillyTavern 设置</h1>
+        <h1 class="page-title">🧩 SillyTavern 设置 ${helpDot('sillytavern')}</h1>
         <div class="page-sub">管理角色卡、世界观词条和作者注；长期记忆已移到“小说设定 → 长期记忆”</div>
       </div>
     </div>
     <div class="card mb-12">
-      <div class="card-head"><span class="card-title">作品作者注</span><button class="btn small secondary" data-action="ai-gen-work-note" title="AI 起草作品作者注">✨ AI 起草</button><button class="btn small" data-action="save-st-work-note">保存作品作者注</button></div>
+      <div class="card-head"><span class="card-title">作品作者注 ${helpDot('work_note')}</span><button class="btn small secondary" data-action="ai-gen-work-note" title="AI 起草作品作者注">✨ AI 起草</button><button class="btn small" data-action="save-st-work-note">保存作品作者注</button></div>
       <textarea id="st-work-author-note" rows="3" placeholder="整部作品通用的 AI 提示，支持 {title} {work} {characters} {summary}">${esc(state.work?.author_note || '')}</textarea>
     </div>
     <div class="card mb-12">
-      <div class="card-head"><span class="card-title">章节作者注</span></div>
+      <div class="card-head"><span class="card-title">章节作者注 ${helpDot('chapter_note')}</span></div>
       ${state.chapters.length ? `
         <select id="st-chapter-select" class="mb-8">
           ${state.chapters.map((ch) => `<option value="${ch.id}" ${currentChapter?.id === ch.id ? 'selected' : ''}>${esc(ch.title)}</option>`).join('')}
@@ -3235,7 +3432,7 @@ async function renderMemory(content) {
   content.innerHTML = `
     <div class="page-head">
       <div>
-        <h1 class="page-title">🧠 长期记忆 / 故事摘要</h1>
+        <h1 class="page-title">🧠 长期记忆 / 故事摘要 ${helpDot('long_memory')}</h1>
         <div class="page-sub">记录已经发生的重要剧情、伏笔、角色状态变化，AI 写作时会自动带入，用于长篇小说记忆与上下文压缩</div>
       </div>
     </div>
@@ -3254,7 +3451,7 @@ async function renderMemory(content) {
       <div class="muted mt-8">💡 这条记忆与正文写作、AI 上下文联动，保存后会在 AI 写作时作为长期记忆传入。</div>
     </div>
     <div class="card mb-12">
-      <div class="card-head"><span class="card-title">章节作者注（联动）</span></div>
+      <div class="card-head"><span class="card-title">章节作者注（联动） ${helpDot('chapter_note')}</span></div>
       ${state.chapters.length ? `
         <select id="st-chapter-select" class="mb-8">
           ${state.chapters.map((ch) => `<option value="${ch.id}" ${currentChapter?.id === ch.id ? 'selected' : ''}>${esc(ch.title)}</option>`).join('')}
@@ -3358,7 +3555,7 @@ async function compressStoryMemory() {
     // D8-#4：走作业入口而不是同步端点——于是有了进度、可取消、落库与"可恢复任务"。
     // 注意 body 是 { kind, work_id }，产出在 result.summary 上（不再是顶层的 summary）。
     const data = await runHarnessJob(
-      { kind: 'compress', work_id: state.workId, timeout: 600000 },
+      { kind: 'compress', work_id: state.workId, timeout: longAiTimeout() },
       '压缩长期记忆',
       '/harness/job');
     el.value = data.result?.summary || '';
@@ -3564,18 +3761,295 @@ async function deleteWorldEntry(id) {
 }
 
 // ---------- AI settings ----------
+// ---------- 工具与环境清单（内容在此处编写，装没装由后端真去磁盘看） ----------
+// 纪律：**清单条目的文案**是作者写的文档，**状态**一律来自 GET /api/env/tools 的真实检测；
+// 两者分开，界面才不会出现"文档说装了、其实没装"。
+const TOOL_SPECS = [
+  {
+    key: 'node',
+    name: 'Node.js',
+    required: true,
+    why: '运行本工坊的底座。没有它服务根本起不来；版本门槛 v22.13+（node:sqlite 能力）。',
+    url: 'https://nodejs.org',
+    urlLabel: 'nodejs.org（下载 LTS 版）',
+    cmd: 'node -v',
+    status: (env) => (env && env.node
+      ? { ok: true, text: `已安装 ${env.node.version}` }
+      : { ok: null, text: '未检测' })
+  },
+  {
+    key: 'dsh',
+    name: 'DeepSeek Harness（dsh）',
+    required: false,
+    why: 'AI 写作 / 创作工作台 / 自动创建小说的运行内核。不装也能手动写作，只是这些 AI 功能用不了。',
+    url: 'https://github.com/deepseek-ai/deepseek-harness',
+    urlLabel: 'github.com/deepseek-ai/deepseek-harness',
+    cmd: 'git clone https://github.com/deepseek-ai/deepseek-harness.git',
+    status: (env) => {
+      const d = env && env.dsh;
+      if (!d) return { ok: null, text: '未检测' };
+      if (!d.found) return { ok: false, text: '未找到（在下面「dsh 仓库路径」里填一次即可）' };
+      if (d.looks_like_dsh === false) return { ok: false, text: `找到了 ${d.dir}，但它不像 dsh 仓库（请填正确路径）` };
+      if (!d.built) return { ok: false, text: '已找到仓库，但缺少构建产物（首次任务会自动构建）' };
+      return { ok: true, text: `已就绪 · ${d.dir}` };
+    }
+  },
+  {
+    key: 'plugin',
+    name: '创作插件 novel-writing',
+    required: false,
+    why: '给 dsh 装上"写小说"的能力（角色卡 / 世界观 / 红线 / 蓝图流程）。源码就在本仓库里，不需要另外下载。',
+    url: 'harness-plugins/novel-writing/',
+    urlLabel: '本仓库 harness-plugins/novel-writing/',
+    cmd: 'powershell -ExecutionPolicy Bypass -File .\\harness-plugins\\novel-writing\\install.ps1 -Profile novel',
+    status: (env) => {
+      const p = env && env.dsh && env.dsh.plugin;
+      if (!p) return { ok: null, text: '未检测' };
+      if (!p.exists) return { ok: false, text: '本仓库缺少插件源码（harness-plugins/novel-writing）' };
+      const hit = (p.installs || []).find((i) => i.exists && i.points_here);
+      if (hit) return { ok: true, text: `已装到 ${hit.home}（profile：${hit.profile}）` };
+      const anywhere = (p.installs || []).find((i) => i.exists);
+      if (anywhere) return { ok: false, text: `dsh 里有一份同名插件，但不是指向本仓库（${anywhere.path}）——建议重跑安装脚本` };
+      return { ok: false, text: '尚未装进 dsh（复制下面的命令运行一次即可）' };
+    }
+  },
+  {
+    key: 'openviking',
+    name: 'OpenViking 记忆库',
+    required: false,
+    why: '可选的本地语义记忆服务：把作品数据向量化，让 AI 能召回很久以前写过的设定与情节。不装不影响写作。',
+    url: 'https://github.com/volcengine/OpenViking',
+    urlLabel: 'github.com/volcengine/OpenViking',
+    cmd: '',
+    status: (env, ov) => {
+      if (!ov) return { ok: null, text: '未检测' };
+      if (ov.error) return { ok: null, text: `未检测（${ov.error}）` };
+      const online = ov.healthy === null ? '未测试' : ov.healthy ? '服务在线' : '服务未响应';
+      return { ok: ov.healthy === true, text: `${online} · ${ov.has_api_key ? '已配置令牌' : '未配置令牌'} · ${ov.endpoint}` };
+    }
+  }
+];
+
+function statusChip(ok, text) {
+  const cls = ok === true ? 'ok' : ok === false ? 'err' : 'warn';
+  return `<span class="env-chip ${cls}">${esc(text)}</span>`;
+}
+
+function renderToolRows(env, ov) {
+  return TOOL_SPECS.map((t) => {
+    const st = t.status(env, ov);
+    const link = t.url
+      ? (String(t.url).startsWith('http')
+        ? `<a href="${esc(t.url)}" target="_blank" rel="noreferrer noopener">${esc(t.urlLabel || t.url)}</a>`
+        : `<code>${esc(t.urlLabel || t.url)}</code>`)
+      : '';
+    const cmd = t.cmd
+      ? `<div class="env-cmd"><code>${esc(t.cmd)}</code><button class="btn small secondary" data-action="copy-text" data-copy="${esc(t.cmd)}">复制</button></div>`
+      : '';
+    return `
+      <div class="env-row">
+        <div class="env-head">
+          ${statusChip(st.ok, st.text)}
+          <b>${esc(t.name)}</b>
+          <span class="chip">${t.required ? '必需' : '可选'}</span>
+        </div>
+        <div class="muted">${esc(t.why)}</div>
+        ${link ? `<div class="muted">安装地址：${link}</div>` : ''}
+        ${cmd}
+      </div>`;
+  }).join('');
+}
+
+function toolListCardHtml() {
+  return `
+    <div class="card mt-12" id="tools-card">
+      <div class="card-head">
+        <span class="card-title">📦 工具与环境清单 ${helpDot('tool_list')}</span>
+        <button class="btn small secondary" data-action="refresh-env-tools">重新检测</button>
+      </div>
+      <div id="tools-list" class="env-list"><div class="empty">检测中…</div></div>
+    </div>`;
+}
+
+function openVikingCardHtml() {
+  return `
+    <div class="card mt-12" id="ov-card">
+      <div class="card-head">
+        <span class="card-title">🧠 OpenViking 记忆库 ${helpDot('openviking')}</span>
+        <button class="btn small secondary" data-action="test-ov-connection">测试连接</button>
+      </div>
+      <div class="field">
+        <label>服务地址</label>
+        <input id="ov-endpoint-input" type="text" autocomplete="off" placeholder="加载中…">
+        <div class="field-help">一般不用改：默认 http://127.0.0.1:1933（本机服务）。</div>
+      </div>
+      <div class="field">
+        <label>访问令牌 / API Key ${helpDot('openviking_key')}</label>
+        <input id="ov-key-input" type="password" autocomplete="new-password" placeholder="加载中…">
+      </div>
+      <div id="ov-status" class="field-help">加载中…</div>
+      <div class="row mt-8">
+        <button class="btn small" data-action="save-ov-config">保存并生效</button>
+        <button class="btn small secondary" data-action="write-ov-global">写入全局配置（让 dsh 也用）</button>
+        <button class="btn small danger" data-action="clear-ov-key">清除已保存的 Key</button>
+      </div>
+    </div>`;
+}
+
+function dshCardHtml() {
+  return `
+    <div class="card mt-12" id="dsh-card">
+      <div class="card-head">
+        <span class="card-title">🛠 本地创作内核（dsh） ${helpDot('dsh')}</span>
+        <button class="btn small secondary" data-action="open-folder" data-target="dsh_repo">📂 打开目录</button>
+      </div>
+      <div class="field">
+        <label>dsh 仓库路径 ${helpDot('dsh_repo')}</label>
+        <input id="dsh-repo-input" type="text" autocomplete="off" placeholder="加载中…">
+        <div class="field-help">留空 = 不带这里的覆盖。完整顺序（前者优先）：环境变量 NOVELSTUDIO_DSH_REPO → 本页填写 → 环境变量 DSH_HOME → 工坊隔壁的 deepseek-harness。不确定填什么，先点「重新检测」看它找到了哪里。</div>
+      </div>
+      <div id="dsh-status" class="field-help">加载中…</div>
+      <div class="row mt-8">
+        <button class="btn small" data-action="save-dsh-repo">保存路径</button>
+        <button class="btn small secondary" data-action="refresh-env-tools">重新检测</button>
+        <button class="btn small secondary" data-action="open-folder" data-target="plugin">📂 插件源码</button>
+        <button class="btn small secondary" data-action="open-folder" data-target="data">📂 数据目录</button>
+      </div>
+    </div>`;
+}
+
+// dsh 路径来源标签（与 harness.js 的 harnessDirCandidates 一一对应）。
+const DSH_SOURCE_LABELS = {
+  env: '环境变量 NOVELSTUDIO_DSH_REPO',
+  workshop: '本页填写',
+  dsh_home: '环境变量 DSH_HOME',
+  sibling: '工坊仓库隔壁的 deepseek-harness'
+};
+
+function dshSourceLabel(source) {
+  const key = String(source || '').replace(/:missing$/, '');
+  return (DSH_SOURCE_LABELS[key] || key || '未知') + (String(source || '').endsWith(':missing') ? '（没找到）' : '');
+}
+
+// 只刷新状态文本，不动输入框内容——否则刚敲进去的路径会被一次轮询抹掉。
+function renderOpenVikingStatus() {
+  const s = state.ovStatus;
+  const box = $('#ov-status');
+  if (!box) return;
+  if (!s || s.error) {
+    box.textContent = `读取失败：${(s && s.error) || '未知错误'}`;
+    return;
+  }
+  const epInput = $('#ov-endpoint-input');
+  if (epInput) {
+    epInput.value = s.workshop.endpoint || '';
+    epInput.placeholder = `留空则沿用：${s.endpoint}（来自 ${s.endpoint_source_label}）`;
+  }
+  const keyInput = $('#ov-key-input');
+  if (keyInput) {
+    keyInput.value = '';
+    keyInput.placeholder = s.workshop.has_api_key
+      ? `已保存 ${s.workshop.api_key_mask}；留空=不改动（服务端当前用：${s.api_key_source_label}）`
+      : `留空则沿用：${s.api_key_source_label}${s.has_api_key ? '（已配置）' : '（未配置）'}`;
+  }
+  const health = s.healthy === null ? '未测试' : s.healthy ? '✅ 服务在线' : '⚠ 服务未响应（不影响手动写作）';
+  box.innerHTML = [
+    `生效地址：<b>${esc(s.endpoint)}</b>（来源：${esc(s.endpoint_source_label)}）`,
+    `Key：${s.has_api_key ? '已配置' : '未配置'}（来源：${esc(s.api_key_source_label)}）`,
+    `连接：${health}`,
+    `语义召回：${s.semantic.effective_enabled ? '已启用' : '未启用'}`,
+    `待重放：${s.pending} 条`
+  ].join(' · ');
+}
+
+function renderEnvTools() {
+  const t = state.envTools;
+  const list = $('#tools-list');
+  if (list) {
+    list.innerHTML = (!t || t.error)
+      ? `<div class="empty">检测失败：${esc((t && t.error) || '未知错误')}</div>`
+      : renderToolRows(t, state.ovStatus);
+  }
+  const box = $('#dsh-status');
+  if (!box) return;
+  if (!t || t.error) {
+    box.textContent = `检测失败：${(t && t.error) || '未知错误'}`;
+    return;
+  }
+  const d = t.dsh || {};
+  const input = $('#dsh-repo-input');
+  if (input) {
+    input.value = d.override || '';
+    input.placeholder = `留空则用自动探测结果：${d.dir || '（没找到）'}`;
+  }
+  const checked = (d.checked || []).map((c) => `<div class="muted">${c.ok ? '✅' : '—'} ${esc(c.label)}：<code>${esc(c.dir)}</code></div>`).join('');
+  const home = d.task_home || {};
+  box.innerHTML = [
+    statusChip(Boolean(d.found && d.looks_like_dsh !== false), d.found
+      ? (d.looks_like_dsh === false ? '找到了路径，但不像 dsh 仓库' : (d.built ? '已找到并已构建' : '已找到，缺构建产物'))
+      : '未找到'),
+    statusChip(null, `路径来源：${dshSourceLabel(d.source)}`),
+    statusChip(null, `profile：${esc(d.profile || '')}`),
+    `<div class="muted mt-8">实际使用：<code>${esc(d.dir || '')}</code></div>`,
+    `<div class="muted">写作任务的 DSH_HOME：<code>${esc(home.home || home.path || '')}</code>${home.home ? '' : '（专用 home 不可用，退回共享 home）'}</div>`,
+    `<div class="muted">settings.yaml：<code>${esc(d.settings_file || '')}</code></div>`,
+    checked ? `<details class="env-details"><summary>它按顺序找过这些位置（共 ${(d.checked || []).length} 处）</summary>${checked}</details>` : ''
+  ].join(' ');
+}
+
+async function loadOpenVikingStatus() {
+  try {
+    state.ovStatus = await api('/novel/openviking');
+  } catch (e) {
+    state.ovStatus = { error: isStaleServerError(e) ? STALE_SERVER_HINT : (e.message || '读取失败') };
+  }
+  renderOpenVikingStatus();
+  renderStaleBanner();
+  // 清单里 OpenViking 那一行读的是同一份状态（单一来源，避免两处各判一次）。
+  if (state.envTools) renderEnvTools();
+}
+
+async function loadEnvTools() {
+  try {
+    state.envTools = await api('/env/tools');
+  } catch (e) {
+    state.envTools = { error: isStaleServerError(e) ? STALE_SERVER_HINT : (e.message || '检测失败') };
+  }
+  renderEnvTools();
+  renderStaleBanner();
+}
+
+// ---------- 「服务端还是旧代码」的识别与翻译 ----------
+// 症状：页面文件来自磁盘（已是新版），而服务进程是**重启前**启动的 → 新接口一律
+// 404 {"error":"API not found"}。新手看到这句话只会以为软件坏了，而它其实只有一个动作：
+// 重启服务。所以这里把症状翻成动作，并在页面上给一条常驻提示。
+const STALE_SERVER_HINT = '服务端仍在运行旧代码（这个接口要重启工坊之后才会出现）。重启方法：关掉那个黑色服务窗口（或在窗口里按 Ctrl+C），再双击 start-novel-studio.cmd，然后刷新本页（Ctrl+F5）。';
+
+function isStaleServerError(e) {
+  return Number(e && e.status) === 404 && /API not found/i.test(String((e && e.message) || ''));
+}
+
+function renderStaleBanner() {
+  const box = $('#stale-banner');
+  if (!box) return;
+  const stale = [state.ovStatus, state.envTools].some((s) => s && s.error === STALE_SERVER_HINT);
+  box.hidden = !stale;
+  box.innerHTML = stale ? `⚠ ${esc(STALE_SERVER_HINT)}` : '';
+}
+
 async function renderAI(content) {
   const configs = state.apiConfigs;
   content.innerHTML = `
     <div class="page-head">
       <div>
-        <h1 class="page-title">AI 设置</h1>
-        <div class="page-sub">管理 DeepSeek / OpenAI 兼容 API 配置</div>
+        <h1 class="page-title">AI 设置 ${helpDot('model_policy')}</h1>
+        <div class="page-sub">API 配置 · OpenViking 记忆库 · 本地创作内核（dsh）· 工具清单</div>
       </div>
       <div class="page-actions">
         <button class="btn" data-action="new-api-config">＋ 新建 API 配置</button>
       </div>
     </div>
+    <div id="stale-banner" class="stale-banner" hidden></div>
     <div class="card mb-12">
       <div class="muted">当前使用：<b>${configs.find((c) => c.id === state.activeConfigId)?.name || '未选择'}</b></div>
       <div class="muted mt-8">API Key 只保存在本机 SQLite 数据库中，不会上传到任何第三方服务器（除你配置的 AI 服务商）。</div>
@@ -3607,6 +4081,9 @@ async function renderAI(content) {
         </div>`;
       }).join('') || '<div class="empty">还没有 API 配置</div>'}
     </div>
+    ${openVikingCardHtml()}
+    ${dshCardHtml()}
+    ${toolListCardHtml()}
     <div class="card mt-12">
       <div class="card-title">提示</div>
       <div class="muted">DeepSeek 默认 Base URL：https://api.deepseek.com；兼容 OpenAI Chat Completions 格式。若使用其他服务商，可填写对应的 OpenAI 兼容地址。AI 写作/润色等任务现在优先走直连通道（秒级响应），只有需要调用创作内核（角色卡/世界观/红线）的任务才会经过 Harness。</div>
@@ -3619,6 +4096,9 @@ async function renderAI(content) {
       <div id="ai-error-history" class="ai-error-history"><span class="muted">加载中...</span></div>
     </div>`;
   loadAIErrors();
+  // 两张新卡各自异步加载：慢/失败都不阻塞页面渲染（失败也只在自己卡里显示原因）。
+  loadOpenVikingStatus();
+  loadEnvTools();
 }
 
 const AI_ACTION_LABELS = {
@@ -3872,7 +4352,7 @@ async function runHarnessJob(body, stageLabel, endpoint = '/harness/run') {
       // 兼容旧服务端：直接返回同步结果（无取消通道，停止按钮不出现）
       return { output: started.output || '', scan: started.scan || null, proposals: started.proposals || null, result: started };
     }
-    return await pollHarnessJob(started.job_id, progress, { timeoutMs: Number(body?.timeout || 600000) + 120000 });
+    return await pollHarnessJob(started.job_id, progress, { timeoutMs: Number(body?.timeout || longAiTimeout()) + 120000 });
   } finally {
     progress.close();
     state.aiTaskRunning = false;
@@ -3972,7 +4452,7 @@ async function runHarnessFromMessages(messages, options = {}) {
             temperature: config.temperature,
             max_tokens: config.max_tokens
           },
-          timeout: 600000 // F-45：直连长生成（write/polish/expand 等），覆盖默认 60s
+          timeout: longAiTimeout() // F-45：直连长生成（write/polish/expand 等），覆盖默认 60s
         });
         const reply = (data.reply || '').trim();
         if (reply) return reply;
@@ -3988,9 +4468,9 @@ async function runHarnessFromMessages(messages, options = {}) {
     const role = m.role === 'system' ? '【系统设定】' : '【用户请求】';
     return `${role}\n${m.content}`;
   }).join('\n\n');
-  // 超时按任务类型分级：整章写作（write）保留 10 分钟；单轮短任务 3 分钟即可，
-  // 避免回退 harness 时让用户为一次润色白白等满 10 分钟。
-  const tieredTimeout = options.timeout || (action === 'write' ? 600000 : 180000);
+  // 超时按任务类型分级：整章写作（write）用统一的长任务超时；单轮短任务 3 分钟即可，
+  // 避免回退 harness 时让用户为一次润色白白等满长任务档。
+  const tieredTimeout = options.timeout || (action === 'write' ? longAiTimeout() : 180000);
   const data = await runHarnessJob({
     prompt, timeout: tieredTimeout, model: options.model || undefined, action,
     reasoning_effort: options.reasoningEffort || undefined,
@@ -4010,11 +4490,17 @@ async function getActiveAIConfig() {
   return state.apiConfigs?.find((c) => c.id === state.activeConfigId) || state.apiConfigs?.[0] || null;
 }
 
-// 非流式直连单次调用（flash 质检/小缺口补足用）；失败或无配置返回 null，调用方回退 harness。
+// 非流式直连单次调用（flash 质检/小缺口补足/蓝图 用）；失败或无配置返回 null，调用方回退 harness。
+//
+// ⚠️ 2026-09-18 实测（真实调用，用户授权）：**长提示词下 flash 的思考 token 会把 max_tokens 吃光**，
+// 返回 content 为空（`out` 正好等于 max_tokens、`finish_reason=length`）。9k 输入 + max_tokens=4096
+// 与 8192 两次都空手而归。所以这里不是"重试碰运气"，而是**明确压低思考预算 + 放宽输出上限**再试一次；
+// 仍为空才交给调用方回退慢通道（那 17 秒的固定开销换"能拿到结果"是值得的）。
 async function directAIWrite(messages, opts = {}) {
   const config = await getActiveAIConfig();
   if (!config || !config.api_key) return null;
-  try {
+  const baseMax = Number(opts.maxTokens ?? config.max_tokens) || 4096;
+  const attempt = async (overrides = {}) => {
     const data = await api('/ai/write', {
       method: 'POST',
       body: {
@@ -4022,13 +4508,20 @@ async function directAIWrite(messages, opts = {}) {
         messages,
         model: opts.model || undefined,
         temperature: opts.temperature ?? config.temperature,
-        max_tokens: opts.maxTokens ?? config.max_tokens
+        max_tokens: overrides.maxTokens ?? baseMax,
+        reasoning_effort: overrides.reasoningEffort || opts.reasoningEffort || undefined
       },
-      timeout: 600000 // 与直连长生成同档（F-45）
+      timeout: longAiTimeout() // 与直连长生成同档（F-45）
     });
-    const reply = (data.reply || '').trim();
-    if (reply) return reply;
-    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 直连通道返回空内容' });
+    return String(data.reply || '').trim();
+  };
+  try {
+    const first = await attempt();
+    if (first) return first;
+    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: `[AI] 直连通道返回空内容（max_tokens=${baseMax}，疑似思考吃光预算）；改为低思考预算 + 更大上限重试一次` });
+    const retry = await attempt({ reasoningEffort: 'low', maxTokens: Math.min(16384, Math.max(8192, baseMax * 2)) });
+    if (retry) return retry;
+    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 直连通道重试后仍为空，调用方将回退慢通道' });
     return null;
   } catch (e) {
     reportClientLog({ level: 'warn', kind: 'ai_direct_fallback', message: `[AI] 直连通道失败：${e.message}` });
@@ -4209,7 +4702,7 @@ async function scheduleLedgerProposalJob(article) {
       method: 'POST',
       body: {
         prompt,
-        timeout: 600000,
+        timeout: longAiTimeout(),
         model: policyModel('fast'),
         action: 'ledger',
         work_id: workId,
@@ -4295,7 +4788,7 @@ function setPipelineOutput(key, text) {
 // 注意：flash 等思考型模型偶发“长思考但 content 为空”，必须把空回复视为失败而不是完成。
 const PIPELINE_SYSTEM = { role: 'system', content: '你是小说创作执行助手：直接输出用户要求的最终内容，不要输出思考过程、解释或开场白。' };
 
-async function runPipelineStage(prompt, { model, reasoningEffort, stageLabel, timeout = 600000 }) {
+async function runPipelineStage(prompt, { model, reasoningEffort, stageLabel, timeout = longAiTimeout() }) {
   if (!state.apiConfigs.length) {
     try { await ensureApiConfigs(true); } catch (_) { /* 取不到配置就回退 harness */ }
   }
@@ -4311,7 +4804,7 @@ async function runPipelineStage(prompt, { model, reasoningEffort, stageLabel, ti
           messages: [PIPELINE_SYSTEM, { role: 'user', content: userContent }],
           max_tokens: 16384
         },
-        timeout: 600000 // F-45：直连长生成，覆盖默认 60s
+        timeout: longAiTimeout() // F-45：直连长生成，覆盖默认 60s
       });
       return (data.reply || '').trim();
     };
@@ -4776,10 +5269,12 @@ function openPlotlineCharModal(characterId, plotlineId) {
 // 已剔除的历史模型（选中即报错，勿再加回）：
 //   deepseek-chat / deepseek-reasoner —— 官方已于 2026-07-24 停止服务；
 //   deepseek-v4-flash / deepseek-v4-flash-vision-exp —— 模型已下线，
-//     旧名仍会被服务端路由到 V4.1 Flash，但无需再作为独立选项暴露。
+//     旧名仍会被服务端路由到 V4.1 Flash，但无需再作为独立选项暴露；
+//   deepseek-v4-pro —— 2026-09-18 起质量档并入 V4.1 Flash（质量改由思考强度表达，
+//     见 ai/policy.mjs 文件头），存量配置由启动迁移改写；**不要再加回下拉**，
+//     否则会出现两个指向同一模型的选项（2026-09-13 踩过 value 重复的坑）。
 const KNOWN_AI_MODELS = [
-  ['deepseek-flash', 'deepseek-flash（V4.1 · 推荐：能力最强、成本最低、支持图像理解）'],
-  ['deepseek-v4-pro', 'deepseek-v4-pro（上一代 Pro，更贵更慢；写作等主要功能内置模型，选它不影响这些功能）']
+  ['deepseek-flash', 'deepseek-flash（V4.1 · 推荐：能力最强、成本最低、支持图像理解）']
 ];
 
 function modelSelectHtml(currentModel) {
@@ -4923,64 +5418,6 @@ function aiContextBlock() {
   return parts.join('\n\n');
 }
 
-function buildAIWriteMessages(extraPrompt = '') {
-  const editor = $('#editor-content');
-  const title = $('#editor-title');
-  const chapterId = state.currentChapterId;
-  const chapter = state.chapters.find((c) => c.id === chapterId) || {};
-  const content = editor?.innerHTML || chapter.content || '';
-  const plain = stripHtml(content);
-  const linkedTermIds = Array.from(new Set(Array.from(content.matchAll(/data-term-id="(\d+)"/g)).map((m) => Number(m[1]))));
-  const terms = linkedTermIds.map((id) => state.termsCache.get(id)).filter(Boolean);
-  const chars = state.characters.slice(0, 12);
-  const panelPrompt = $('#ai-prompt')?.value?.trim() || '';
-  const prompt = extraPrompt || panelPrompt;
-  const customPrompt = prompt ? `\n写作指令：${prompt}` : '';
-
-  const system = `你是资深中文网络小说创作助手。你熟悉网文爽点、节奏、人物塑造和世界观设定。请输出自然流畅的中文小说正文或细纲，不要输出解释性前言。`;
-  const user = `
-当前作品：${state.work?.title || ''}
-当前章节/场景：${title?.value || chapter.title || ''}
-大纲摘要：${chapter.summary || '无'}
-当前正文（前文）：
-${plain.slice(-4000)}
-
-相关设定词条：
-${terms.map((t) => `【${t.title}】${t.content}`).join('\n') || '无'}
-
-主要角色档案：
-${chars.map((c) => `【${c.name}】身份：${c.identity}；性格：${c.personality}；当前状态：${c.status}`).join('\n') || '无'}
-
-AI 上下文（角色卡 / 世界观 / 作者注）：
-${aiContextBlock() || '无'}
-${customPrompt}
-
-请结合以上上下文，生成符合故事走向的正文内容。如果用户要求续写，请紧接前文；如果要求生成新段落，请单独起一段。`;
-  return [
-    { role: 'system', content: system },
-    { role: 'user', content: user }
-  ];
-}
-
-async function runAIWrite() {
-  await loadAIContext();
-  const out = $('#ai-output');
-  const btn = $('[data-action="ai-write"]');
-  if (out) out.textContent = 'AI 正在写作，请稍候...';
-  if (btn) btn.disabled = true;
-  try {
-    const reply = await runHarnessFromMessages(buildAIWriteMessages(), { model: policyModel('fast'), action: 'write' });
-    if (out) out.textContent = reply;
-    state.aiDraft = reply;
-    const insertBtn = $('#ai-insert-btn');
-    if (insertBtn) insertBtn.style.display = state.aiDraft ? '' : 'none';
-  } catch (e) {
-    if (out) out.textContent = 'AI 请求失败：' + e.message;
-    toast(e.message, 'error');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
 
 // ---------- 工具栏 AI 写作 / 润色 / 扩写 ----------
 // 把 AI 返回的纯文本转成段落 HTML，保留换行。
@@ -5121,6 +5558,20 @@ const AI_WRITING_CLARIFY_PROMPT = `请你在回答前先向我提问
 完全理解我的真实需求和目标时
 再给出最终方案。`;
 
+// 直连通道没有插件人设（慢通道人设 agent.cordis.yml 里含这些纪律）。把与蓝图/审稿相关的几条
+// **内联进提示词**，两条通道的"写作纪律"就对齐了 —— 这是"改走直连又不掉质量"的前提。
+// 依据：2026-09-18 实测慢通道每次多花 ≈17 秒固定开销（dsh 冷启动 + 智能体循环），
+// 而插件人设第 17 行自己写着「提示词已内联提供时不必重复调用 novel_context」。
+const WRITING_DISCIPLINE = [
+  '【写作纪律（务必遵守）】',
+  '1. 上面的【当前小说上下文】就是你的资料。若某处标注「已按预算截断」，只依据现有信息作答，并在相应字段注明不确定；不要编造与既有设定冲突的内容。',
+  '2. 严格避开【写作风格红线】里的词句：用具体动作、感官细节、对话潜台词替代「嘴角勾起一抹冷笑」式的万能模板；克制形容词与排比，保留网文节奏但拒绝 AI 腔。'
+].join('\n');
+
+// 蓝图专用的一条：`references` 是蓝图 JSON 的字段，审稿报告的字段集里没有它 ——
+// 重审发现早先把它并进通用纪律，于是审稿提示词里出现"需要回扣的写进 references"这种对不上的指示。
+const BLUEPRINT_EXTRA_DISCIPLINE = '3. 与既有设定/伏笔保持一致；需要回扣的写进 references，没有依据就留空。';
+
 function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = false) {
   const lines = [];
   lines.push(`你是资深中文网络小说创作助手。你熟悉网文爽点、节奏、人物塑造和世界观设定。`);
@@ -5129,6 +5580,9 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = fal
   } else {
     lines.push(AI_WRITING_CLARIFY_PROMPT);
   }
+  lines.push('');
+  lines.push(WRITING_DISCIPLINE);
+  lines.push(BLUEPRINT_EXTRA_DISCIPLINE);
   lines.push(``);
   lines.push(`对话输出规则：
 - ${auto ? '直接输出，不需要提问。' : '如果还需要了解我的需求，第一行必须严格是【提问】，随后只输出一个问题，不要输出其他内容。'}
@@ -5348,7 +5802,7 @@ function parseReviewText(text) {
   return { stage: 'raw', report: null };
 }
 
-/** 兼容旧调用点：只要报告对象，救不回来返回 null。 */
+/** 只要结构化报告对象（救不回来返回 null）。前端测试与外部调用用它，正常界面路径直接用 parseReviewText。 */
 function extractReviewFromText(text) {
   return parseReviewText(text).report;
 }
@@ -5481,7 +5935,10 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
     // 🗂 先落草稿再开弹窗：这版稿子此前只活在弹窗 state 里，
     // 用户点「先审稿再应用」或「取消」关闭弹窗就等于静默销毁（2026-09-14 真实事故）。
     // 落库后可在章节里「取回上一版生成稿」，关闭弹窗不再是丢失。
-    const draftChapterId = state.currentChapterId;
+    // ⚠️ 章号优先取 meta.chapterId（任务自带的 chapter_id）：取回"别的章"的结果时，
+    // 用 state.currentChapterId 会把草稿落到当前打开的那一章 —— 而「取回生成稿」是覆盖式写回，
+    // 落错章等于给另一章埋了一颗地雷（2026-09-18 重审发现并修正）。
+    const draftChapterId = Number(meta.chapterId) || state.currentChapterId;
 
     // ── P5 埋点：这次「生成」的规模与上下文成本 ──────────────────────────
     // 契约的结构化不变量回答不了「上下文质量有没有变好」，只有作者的真实行为能回答。
@@ -5556,11 +6013,36 @@ async function applySelectedProposals() {
 }
 
 // ---------- 审稿 → 确认清单 → 修稿 → 差异合并 ----------
-function buildAIReviewPrompt(article) {
+// S2（2026-09-18）：审稿**保持慢通道**，但把两样东西内联进提示词，抵消"慢通道才有"的优势：
+//   ① 写作纪律（与人设同源，见 WRITING_DISCIPLINE）；
+//   ② **确定性红线扫描结果**（/api/novel/scan）。实测慢通道的审稿报告里会出现「红线扫描零命中」
+//      ——那是它调用 novel_scan 工具得到的确定性结论；直连通道没有工具，所以必须**预先算好喂进去**，
+//      否则一旦改直连就会丢掉这条确定性判据（实测：直连审稿因思考吃光预算两次返回空，本就没跑通）。
+// 把 `POST /api/novel/scan` 的结果渲染成提示词里的一段。
+// ⚠️ 字段名以**服务端契约**为准：server.js 的 scanAgainstRedlines 返回
+// `hits: [{ kind, pattern, note, count, sample }]` —— 没有 `word`。
+// 2026-09-18 第四轮重审抓到的真实缺陷：这里曾读 `h.word`，于是提示词里出现
+// 「命中 6 处：undefined×3、undefined×2」：模型拿不到任何真实红线词，却同时被要求
+// "必须与扫描结果一致"——比不内联这段更糟（会诱导它编造）。同文件既有 UI
+// （redlineScanSummaryHtml）用的就是 h.pattern，两处口径本应一致。
+function buildRedlineScanText(scan) {
+  const hits = (scan && Array.isArray(scan.hits)) ? scan.hits : [];
+  const total = Number(scan && scan.total) || 0;
+  if (!(total > 0) || !hits.length) return '零命中（这篇正文没有触发任何红线词句）';
+  return `命中 ${total} 处：` + hits.slice(0, 12)
+    .map((h) => `${h.pattern || h.note || '(未命名红线)'}×${h.count}`)
+    .join('、');
+}
+
+function buildAIReviewPrompt(article, redlineScanText = '') {
   return [
     '你是严格的中文网络小说审稿编辑。请审读下面这篇章节正文，并对照小说上下文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"summary":"总评（两三句）","issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"strengths":[{"text":"写得好的地方"}]}',
     'issues 覆盖：剧情逻辑/与既有设定冲突/人物言行一致/AI 腔与模板句/节奏与钩子/篇幅；strengths 1-3 条。',
+    '',
+    WRITING_DISCIPLINE,
+    ...(redlineScanText ? ['', '【确定性红线扫描结果（工具给出，与你的判断并列）】', redlineScanText,
+      '要求：AI 腔相关的问题必须与上面的扫描结果一致——扫描命中的要写进 issues 并指出位置；扫描零命中就不要臆造"存在 AI 腔命中"。'] : []),
     '',
     '【当前小说上下文】',
     aiContextBlock() || '无',
@@ -5572,6 +6054,9 @@ function buildAIReviewPrompt(article) {
   ].join('\n');
 }
 
+// ⚠️ 下面是**整章重写**的提示词：输出≈整章长度，是修稿慢的主因（2026-09-18 实测 8 分 25 秒仍在生成）。
+// 现在默认走 buildAIRevisionPatchPrompt（只输出要改的段落）；这个函数保留为**兜底路径**：
+// 补丁解析失败或一条都没命中时回退到它，保证"改不动"和"改坏"之间还有一条熟路。
 function buildAIRevisionPrompt(article, issues) {
   const list = (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）';
   return [
@@ -5600,9 +6085,11 @@ function diffParagraphs(oldText, newText) {
 // 审稿主流程：审稿报告 → 确认清单 → 修稿 → 差异预览 → 合并。
 async function runArticleReview(info) {
   const jobBase = {
-    timeout: 600000,
-    // 质量优先：审稿报告决定后续修稿方向，不用便宜的模型省这一步。
+    timeout: longAiTimeout(),
+    // 质量优先：审稿报告决定后续修稿方向。2026-09-18 起"质量优先"由思考强度表达
+    // （模型与快档同为 V4.1 Flash，见 ai/policy.mjs 文件头决策）。
     model: policyModel('quality'),
+    reasoning_effort: policyEffortForTier('quality') || undefined,
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
     chapter_id: state.currentChapterId || undefined,
@@ -5612,8 +6099,20 @@ async function runArticleReview(info) {
     stage: 'AI 审稿'
   };
   try {
+    // S2：先把**确定性红线扫描**算出来（与 harness 的 novel_scan 工具同源，都是服务端 scanAgainstRedlines），
+    // 再连同写作纪律一起内联进审稿提示词。扫描失败不阻塞审稿（只是少一条判据，且提示词里不会出现该段）。
+    let redlineScanText = '';
+    try {
+      const scan = await api('/novel/scan', {
+        method: 'POST',
+        body: { work_id: state.workId || state.work?.id || null, text: info.article, skip_dialogue: true }
+      });
+      redlineScanText = buildRedlineScanText(scan);
+    } catch (e) {
+      reportClientLog({ level: 'warn', kind: 'redline_scan_failed', message: `[审稿] 红线扫描不可用：${e.message}` });
+    }
     const reviewData = await runHarnessJob(
-      { ...jobBase, prompt: buildAIReviewPrompt(info.article), kind: 'review', stage: 'AI 审稿' },
+      { ...jobBase, prompt: buildAIReviewPrompt(info.article, redlineScanText), kind: 'review', stage: 'AI 审稿' },
       'AI 审稿 · 正在通读全文并生成审稿报告…'
     );
     const rawOutput = String(reviewData.output || '');
@@ -5684,11 +6183,20 @@ async function refineByChecklist() {
   document.querySelectorAll('[data-review-issue]:checked').forEach((el) => {
     confirmed.push((review.issues || [])[Number(el.dataset.reviewIssue)]);
   });
+  // ⚠️ 一条都没勾选就**不要发起任何调用**：重审发现早先这一检查放在"补丁调用之后"的回退分支里，
+  // 于是作者把勾全取消后，仍然先跑了一次付费的修稿调用，再告诉他"没有勾选任何问题"。
+  // 付费动作之前必须先做前置校验（与"AI 写作"先弹确认框同一条纪律）。
+  if (!confirmed.length) {
+    closeModal();
+    toast('没有勾选任何问题，未发起修稿', 'error');
+    return;
+  }
   closeModal();
   const jobBase = {
-    timeout: 600000,
-    // 质量优先：这一步直接产出修好的正文，是交付物本身。
+    timeout: longAiTimeout(),
+    // 质量优先：这一步直接产出修好的正文，是交付物本身 —— 由思考强度表达（同 V4.1 Flash）。
     model: policyModel('quality'),
+    reasoning_effort: policyEffortForTier('quality') || undefined,
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
     chapter_id: state.currentChapterId || undefined,
@@ -5696,20 +6204,152 @@ async function refineByChecklist() {
   };
   try {
     const refinedData = await runHarnessJob(
-      { ...jobBase, prompt: buildAIRevisionPrompt(info.article, confirmed), kind: 'revision', stage: 'AI 修稿' },
+      { ...jobBase, prompt: buildAIRevisionPatchPrompt(info.article, confirmed), kind: 'revision', stage: 'AI 修稿' },
+      'AI 修稿 · 正在按确认清单逐段修改…'
+    );
+    const raw = refinedData.output || '';
+    // 首选补丁式（只改相关段落，快）；解析不到/一条都没命中 → 回退整章重写（慢但熟路）。
+    const patched = tryApplyRevisionOutput(raw, info.article);
+    if (patched && patched.ok) {
+      showReviewDiff(info.article, patched.text, {
+        checklist: confirmed.length,
+        applied: patched.applied.length,
+        notes: patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40))
+      });
+      markJobApplied(refinedData && refinedData.job_id);
+      toast(patched.unresolved.length ? `已改 ${patched.applied.length} 处；${patched.unresolved.length} 处未能定位` : `已按清单改好 ${patched.applied.length} 处`, patched.unresolved.length ? 'error' : 'success');
+      return;
+    }
+    // 回退：整章重写（已确认清单非空，前面统一校验过）。
+    toast('按段修改没能解析出可用补丁，已回退整章重写（会慢一些）', 'error');
+    const fullData = await runHarnessJob(
+      { ...jobBase, prompt: buildAIRevisionPrompt(info.article, confirmed), kind: 'revision', stage: 'AI 修稿（整章）' },
       'AI 修稿 · 正在按确认清单修改…'
     );
-    const revised = parseAIWritingOutput(refinedData.output || '').finalText || '';
+    const revised = parseAIWritingOutput(fullData.output || '').finalText || '';
     if (!revised.trim()) throw new Error('修稿结果为空');
-    showReviewDiff(info.article, revised, confirmed.length);
-    // 修稿产出已交付（差异预览已打开）→ 标记任务已应用，恢复条不再重复提示。
-    markJobApplied(refinedData && refinedData.job_id);
+    showReviewDiff(info.article, revised, { checklist: confirmed.length });
+    markJobApplied(fullData && fullData.job_id);
   } catch (e) {
     if (!e.cancelled) toast('修稿失败：' + e.message, 'error');
   }
 }
 
-function showReviewDiff(oldText, newText, confirmedCount) {
+// ---------- 修稿（补丁式）：只改被勾选的问题涉及的段落 ----------
+// 为什么改成补丁式：整章重写要让模型把 5000+ 字原样吐一遍，输出长度≈章节长度，
+// 时间与费用都花在"抄写没问题的段落"上。补丁式只输出需要改的段落（通常几百字）。
+// 代价是引入"定位"这一步——所以设计上强制：**定位不到必须可见**（进 unresolved 清单），
+// 且解析失败时回退整章重写（见 refineByChecklist）。
+function buildAIRevisionPatchPrompt(article, issues) {
+  const list = (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）';
+  return [
+    '你是资深中文网络小说修稿编辑。**只修改下面「作者确认的问题清单」涉及的段落**，其它段落一个字都不要动、也不要输出。',
+    '',
+    '【作者确认的问题清单】',
+    list,
+    '',
+    '【当前小说上下文】',
+    aiContextBlock() || '无',
+    '',
+    '【待修正文】',
+    String(article || '').slice(0, 12000),
+    '',
+    '只输出一个 JSON 对象，不要 Markdown 代码块、不要解释、不要任何前后缀：',
+    '{"patches":[{"issue":1,"anchor":"原文段落（逐字照抄，含标点，不要改动一个字）","revised":"改好后的段落"}]}',
+    '规则：',
+    '1. 一处改动一条 patch；同一段落有多条问题时合并为一条。',
+    '2. anchor 必须能在【待修正文】里**原样找到**（逐字复制整段），否则这条修改会作废。',
+    '3. revised 只写改后的段落本身，不要编号、不要解释、不要引号包裹。',
+    '4. 某条问题不需要改动就不必为它输出 patch；没有要改的就输出 {"patches":[]}。'
+  ].join('\n');
+}
+
+/** 解析补丁输出：严格 JSON → 抢救（沿用审稿报告的引号容错思路）→ 失败返回 null。 */
+function parseRevisionPatches(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const pick = (obj) => {
+    const arr = Array.isArray(obj && obj.patches) ? obj.patches : null;
+    if (!arr) return null;
+    const patches = [];
+    for (const p of arr) {
+      const anchor = String((p && (p.anchor ?? p.original ?? p.old)) || '').trim();
+      const revised = String((p && (p.revised ?? p.replacement ?? p.new)) || '').trim();
+      if (anchor) patches.push({ issue: Number(p && p.issue) || 0, anchor, revised });
+    }
+    return patches;
+  };
+  const strict = extractJSONFromText(text);
+  const viaStrict = strict ? pick(strict) : null;
+  if (viaStrict) return viaStrict;
+  // 抢救：模型常在字符串值末尾多吐一个引号（`…文本。","next"`）——与审稿报告同一类瑕疵。
+  // 按 "anchor" 出现位置切块，块内用与审稿报告同源的 salvageJSONString 取值。
+  const patches = [];
+  const idxs = [];
+  for (let i = text.indexOf('"anchor"'); i >= 0; i = text.indexOf('"anchor"', i + 1)) idxs.push(i);
+  for (let k = 0; k < idxs.length; k++) {
+    const seg = text.slice(idxs[k], k + 1 < idxs.length ? idxs[k + 1] : text.length);
+    const anchor = salvageJSONString(seg, 'anchor').trim();
+    const revised = salvageJSONString(seg, 'revised').trim();
+    if (anchor) patches.push({ issue: 0, anchor, revised });
+  }
+  return patches.length ? patches : null;
+}
+
+/**
+ * 把补丁应用到正文。逐段匹配（先精确、再"包含"退让），**命中才改**。
+ * 返回 { text, applied, unresolved }：unresolved 必须展示给作者，绝不静默丢弃。
+ */
+function applyRevisionPatches(article, patches) {
+  const paras = String(article || '').split(/\n{2,}/);
+  const used = new Set();
+  const applied = [];
+  const unresolved = [];
+  for (const p of patches || []) {
+    const anchor = String(p.anchor || '').trim();
+    const revised = String(p.revised || '').trim();
+    if (!anchor || !revised) {
+      unresolved.push({ issue: p.issue, anchor, reason: !anchor ? '缺 anchor（无法定位）' : '缺 revised（改后内容为空）' });
+      continue;
+    }
+    let idx = -1;
+    for (let i = 0; i < paras.length; i++) {
+      if (used.has(i)) continue;
+      if (paras[i].trim() === anchor) { idx = i; break; }
+    }
+    if (idx < 0) {
+      // 退让一步：模型可能多抄/少抄了首尾标点。只在 anchor 足够长时才允许模糊命中，避免误改。
+      for (let i = 0; i < paras.length; i++) {
+        if (used.has(i)) continue;
+        if (anchor.length >= 8 && paras[i].includes(anchor)) { idx = i; break; }
+      }
+    }
+    if (idx < 0) { unresolved.push({ issue: p.issue, anchor, reason: '在正文里找不到这段原文' }); continue; }
+    used.add(idx);
+    paras[idx] = revised;
+    applied.push({ issue: p.issue, anchor, revised });
+  }
+  return { text: paras.join('\n\n'), applied, unresolved };
+}
+
+/**
+ * 修稿产出的统一入口：先按补丁解析，成功就返回改好的正文；否则返回 null（调用方回退整章重写）。
+ * 抽出来是因为这条路径有**两个**调用点：正常流程 refineByChecklist 与刷新后的"接回进度"。
+ */
+function tryApplyRevisionOutput(output, baseArticle) {
+  const patches = parseRevisionPatches(output);
+  if (!patches || !patches.length) return null;
+  const result = applyRevisionPatches(baseArticle, patches);
+  if (!result.applied.length) return { ...result, ok: false };
+  return { ...result, ok: true };
+}
+
+// ⚠️ 第 3 个参数是**带标签的对象**，不是一个裸数字：
+//    checklist = 作者勾选的问题条数；applied = 实际改好的处数；notes = 没能定位的条目。
+//    两条路径给出的数不同（正常流程知道清单条数；"接回进度"只知道改好几处），
+//    用一个参数位表达两种量，必然出现「标题说按 0 条清单修改、正文说 2 条没定位」这种自相矛盾
+//    （2026-09-18 第四轮重审抓到）。
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [] } = {}) {
   state.pendingReviewDiff = { newText };
   const ops = diffParagraphs(oldText, newText);
   const body = ops.map((op) => {
@@ -5717,10 +6357,14 @@ function showReviewDiff(oldText, newText, confirmedCount) {
     if (op.t === 'del') return `<div class="diff-p diff-del">${esc(op.x)}</div>`;
     return `<div class="diff-p diff-add">${esc(op.x)}</div>`;
   }).join('');
+  const title = checklist != null
+    ? `🆚 修稿差异预览（按 ${checklist} 条清单修改${applied != null ? `，实际改好 ${applied} 处` : ''}）`
+    : `🆚 修稿差异预览（实际改好 ${applied ?? 0} 处）`;
   openModal({
-    title: `🆚 修稿差异预览（按 ${confirmedCount} 条清单修改）`,
+    title,
     body: `
       <div class="muted mb-8"><span class="diff-add-inline">绿色</span>=修稿新增/改写，<span class="diff-del-inline">红色</span>=旧稿被删改。确认无误后合并到正文。</div>
+      ${notes.length ? `<div class="redline-scan warn">⚠️ 有 ${notes.length} 条改动没能自动定位，已保持原样、需要你手工处理：${notes.map((n) => esc(String(n).slice(0, 60))).join('；')}</div>` : ''}
       <div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`,
     footer: `
       <button class="btn secondary" data-close-modal>放弃修改</button>
@@ -5813,9 +6457,24 @@ async function handleImportFile(file) {
   }
 }
 
-async function applyAIWritingArticle(mode, article) {
+async function applyAIWritingArticle(mode, article, chapterId = null) {
   const editor = $('#editor-content');
-  if (!editor) return;
+  if (!editor) {
+    // N1：此前这里直接 return —— 结果弹窗关掉、什么都不发生、也没有任何提示，
+    // 用户会以为"已经插入/替换成功"。非写作视图（总览/设定等）取回结果时就会撞上。
+    // 现在把产出留成草稿并说明去哪找，绝不静默吞掉一次几分钟的等待。
+    // 章号同样优先用调用方给的（任务自带），避免把草稿落到"当前恰好打开的那一章"。
+    const targetChapterId = Number(chapterId) || state.currentChapterId;
+    try {
+      if (targetChapterId) {
+        // 与 showAIWritingResult 落草稿时同一写法（content 存原文，取回走 /novel/chapter_save）
+        await api('/novel/draft', { method: 'POST', body: { chapter_id: targetChapterId, content: article } });
+        await refreshChapterRecovery(targetChapterId);
+      }
+    } catch (_) { /* 落草稿失败也要把话说清楚 */ }
+    toast('当前不在正文写作页，未直接写入；结果已存为本章草稿——回到「正文写作」页顶部的取回条即可应用', 'error');
+    return;
+  }
   if (mode === 'insert') {
     insertHtmlAtCursor(editor, textToParagraphsHtml(article));
     scheduleSave();
@@ -5870,7 +6529,7 @@ function showBlueprintConfirm(blueprint) {
     openModal({
       title: '📐 章节蓝图 · 请确认或修改',
       body: `
-        <div class="muted mb-8">AI 根据本章需求生成了蓝图，写作将严格围绕它展开；可修改后再「按此蓝图成文」，蓝图会保存到章节并参与后续上下文与一致性核对。</div>
+        <div class="muted mb-8">AI 根据本章需求生成了蓝图，写作将严格围绕它展开；可修改后再「按此蓝图成文」，蓝图会保存到章节并参与后续上下文与一致性核对。${helpDot('blueprint')}</div>
         <div id="bp-empty-hint" class="redline-scan warn" hidden>⬆ 六个字段不能全为空：请至少填写一项，或改用「跳过蓝图直接成文」。</div>
         <div class="form-grid">
           <div class="field full"><label>场景目标</label><input id="bp-scene-goal" value="${esc(b.scene_goal || '')}" placeholder="本场景要达成什么"></div>
@@ -5890,6 +6549,19 @@ function showBlueprintConfirm(blueprint) {
   });
 }
 
+// 上下文是否被预算截断/溢出。
+// 用途：慢通道能"用工具取回被截断的原文"，直连不能 —— 所以**截断时不用直连**。
+// 取不到上下文元数据时保守返回 true（宁可慢，不要基于残缺资料生成蓝图）。
+function aiContextTruncated() {
+  const ctx = state.aiContext;
+  if (!ctx) return true;
+  if (ctx.context_overflow) return true;
+  const manifest = Array.isArray(ctx.context_manifest) ? ctx.context_manifest : [];
+  if (manifest.some((m) => m && (m.truncated || Number(m.dropped) > 0))) return true;
+  const stats = ctx.context_stats || {};
+  return Number(stats.truncatedLayers) > 0;
+}
+
 async function performToolbarAIWrite(requirement) {
   const editor = $('#editor-content');
   if (!editor) return;
@@ -5899,7 +6571,7 @@ async function performToolbarAIWrite(requirement) {
   // 🐞 运行追踪：记录本次写作是被取消还是正常结束，用于收尾时的操作状态。
   let traceWriteCancelled = false;
   const jobBase = {
-    timeout: 600000,
+    timeout: longAiTimeout(),
     model: policyModel('fast'),
     action: 'write',
     work_id: state.workId || state.work?.id || undefined,
@@ -5923,8 +6595,34 @@ async function performToolbarAIWrite(requirement) {
         : (lastMsg?.content || '').includes('【提问】')
           ? 'AI 写作（1/3 蓝图）· 已收到回答，正在生成章节蓝图…'
           : 'AI 写作（1/3 蓝图）· 正在按反馈重新规划蓝图…';
-      const data = await runHarnessJob({ ...jobBase, prompt: buildAIWritingBlueprintPrompt(initial, history, targetWords) }, stageLabel);
-      const raw = data.output || '';
+      const blueprintPrompt = buildAIWritingBlueprintPrompt(initial, history, targetWords);
+      // S1（2026-09-18 实测驱动）：蓝图轮优先走**直连**——省掉慢通道每次 ≈17 秒的固定开销
+      // （实测：微型任务 直连 0.6s vs 慢通道 17.9s；同一条真实蓝图提示词 19.1s vs 47.3s，
+      //   两者都产出 `【蓝图】` 首行 + 6/6 字段）。
+      // 两道保险：① 上下文被预算截断时不用直连（慢通道能取回被截断的原文）；
+      //           ② 直连失败/空回复 → 自动回退慢通道（directAIWrite 内部已对"思考吃光预算"重试过一次）。
+      let raw = '';
+      // 慢通道那条路的结果（scan / proposals / job_id）——直连时为 null。
+      // ⚠️ 必须在**循环体外**声明：下面 6705/6725 两个降级分支要用它。
+      // 重审抓到过一版把它写成 if 块内的 `const data`，块外引用即 ReferenceError（node --check 查不出来）。
+      let jobMeta = null;
+      if (!aiContextTruncated()) {
+        // 直连也要出进度卡：否则界面会静默十几秒（用户以为是卡死）。
+        // 进度卡自带每秒计时，正好补上"直连没有 stage 推送"这个短板。
+        const card = showAITaskProgress(stageLabel);
+        try {
+          const viaDirect = await directAIWrite([{ role: 'user', content: blueprintPrompt }], {
+            model: policyModel('fast'), maxTokens: 8192
+          });
+          if (viaDirect) raw = viaDirect;
+        } finally {
+          card.close();
+        }
+      }
+      if (!raw.trim()) {
+        jobMeta = await runHarnessJob({ ...jobBase, prompt: blueprintPrompt }, stageLabel);
+        raw = jobMeta.output || '';
+      }
       if (!raw.trim()) {
         // N-02：把原始输出挂到错误上，供错误弹窗回显（此前失败只有瞬态 toast，用户看不到任何原因）。
         const err = new Error('AI 没有返回内容');
@@ -6049,7 +6747,7 @@ async function performToolbarAIWrite(requirement) {
 
       if (parsed.finalText) {
         // 模型跳过蓝图直接给了正文（降级路径，兼容旧行为）
-        const mode = await showAIWritingResult(parsed.finalText, data.scan, data.proposals, targetWords, data && data.job_id);
+        const mode = await showAIWritingResult(parsed.finalText, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id);
         if (mode === null) return;
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
         await applyAIWritingArticle(mode, parsed.finalText);
@@ -6069,7 +6767,7 @@ async function performToolbarAIWrite(requirement) {
       }
 
       // 兜底：按最终结果处理
-      const mode = await showAIWritingResult(raw, data.scan, data.proposals, targetWords, data && data.job_id);
+      const mode = await showAIWritingResult(raw, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id);
       if (mode === null) return;
       if (mode === 'regenerate') return performToolbarAIWrite(requirement);
       await applyAIWritingArticle(mode, raw);
@@ -6121,7 +6819,10 @@ function askBatchGenerate() {
 async function batchGenerateChapters(count) {
   count = Math.min(10, Math.max(1, Number(count) || 3));
   if (!state.workId) return toast('请先进入一部作品', 'error');
-  flushSave(); // F-01：批量生成前先落盘当前编辑器，避免长时间任务结束时丢失未保存内容
+  // F-01：批量生成前先落盘当前编辑器，避免长时间任务结束时丢失未保存内容。
+  // ⚠️ 必须 await：紧接着要查"哪些章节还是空的"（server 侧判据是 content IS NULL OR content=''），
+  // 正在写、还没落盘的新章会被判成空章 → 被选成生成目标，然后你的未保存内容被覆盖。
+  await flushSave();
   let empty;
   try {
     empty = await api(`/novel/empty_chapters?work_id=${state.workId}`);
@@ -6131,7 +6832,7 @@ async function batchGenerateChapters(count) {
   const targets = (empty.chapters || []).slice(0, count);
   if (!targets.length) return toast('没有空章节可生成（可先在正文写作页新建章节）', 'error');
   const jobBase = {
-    timeout: 600000,
+    timeout: longAiTimeout(),
     model: policyModel('fast'),
     action: 'write',
     work_id: state.workId,
@@ -6611,10 +7312,13 @@ function genDialoguePrompt(system, context, initial, history, forceQuestion = fa
 // 多轮【提问】→【成文】生成循环，返回最终文本；用户中途取消返回 null。
 // 首轮强制一问（forceQuestion）优先走直连通道秒级出题，直连失败/空回复回退 Harness；
 // 成文轮（用户回答后）仍走 Harness 创作内核保证设定质量与上下文一致。
-// 模型分工：提问轮 = deepseek-flash（直连，澄清问题只需一个问句，快且省）；
-// 成文轮 = deepseek-v4-pro（正式产出设定，质量优先，用户已确认）。
-// 注：直连失败/空回复回退 Harness 时，提问轮也会走 pro——该回退分支历史性地与成文轮
-// 共用同一次 harness 调用（质量优先、极少触发，可接受）；若要严格分离需按 forceQuestion 再分支。
+// 模型分工：提问轮 = 快档（直连，澄清问题只需一个问句）；成文轮 = 质量档。
+// ⚠️ 2026-09-18 起两档**模型名相同**（都是 V4.1 Flash = `deepseek-flash`），
+//    「质量优先」由 reasoning_effort 表达（policyEffortForTier('quality') = 'high'）。
+//    这里的历史注释写的是 `deepseek-v4-pro`——那已是上一代模型，**不要再照它改回去**：
+//    详见 ai/policy.mjs 文件头的决策记录。
+// 注：直连失败/空回复回退 Harness 时，提问轮也会跟着走同一次 harness 调用（质量档）——
+// 该回退分支历史性地与成文轮共用同一次调用（极少触发，可接受）；若要严格分离需按 forceQuestion 再分支。
 async function runGenAskLoop({ system, initial }) {
   const history = [];
   // 成文轮上下文：settings 轻量装配 + 词条按需选取；整个循环只装配一次，
@@ -6635,9 +7339,10 @@ async function runGenAskLoop({ system, initial }) {
       // 无可用 API 配置 / 直连失败 / 空回复：回退 Harness 慢通道（含后续成文轮）。
       const data = await runHarnessJob({
         prompt,
-        timeout: 600000,
-        // 质量优先：成文轮产出正式设定，与提问轮分工不同，不用 flash 省这一步。
+        timeout: longAiTimeout(),
+        // 质量优先：成文轮产出正式设定，与提问轮分工不同 —— 由思考强度表达（同 V4.1 Flash）。
         model: policyModel('quality'),
+        reasoning_effort: policyEffortForTier('quality') || undefined,
         action: 'settings-gen',
         work_id: state.workId,
         chapter_id: state.currentChapterId || undefined,
@@ -7176,7 +7881,13 @@ async function runAICreateNovel() {
     // D8-#4：走作业入口。此前这条是同步请求——浏览器要挂着一个 HTTP 长连接等几分钟，
     // 刷新即丢、也无法取消；现在与其它 AI 任务同构（进度卡 + 停止 + 可恢复）。
     const job = await runHarnessJob(
-      { kind: 'generate_novel', prompt, model: policyModel('quality'), timeout: 600000 },
+      {
+        kind: 'generate_novel',
+        prompt,
+        model: policyModel('quality'),
+        reasoning_effort: policyEffortForTier('quality') || undefined,
+        timeout: longAiTimeout()
+      },
       'AI 自动创建小说',
       '/harness/job');
     const data = job.result || {};
@@ -7641,7 +8352,7 @@ async function handleAction(action, actionEl, e) {
       }
 
       case 'open-chapter': {
-        flushSave(); // F-01：切章前先落盘当前编辑器，避免 800ms 内切章丢字
+        await flushSave(); // F-01：切章前先落盘（await：随后 render 会重新拉取章节，避免读到旧正文/旧字数）
         state.currentChapterId = Number(actionEl.dataset.id);
         state.view = 'writing';
         await render();
@@ -8198,6 +8909,150 @@ async function handleAction(action, actionEl, e) {
         break;
       }
 
+      // ---------- AI 设置页：OpenViking 记忆库卡 ----------
+      case 'save-ov-config': {
+        const endpointEl = $('#ov-endpoint-input');
+        const keyEl = $('#ov-key-input');
+        if (!endpointEl) break;
+        const body = { endpoint: String(endpointEl.value || '').trim() };
+        // 空 Key = 不改动（要清除请按「清除已保存的 Key」）——与后端 PUT 的字段契约一致。
+        const typedKey = String(keyEl?.value || '').trim();
+        if (typedKey) body.api_key = typedKey;
+        const btn = actionEl;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '保存中…';
+        try {
+          state.ovStatus = await api('/novel/openviking', { method: 'PUT', body });
+          renderOpenVikingStatus();
+          if (state.envTools) renderEnvTools();
+          const healthy = state.ovStatus.healthy === true;
+          toast(healthy ? '已保存，OpenViking 连接正常' : '已保存，但 OpenViking 目前没有响应（不影响手动写作）', healthy ? 'success' : 'error');
+        } catch (e) {
+          toast('保存失败：' + e.message, 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+        break;
+      }
+
+      case 'test-ov-connection': {
+        const btn = actionEl;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '测试中…';
+        try {
+          state.ovStatus = await api('/novel/openviking');
+          renderOpenVikingStatus();
+          if (state.envTools) renderEnvTools();
+          const healthy = state.ovStatus.healthy === true;
+          toast(healthy ? 'OpenViking 连接成功' : 'OpenViking 没有响应：确认服务已启动，地址/端口是否填对', healthy ? 'success' : 'error');
+        } catch (e) {
+          toast('测试失败：' + e.message, 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+        break;
+      }
+
+      case 'clear-ov-key': {
+        if (!confirm('清除工坊内保存的 OpenViking Key？\n\n清除后会回到配置文件 / 环境变量里的凭证。')) break;
+        try {
+          state.ovStatus = await api('/novel/openviking', { method: 'PUT', body: { clear_api_key: true } });
+          renderOpenVikingStatus();
+          if (state.envTools) renderEnvTools();
+          toast('已清除工坊内保存的 Key', 'success');
+        } catch (e) {
+          toast('清除失败：' + e.message, 'error');
+        }
+        break;
+      }
+
+      case 'write-ov-global': {
+        if (!confirm('把当前生效的 OpenViking 地址与 Key 写入全局配置文件？\n\n• 目标：~/.openviking/ovcli.conf\n• 只改 url / api_key 两个字段，其它字段原样保留\n• 写入前自动备份原文件\n\n这一步是为了让 dsh 侧（GUI 会话 / AI 写作任务）也用同一份凭证。')) break;
+        try {
+          const out = await api('/novel/openviking/global_config', { method: 'POST', body: {} });
+          renderOpenVikingStatus();
+          const changed = (out.changed || []).join('、');
+          toast(changed ? `已写入全局配置：${changed}` : (out.message || '无需改动'), 'success');
+          // 备份路径与还原方法必须**看得见、能复制**：写的是作者主目录下的文件，
+          // 只在 toast 里闪一下不够（toast 会消失，路径又长）。
+          if (typeof alert === 'function') {
+            alert(`全局配置已处理\n\n文件：${out.path}\n改动：${changed || '无'}\n备份：${out.backup || '（写入前不存在该文件）'}\n${out.restore_hint || ''}\n\n${out.note || ''}`);
+          }
+        } catch (e) {
+          toast('写入失败：' + e.message, 'error');
+        }
+        break;
+      }
+
+      // ---------- AI 设置页：本地创作内核（dsh）卡 ----------
+      case 'save-dsh-repo': {
+        const input = $('#dsh-repo-input');
+        if (!input) break;
+        const dir = String(input.value || '').trim();
+        const btn = actionEl;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '保存中…';
+        try {
+          const out = await api('/env/dsh_repo', { method: 'PUT', body: { dir } });
+          toast(out.dsh && out.dsh.found ? '已保存，dsh 已找到' : '已保存，但仍未找到 dsh（检查路径）', out.dsh && out.dsh.found ? 'success' : 'error');
+          await loadEnvTools();
+        } catch (e) {
+          // 填了一个不是 dsh 仓库的目录时后端会明确拒绝，这里原样把原因显示出来。
+          toast('保存失败：' + e.message, 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+        break;
+      }
+
+      case 'refresh-env-tools': {
+        const btn = actionEl;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '检测中…';
+        try {
+          await loadEnvTools();
+          await loadOpenVikingStatus();
+          toast('已重新检测', 'success');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+        break;
+      }
+
+      case 'open-folder': {
+        const target = actionEl.dataset.target || '';
+        try {
+          const out = await api('/env/open_folder', { method: 'POST', body: { target } });
+          toast(`已在文件管理器打开：${out.label || target}`, 'success');
+        } catch (e) {
+          toast('打开失败：' + e.message, 'error');
+        }
+        break;
+      }
+
+      case 'copy-text': {
+        const text = actionEl.dataset.copy || '';
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            toast('已复制到剪贴板', 'success');
+          } else {
+            throw new Error('浏览器不支持剪贴板接口');
+          }
+        } catch (e) {
+          toast('复制失败，请手动选中命令复制：' + e.message, 'error');
+        }
+        break;
+      }
+
       case 'save-api-config': {
         const modal = $('.modal');
         const data = collectModalData(modal);
@@ -8314,7 +9169,12 @@ async function handleAction(action, actionEl, e) {
         break;
 
       case 'ai-write':
-        await runAIWrite();
+        // D6（2026-09-18）：这条入口此前走的是**另一套**一次性管线（buildAIWriteMessages 自己拼上下文，
+        // 然后一次 runHarnessFromMessages）——没有蓝图、没有目标字数补足、没有质检轮、也没有采纳率埋点；
+        // 同一个「AI 写作」在工具栏与参考面板行为完全不同，且走这条路的成文在后续一致性核对里缺蓝图锚点。
+        // 现在统一到工具栏那条管线：需求确认 → 蓝图（直连优先）→ 成文 → 质检 → 补足。
+        toast('已改用与工具栏「✍️ AI 写作」相同的流程（需求 → 蓝图 → 成文）', 'success');
+        await performToolbarAIWrite($('#ai-prompt')?.value?.trim() || '');
         break;
 
       case 'ai-create-submit':
@@ -8578,7 +9438,7 @@ document.addEventListener('change', async (e) => {
   }
   // D15：单栏布局下的章节切换器
   if (e.target.id === 'chapter-switcher') {
-    flushSave(); // F-01：切章前先落盘，避免丢字
+    await flushSave(); // F-01：切章前先落盘（await 的理由同上：随后要重新拉取渲染）
     state.currentChapterId = Number(e.target.value);
     await render();
     persistSession();
@@ -8699,28 +9559,64 @@ document.addEventListener('click', async (e) => {
 });
 
 // tooltip
-document.addEventListener('mouseover', (e) => {
-  const link = e.target.closest('.term-link');
+// 两用：① 正文里的词条链接（.term-link）→ 词条摘要；
+//       ② 帮助标记（[data-help]：标题旁的小问号、字段小字）→ HELP_TEXT 里的解释。
+// 合成一个 handler：定位/跟随/隐藏这些边界条件只维护一处（早先只认 .term-link，
+// 于是"标题旁边加个小字提示"这件事没有现成通道，只能各自用原生 title——不可样式化、
+// 触屏与键盘也看不到）。
+function tooltipHtmlFor(el) {
+  if (el.classList && el.classList.contains('term-link')) {
+    const term = state.termsCache.get(Number(el.dataset.termId));
+    if (!term) return '';
+    return `<div class="tt-title">${esc(term.title)}</div><div class="tt-body">${esc((term.content || '').slice(0, 140))}</div>`;
+  }
+  const item = el.dataset && el.dataset.help ? HELP_TEXT[el.dataset.help] : null;
+  if (!item) return '';
+  return `<div class="tt-title">${esc(item.title)}</div><div class="tt-body">${esc(item.body)}</div>`;
+}
+
+function openTooltip(anchor, html, pos) {
   const tip = $('#tooltip');
-  if (!link || !tip) return;
-  const id = Number(link.dataset.termId);
-  const term = state.termsCache.get(id);
-  if (!term) return;
-  tip.innerHTML = `<div class="tt-title">${esc(term.title)}</div><div class="tt-body">${esc((term.content || '').slice(0, 140))}</div>`;
+  if (!tip) return;
+  tip.innerHTML = html;
   tip.hidden = false;
-  const move = (ev) => {
-    tip.style.left = Math.min(ev.clientX + 14, window.innerWidth - 320) + 'px';
-    tip.style.top = (ev.clientY + 14) + 'px';
+  const place = (x, y) => {
+    const maxLeft = Math.max(0, (window.innerWidth || 1200) - 360);
+    tip.style.left = Math.min(x + 14, maxLeft) + 'px';
+    tip.style.top = (y + 14) + 'px';
   };
-  move(e);
-  const onMove = (ev) => move(ev);
+  if (pos) place(pos.x, pos.y);
+  else {
+    const r = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : { left: 0, bottom: 0 };
+    place(r.left, r.bottom);
+  }
+  const onMove = (ev) => place(ev.clientX, ev.clientY);
   const onOut = () => {
     tip.hidden = true;
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseout', onOut);
+    document.removeEventListener('focusin', onFocusOut);
   };
-  document.addEventListener('mousemove', onMove);
+  const onFocusOut = (ev) => { if (!anchor.contains(ev.target)) onOut(); };
+  if (pos) document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseout', onOut);
+  document.addEventListener('focusin', onFocusOut);
+}
+
+document.addEventListener('mouseover', (e) => {
+  const el = e.target.closest && e.target.closest('.term-link, [data-help]');
+  if (!el) return;
+  const html = tooltipHtmlFor(el);
+  if (!html) return;
+  openTooltip(el, html, { x: e.clientX, y: e.clientY });
+});
+
+// 键盘可达：Tab 聚焦到帮助标记时同样能看到解释（也顺便覆盖没有 hover 的触屏）。
+document.addEventListener('focusin', (e) => {
+  const el = e.target.closest && e.target.closest('[data-help]');
+  if (!el) return;
+  const html = tooltipHtmlFor(el);
+  if (html) openTooltip(el, html, null);
 });
 
 // sidebar toggle

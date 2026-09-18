@@ -617,9 +617,22 @@ export function attachClientNodes(opId, nodes) {
   let accepted = 0;
   for (const raw of nodes.slice(0, 200)) {
     if (op.nodes.length >= MAX_NODES_PER_OP) {
-      if (!op.truncated) op.truncated = true;
+      // 截断记账必须与后端 recordNode 同一套口径（那里会 state.truncatedOps += 1 并发 op-truncated 事件）：
+      // 此前这里只置 op.truncated 且只加 droppedNodes，于是 sessionSummary/traceState 的
+      // truncated_ops 少报、界面也收不到"这条操作被截断"的实时提示。2026-09-18 审计发现并统一。
+      if (!op.truncated) {
+        op.truncated = true;
+        state.truncatedOps += 1;
+        pushStream({ type: 'op-truncated', opId: id, limit: MAX_NODES_PER_OP });
+      }
       op.droppedNodes += 1;
       state.droppedNodes += 1;
+      // dropped_by_kind 也在摘要里（见 opSummary）：客户端节点同样要按 kind 记账，
+      // 否则「被丢弃的是哪类节点」在前后端两条路径上口径不同。
+      if (op.droppedByKind) {
+        const kind = String(raw.kind || 'other');
+        op.droppedByKind[kind] = (op.droppedByKind[kind] || 0) + 1;
+      }
       continue;
     }
     state.seq += 1;
@@ -1024,7 +1037,8 @@ function jsonSafeReplacer(key, value) {
 }
 
 /** 保留策略：只留最近 KEEP_SESSIONS 个会话文件。 */
-export function pruneSessions(keep = KEEP_SESSIONS) {
+// 仅本文件使用（保留策略定时器调用）；2026-09-18 去掉 export：仓库内除本文件外 0 引用。
+function pruneSessions(keep = KEEP_SESSIONS) {
   try {
     ensureDir();
     const files = fs.readdirSync(DEBUG_DIR)
@@ -1202,7 +1216,12 @@ export function traceRequest(req, res, fn) {
       op.lastActivityAt = nowMs();
     });
     res.on('close', () => {
-      if (res.writableFinished) return;
+      if (res.writableFinished) return; // 正常收尾走 finish 分支（它已递减，不能重复减）
+      // ⚠️ 客户端中止（关页面 / 点停止 / abort）也必须递减 pendingRequests：
+      // 否则这条操作的计数永不归零，而 sweepIdleOperations 的守门条件正是
+      // `if ((op.pendingRequests || 0) > 0) continue;` → 该操作永久停在 running，
+      // 等到停录才被兜底收尾（耗时按"到那一刻"计算）。这正是本函数注释要消灭的现象。
+      op.pendingRequests = Math.max(0, (op.pendingRequests || 0) - 1);
       // 客户端中止（关页面 / 点停止 / abort）：headersSent 为真时 res.statusCode 仍是 200，
       // 直接用它会把「被中断的请求」记成成功。用 writableEnded / headersSent 判定，
       // 只有确实没写完响应的连接才记 499（客户端关闭请求）。

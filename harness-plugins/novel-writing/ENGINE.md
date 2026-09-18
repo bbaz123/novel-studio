@@ -174,7 +174,7 @@ dsh 的默认模型只存在于**进程级**的 `settings.yaml`，而 headless C
 
 ⚠️ 有一件事必须跟着走：专用 `DSH_HOME`（决策 B）启用后，**设置文件也要跟着走**。
 否则回退路径改的是 GUI 的 `settings.yaml`，而子进程读的是新 home 的——**改了等于没改**，
-还会静默以默认模型运行。`harness.js` 的 `DSH_SETTINGS` 因此改为跟随 `resolveTaskDshHome()`。
+还会静默以默认模型运行。`harness.js` 里取这个路径的 `dshSettingsPath()` 因此跟随 `resolveTaskDshHome()`。
 
 证据：`.p1-baseline/exp-concurrent-models.mjs`（两个并发任务各自读到自己的模型、
 全局 `settings.yaml` **逐字节未变**、零计费）与 `.p1-baseline/test-task-settings.mjs`。

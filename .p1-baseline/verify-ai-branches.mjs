@@ -24,7 +24,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MODELS, EFFORTS, PIPELINE_EFFORT_BY_MODE } from '../ai/policy.mjs';
 
-const FILES = ['public/app.js', 'server.js', 'harness.js'];
+// 扫描清单。**db.js 是 2026-09-18 补进来的**：它此前把 'deepseek-flash' 写死在建表默认值与
+// 迁移 SQL 里，而清单里没有它 → 工具永远报"0 处绕过"，改分工时那两处会静默留在旧名上。
+// 现在 db.js 从 ai/policy.mjs 取模型名（测试 test-policy-tiers.mjs 会钉住这一点）。
+const FILES = ['public/app.js', 'server.js', 'harness.js', 'db.js'];
 
 /** 允许出现模型字面量的行（人工确认过的例外，逐条列出原因）。 */
 const ALLOWED_LITERAL_LINES = [

@@ -1,5 +1,14 @@
 # 小说工坊（novel-studio）上下文记忆功能分析报告
 
+> ⚠️ **2026-09-18 变更注记**：本文档记录的是**当时**的状态。此后质量档已统一为 V4.1 Flash（`deepseek-flash`），
+> 「质量优先」改由 `reasoning_effort: high` 表达（`ai/policy.mjs` 的 `EFFORT_BY_TIER`，决策理由见该文件头）。
+> 文中凡出现 `deepseek-v4-pro` / 「两处常量需同步改」/「10 分钟超时」的表述，**均以当前代码为准**。
+> 另：文中 §6.2 提到的 `syncWorkFull` **分批 `batchWrite`**（≤200 op/批）也已不存在——
+> OpenViking 客户端的 `batchWrite` 已删除，同步改为**逐文件 `write`**（见 `openviking-sync.js` 的 `syncWorkFull`）。
+> 之所以单独点出来：注记若只列三类，会让人以为"除了这三类都是准的"。
+
+
+
 > 分析对象：`C:\Users\a1941\Desktop\DeepSeek\novel-studio`（版本 0.9.1，零依赖 Node.js + SQLite + 浏览器 SPA）
 > 分析方式：源码逐层精读（server.js / db.js / openviking.js / openviking-sync.js / harness.js / harness-plugins/novel-writing/novel-tools.mjs / public/app.js）+ 端到端冒烟实测
 > 实测依据：`harness-plugins/novel-writing/test/smoke.mjs`（23 项断言，22 项通过，1 项为计时分辨率抖动，详见 §9）

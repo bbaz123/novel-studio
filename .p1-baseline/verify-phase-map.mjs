@@ -292,6 +292,44 @@ export const PHASES = [
     note: '验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——'
       + '但注意 X 内部彼此 import（verify-all ↔ 各工具），且被 .p0-recon 的线路层工具引用。',
   },
+  {
+    id: 'S',
+    title: '2026-09-18 会话：模型统一 V4.1 Flash + 写作路径提速 + 环境自检接线',
+    files: [
+      // —— 模型/强度/超时的单点化：策略表本身已在 P4，这里认领它的**新证据与消费点** ——
+      '.p1-baseline/test-policy-tiers.mjs',
+      // —— 新手引导与「环境自检」卡的离线验收（OpenViking 凭证链 / dsh 仓库 / 全局配置写入）——
+      'env-tools-test.mjs',
+      // —— 新增的生产文件（此前不属于任何阶段）——
+      'openviking.js',        // AI 设置页「OpenViking 记忆库」卡 + 与插件对齐的凭证链
+      // —— 被本会话改过、且此前无人认领的既有文件 ——
+      'logger.js',
+      'debug-trace.js',
+      'public/index.html',
+      'public/styles.css',
+      'frontend-test.mjs',
+      'api-test-suite.mjs',
+      'docs/CHANGELOG.md',
+      // 四份历史报告被追加了「2026-09-18 变更注记」（模型口径以当前代码为准），
+      // 注记本身是**留痕**，不是重写历史结论。
+      'docs/agent-change-review-2026-09-13.md',
+      'docs/context-memory-analysis-report.md',
+      'docs/context-optimization-review-report.md',
+      'docs/p4-policy-verification.md',
+      // 本会话第四轮重审的报告（与 OpenViking 上的同名报告同源）
+      'docs/self-review-2026-09-18.md',
+    ],
+    evidence: [
+      '.p1-baseline/test-policy-tiers.mjs',
+      'env-tools-test.mjs',
+      'docs/self-review-2026-09-18.md',
+    ],
+    rollback: 'shared',
+    note: '本会话改动落在已被 P0–P6/D8 认领的共享文件里（server.js / public/app.js / harness.js / '
+      + 'ai/policy.mjs / db.js），所以**不能单独回滚**：撤掉 openviking.js 会打断 server.js 的启动路径，'
+      + '撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照'
+      + '（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

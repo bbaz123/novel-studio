@@ -27,6 +27,7 @@
 | **P6** | 一次性切换（工具就绪，**未执行**） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **D8** | 不足清单修复（D8-#1…#8） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **X** | 跨阶段：总纲与工具入口 | 🟡 可单独撤，但会让若干验收工具失效（需同步修） |
+| **S** | 2026-09-18 会话：模型统一 V4.1 Flash + 写作路径提速 + 环境自检接线 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：（无）。**仅会让验收工具失效的：X。其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -36,6 +37,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
+  - harness.js 被 .p1-baseline/test-harness-env.mjs（验收工具，X）import——撤掉会让该工具失效
   - harness.js 被 .p1-baseline/test-model-switch-gate.mjs（验收工具，P4）import——撤掉会让该工具失效
   - harness.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
 - **说明**：harness.js 同时被 P4/P6 改过；profile 本身的回滚是卸掉 novel profile 与 bundle 接线（install-profile.mjs 反向操作）。
@@ -142,8 +144,10 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
+  - ai/policy.mjs 被**生产代码** db.js（P5）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** harness.js（P0）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** server.js（P2/P3/P5）import——撤掉会打断线上路径
+  - 文件 docs/p4-policy-verification.md 同时属于 P4/S——改动改在同一批代码里，撤不干净
   - 文件 public/app.js 同时属于 P3/P4/P5——改动改在同一批代码里，撤不干净
   - 文件 server.js 同时属于 P2/P3/P4/P5——改动改在同一批代码里，撤不干净
 - **说明**：策略单点化本身可撤（恢复各处字面量），但 ai/policy.mjs 被 harness.js 与 server.js import，前端与 server.js 又被 P3/P5 共同修改 → 无法只撤 P4。
@@ -291,9 +295,38 @@
   - `package.json`
   - `start-novel-studio.cmd`
 
+### S · 2026-09-18 会话：模型统一 V4.1 Flash + 写作路径提速 + 环境自检接线
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - debug-trace.js 被**生产代码** harness.js（P0）import——撤掉会打断线上路径
+  - debug-trace.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
+  - debug-trace.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
+  - 文件 docs/p4-policy-verification.md 同时属于 P4/S——改动改在同一批代码里，撤不干净
+  - logger.js 被**生产代码** harness.js（P0）import——撤掉会打断线上路径
+  - logger.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
+- **说明**：本会话改动落在已被 P0–P6/D8 认领的共享文件里（server.js / public/app.js / harness.js / ai/policy.mjs / db.js），所以**不能单独回滚**：撤掉 openviking.js 会打断 server.js 的启动路径，撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。
+- **验收证据**：`.p1-baseline/test-policy-tiers.mjs`、`env-tools-test.mjs`、`docs/self-review-2026-09-18.md`
+- **本阶段认领的文件**（15 个）：
+  - `.p1-baseline/test-policy-tiers.mjs`
+  - `api-test-suite.mjs`
+  - `debug-trace.js`
+  - `docs/CHANGELOG.md`
+  - `docs/agent-change-review-2026-09-13.md`
+  - `docs/context-memory-analysis-report.md`
+  - `docs/context-optimization-review-report.md`
+  - `docs/p4-policy-verification.md`
+  - `docs/self-review-2026-09-18.md`
+  - `env-tools-test.mjs`
+  - `frontend-test.mjs`
+  - `logger.js`
+  - `openviking.js`
+  - `public/index.html`
+  - `public/styles.css`
+
 ## 三、归属核对
 
-- 真实改动集：**146** 个文件
+- 真实改动集：**160** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

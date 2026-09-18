@@ -170,6 +170,14 @@ run('装配回归：差异须恰好为已刻画的「压缩提示挪位」（压
 // ── 4. 策略与工具面（离线）─────────────────────────────────────────────
 run('装配器单元测试（边界与溢出分支）', process.execPath, ['.p1-baseline/test-assembler.mjs']);
 run('AI 全分支核对（0 处绕过策略）', process.execPath, ['.p1-baseline/verify-ai-branches.mjs']);
+// 2026-09-18：质量档统一为 V4.1 Flash、质量改由思考强度表达、长任务超时单点化
+// —— 三件事都属于"悄悄失效也不会报错"的类型（两档模型不一致 / 强度补偿丢失 / 超时被 clamp 截短）。
+run('模型档位·强度补偿·长任务超时（策略单点）', process.execPath, ['.p1-baseline/test-policy-tiers.mjs']);
+// ⚠️ 这两条此前**只在 MUST_INCLUDE 里出现**（只被 `node --check` 语法检查扫过，从不被执行）——
+// 于是本轮新增的前端断言与配置链断言不在任何"一键验收"里，README 的
+// 「一键跑完全部验证」也就成了过度声明。两者都零网络、零服务器、零计费，默认跑。
+run('前端执行验证（vm + DOM 桩：渲染/交互/回归断言）', process.execPath, ['frontend-test.mjs']);
+run('工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', process.execPath, ['env-tools-test.mjs']);
 run('插件工具面与版本一致', process.execPath, ['.p1-baseline/verify-plugin-tools.mjs']);
 // 编码类缺陷定点检查（2026-09-18 扩了两处覆盖）：
 //   A 非法 UTF-8（git 按字节存，不会报错）；B **含非 ASCII 的 .ps1 必须带 BOM**

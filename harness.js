@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log, readableErrorMessage } from './logger.js';
 import { traceHarness, traceNow } from './debug-trace.js';
-import { EFFORTS } from './ai/policy.mjs';
+import { EFFORTS, LONG_AI_TIMEOUT_MS } from './ai/policy.mjs';
 import { harnessChildEnv, resolveTaskDshHome, taskHomeInfo } from './ai/harness-env.mjs';
 import { buildSettingsRedirectPatch, buildTaskArgs, TASK_SETTINGS_PREFIX } from './ai/task-settings.mjs';
 
@@ -35,31 +35,93 @@ export const OPENVIKING_PEER_ID =
 // 本应用需要的是仓库路径，因此优先使用专属变量 NOVELSTUDIO_DSH_REPO；
 // DSH_HOME 只有在确实包含 package.json（即恰好指向仓库）时才采用；
 // 其次探测工坊仓库同级的 deepseek-harness 目录（移动仓库后无需改配置）。
-function resolveHarnessDir() {
-  const sibling = path.join(__dirname, '..', 'deepseek-harness');
-  // 仅保留环境变量与同级目录探测，不硬编码本机绝对路径（避免用户名/路径泄露进源码）。
-  const candidates = [
-    process.env.NOVELSTUDIO_DSH_REPO,
-    process.env.DSH_HOME,
-    sibling
-  ].filter(Boolean);
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
-  }
-  // 都不存在时保留第一个候选，便于报错信息指出实际检查的路径。
-  return candidates[0] || sibling;
+//
+// ⚠️ 为什么解析结果**每次现算**而不是启动时定死：作者可以在 AI 设置页里改这个路径，
+// 改完的下一个任务就该用新路径。启动时快照会让「填了路径、下一个任务仍报未找到」
+// 变成一种最难查的坑（与 D4 同族：数据要一路查到真正消费它的那一行，写进变量不算完）。
+// 因此这里只导出**函数**，不导出目录常量。
+let harnessRepoOverride = '';
+
+/** 由 server.js 从 app_settings 注入（AI 设置页保存时再次调用）；空串=未设置。 */
+export function setHarnessRepoOverride(dir) {
+  harnessRepoOverride = String(dir || '').trim();
+  return harnessRepoOverride;
 }
-export const HARNESS_DIR = resolveHarnessDir();
-export const HARNESS_PACKAGE = path.join(HARNESS_DIR, 'package.json');
+
+/** 候选位置（含来源标签），供自检接口如实展示"到底看过哪几个地方"。 */
+function harnessDirCandidates() {
+  const sibling = path.join(__dirname, '..', 'deepseek-harness');
+  // 仅保留环境变量、工坊内设置与同级目录探测，不硬编码本机绝对路径（避免用户名/路径泄露进源码）。
+  return [
+    { source: 'env', label: 'NOVELSTUDIO_DSH_REPO 环境变量', dir: String(process.env.NOVELSTUDIO_DSH_REPO || '').trim() },
+    { source: 'workshop', label: '工坊内设置（AI 设置页）', dir: harnessRepoOverride },
+    { source: 'dsh_home', label: 'DSH_HOME 环境变量', dir: String(process.env.DSH_HOME || '').trim() },
+    { source: 'sibling', label: '工坊仓库同级的 deepseek-harness', dir: sibling }
+  ].filter((c) => c.dir);
+}
+
+/** 解析结果：dir + 命中的来源 + 每个候选的命中情况（都不命中时保留首个候选，供报错指出实际检查的路径）。 */
+function resolveHarnessDirInfo() {
+  const checked = harnessDirCandidates().map((c) => ({
+    ...c,
+    ok: fs.existsSync(path.join(c.dir, 'package.json'))
+  }));
+  const hit = checked.find((c) => c.ok);
+  return {
+    dir: hit ? hit.dir : (checked[0]?.dir || path.join(__dirname, '..', 'deepseek-harness')),
+    source: hit ? hit.source : (checked.length ? `${checked[0].source}:missing` : 'default'),
+    found: Boolean(hit),
+    checked
+  };
+}
+
+function harnessDir() {
+  return resolveHarnessDirInfo().dir;
+}
+
+function harnessPackagePath() {
+  return path.join(harnessDir(), 'package.json');
+}
+
+/**
+ * 这个目录**像不像** dsh 仓库。
+ *
+ * 与上面的"能不能解析出路径"是两个问题：解析只要求 package.json（既有行为，保持兼容），
+ * 而作者在界面上**手填**路径时，只校验 package.json 会放进一堆误填——例如填成工坊自己的
+ * 目录（它也有 package.json），结果之后每个任务都失败在"未找到 dsh 启动方式"，
+ * 而界面显示"已保存"。所以手填这一步用更严的判据：package.json + 三个 dsh 布局特征之一。
+ *
+ * 三个特征都取自 dsh 的实际布局（`scripts.dsh`、`apps/cli`、`packages/`），
+ * 任取其一即可，避免只认一种而误伤不同版本的仓库。
+ */
+export function looksLikeDshRepo(dir) {
+  try {
+    const pkgPath = path.join(dir, 'package.json');
+    if (!fs.existsSync(pkgPath)) return false;
+    if (fs.existsSync(path.join(dir, 'apps', 'cli'))) return true;
+    if (fs.existsSync(path.join(dir, 'packages'))) return true;
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return Boolean(pkg && pkg.scripts && String(pkg.scripts.dsh || '').trim());
+  } catch {
+    return false;
+  }
+}
 
 // dsh 全局设置文件，用于临时切换默认模型。
 // 决策 B：若写作任务被关进专用 DSH_HOME，设置文件**必须跟着走**——否则回退路径改的是
 // GUI 的 settings.yaml，而子进程读的是新 home 的，**改了等于没改**（且会静默用默认模型）。
 // 显式设了 DSH_SETTINGS 时仍然最高优先。
-export const DSH_SETTINGS = process.env.DSH_SETTINGS || (() => {
+// 导出是为了让 `.p1-baseline/test-harness-env.mjs` 做**语义断言**（真调它看跟随哪一层），
+// 而不是去 grep 源码形状——形状断言在"常量改函数"这种无害重构后会静默失效（2026-09-18 实际发生过）。
+//
+// ⚠️ DSH_SETTINGS 在**调用时**读，不在模块加载时快照：快照会让"改了环境变量却没生效"变得无法解释，
+// 也与本次把其它常量改成"每次现算"的做法不一致（同一个函数里两种时序语义最容易埋坑）。
+export function dshSettingsPath() {
+  const explicit = String(process.env.DSH_SETTINGS || '').trim();
+  if (explicit) return explicit;
   const home = resolveTaskDshHome();
   return home ? path.join(home, 'settings.yaml') : path.join(os.homedir(), '.dsh', 'settings.yaml');
-})();
+}
 
 // 决策 B：**首次真正跑任务时**如实打印写作任务的 home 决策。
 // 为什么必须打印：实测 `DSH_HOME` 会随启动方式而变（从 DSH 派生的终端启动工坊时环境里已经带着它，
@@ -128,8 +190,9 @@ function restoreHarnessSettingsIfNeeded() {
   const backup = readPatchBackup();
   if (!backup || !backup.patched || !backup.original) return;
   try {
-    if (fs.readFileSync(DSH_SETTINGS, 'utf8') === backup.patched) {
-      fs.writeFileSync(DSH_SETTINGS, backup.original);
+    const settingsFile = dshSettingsPath();
+    if (fs.readFileSync(settingsFile, 'utf8') === backup.patched) {
+      fs.writeFileSync(settingsFile, backup.original);
       clearPatchBackup();
       log({ level: 'warn', layer: 'harness', kind: 'settings_restore_failed', message: '检测到崩溃残留的模型补丁，已还原 settings.yaml' });
     }
@@ -138,16 +201,40 @@ function restoreHarnessSettingsIfNeeded() {
 restoreHarnessSettingsIfNeeded();
 
 export function isHarnessAvailable() {
-  return fs.existsSync(HARNESS_PACKAGE);
+  return fs.existsSync(harnessPackagePath());
 }
 
 // 判断 dsh 是否已经构建出运行所需的 lib 产物。
 export function isHarnessBuilt() {
+  const dir = harnessDir();
   const markers = [
-    path.join(HARNESS_DIR, 'packages/interaction/commands/lib/typert.host.js'),
-    path.join(HARNESS_DIR, 'packages/goal/goal/lib/typert.host.js')
+    path.join(dir, 'packages/interaction/commands/lib/typert.host.js'),
+    path.join(dir, 'packages/goal/goal/lib/typert.host.js')
   ];
   return markers.every((file) => fs.existsSync(file));
+}
+
+/**
+ * 供 AI 设置页「本地创作内核」卡使用：把"实际用了哪条路径、为什么、构建产物在不在"
+ * 一次性如实报出来。界面与日志读的是同一份结果——安装器与运行时各说各话，
+ * 是 2026-09-18 那轮记下的坑（`install-profile.mjs` 写死 `~/.dsh` 却打印"接线完成"）。
+ */
+export function harnessRuntimeInfo() {
+  const info = resolveHarnessDirInfo();
+  return {
+    dir: info.dir,
+    source: info.source,
+    found: info.found,
+    // "找到了 package.json" ≠ "这确实是 dsh 仓库"：界面要能区分这两件事，
+    // 否则作者会看到"已找到"却永远跑不起 AI 写作。
+    looks_like_dsh: info.found ? looksLikeDshRepo(info.dir) : false,
+    built: info.found ? isHarnessBuilt() : false,
+    checked: info.checked,
+    override: harnessRepoOverride,
+    profile: DSH_PROFILE,
+    settings_file: dshSettingsPath(),
+    task_home: taskHomeInfo()
+  };
 }
 
 // N-01：dsh 任务启动方式解析。优先按 dsh 仓库 package.json 的 scripts.dsh 定义
@@ -156,7 +243,7 @@ export function isHarnessBuilt() {
 // 纯 node spawn 传中文参数实测完好。解析失败时回退到旧的 pnpm 方式。
 function resolveDshLaunch() {
   try {
-    const pkg = JSON.parse(fs.readFileSync(HARNESS_PACKAGE, 'utf8'));
+    const pkg = JSON.parse(fs.readFileSync(harnessPackagePath(), 'utf8'));
     const script = String((pkg.scripts && pkg.scripts.dsh) || '').trim();
     // 形如："node --import tsx/esm apps/cli/src/bin.ts"
     const m = script.match(/^node\s+([\s\S]+)$/);
@@ -165,8 +252,9 @@ function resolveDshLaunch() {
       if (!parts.length) return null;
       // 最后一个参数是入口脚本，相对路径按仓库根解析；其余（--import tsx/esm 等）原样传递。
       const entry = parts[parts.length - 1];
-      const resolved = entry.startsWith('.') || !entry.includes(':') ? path.join(HARNESS_DIR, entry) : entry;
-      return { args: [...parts.slice(0, -1), resolved], cwd: HARNESS_DIR };
+      const dir = harnessDir();
+      const resolved = entry.startsWith('.') || !entry.includes(':') ? path.join(dir, entry) : entry;
+      return { args: [...parts.slice(0, -1), resolved], cwd: dir };
     }
   } catch { /* 读取/解析失败走 pnpm 兜底 */ }
   return null;
@@ -198,7 +286,7 @@ function runPnpm(args, options = {}) {
     }
     const timeoutMs = options.timeout || 20 * 60 * 1000;
     const child = spawn(process.execPath, [pnpmJs, ...args], {
-      cwd: options.cwd || HARNESS_DIR,
+      cwd: options.cwd || harnessDir(),
       shell: false,
       windowsHide: true
     });
@@ -238,7 +326,9 @@ function runPnpm(args, options = {}) {
 // 自动构建 deepseek-harness，解决 lib 产物缺失导致的插件加载失败。
 // 进程内互斥：并发请求只会触发一次构建；构建后复查产物标记，失败即抛明确错误。
 let buildPromise = null;
-export async function buildHarness() {
+// 仅本文件使用（runHarnessTaskWithProgress 里调用）；2026-09-18 去掉 export：
+// 仓库内除本文件外 0 引用，留着的导出会让人以为它是对外接口。
+async function buildHarness() {
   if (isHarnessBuilt()) return true;
   if (!buildPromise) {
     buildPromise = (async () => {
@@ -257,7 +347,7 @@ export async function buildHarness() {
 
 function readSettings() {
   try {
-    return fs.readFileSync(DSH_SETTINGS, 'utf8');
+    return fs.readFileSync(dshSettingsPath(), 'utf8');
   } catch (_) {
     return null;
   }
@@ -265,10 +355,11 @@ function readSettings() {
 
 function writeSettings(content) {
   // 原子写：先写临时文件再 rename，避免中断损坏用户的 ~/.dsh/settings.yaml。
-  const tmp = `${DSH_SETTINGS}.tmp-${process.pid}`;
+  const settingsFile = dshSettingsPath();
+  const tmp = `${settingsFile}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, content);
   try {
-    fs.renameSync(tmp, DSH_SETTINGS);
+    fs.renameSync(tmp, settingsFile);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch (_) { /* 忽略 */ }
     throw e;
@@ -293,7 +384,7 @@ export function normalizeReasoningEffort(value) {
  * 以免误伤用户在同一文件里的其它配置。
  * 导出以便单测直接覆盖（纯函数，无副作用）。
  */
-export function patchAgentDefault(yaml, { model, reasoningEffort } = {}) {
+function patchAgentDefault(yaml, { model, reasoningEffort } = {}) {
   const lines = yaml.split('\n');
   let start = -1;
   let end = lines.length;
@@ -464,7 +555,11 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
   logTaskHomeDecisionOnce();
 
   if (!isHarnessAvailable()) {
-    throw new Error(`未找到 deepseek-harness：${HARNESS_DIR}`);
+    // 报错要指出**实际检查过哪些位置**：小白看到"未找到 deepseek-harness"时，
+    // 唯一能自救的信息就是"它到底去哪里找过"。可在 AI 设置页「本地创作内核」卡里填路径。
+    const info = resolveHarnessDirInfo();
+    const tried = info.checked.map((c) => `${c.label}：${c.dir}`).join('；');
+    throw new Error(`未找到 deepseek-harness（${info.dir}）。已检查：${tried}。可在「AI 设置 → 本地创作内核」里填写 dsh 仓库路径。`);
   }
 
   // 如果 dsh 缺少构建产物，先自动构建，避免 typert.host.js 等文件缺失。
@@ -544,7 +639,8 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
       }
     }
 
-    const timeoutMs = options.timeout || 10 * 60 * 1000;
+    // 默认超时与策略表同源（此前是 10 分钟的散落字面量；30 分钟见 ai/policy.mjs 的 LONG_AI_TIMEOUT_MS）
+    const timeoutMs = options.timeout || LONG_AI_TIMEOUT_MS;
     const startedAt = Date.now();
     log({
       level: 'info', layer: 'harness', kind: 'task_start',
@@ -574,7 +670,7 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           patchPath: taskSettings ? taskSettings.patchPath : null,
         });
         const spawnArgs = launch ? [...launch.args, ...taskArgs] : [pnpmJs, 'dsh', ...taskArgs];
-        const spawnCwd = launch ? launch.cwd : HARNESS_DIR;
+        const spawnCwd = launch ? launch.cwd : harnessDir();
         const childEnv = harnessChildEnv({ peerId: OPENVIKING_PEER_ID, env: options.env });
         // 仅无 shell 启动：避免 shell:true 把 prompt 拼进 cmd 命令行的注入面（HA-06）；
         // 同时避免 pnpm→cmd.exe 链路把中文参数按 ANSI 损坏（N-01）。

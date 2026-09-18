@@ -1,32 +1,37 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { isHarnessAvailable, isHarnessBuilt, runHarnessTask, runHarnessTaskWithProgress, modelSwitchLoad } from './harness.js';
+import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo } from './harness.js';
 import { readZip } from './zip-reader.mjs';
 import { htmlToPlain } from './text-utils.js';
-import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
-import { ovClient, pendingQueueLength } from './openviking.js';
+import { notifyChange, getSemanticRecall, semanticSearchMerge, semanticEnabled, ovEffectiveEnabled, setAppSetting, getAppSetting, syncWorkFull, removeWorkFromMemory, autoIndexExistingWorks, workDir, flushDebouncedSync } from './openviking-sync.js';
+import { ovClient, pendingQueueLength, reloadOpenVikingClient, setOpenVikingWorkshopConfig, getOpenVikingWorkshopConfig, openVikingConfigInfo, writeGlobalOpenVikingConfig, resolveOpenVikingConfig, DATA_DIR } from './openviking.js';
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
 import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance, agentMemoryUpdateVerdict, needsAgentMemoryGuard } from './ai/memory-compress-guard.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
-import { MODELS, KNOWN_DEEPSEEK_MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, policySnapshot } from './ai/policy.mjs';
+import { MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, effortForTier, LONG_AI_TIMEOUT_MS, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
 import {
-  traceRequest, traceFn, traceEvent, traceAI, traceHarness, bumpTool, prepareTraced,
+  traceRequest, traceFn, traceEvent, traceAI, bumpTool, prepareTraced,
   startTracing, stopTracing, pingTracing, checkStaleTracing, traceState, traceNow, traceClockDomain,
   beginOperation, finishOperation, attachClientNodes, sweepIdleOperations,
   listOperations, getOperation, listToolCalls, sessionSummary,
-  subscribeStream, listSessions, readSession, purgeSessions, pruneSessions,
-  flushTraceFile, traceConfigInfo, DEBUG_DIR, isExcludedPath
+  subscribeStream, listSessions, readSession, purgeSessions,
+  flushTraceFile, traceConfigInfo, DEBUG_DIR
 } from './debug-trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-const PORT = process.env.PORT || 3737;
+// 端口归一：与 ai/harness-env.mjs 的 `Number(port ?? base.PORT) || DEFAULT_PORT` 保持同一套语义——
+// 此前这里是 `process.env.PORT || 3737`（不转数字），于是 PORT='abc' 时服务会拿字符串去 listen，
+// 而下发给 dsh 子进程的 NOVELSTUDIO_BASE_URL 却是 3737：两边指向不同实例，且报错信息很难懂。
+const PORT = Number(process.env.PORT) || 3737;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -133,6 +138,23 @@ async function readBody(req) {
   });
 }
 
+// 读请求体失败时，把**真实原因**回给调用方。
+// 为什么要有它：新加的环境类路由此前写的是 `readBody(req).catch(() => ({}))`，
+// 于是"JSON 畸形"（INVALID_JSON）被报成"缺少 dir 字段"、"体积超限"（413）被降级成 400 ——
+// 报错与真实原因无关，排查方向整个跑偏（本项目已经吃过一次这种亏）。
+// 返回 { ok:false } 表示已回响应，调用方直接 return 即可。
+async function readBodyOrError(req, res) {
+  try {
+    return { ok: true, body: await readBody(req) };
+  } catch (e) {
+    const tooLarge = e && e.code === 'PAYLOAD_TOO_LARGE';
+    sendError(res, tooLarge ? 413 : 400, e && e.code === 'INVALID_JSON'
+      ? '请求体不是合法 JSON'
+      : ((e && e.message) || '请求体读取失败'));
+    return { ok: false };
+  }
+}
+
 function getPath(req) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   return {
@@ -220,6 +242,149 @@ function getAppSettingDb(key, fallback = '') {
 
 function setAppSettingDb(key, value) {
   prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value));
+}
+
+// ---------- 工坊内工具设置（AI 设置页填写的三样东西） ----------
+// 存 app_settings（本机 SQLite），启动时与每次保存时注入到对应模块：
+//   ov_endpoint / ov_api_key → openviking.js 的凭证链第 2 层
+//   dsh_repo                 → harness.js 的 dsh 仓库解析链第 2 层
+// 为什么要"注入"而不是让那些模块自己读库：openviking.js / harness.js 都刻意不 import db
+// （保持可离线单测、导入零副作用）。这里就是唯一的接线点——两处都在同一处集中，
+// 避免"改了一处、另一处忘了读"。
+const SETTING_OV_ENDPOINT = 'ov_endpoint';
+const SETTING_OV_API_KEY = 'ov_api_key';
+const SETTING_DSH_REPO = 'dsh_repo';
+
+function applyWorkshopToolSettings() {
+  const ov = setOpenVikingWorkshopConfig({
+    endpoint: getAppSetting(SETTING_OV_ENDPOINT, ''),
+    apiKey: getAppSetting(SETTING_OV_API_KEY, '')
+  });
+  const dshRepo = setHarnessRepoOverride(getAppSetting(SETTING_DSH_REPO, ''));
+  // 凭证变了就必须重建客户端：否则界面显示"已保存"，真实请求还打旧地址/用旧 Key。
+  const cfg = reloadOpenVikingClient();
+  return { ov, dshRepo, endpoint: cfg.endpoint, endpoint_source: cfg.endpointSource };
+}
+
+// 插件安装位置检测：**从磁盘派生**，不写死路径假设。
+// 实测布局：<dsh home>/profiles/<profile>/node_modules/novel-writing（junction → 本仓库）。
+// 同时看专用 home（决策 B：~/.dsh-novel）与共享 home（~/.dsh，GUI 用）。
+//
+// ⚠️ home / profile 一律取自传入的 harnessRuntimeInfo()，不在这里另算一套、也不 import
+// DSH_PROFILE/taskHomeInfo：两处各算一次必然分叉（而且第一版就踩了「用了没导入的符号」——
+// node --check 只查语法，这类运行时引用错误只有真跑才会暴露）。
+function detectPluginInstall(runtime = {}) {
+  const pluginDir = path.join(__dirname, 'harness-plugins', 'novel-writing');
+  const profile = runtime.profile || 'novel';
+  let sourceReal = '';
+  try { sourceReal = fs.realpathSync(pluginDir); } catch { /* 缺源码时下面 exists=false */ }
+  const homes = [];
+  const taskHome = (runtime.task_home && runtime.task_home.path) || '';
+  for (const h of [taskHome, path.join(os.homedir(), '.dsh')]) {
+    if (h && !homes.includes(h)) homes.push(h);
+  }
+  const installs = homes.map((home) => {
+    const link = path.join(home, 'profiles', profile, 'node_modules', 'novel-writing');
+    let exists = false;
+    let pointsHere = false;
+    let isLink = false;
+    try {
+      if (fs.existsSync(link)) {
+        exists = true;
+        const st = fs.lstatSync(link);
+        // ⚠️ 只认**真正的链接**（Windows 上 junction 也走 isSymbolicLink 之外的分支，
+        // 由下面的 points_here 用 realpath 比较来判"指向本仓库"）。
+        // 曾经的写法是 `st.isSymbolicLink() || Boolean(st.isDirectory())` ——
+        // 任何目录都为真，字段恒 true、语义失效（2026-09-18 第四轮重审抓到）。
+        isLink = st.isSymbolicLink();
+        pointsHere = Boolean(sourceReal) && fs.realpathSync(link).toLowerCase() === sourceReal.toLowerCase();
+      }
+    } catch { /* 读不到按未安装处理 */ }
+    return { home, profile, path: link, exists, points_here: pointsHere, is_link: isLink };
+  });
+  const guiPreset = path.join(os.homedir(), '.dsh', '.agent-presets', 'novel-writing');
+  return {
+    dir: pluginDir,
+    exists: fs.existsSync(path.join(pluginDir, 'package.json')),
+    installs,
+    installed: installs.some((i) => i.exists && i.points_here),
+    gui_preset: { path: guiPreset, exists: fs.existsSync(guiPreset) }
+  };
+}
+
+// 本机目录白名单：前端只能按**枚举键**请求打开，不能传路径——
+// 传路径就等于给页面一个"打开任意位置"的接口，没必要也不该有。
+function openFolderTargets() {
+  return {
+    dsh_repo: { label: 'dsh 仓库', dir: harnessRuntimeInfo().dir },
+    plugin: { label: '创作插件源码', dir: path.join(__dirname, 'harness-plugins', 'novel-writing') },
+    data: { label: '数据目录', dir: DATA_DIR },
+    logs: { label: '日志目录', dir: path.join(DATA_DIR, 'logs') }
+  };
+}
+
+// 在系统文件管理器里打开一个本机目录（Windows: explorer / macOS: open / Linux: xdg-open）。
+// 等子进程的 'spawn' 事件再回报成功：否则"调用了 spawn"会被当成"真的打开了"——
+// 而 spawn 失败（EPERM / 找不到命令 / 路径不存在）是异步报错，直接 return ok 就是一句谎。
+async function openFolderInFileManager(dir) {
+  const cmd = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    try {
+      const child = spawn(cmd, [dir], { detached: true, stdio: 'ignore', windowsHide: false });
+      child.once('error', (e) => done({ ok: false, cmd, error: e.message }));
+      child.once('spawn', () => { child.unref(); done({ ok: true, cmd }); });
+      setTimeout(() => done({ ok: false, cmd, error: '启动文件管理器超时（没有收到确认）' }), 3000);
+    } catch (e) {
+      done({ ok: false, cmd, error: e.message });
+    }
+  });
+}
+
+// OpenViking 地址归一化与校验。
+// 小白最可能填的是「127.0.0.1:1933」这种没有协议的写法——直接存下来会变成一条
+// 用不了的地址，而卡片只会显示"服务未响应"，看不出是自己少写了 http://。
+// 所以：缺协议就补 http://，补完仍不是合法 URL 就明确拒绝（不写入）。
+function normalizeOvEndpoint(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return { ok: true, value: '' }; // 空 = 清除，回到下层
+  const withScheme = /^https?:\/\//i.test(text) ? text : `http://${text}`;
+  let url;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return { ok: false, error: `地址格式不正确：${text}（示例：http://127.0.0.1:1933）` };
+  }
+  if (!url.hostname) return { ok: false, error: `地址缺少主机名：${text}` };
+  return { ok: true, value: withScheme.replace(/\/+$/, '') };
+}
+
+// OpenViking 状态（AI 设置页「OpenViking 记忆库」卡的数据源）。
+// 与 GET /api/novel/semantic 同源同口径：healthy / pending / 开关都取自同一批函数。
+// 注：这里**总是探测一次**（ovClient.health()，4s 上限）。此前留了个 `probe=false` 参数，
+// 但仓库里两个调用点都用默认值 —— 死参数会让下一个人以为存在"不探测的轻量查询"这条路
+// （2026-09-18 第四轮重审删掉）。
+async function openVikingStatusPayload() {
+  const info = openVikingConfigInfo();
+  const workshop = getOpenVikingWorkshopConfig();
+  const healthy = await ovClient.health();
+  return {
+    ok: true,
+    endpoint: info.endpoint,
+    endpoint_source: info.endpoint_source,
+    endpoint_source_label: info.endpoint_source_label,
+    api_key_source: info.api_key_source,
+    api_key_source_label: info.api_key_source_label,
+    has_api_key: info.has_api_key,
+    config_paths: info.config_paths,
+    // 工坊内已保存的值：地址明文（本就是作者自己填的），Key 只回掩码。
+    workshop: { endpoint: workshop.endpoint, api_key_mask: maskApiKey(workshop.apiKey), has_api_key: Boolean(workshop.apiKey) },
+    semantic: { setting_enabled: semanticEnabled(), effective_enabled: ovEffectiveEnabled() },
+    healthy,
+    pending: pendingQueueLength(),
+    work_root: workDir(0).replace(/\/0$/, '')
+  };
 }
 
 // ---------- 通用 CRUD ----------
@@ -505,8 +670,12 @@ function applyReasoningEffort(body, effort) {
 
 // DeepSeek V4 API 当前允许的最大输出 token 数；用于把“无上限”映射到接口实际上限。
 const MAX_OUTPUT_TOKENS = 393216;
-// 思考模式 + 大 max_tokens 可能耗时较长，放宽请求超时避免中途 abort。
-const AI_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
+// 直连单次请求的超时（思考模式 + 大 max_tokens 可能耗时较长，放宽避免中途 abort）。
+// ⚠️ 它必须与 ai/policy.mjs 的 LONG_AI_TIMEOUT_MS **同源**：前端的直连长生成就是按
+// longAiTimeout() 在等的（public/app.js 的 directAIWrite / runPipelineStage）。
+// 若这里写死 30 分钟而策略表被调大，直连路径会在旧上限处静默 abort，
+// 报错形态（AbortError）看起来像网络故障 —— 2026-09-18 第四轮重审把这条也收回单点。
+const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
@@ -1059,12 +1228,13 @@ function summarizeAIEval(workId) {
   };
 }
 
+// HTML → 单行纯文本（搜索片段、字数口径用）。
+// D5（2026-09-18）：实现**收敛到 text-utils.js 的 htmlToPlain**，这里只在它之上压平空白。
+// 此前是本文件自带的正则实现，与 htmlToPlain 并存 → 同一章在"检索片段/字数"与"导出文件/记忆库正文"
+// 里文本不同（实体解码、段落边界的差异）；而 text-utils.js 文件头写着"供 server.js 与 openviking-sync.js
+// 复用，避免两处实现漂移"——漂移已经发生了，所以这里改成委托，只保留"压平成一行"这一项差异。
 function plainText(html = '') {
-  return String(html)
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return htmlToPlain(html).replace(/\s+/g, ' ').trim();
 }
 
 // 上下文装配热点优化：只取头部/尾部时，先按倍数截取原始 HTML 再剥标签，
@@ -1162,14 +1332,20 @@ async function compressStoryMemory(workId, onChunk, signal) {
   const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节：\n${chapterText.slice(0, 6000)}\n\n已出场角色（**只允许提到这些角色，不要引入任何未在此列的角色**）：\n${characterText.slice(0, 3000)}\n\n世界观：\n${worldText.slice(0, 3000)}\n\n请只输出压缩后的记忆摘要。`;
 
   // 记忆压缩是「读得多、写得少」的摘要任务。
-  // 模型用 QUALITY_AI_MODEL：产出的长期记忆会喂给之后**每一章**的上下文，质量影响是累积的，
-  // 按用户「质量优先」基线不在这里省（2026-09-13 用户决定由 flash 改回 pro）。
-  // 思考强度仍刻意不指定：沿用 ~/.dsh/settings.yaml 的全局设置，避免单方面调低。
+  // 质量优先：产出的长期记忆会喂给之后**每一章**的上下文，质量影响是累积的。
+  // 2026-09-18 起"质量优先"由**思考强度**表达（模型与快档同为 V4.1 Flash，见 ai/policy.mjs 文件头）；
+  // 此前这里刻意不指定强度、沿用 ~/.dsh/settings.yaml 全局设置——那在换模型之后就不再成立，
+  // 因为"更贵的模型"这个质量信号已经没有了。
   // D8-#4：带进度上报（此前用无 onChunk 的入口，进了作业设施 tail 也是空的）；
   // 并透传 abort signal，否则作业的"取消"到不了子进程（会一直 running）。
   const output = await runHarnessTaskWithProgress(
     prompt,
-    { timeout: 10 * 60 * 1000, model: QUALITY_AI_MODEL, signal },
+    {
+      timeout: LONG_AI_TIMEOUT_MS,
+      model: QUALITY_AI_MODEL,
+      reasoningEffort: effortForTier('quality') || undefined,
+      signal
+    },
     typeof onChunk === 'function' ? onChunk : undefined);
 
   // D8-#3：零损失护栏（**两侧**）。压缩是**有损**操作，而长期记忆会喂给之后每一章——
@@ -2744,7 +2920,9 @@ function createNovelFromData(data) {
 }
 
 // 通过 DeepSeek Harness 生成完整小说并写入数据库。
-async function generateNovelFromHarness(prompt, model, onChunk, signal) {
+// reasoningEffort：调用方（/harness/job 的命名任务）按档位下发；**必须继续往下透传**，
+// 否则模型档位合并后质量档就失去了唯一的补偿信号（2026-09-18 重审抓到的缺陷）。
+async function generateNovelFromHarness(prompt, model, onChunk, signal, reasoningEffort) {
   if (!prompt || !prompt.trim()) throw new Error('请输入一段小说描述');
   const task = `${NOVEL_GENERATION_SYSTEM_PROMPT}\n\n请根据以下描述生成小说设定 JSON：\n\n${prompt.trim()}`;
   // D8-#4：改用**带进度**的入口并把 chunk 转给调用方。
@@ -2754,7 +2932,7 @@ async function generateNovelFromHarness(prompt, model, onChunk, signal) {
   // HARNESS_CANCELLED"，不透传的话取消按钮点了也没用（作业会一直 running）。
   const output = await runHarnessTaskWithProgress(
     task,
-    { timeout: 10 * 60 * 1000, model: model || undefined, signal },
+    { timeout: LONG_AI_TIMEOUT_MS, model: model || undefined, reasoningEffort: reasoningEffort || undefined, signal },
     typeof onChunk === 'function' ? onChunk : undefined);
   const data = extractJSON(output);
   return createNovelFromData(data);
@@ -2768,10 +2946,10 @@ const harnessJobs = new Map(); // jobId -> { id, status, started_at, finished_at
 
 // ---------- harness 并发闸门（唯一入口）----------
 // 闸门的意图是「防止刷出大量 dsh 子进程拖垮机器」。但此前只有 /harness/run 走作业设施、
-// 被计数；另有两条路由直接调 runHarnessTask、不建 job，于是**完全绕过闸门**：
+// 被计数；另有两条路由**不建 job、直接**跑 harness（经 withHarnessSlot 占位），此前完全绕过闸门：
 //   · POST /harness/generate_novel
 //   · POST /story_memory/compress
-// 现在它们也要占一个槽位；闸门值抽成常量，不再在两处各写一个 2。
+// 现在它们也要占一个槽位（directHarnessRuns 计数）；闸门值抽成常量，不再在两处各写一个 2。
 const HARNESS_CONCURRENCY = 2;
 let directHarnessRuns = 0; // 不走作业设施、直接跑 harness 的在途请求数
 
@@ -3069,7 +3247,7 @@ function maybeAutoCompressMemory(workId) {
     }
     const job = createHarnessJob('', {
       action: 'compress', kind: 'compress', stage: '自动压缩长期记忆',
-      workId: wid, timeout: 10 * 60 * 1000,
+      workId: wid, timeout: LONG_AI_TIMEOUT_MS,
       runner: ({ onChunk, signal }) => compressStoryMemory(wid, onChunk, signal).then((s) => ({ summary: s })),
     });
     log({
@@ -3526,6 +3704,136 @@ async function handleAPI(req, res, pathname, query) {
     }
     return sendJSON(res, 202, { ok: true, scheduled: targets.length, message: '索引任务已排队（异步向量化，需要一些时间）' });
   }
+  // ---------- 🧠 OpenViking 记忆库：界面里填、填完即生效 ----------
+  // 与上面的 novel/semantic 同属记忆库集成，读写同一批 app_settings。
+  // 纪律：凭证的优先级阶梯**只在 openviking.js 定义一次**，这里的"来源"标签直接取
+  // 该链的输出，不另算一套（两套口径必然分叉，然后界面开始说谎）。
+  if (resource === 'novel' && segments[2] === 'openviking' && segments[3] === undefined) {
+    if (method === 'GET') {
+      return sendJSON(res, 200, await openVikingStatusPayload());
+    }
+    if (method === 'PUT') {
+      const body = await readBody(req);
+      const applied = [];
+      // endpoint：字段出现即视为作者的明确意图（空串=清除，回到配置文件/默认值）。
+      if (typeof body.endpoint === 'string') {
+        const norm = normalizeOvEndpoint(body.endpoint);
+        if (!norm.ok) return sendError(res, 400, norm.error);
+        setAppSetting(SETTING_OV_ENDPOINT, norm.value);
+        applied.push('endpoint');
+      }
+      // api_key：**空串不等于清除**——表单里留空更可能是"不改动"。
+      // 清除必须显式带 clear_api_key:true（界面上是一个独立按钮）。
+      // 这类"空值语义"含混过一次就会静默清掉作者的 Key，所以把契约写死在这里与界面两边。
+      if (typeof body.api_key === 'string' && body.api_key.trim()) {
+        setAppSetting(SETTING_OV_API_KEY, body.api_key.trim());
+        applied.push('api_key');
+      } else if (body.clear_api_key === true) {
+        setAppSetting(SETTING_OV_API_KEY, '');
+        applied.push('clear_api_key');
+      }
+      const appliedNow = applyWorkshopToolSettings();
+      log({
+        level: 'info', layer: 'openviking', kind: 'ov_config_saved',
+        message: `OpenViking 设置已更新（${applied.join('、') || '无字段变更'}）`,
+        context: { applied, endpoint_source: appliedNow.endpoint_source }
+      });
+      const payload = await openVikingStatusPayload();
+      return sendJSON(res, 200, { ...payload, applied });
+    }
+    return sendError(res, 405, 'Method not allowed');
+  }
+  // 一键把当前生效凭证写进 ~/.openviking/ovcli.conf，让 dsh 侧（GUI 会话 / 写作任务）共用同一套。
+  if (resource === 'novel' && segments[2] === 'openviking' && segments[3] === 'global_config' && method === 'POST') {
+    const cfg = resolveOpenVikingConfig();
+    if (!cfg.endpoint && !cfg.apiKey) return sendError(res, 400, '当前没有可写入的 OpenViking 地址或 Key');
+    const out = writeGlobalOpenVikingConfig({ endpoint: cfg.endpoint, apiKey: cfg.apiKey });
+    if (!out.ok) return sendError(res, 500, out.error || '写入全局配置失败');
+    log({
+      level: out.changed.length ? 'info' : 'warn', layer: 'openviking', kind: 'ov_global_config',
+      message: `全局 ovcli.conf ${out.changed.length ? '已更新：' + out.changed.join('、') : '无需改动'}`,
+      context: { path: out.path, backup: out.backup }
+    });
+    return sendJSON(res, 200, {
+      ...out,
+      // 如实说明这一步影响谁：工坊自己的连接顺序里"工坊内设置"优先于该文件，
+      // 所以写它不会改变工坊当前状态，改的是 dsh 侧读到的凭证。
+      note: '工坊自己的连接不受影响（工坊内设置优先于该文件）；这一步是给 dsh 侧（GUI 会话 / 写作任务）用的。'
+    });
+  }
+
+  // ---------- 🛠 环境自检：AI 设置页「工具与环境清单」卡的数据源 ----------
+  // 每一项都必须**真去磁盘/网络看**，不能凭"文档里写了"就当装好了。
+  if (resource === 'env' && segments[2] === 'tools' && method === 'GET') {
+    const dsh = harnessRuntimeInfo();
+    const ov = openVikingConfigInfo();
+    const plugin = detectPluginInstall(dsh);
+    return sendJSON(res, 200, {
+      ok: true,
+      node: {
+        version: process.version,
+        // 能力探测优于版本比较：服务此刻能跑起来，本身就证明 node:sqlite 可用。
+        sqlite_ok: true,
+        note: '服务已成功启动 ⇒ 当前 Node 的 node:sqlite 可用（本项目实际门槛 22.13+）'
+      },
+      server: { port: Number(PORT), pid: process.pid, data_dir: DATA_DIR, log_dir: path.join(DATA_DIR, 'logs') },
+      dsh: {
+        dir: dsh.dir, source: dsh.source, found: dsh.found, built: dsh.built,
+        // "找到了 package.json" 与 "这确实是 dsh 仓库" 分开报：界面据此提示作者别填错目录。
+        looks_like_dsh: dsh.looks_like_dsh,
+        checked: dsh.checked, override: dsh.override,
+        profile: dsh.profile, settings_file: dsh.settings_file, task_home: dsh.task_home,
+        plugin
+      },
+      openviking: {
+        endpoint: ov.endpoint, endpoint_source: ov.endpoint_source, endpoint_source_label: ov.endpoint_source_label,
+        api_key_source: ov.api_key_source, api_key_source_label: ov.api_key_source_label, has_api_key: ov.has_api_key,
+        config_paths: ov.config_paths,
+        setting_enabled: semanticEnabled(), effective_enabled: ovEffectiveEnabled(),
+        pending: pendingQueueLength()
+      }
+    });
+  }
+  // 打开本机目录（参数是枚举键，不是路径）。dry_run=true 只回显将要打开的目录，不真的打开——
+  // 自动化测试用它覆盖成功路径，而不必在验证时弹出资源管理器窗口。
+  if (resource === 'env' && segments[2] === 'open_folder' && method === 'POST') {
+    const parsed = await readBodyOrError(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body;
+    const key = String(body.target || '');
+    const targets = openFolderTargets();
+    if (!Object.prototype.hasOwnProperty.call(targets, key)) {
+      return sendError(res, 400, `未知的目录标识：${key || '(空)'}（可选：${Object.keys(targets).join(' / ')}）`);
+    }
+    const item = targets[key];
+    if (!item.dir || !fs.existsSync(item.dir)) return sendError(res, 404, `目录不存在：${item.dir}`);
+    if (body.dry_run === true) return sendJSON(res, 200, { ok: true, target: key, label: item.label, dir: item.dir, opened: false, dry_run: true });
+    const out = await openFolderInFileManager(item.dir);
+    if (!out.ok) return sendError(res, 500, `调用 ${out.cmd} 失败：${out.error || '未知错误'}`);
+    return sendJSON(res, 200, { ok: true, target: key, label: item.label, dir: item.dir, opened: true });
+  }
+  // 填 dsh 仓库路径（AI 设置页「本地创作内核」卡）。与 OpenViking 卡同构：存设置 → 立即注入 → 复检。
+  if (resource === 'env' && segments[2] === 'dsh_repo' && method === 'PUT') {
+    const parsed = await readBodyOrError(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body;
+    if (typeof body.dir !== 'string') return sendError(res, 400, '缺少 dir 字段');
+    const dir = body.dir.trim();
+    // 填了就必须真的像个 dsh 仓库：只校验 package.json 会把误填（例如填成工坊自己）放进去，
+    // 之后每个任务都失败在"未找到 dsh 启动方式"，而界面显示"已保存"。
+    if (dir && !looksLikeDshRepo(dir)) {
+      return sendError(res, 400, `这个目录不像 dsh 仓库：${dir}（需要 package.json，并且有 apps/cli 或 packages/ 或 package.json 的 scripts.dsh）`);
+    }
+    setAppSetting(SETTING_DSH_REPO, dir);
+    setHarnessRepoOverride(dir);
+    const info = harnessRuntimeInfo();
+    log({
+      level: 'info', layer: 'harness', kind: 'dsh_repo_saved',
+      message: `dsh 仓库路径已更新：${dir || '(清空，回到自动探测)'}`,
+      context: { dir, source: info.source, found: info.found, looks_like_dsh: info.looks_like_dsh }
+    });
+    return sendJSON(res, 200, { ok: true, applied: dir, dsh: { dir: info.dir, source: info.source, found: info.found, looks_like_dsh: info.looks_like_dsh, built: info.built, checked: info.checked } });
+  }
   if (resource === 'novel' && segments[2] === 'redlines' && method === 'GET') {
     const workId = Number(query.work_id) || null;
     return sendJSON(res, 200, { work_id: workId, redlines: listRedlines(workId) });
@@ -3804,6 +4112,10 @@ async function handleAPI(req, res, pathname, query) {
       .run(title, summary, content, now(), chapterId);
     touchWork(chapter.work_id);
     notifyChange('chapters', { workId: chapter.work_id, id: chapterId });
+    // D8（2026-09-18 收口）：这条路（审稿合并 / 批量生成写回 / 草稿取回）同样在写正文，
+    // 此前**不触发**记忆自动压缩，只有 PUT /api/chapters/:id 触发 —— 与 3194 附近注释
+    // 「章节正文落盘时检查长期记忆长度」的口径不符。压缩本身默认关闭，这里是空操作。
+    maybeAutoCompressMemory(chapter.work_id);
     const hits = scanAgainstRedlines(listRedlines(chapter.work_id), plainText(content));
     return sendJSON(res, 200, {
       ok: true, chapter_id: chapterId, version_id: Number(version.id),
@@ -3838,14 +4150,23 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     const kind = String(body.kind || '').trim();
     if (harnessLoad() >= HARNESS_CONCURRENCY) return sendError(res, 429, `已有任务运行中，请稍后再试（并发上限 ${HARNESS_CONCURRENCY}）`);
-    const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || 10 * 60 * 1000)), 60 * 60 * 1000);
+    const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || LONG_AI_TIMEOUT_MS)), 60 * 60 * 1000);
+    // 思考强度：与 /harness/run 同一套校验与透传。
+    // ⚠️ 2026-09-18 重审抓到的缺陷：本入口**没有读 body.reasoning_effort**，而前端
+    //    「AI 自动创建小说」是按质量档发 `reasoning_effort:'high'` 的（policyEffortForTier('quality')）——
+    //    字段到了这里被静默丢掉，于是"质量优先"退化成"和快档一模一样"。
+    //    模型档位合并成同一个名字之后，强度就是质量档**唯一**的补偿信号，丢它等于没有质量档。
+    const reasoningEffort = normalizeReasoningEffort(body.reasoning_effort);
+    if (body.reasoning_effort && !reasoningEffort) {
+      return sendError(res, 400, `非法思考强度：仅允许 ${[...DEEPSEEK_REASONING_EFFORTS].join(' / ')}`);
+    }
 
     // 每种命名任务只声明"怎么跑"和"跑完长什么样"，作业设施本身不动。
     const NAMED_TASKS = {
       'generate_novel': {
         label: 'AI 自动创建小说',
         workId: null,
-        runner: ({ onChunk, signal }) => generateNovelFromHarness(String(body.prompt || '').trim(), body.model || undefined, onChunk, signal),
+        runner: ({ onChunk, signal }) => generateNovelFromHarness(String(body.prompt || '').trim(), body.model || undefined, onChunk, signal, reasoningEffort || undefined),
       },
       'compress': {
         label: '压缩长期记忆',
@@ -3861,6 +4182,7 @@ async function handleAPI(req, res, pathname, query) {
     const job = createHarnessJob('', {
       timeout,
       model: body.model || undefined,
+      reasoningEffort: reasoningEffort || undefined,
       action: kind,
       kind,
       stage: spec.label,
@@ -3886,7 +4208,7 @@ async function handleAPI(req, res, pathname, query) {
     // 负载 = 作业设施里的排队/运行中 + 直接跑 harness 的在途请求（两条旁路也算）。
     if (harnessLoad() >= HARNESS_CONCURRENCY) return sendError(res, 429, `已有任务运行中，请稍后再试（并发上限 ${HARNESS_CONCURRENCY}）`);
     // 超时钳制：1s ~ 60min，拒绝近乎无限的后台任务。
-    const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || 10 * 60 * 1000)), 60 * 60 * 1000);
+    const timeout = Math.min(Math.max(1000, Math.floor(Number(body.timeout) || LONG_AI_TIMEOUT_MS)), 60 * 60 * 1000);
     // 思考强度：非法值在入队前就 400，避免任务排到队才在 dsh 子进程里失败。
     const reasoningEffort = normalizeReasoningEffort(body.reasoning_effort);
     if (body.reasoning_effort && !reasoningEffort) {
@@ -3978,7 +4300,10 @@ async function handleAPI(req, res, pathname, query) {
     const body = await readBody(req);
     try {
       // 同步跑 harness 的路由也要占并发槽位（此前完全绕过闸门）。
-      const result = await withHarnessSlot(() => generateNovelFromHarness(body.prompt, body.model));
+      // 与 /harness/job 同口径：思考强度按档位透传（本路由是旧同步入口，界面已不走它，
+      // 但"同一个功能两个入口给出不同的质量档"本身就是缺陷 —— 统一在这里补齐）。
+      const effort = normalizeReasoningEffort(body.reasoning_effort) || undefined;
+      const result = await withHarnessSlot(() => generateNovelFromHarness(body.prompt, body.model, undefined, undefined, effort));
       return sendJSON(res, 200, { ok: true, ...result });
     } catch (e) {
       // 429 是闸门拒绝，不是 AI 调用失败——不该混进 AI 错误日志。
@@ -4300,6 +4625,19 @@ function serveStatic(req, res, pathname) {
 
 // 首次启动写入默认红线清单（幂等）
 seedRedlinesIfEmpty();
+
+// 把作者在 AI 设置页填过的工具配置注入到对应模块（OpenViking 凭证 / dsh 仓库路径）。
+// 必须在服务开始接请求之前执行：否则重启后第一次 AI 任务会用到旧路径或旧凭证，
+// 而界面显示的是已保存的新值——"看起来生效、实际没生效"正是要避免的形态。
+{
+  const applied = applyWorkshopToolSettings();
+  const ovFrom = applied.ov.endpoint || applied.ov.apiKey ? '工坊内设置' : '配置文件/环境变量';
+  log({
+    level: 'info', layer: 'server', kind: 'workshop_tool_settings',
+    message: `工具配置已加载（OpenViking 凭证来源：${ovFrom}；dsh 仓库覆盖：${applied.dshRepo || '未设置'}）`,
+    context: { ov_endpoint_source: applied.endpoint_source, dsh_repo: applied.dshRepo }
+  });
+}
 
 // 日志系统初始化：注入 SQLite、迁移旧 AI 错误、安装进程兜底与卡顿监测、启动保留策略。
 initLogger(db, { onExit: () => { flushDebouncedSync(); flushTraceFile(); } });

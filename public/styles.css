@@ -65,6 +65,7 @@ textarea { resize: vertical; }
 .row { display: flex; align-items: center; gap: 8px; }
 .grow { flex: 1; min-width: 0; }
 .mt-8 { margin-top: 8px; }
+.mt-4 { margin-top: 4px; }
 .mt-12 { margin-top: 12px; }
 .mb-8 { margin-bottom: 8px; }
 .mb-12 { margin-bottom: 12px; }
@@ -665,7 +666,86 @@ textarea { resize: vertical; }
   font-size: 13px;
 }
 .tooltip .tt-title { font-weight: 700; color: #c7d2fe; }
-.tooltip .tt-body { color: var(--text-dim); margin-top: 4px; }
+.tooltip .tt-body { color: var(--text-dim); margin-top: 4px; line-height: 1.65; }
+
+/* 新手引导：标题旁的小问号 + 字段小字 + 工具清单 */
+.help-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+  flex: none;
+}
+.help-dot:hover, .help-dot:focus { color: #c7d2fe; border-color: #6366f1; outline: none; }
+.field-help {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 5px;
+  line-height: 1.7;
+}
+.field-help b { color: var(--text); font-weight: 600; }
+.field-help code { font-family: var(--mono); font-size: 11px; }
+/* 版本不一致提示（页面已更新、服务端还在跑旧代码） */
+.stale-banner {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(234, 179, 8, .35);
+  background: rgba(234, 179, 8, .08);
+  color: #eab308;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.env-list { display: flex; flex-direction: column; gap: 10px; }
+.env-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, .012);
+}
+.env-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
+.env-chip {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.env-chip.ok { color: var(--success); border-color: rgba(34, 197, 94, .35); background: rgba(34, 197, 94, .08); }
+.env-chip.err { color: var(--danger); border-color: rgba(239, 68, 68, .35); background: rgba(239, 68, 68, .08); }
+.env-chip.warn { color: #eab308; border-color: rgba(234, 179, 8, .35); background: rgba(234, 179, 8, .08); }
+.env-cmd { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.env-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, .28);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.env-details { margin-top: 6px; }
+.env-details summary { cursor: pointer; color: var(--text-dim); font-size: 12px; user-select: none; }
+.env-details code { font-family: var(--mono); font-size: 11px; }
+
+/* 下面四个类名**有意不配样式**（2026-09-18 审计结论，避免下次又被当成"漏加样式"）：
+   · .sidebar-toggle  —— 视觉由 .icon-btn 提供，类名只作标记（JS 用 #sidebar-toggle 这个 id）；
+   · .ai-progress-stop —— 视觉由 .btn.small.danger 提供，类名是 JS 选择器（进度卡里找"停止"按钮）；
+   · .gen-item-cb      —— checkbox 用浏览器默认样式，类名是 JS 选择器；
+   · .pipeline-output  —— 视觉由 .pipeline-stage textarea 提供。 */
 
 .empty {
   color: var(--text-dim);
