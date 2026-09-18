@@ -252,7 +252,7 @@ globalThis.__probe = {
   tooltipHtmlFor,
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
-  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, aiContextTruncated, directAIWrite,
+  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, aiContextTruncated, directAIWrite,
   performToolbarAIWrite
 };
 `;
@@ -714,6 +714,46 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     check('107k 章节标题查不到时退回 #id（不显示 undefined）',
       P.chapterTitleOf(999) === '#999' && P.chapterTitleOf(107) === '第107章',
       `${P.chapterTitleOf(999)} / ${P.chapterTitleOf(107)}`);
+  }
+
+  // 付费调用的前置校验：底稿为空时**一次调用都不许发**。
+  // ⚠️ 这是第四轮改动引入的新可能：'接回进度 / 查看上次审稿'那条路上，
+  // 取目标章正文失败会让 info.article 为空 —— 空底稿的审稿/修稿是"必花钱、必无用"。
+  {
+    const calls = { harness: 0, review: 0 };
+    const msgs = [];
+    const saved = {
+      runHarnessJob: sandbox.runHarnessJob, toast: sandbox.toast, closeModal: sandbox.closeModal,
+      querySelectorAll: sandbox.document.querySelectorAll, pendingReview: P.state.pendingReview
+    };
+    sandbox.runHarnessJob = async () => { calls.harness += 1; return { output: '' }; };
+    sandbox.toast = (m) => { msgs.push(String(m)); };
+    sandbox.closeModal = () => {};
+    // 桩里 querySelectorAll 恒返回空 → 让「勾选清单」这一关先通过，才能测到"底稿为空"这一关
+    sandbox.document.querySelectorAll = () => [{ dataset: { reviewIssue: '0' } }];
+
+    P.state.pendingReview = { info: { article: '', chapterId: 107 }, review: { issues: ['问题一'] } };
+    await P.refineByChecklist();
+    check('108a 底稿为空时不发起修稿调用（空底稿必花钱必无用）', calls.harness === 0, `harness=${calls.harness}`);
+    check('108b 底稿为空时明确告知原因', msgs.some((m) => m.includes('没有拿到这一章的正文')), msgs.join(' | ').slice(0, 60));
+
+    // 同样地：审稿也不该在空正文上发起
+    await P.runArticleReview({ article: '', chapterId: 107 });
+    check('108c 正文为空时不发起审稿调用', calls.harness === 0, `harness=${calls.harness}`);
+    check('108d 空正文审稿被拦下时给出可执行的提示', msgs.some((m) => m.includes('未发起审稿')), msgs.join(' | ').slice(0, 60));
+
+    // 反证：有底稿时必须真的调用（否则上面两条可能只是"函数永远不动"）
+    calls.harness = 0;
+    P.state.pendingReview = { info: { article: '第一段：正文。', chapterId: 107 }, review: { issues: ['问题一'] } };
+    sandbox.runHarnessJob = async () => { calls.harness += 1; return { output: '{"patches":[]}' }; };
+    await P.refineByChecklist();
+    check('108e 有底稿时正常发起修稿（证明 108a 不是"函数根本不会调用"）', calls.harness >= 1, `harness=${calls.harness}`);
+
+    sandbox.runHarnessJob = saved.runHarnessJob;
+    sandbox.toast = saved.toast;
+    sandbox.closeModal = saved.closeModal;
+    sandbox.document.querySelectorAll = saved.querySelectorAll;
+    P.state.pendingReview = saved.pendingReview;
   }
 }
 

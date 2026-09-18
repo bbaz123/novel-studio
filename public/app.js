@@ -2994,12 +2994,18 @@ async function restoreChapterDraft() {
     });
     return;
   }
-  // 结构化报告：复用正常审稿弹窗，「按确认清单修稿」以当前正文为底稿。
-  // 这条路径的审稿报告是从**当前章**读出来的，所以章号就是当前章（显式带上，别让它去猜）。
-  const editor = $('#editor-content');
-  const article = editor ? editorPlainText(editor.innerHTML) : '';
+  // 结构化报告：复用正常审稿弹窗。
+  // ⚠️ 底稿与绑定都用**函数自己算出的 chapterId**（来自 review.chapter_id），而不是 state.currentChapterId：
+  // 报告是"按章"读出来的，以它为准才不会张冠李戴；两者若不同，由 revisionBaseArticle 去取
+  // 那一章已保存的正文（取不到就把底稿留空，让「按清单修稿」被前置校验拦下，而不是拿错章的正文去修）。
+  let article = '';
+  try {
+    article = await revisionBaseArticle(chapterId);
+  } catch (e) {
+    toast('取不到该章正文，报告仍可查看，但不能按清单修稿：' + e.message, 'error');
+  }
   state.pendingReview = {
-    info: { article, scan: null, proposals: null, targetWords: resolveTargetWords(), chapterId: Number(state.currentChapterId) || null },
+    info: { article, scan: null, proposals: null, targetWords: resolveTargetWords(), chapterId },
     review: report
   };
   showReviewReport(report);
@@ -3043,7 +3049,7 @@ async function resumeHarnessJob(jobId) {
     const progress = showAITaskProgress(`${label} · 已接回进度，正在等待完成…`);
     try {
       const result = await pollHarnessJob(jobId, progress, { timeoutMs: 3600000 });
-      await finalizeHarnessOutput({ ...result, kind: result.kind || job.kind, chapter_id: result.chapter_id || job.chapter_id, fallbackArticle: '' });
+      await finalizeHarnessOutput({ ...result, kind: result.kind || job.kind, chapter_id: result.chapter_id || job.chapter_id });
     } catch (e) {
       if (e.interrupted) {
         toast(e.message, 'error');
@@ -3083,8 +3089,7 @@ async function fetchHarnessJobResult(jobId) {
     kind: job.kind,
     stage: job.stage,
     chapter_id: job.chapter_id,
-    job_id: job.id,
-    fallbackArticle: ''
+    job_id: job.id
   });
 }
 
@@ -3120,7 +3125,7 @@ function chapterTitleOf(id) {
  * - 成文类：**落成章节草稿**并打开「AI 写作结果」弹窗，绝不自动覆盖正文；
  * - 审稿：解析后存 chapter_reviews 并打开审稿报告弹窗；
  * - 修稿：解析正文后直接走差异预览。
- * @param {{output:string, kind?:string, stage?:string, chapter_id?:number, job_id?:string, fallbackArticle?:string}} r
+ * @param {{output:string, kind?:string, stage?:string, chapter_id?:number, job_id?:string}} r
  */
 async function finalizeHarnessOutput(r) {
   const kind = String(r.kind || 'harness');
@@ -3154,7 +3159,7 @@ async function finalizeHarnessOutput(r) {
     try {
       article = await revisionBaseArticle(chapterId);
     } catch (e) {
-      toast('取不到该章正文，审稿报告仍可查看，但「按清单修稿」会有风险：' + e.message, 'error');
+      toast('取不到该章正文，审稿报告仍可查看，但「按清单修稿」会被拦下（切到该章后重试即可）：' + e.message, 'error');
     }
     state.pendingReview = {
       info: { article, scan: null, proposals: null, targetWords: resolveTargetWords(), chapterId },
@@ -3168,14 +3173,14 @@ async function finalizeHarnessOutput(r) {
 
   if (kind === 'revision') {
     // 补丁的 anchor 是对着**某一章**的正文生成的，所以底稿必须取自那一章（见 revisionBaseArticle）。
-    let base = String(r.fallbackArticle || '');
-    if (!base.trim()) {
-      try {
-        base = await revisionBaseArticle(chapterId);
-      } catch (e) {
-        toast('取不到该章正文，无法生成差异预览（可切到该章后重试取回）：' + e.message, 'error');
-        return;
-      }
+    // 注：这里曾经有个 `fallbackArticle` 参数，但两个调用点都传空串、没有任何生产者 ——
+    // 一个"看起来能传底稿"的死字段比没有更糟（第五轮重审删掉，底稿一律按章取）。
+    let base = '';
+    try {
+      base = await revisionBaseArticle(chapterId);
+    } catch (e) {
+      toast('取不到该章正文，无法生成差异预览（可切到该章后重试取回）：' + e.message, 'error');
+      return;
     }
     // 修稿产出有两种形态：补丁式（新的默认，输出 JSON）与整章重写（兜底/历史任务）。
     // 这里必须两种都认——否则刷新后接回进度，会把 JSON 当成正文塞进差异预览。
@@ -6133,6 +6138,12 @@ async function runArticleReview(info) {
   // 都用它，而不是每次现读 state.currentChapterId —— 审稿+修稿合计几分钟，
   // 期间作者切章是完全正常的操作，现读会把后续所有写操作挪到另一章上。
   const reviewChapterId = Number(info && info.chapterId) || Number(state.currentChapterId) || null;
+  // 空正文不审稿：审查一篇空章是"必花钱、必无意义"（报告只会是"未发现问题"），
+  // 而"接回进度"这条路上 info.article 可能因为取不到正文而为空（第四轮改动引入的新可能）。
+  if (!String(info && info.article || '').trim()) {
+    toast('没有拿到这一章的正文，未发起审稿：请切到该章确认正文已保存后重试', 'error');
+    return;
+  }
   const jobBase = {
     timeout: longAiTimeout(),
     // 质量优先：审稿报告决定后续修稿方向。2026-09-18 起"质量优先"由思考强度表达
@@ -6238,6 +6249,14 @@ async function refineByChecklist() {
   if (!confirmed.length) {
     closeModal();
     toast('没有勾选任何问题，未发起修稿', 'error');
+    return;
+  }
+  // ⚠️ 底稿为空同样不能发起调用（第四轮改动引入的新可能：'接回进度/查看上次审稿'这条路上，
+  // 取目标章正文失败会让 info.article 为空）。空底稿的修稿是"必花钱、必无用"——
+  // 模型拿不到待修正文，anchor 一条也命中不了，只会白等几分钟。
+  if (!String(info && info.article || '').trim()) {
+    closeModal();
+    toast('没有拿到这一章的正文，未发起修稿：请切到该章确认正文已保存后重试', 'error');
     return;
   }
   closeModal();

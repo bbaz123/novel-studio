@@ -240,6 +240,8 @@ node .p1-baseline/gate-env.mjs --stop   # 收工（清 marker；Ctrl+C 亦可）
 | `PORT=<空闲端口>` | 实例错配；harness 子进程据此回连本实例 |
 | `NOVELSTUDIO_OV_DISABLED=1` | 服务端 OpenViking 集成（不写 `ov_uri` 记忆目录） |
 | `NOVELSTUDIO_OPENVIKING_PEER_ID=<测试 peer>` | dsh 任务的记忆写入落进生产 peer |
+| `OPENVIKING_CLI_CONFIG_FILE=<隔离目录>/ovcli.conf` | **写入全局 OpenViking 配置**的端点把目标落在作者主目录（2026-09-18 补：此前缺这一条，导致 `api-test-suite` 的 M26–M29 只能永久跳过） |
+| `OPENVIKING_CONFIG_FILE=<隔离目录>/ov.conf` | 同上（`ov.conf` 一侧的读取） |
 | `DEEPSEEK_BASE_URL=http://127.0.0.1:<黑洞端口>` | LLM 出海；**黑洞连接即隔离证明** |
 | `DEEPSEEK_API_KEY=<哨兵值>` | 兜底（未实测：万一 baseURL 未生效，请求应 401 而非计费） |
 
