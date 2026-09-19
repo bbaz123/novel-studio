@@ -237,10 +237,66 @@ export function harnessRuntimeInfo() {
   };
 }
 
+/**
+ * 源码入口 → 预构建产物的路径推导（纯函数，便于离线断言）。
+ * dsh 仓库用 tsdown：`apps/cli/src/bin.ts` 的产物就是 `apps/cli/lib/bin.js`。
+ * 推不出对应关系时返回 null（宁可不换，也不猜一个路径）。
+ */
+export function builtCounterpartOf(entryPath) {
+  const m = String(entryPath || '').match(/^(.*)[\\/]src[\\/]([^\\/]+)\.tsx?$/);
+  if (!m) return null;
+  return path.join(m[1], 'lib', `${m[2]}.js`);
+}
+
+/**
+ * 是否该用预构建产物启动：产物存在，且**不比源码旧**（防"改了源码没重建"）。
+ * 纯函数（时间与存在性都由调用方给），便于离线断言真值表。
+ *
+ * @param {{builtExists:boolean, builtMtime:number, srcNewestMtime:number, forced?:string}} o
+ * @returns {{use:boolean, why:string}}
+ */
+export function shouldUseBuiltEntry({ builtExists, builtMtime, srcNewestMtime, forced = '' }) {
+  if (forced === 'source') return { use: false, why: 'NOVELSTUDIO_DSH_LAUNCH=source 强制走源码' };
+  if (forced === 'built' && builtExists) return { use: true, why: 'NOVELSTUDIO_DSH_LAUNCH=built 强制走产物' };
+  if (!builtExists) return { use: false, why: '预构建产物不存在' };
+  if (!Number.isFinite(builtMtime) || !Number.isFinite(srcNewestMtime)) return { use: false, why: '无法比较源码与产物的时间戳' };
+  if (srcNewestMtime > builtMtime) return { use: false, why: '源码比产物新（改了没重建），回退源码路径' };
+  return { use: true, why: '产物存在且不比源码旧' };
+}
+
+/** 递归取一棵目录树里最新的 mtime（取不到时返回 NaN，由判据拒绝）。 */
+function newestMtimeUnder(dir, limit = 20000) {
+  let newest = NaN;
+  let seen = 0;
+  const walk = (d) => {
+    let items;
+    try { items = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const it of items) {
+      if (seen >= limit) return;
+      if (it.name === 'node_modules' || it.name === '.git') continue;
+      const p = path.join(d, it.name);
+      if (it.isDirectory()) { walk(p); continue; }
+      seen += 1;
+      try {
+        const mt = fs.statSync(p).mtimeMs;
+        if (!Number.isFinite(newest) || mt > newest) newest = mt;
+      } catch { /* 单个文件取不到不影响整体判断 */ }
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
 // N-01：dsh 任务启动方式解析。优先按 dsh 仓库 package.json 的 scripts.dsh 定义
 // 直接以 node spawn 启动（绕过 pnpm），因为 pnpm 在 Windows 上运行脚本会经 cmd.exe，
 // 把中文 prompt 按 ANSI 代码页损坏成「?」（已实测复现：AI 收到满屏问号并拒绝写作）。
 // 纯 node spawn 传中文参数实测完好。解析失败时回退到旧的 pnpm 方式。
+//
+// ⚠️ 2026-09-18 实测（零计费，假 LLM 端点）：scripts.dsh 的 `node --import tsx/esm apps/cli/src/bin.ts`
+// 会让**每个任务现场转译一遍 TypeScript** —— 冷启动 12.6 秒；而同一仓库里已构建的
+// `apps/cli/lib/bin.js` 冷启动只要 1.9 秒。两条路径用同一 profile 组合出的配置
+// **逐字相同**（`--dump-config` 各 398 行、0 差异），所以这是纯开销，不是取舍。
+// 因此：**能用产物就用产物**，源码路径保留为回退（产物不存在 / 源码更新了没重建 / 显式强制）。
 function resolveDshLaunch() {
   try {
     const pkg = JSON.parse(fs.readFileSync(harnessPackagePath(), 'utf8'));
@@ -254,10 +310,45 @@ function resolveDshLaunch() {
       const entry = parts[parts.length - 1];
       const dir = harnessDir();
       const resolved = entry.startsWith('.') || !entry.includes(':') ? path.join(dir, entry) : entry;
-      return { args: [...parts.slice(0, -1), resolved], cwd: dir };
+      const sourceLaunch = { args: [...parts.slice(0, -1), resolved], cwd: dir };
+
+      // 预构建产物：入口换成 lib 下同名 .js，并**去掉 tsx 加载器**（产物是 JS，不再需要现译）。
+      const builtEntry = builtCounterpartOf(resolved);
+      if (builtEntry) {
+        let builtExists = false;
+        let builtMtime = NaN;
+        try { builtMtime = fs.statSync(builtEntry).mtimeMs; builtExists = true; } catch { /* 不存在 */ }
+        const verdict = shouldUseBuiltEntry({
+          builtExists,
+          builtMtime,
+          srcNewestMtime: builtExists ? newestMtimeUnder(path.dirname(resolved)) : NaN,
+          forced: String(process.env.NOVELSTUDIO_DSH_LAUNCH || '').trim().toLowerCase(),
+        });
+        if (verdict.use) {
+          // 去掉成对的 `--import <loader>`（只去掉紧邻的取值，不误伤其它选项）。
+          const rest = [];
+          for (let i = 0; i < parts.length - 1; i += 1) {
+            if (parts[i] === '--import' && i + 1 < parts.length - 1) { i += 1; continue; }
+            rest.push(parts[i]);
+          }
+          logBuiltLaunchOnce(true, `预构建产物启动（省掉每任务现场转译，实测冷启动 12.6s → 1.9s）：${builtEntry}`);
+          return { args: [...rest, builtEntry], cwd: dir };
+        }
+        logBuiltLaunchOnce(false, `走源码路径：${verdict.why}`);
+      }
+      return sourceLaunch;
     }
   } catch { /* 读取/解析失败走 pnpm 兜底 */ }
   return null;
+}
+
+// 只打印一次：这个决策每次任务都会算，但真跑起来每次刷屏会淹掉别的日志。
+let builtLaunchLogged = '';
+function logBuiltLaunchOnce(usedBuilt, detail) {
+  const key = `${usedBuilt}|${detail}`;
+  if (builtLaunchLogged === key) return;
+  builtLaunchLogged = key;
+  log({ level: 'info', layer: 'harness', kind: 'dsh_launch', message: detail });
 }
 
 // 找到 pnpm 的 corepack JS 入口，避免使用 shell: true 启动子进程。

@@ -205,6 +205,10 @@ run('每任务独立 settings（吞吐回到 2 的前提）', process.execPath,
 // 变异锚点用同目录的 mutation-check-harness-pool.mjs 单独跑（它会改文件再还原，不进默认套件）。
 run('常驻热备池（协议 + 池策略，注入假 dsh）', process.execPath,
   ['.p1-baseline/test-harness-pool.mjs']);
+// dsh 启动路径选择：**优先预构建产物**（省掉每任务现场 tsx 转译，实测冷启动 12.6s → 1.9s），
+// 但必须有防陈旧判据（源码比产物新就回退源码）。这里钉的是那两条纯函数的真值表。
+run('dsh 启动路径（预构建优先 + 防陈旧）', process.execPath,
+  ['.p1-baseline/test-dsh-launch.mjs']);
 
 // ── 4b. I4 的**静态**保证：可截断层必须真有查回路径（零成本，默认跑）────────
 // 端到端那条（verify-retrieval）是数据相关的：只查"当前数据里实际被裁的层"。

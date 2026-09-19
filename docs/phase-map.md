@@ -37,6 +37,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
+  - harness.js 被 .p1-baseline/test-dsh-launch.mjs（验收工具，S）import——撤掉会让该工具失效
   - harness.js 被 .p1-baseline/test-harness-env.mjs（验收工具，X）import——撤掉会让该工具失效
   - harness.js 被 .p1-baseline/test-model-switch-gate.mjs（验收工具，P4）import——撤掉会让该工具失效
   - harness.js 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
@@ -307,11 +308,13 @@
   - logger.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
 - **说明**：本会话改动落在已被 P0–P6/D8 认领的共享文件里（server.js / public/app.js / harness.js / ai/policy.mjs / db.js），所以**不能单独回滚**：撤掉 openviking.js 会打断 server.js 的启动路径，撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。
 - **验收证据**：`.p1-baseline/test-policy-tiers.mjs`、`env-tools-test.mjs`、`.p1-baseline/test-harness-pool.mjs`、`.p1-baseline/mutation-check-harness-pool.mjs`、`docs/self-review-2026-09-18.md`
-- **本阶段认领的文件**（22 个）：
+- **本阶段认领的文件**（24 个）：
   - `.p1-baseline/fake-llm.mjs`
   - `.p1-baseline/mutation-check-harness-pool.mjs`
+  - `.p1-baseline/probe-cold-start.mjs`
   - `.p1-baseline/probe-sdk-runtime.mjs`
   - `.p1-baseline/setup-novel-sdk-profile.mjs`
+  - `.p1-baseline/test-dsh-launch.mjs`
   - `.p1-baseline/test-harness-pool.mjs`
   - `.p1-baseline/test-policy-tiers.mjs`
   - `ai/harness-pool.mjs`
@@ -333,7 +336,8 @@
 
 ## 三、归属核对
 
-- 真实改动集：**167** 个文件
-- 未被任何阶段认领：**0** 个
+- 真实改动集：**170** 个文件
+- 未被任何阶段认领：**1** 个
 
-✓ 全部改动都有归属。
+⚠️ 以下改动没有归属——没人能说清怎么回滚它们：
+  - `_commit-msg.txt`

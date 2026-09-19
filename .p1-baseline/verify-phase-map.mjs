@@ -334,6 +334,13 @@ export const PHASES = [
       '.p1-baseline/setup-novel-sdk-profile.mjs',
       'ai/harness-sdk-worker.mjs',
       '.p1-baseline/probe-sdk-runtime.mjs',
+      // —— dsh 启动路径：**优先预构建产物**（本轮最大的单点提速）——
+      // 源码仓库的 scripts.dsh 是 `node --import tsx/esm …`，每个任务现场转译一遍 TS；
+      // 实测冷启动 12.6s → 用已构建的 apps/cli/lib/bin.js 只要 1.9s，而两条路径
+      // `--dump-config` 逐字相同（398 行 0 差异）。产出：改 harness.js 的 resolveDshLaunch
+      // + 两个纯函数判据（防"改了源码没重建"）+ 一条把对照实验做实的探测脚本。
+      '.p1-baseline/probe-cold-start.mjs',
+      '.p1-baseline/test-dsh-launch.mjs',
     ],
     evidence: [
       '.p1-baseline/test-policy-tiers.mjs',
