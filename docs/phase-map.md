@@ -28,6 +28,7 @@
 | **D8** | 不足清单修复（D8-#1…#8） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **X** | 跨阶段：总纲与工具入口 | 🟡 可单独撤，但会让若干验收工具失效（需同步修） |
 | **S** | 2026-09-18 会话：模型统一 V4.1 Flash + 写作路径提速 + 环境自检接线 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **T** | 2026-09-19 轮：全仓代码审查与修复（Q1/Q2/Q4 + R1/R2 + O1/O2/C1/F1） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：（无）。**仅会让验收工具失效的：X。其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -334,9 +335,21 @@
   - `public/index.html`
   - `public/styles.css`
 
+### T · 2026-09-19 轮：全仓代码审查与修复（Q1/Q2/Q4 + R1/R2 + O1/O2/C1/F1）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - zip-reader.mjs 被**生产代码** server.js（P2/P3/P4/P5）import——撤掉会打断线上路径
+- **说明**：本轮改动的主体落在**已被 P2–P5 认领的共享文件**里（server.js 的 compressStoryMemory / agentMemoryGuardOf / getPath，public/app.js 的 directAIWrite / streamAIDirectWrite / loadAIContext / aiContextBlock）与**已被 S 认领的** frontend-test.mjs，所以主体**不能单独回滚**：撤掉 Q1/Q2 会退回"出场判定只读章节头部"，压缩摘要可以静默丢实体、并喂给之后每一章；撤掉 Q4 会让前端重新拿无预算的旧拼装喂进约 7.4 万字。本阶段唯一可单独撤的是 zip-reader.mjs 的两个上限常量（撤掉=回到无上限解压，不影响其它阶段）。完整回滚用改动前的快照 `data/backup-review-v096-*`（12 个受影响文件，逐文件同构还原；该目录在 .gitignore 内，不进仓库）。
+- **验收证据**：`docs/code-review-2026-09-19-summary.md`
+- **本阶段认领的文件**（3 个）：
+  - `docs/code-review-2026-09-19-summary.md`
+  - `docs/code-review-2026-09-19.md`
+  - `zip-reader.mjs`
+
 ## 三、归属核对
 
-- 真实改动集：**169** 个文件
+- 真实改动集：**172** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

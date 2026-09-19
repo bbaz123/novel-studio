@@ -355,6 +355,33 @@ export const PHASES = [
       + '撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照'
       + '（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。',
   },
+  {
+    id: 'T',
+    title: '2026-09-19 轮：全仓代码审查与修复（Q1/Q2/Q4 + R1/R2 + O1/O2/C1/F1）',
+    files: [
+      // —— 本轮唯一"首次获得归属"的生产文件 ——
+      // 此前它不属于任何阶段：EPUB/ZIP 解压一直**没有解压后大小上限**（只按压缩包字节数
+      // 限制），而 deflate 的高压缩比能让小包解出超大内容。现在按中央目录的声明大小先拒绝
+      // （单条目 128MB / 整包 256MB），inflate 另加 maxOutputLength，解压后再核一次实际长度。
+      'zip-reader.mjs',
+      // —— 本轮第 1 步的审查报告与 5 步总结 ——
+      // 交付时由工作区根目录的 `C-第一次代码审查报告.md` / `C-代码审查总结.md` 原样归档进
+      // docs/（正文未改，只补了文首归档注记与两处指向自身路径的清单项）。它们是**验收记录**
+      // 而不是产物，但按判据 1「每个改动都要有人能说清怎么回滚」仍必须认领。
+      'docs/code-review-2026-09-19.md',
+      'docs/code-review-2026-09-19-summary.md',
+    ],
+    evidence: ['docs/code-review-2026-09-19-summary.md'],
+    rollback: 'shared',
+    note: '本轮改动的主体落在**已被 P2–P5 认领的共享文件**里（server.js 的 compressStoryMemory / '
+      + 'agentMemoryGuardOf / getPath，public/app.js 的 directAIWrite / streamAIDirectWrite / '
+      + 'loadAIContext / aiContextBlock）与**已被 S 认领的** frontend-test.mjs，所以主体**不能单独回滚**：'
+      + '撤掉 Q1/Q2 会退回"出场判定只读章节头部"，压缩摘要可以静默丢实体、并喂给之后每一章；'
+      + '撤掉 Q4 会让前端重新拿无预算的旧拼装喂进约 7.4 万字。本阶段唯一可单独撤的是 zip-reader.mjs '
+      + '的两个上限常量（撤掉=回到无上限解压，不影响其它阶段）。'
+      + '完整回滚用改动前的快照 `data/backup-review-v096-*`（12 个受影响文件，逐文件同构还原；'
+      + '该目录在 .gitignore 内，不进仓库）。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */
