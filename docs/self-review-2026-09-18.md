@@ -563,3 +563,55 @@ README 原先写的"两条通道纪律对齐（约 250 字）"因此只在蓝图
 - **R21 · 错误路径上的"真值空对象"比抛错更危险。** 空 `text` 被包成对象返回，让调用方的
   `if (!x)` 判空逻辑失效，于是**该回退的回退不了**。规则：返回"结果对象"的通道函数，
   要么在空结果时抛错、要么让调用方按字段判空，**不允许**用"真值但内容为空"的对象表示失败。
+- **R22 · 常驻进程池必须"关闭后不再收留"**：`disposeAll` 与异步补位之间存在竞态，
+  一个刚 spawn 完的进程可能在关闭之后才落地、再也没人 dispose 它 —— 服务退出就漏一个孤儿。
+  规则：任何"异步产出资源"的池都要有 `disposed` 标志 + 就绪即就地退役，并在关闭时 await 在途产出。
+
+---
+
+## 附三、常驻 dsh 运行时的**阻塞点**（零计费端到端探测的产出）
+
+### 结论：本机 dsh 源码仓库的版本**没有**常驻 bundle，常驻方案在当前版本上做不成
+
+已按计划做完并离线验证的部分（协议层、池策略、profile 生成器、真实子进程适配器、
+零计费端到端探测脚本）都在提交里；**卡在最后一公里，且这个卡点只有真跑才会暴露**。
+
+**证据链**（`.p1-baseline/probe-sdk-runtime.mjs` 实跑输出）：
+
+1. novel-studio 实际启动的是**源码仓库**那份 dsh：`harnessRuntimeInfo()` → `dir = C:\Users\a1941\Desktop\DeepSeek\deepseek-harness`（来源 `sibling`）。
+2. 该仓库 `git log -1` → `b150a551b8`（**2026-08-21**，`release/dsh-0.1.1-rc.2`）。
+3. 它的 `packages/bundle/` 只有 `base / headless / web-app` —— **没有 `sdk-app`**。
+4. bundle 解析用的是 Node 模块解析（`packages/boot/app-boot/src/profile.ts` 的
+   `resolveBundleDir` → `packageDirFromAnchor`），锚点是 **`apps/cli/package.json`**。
+   实测该锚点能解析出 `@deepseek-ai/dsh-headless`、`dsh-base`，**解析不出 `dsh-sdk-app`**（与 3 一致）。
+5. 于是 `dsh --profile novel-sdk` 直接退出：
+   `cannot resolve profile bundle "@deepseek-ai/dsh-sdk-app" from the dsh installation or …\profiles\novel-sdk`。
+6. 上游 `master` 的 `packages/bundle/` **有** `sdk-app`（还有 `sdk-minimal`、`acp-app`）——
+   查法：`api.github.com/repos/deepseek-ai/deepseek-harness/contents/packages/bundle?ref=master`。
+   npm 全局那份 `@deepseek-ai/dsh` 是 `0.1.5-rc.1`，也带 `sdk-app`。
+
+### 三条可选路（都需要用户定，且都会改变现有基线）
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 升级源码仓库**到含 `sdk-app` 的版本并重装依赖 | 常驻池按原设计即可用 | 从 `0.1.1-rc.2` 跳到最新，**写作任务的 dsh 组合整体改变**（人设/工具集/提示词），必须重抓基线对照；仓库里还有未跟踪的 `wudu_ch6.txt` 要保住 |
+| **B. 把 harness 指向 npm 全局那份 dsh** | 它自带 `sdk-app` | ① 它**没有 `scripts.dsh`**（`bin: {dsh: lib/bin.js}`），现有 `resolveDshLaunch` 解析不出启动方式，要加一条包式启动路径；② 同样改变整条流水线的 dsh 构建（本项目自己记过"源码仓库 vs npm 全局组合结果不同"），基线要重做 |
+| **C. 暂缓** | 池代码保持已验证、默认不启用 | 每任务 ≈17–18 秒冷启动照旧 |
+
+### 现场状态（可安全回退）
+
+- `~/.dsh-novel/profiles/novel-sdk/` 已按 A 的前提建好（`novel-writing` 是 **junction**，不是副本），
+  但**当前无人引用、也不会被自动使用**（没有任何代码指向它）。
+- ⚠️ 删除它时**不要**直接 `Remove-Item -Recurse`（本仓库记过：对 junction 递归删除会删到**目标内容**）。
+  安全做法：`cmd /c rmdir "%USERPROFILE%\.dsh-novel\profiles\novel-sdk\node_modules\novel-writing"`，
+  再删 `novel-sdk` 目录。
+- 探测脚本是**故意会红**的：它红着的时候报的正是上面第 5 条。它不是一个坏掉的测试，
+  而是"这个能力在当前 dsh 版本上不存在"的可复现证据。
+
+### 新增规则
+
+- **R23 · "能力存在"要在**目标构建**上验证，不能拿另一个构建的存在当证据。**
+  本轮 `dsh-sdk-app` 在 npm 全局那份里确实存在（协议取证就是在那儿做的），
+  而应用实际启动的是源码仓库那份 —— 两者差一个月的版本。
+  规则：凡是"某能力可用"的结论，都要写明**在哪一份构建上**看到的，并在**真正会被启动的那一份**上复验。
+

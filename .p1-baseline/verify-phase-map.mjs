@@ -327,6 +327,13 @@ export const PHASES = [
       // 零成本假 LLM 端点：黑洞端点只能证明"请求真的发出去了"，证明不了"任务能跑完"。
       // 这个会**真的回一个应答**，于是"常驻池端到端跑通"可以在零计费下被验收。
       '.p1-baseline/fake-llm.mjs',
+      // 常驻运行时的接线件：profile 生成器（照 novel 派生，只换 bundles 里的一行）、
+      // 真实子进程适配器（spawn + initialize 握手）、零计费端到端探测脚本。
+      // ⚠️ 探测脚本当前**故意是红的**：它精确报出"本机 dsh 源码仓库（0.1.1-rc.2）没有
+      // sdk-app bundle"——那不是脚本坏，而是"这个能力在当前 dsh 版本上不存在"的证据。
+      '.p1-baseline/setup-novel-sdk-profile.mjs',
+      'ai/harness-sdk-worker.mjs',
+      '.p1-baseline/probe-sdk-runtime.mjs',
     ],
     evidence: [
       '.p1-baseline/test-policy-tiers.mjs',
