@@ -626,7 +626,7 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   P.state.aiContext = { context_overflow: { dropped: 10 } };
   check('102 溢出同样判为截断', P.aiContextTruncated() === true);
 
-  // S3：空回复 → 用「低思考预算 + 更大上限」重试一次（实测：思考会把 max_tokens 吃光）
+  // S3：空回复 → 先保持原思考强度 + 更大上限重试一次（实测：思考会把 max_tokens 吃光）
   P.state.apiConfigs = [{ id: 1, api_key: 'sk-test', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 }];
   P.state.activeConfigId = 1;
   directCalls.length = 0;
@@ -634,7 +634,7 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   const reply = await P.directAIWrite([{ role: 'user', content: '写点东西' }], {});
   check('103 首次空回复后重试并拿到内容', reply === '重试后拿到的正文', String(reply));
   check('104 确实发生了两次调用', directCalls.length === 2, directCalls.length + ' 次');
-  check('105 重试时压低思考预算为 low', directCalls[1] && directCalls[1].reasoning_effort === 'low', JSON.stringify(directCalls[1] && directCalls[1].reasoning_effort));
+  check('105 第一次空回复后先保持原思考强度重试（不降 low）', directCalls[1] && directCalls[1].reasoning_effort === undefined, JSON.stringify(directCalls[1] && directCalls[1].reasoning_effort));
   check('106 重试时放宽输出上限（≥8192）', directCalls[1] && Number(directCalls[1].max_tokens) >= 8192, String(directCalls[1] && directCalls[1].max_tokens));
   stub.directEmptyOnce = false;
 
@@ -1041,9 +1041,9 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     [{ done: true, text: '' }],
     [{ delta: '重试后拿到的正文' }, { done: true, text: '重试后拿到的正文' }]
   ]);
-  check('111b 空回复会重试一次，且重试请求换成了低思考预算 + 更大输出上限',
+  check('111b 空回复会先保持原思考强度并放宽输出上限重试一次',
     retried.bodies.length === 2
-      && retried.bodies[1].reasoning_effort === 'low'
+      && retried.bodies[1].reasoning_effort === undefined
       && Number(retried.bodies[1].max_tokens) > Number(retried.bodies[0].max_tokens),
     JSON.stringify(retried.bodies.map((b) => ({ e: b.reasoning_effort, m: b.max_tokens }))));
   check('111c 重试成功时用重试结果交付（不再整章白等、也不再报错）',
@@ -1051,9 +1051,13 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     JSON.stringify(retried.outcome.ok ? retried.outcome.value : String(retried.outcome.error)));
 
   const alwaysEmpty = await runStream([[{ done: true, text: '' }]]);
-  check('111d 两次都空才抛错（错误带 emptyReply，让调用方回退精写内核而不是就地失败）',
-    !alwaysEmpty.outcome.ok && alwaysEmpty.outcome.error.emptyReply === true && alwaysEmpty.bodies.length === 2,
-    JSON.stringify({ calls: alwaysEmpty.bodies.length, msg: String(alwaysEmpty.outcome.error && alwaysEmpty.outcome.error.message) }));
+  check('111d 保持原思考强度重试仍空后，再降 low 兜底；三次都空才抛错',
+    !alwaysEmpty.outcome.ok && alwaysEmpty.outcome.error.emptyReply === true
+      && alwaysEmpty.bodies.length === 3
+      && alwaysEmpty.bodies[1].reasoning_effort === undefined
+      && alwaysEmpty.bodies[2].reasoning_effort === 'low'
+      && Number(alwaysEmpty.bodies[2].max_tokens) > Number(alwaysEmpty.bodies[0].max_tokens),
+    JSON.stringify({ calls: alwaysEmpty.bodies.length, msg: String(alwaysEmpty.outcome.error && alwaysEmpty.outcome.error.message), bodies: alwaysEmpty.bodies.map((b) => ({ e: b.reasoning_effort, m: b.max_tokens })) }));
 
   const partial = await runStream([[{ delta: '半截正文' }]]);
   check('111e 半截流（有正文但没等到 done）仍抛错——绝不把残缺正文当成品交付',

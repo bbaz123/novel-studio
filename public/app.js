@@ -4553,8 +4553,8 @@ async function getActiveAIConfig() {
 //
 // ⚠️ 2026-09-18 实测（真实调用，用户授权）：**长提示词下 flash 的思考 token 会把 max_tokens 吃光**，
 // 返回 content 为空（`out` 正好等于 max_tokens、`finish_reason=length`）。9k 输入 + max_tokens=4096
-// 与 8192 两次都空手而归。所以这里不是"重试碰运气"，而是**明确压低思考预算 + 放宽输出上限**再试一次；
-// 仍为空才交给调用方回退慢通道（那 17 秒的固定开销换"能拿到结果"是值得的）。
+// 与 8192 两次都空手而归。所以这里不是"重试碰运气"，而是**放宽输出上限**再试一次；只有仍为空时
+// 才降思考预算兜底，优先保住生成质量。仍为空才交给调用方回退慢通道。
 async function directAIWrite(messages, opts = {}) {
   const config = await getActiveAIConfig();
   if (!config || !config.api_key) return null;
@@ -4577,9 +4577,13 @@ async function directAIWrite(messages, opts = {}) {
   try {
     const first = await attempt();
     if (first) return first;
-    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: `[AI] 直连通道返回空内容（max_tokens=${baseMax}，疑似思考吃光预算）；改为低思考预算 + 更大上限重试一次` });
-    const retry = await attempt({ reasoningEffort: 'low', maxTokens: Math.min(16384, Math.max(8192, baseMax * 2)) });
-    if (retry) return retry;
+    const largerMax = Math.min(16384, Math.max(8192, baseMax * 2));
+    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: `[AI] 直连通道返回空内容（max_tokens=${baseMax}，疑似思考吃光预算）；先保持原思考强度并放宽上限到 ${largerMax} 重试一次` });
+    const sameEffortRetry = await attempt({ maxTokens: largerMax });
+    if (sameEffortRetry) return sameEffortRetry;
+    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 保持原思考强度重试后仍为空，改为低思考预算 + 更大上限兜底一次' });
+    const lowEffortRetry = await attempt({ reasoningEffort: 'low', maxTokens: largerMax });
+    if (lowEffortRetry) return lowEffortRetry;
     reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 直连通道重试后仍为空，调用方将回退慢通道' });
     return null;
   } catch (e) {
@@ -4669,20 +4673,30 @@ async function streamAIDirectWrite(body, stageLabel) {
     // 成文轮是全链路最长的一次生成，恰恰最容易撞上。此前这里**直接报错**，而且报得很隐蔽：
     // 调用方拿到的是一个 `text` 为空但**真值**的对象，`if (!proseData)` 判不出来，
     // 于是"可恢复的空回复"变成"整章白等 + 报错"，连回退精写内核都走不到。
-    // 现在压低思考预算（low）+ 放宽输出上限重试一次；仍为空才抛错，让调用方的既有回退分支接管。
+    // 现在先保持原思考强度 + 放宽输出上限重试一次；仍为空才降思考预算兜底，
+    // 尽可能不牺牲首轮重试的正文质量；再为空才抛错，让调用方的既有回退分支接管。
     if (!String(result.text || '').trim()) {
-      reportClientLog({ level: 'warn', kind: 'ai_write_stream_empty_retry', message: '[AI] 成文流式直连返回空内容（思考可能吃光输出预算），改为低思考预算 + 更大上限重试一次' });
       const baseMax = Number(body.max_tokens) || 4096;
+      const largerMax = Math.min(16384, Math.max(8192, baseMax * 2));
+      reportClientLog({ level: 'warn', kind: 'ai_write_stream_empty_retry', message: `[AI] 成文流式直连返回空内容（思考可能吃光输出预算），先保持原思考强度 + 更大上限到 ${largerMax} 重试一次` });
       result = await attempt({
         ...body,
-        reasoning_effort: 'low',
-        max_tokens: Math.min(16384, Math.max(8192, baseMax * 2))
+        max_tokens: largerMax
       });
       if (cancelled) throw cancelledErr();
+      if (!String(result.text || '').trim()) {
+        reportClientLog({ level: 'warn', kind: 'ai_write_stream_empty_retry', message: '[AI] 成文流式直连保持原思考强度重试后仍为空，改为低思考预算 + 更大上限兜底一次' });
+        result = await attempt({
+          ...body,
+          reasoning_effort: 'low',
+          max_tokens: largerMax
+        });
+        if (cancelled) throw cancelledErr();
+      }
     }
     if (!String(result.text || '').trim()) {
       const err = new Error(result.complete
-        ? '直连通道返回空内容（思考可能吃光了输出预算），已重试一次仍为空'
+        ? '直连通道返回空内容（思考可能吃光了输出预算），已重试两次仍为空'
         : '流式连接中断，未收到完成信号（可重试或改用精写内核）');
       err.emptyReply = true;
       throw err;
@@ -5396,17 +5410,41 @@ function openApiConfigModal(config = null) {
 
 // ---------- AI functions ----------
 // 加载当前章节的 AI 上下文：角色卡、激活的世界观词条、作者注。
+let aiContextInflight = null; // 同一 workId:chapterId 的并发请求复用，避免多次重复装配往返
 async function loadAIContext() {
-  if (!state.currentChapterId) {
+  const chapterId = state.currentChapterId;
+  const workId = state.workId || state.work?.id || 0;
+  if (!chapterId) {
     state.aiContext = null;
     return null;
   }
+  const key = `${workId}:${chapterId}`;
+  if (aiContextInflight && aiContextInflight.key === key) return aiContextInflight.promise;
+  const fresh = () => state.currentChapterId === chapterId && (state.workId || state.work?.id || 0) === workId;
+  const promise = (async () => {
+    try {
+      let ctx = await api(`/ai_context?chapter_id=${chapterId}`);
+      if (!fresh()) return state.aiContext;
+      // P2 契约：提示词正文只应来自服务端 assembled。旧接口若未返回 assembled，
+      // 回退到唯一装配器 /novel/context，避免前端再次启用无预算的旧拼装。
+      if (ctx && !(typeof ctx.assembled === 'string' && ctx.assembled) && workId) {
+        try {
+          const assembledCtx = await api(`/novel/context?work_id=${workId}&chapter_id=${chapterId}&mode=full`);
+          ctx = assembledCtx || ctx;
+        } catch (_) { /* 回退失败时保留 /ai_context 的结构化字段供界面预览 */ }
+      }
+      if (fresh()) state.aiContext = ctx;
+    } catch (_) {
+      if (fresh()) state.aiContext = null;
+    }
+    return state.aiContext;
+  })();
+  aiContextInflight = { key, promise };
   try {
-    state.aiContext = await api(`/ai_context?chapter_id=${state.currentChapterId}`);
-  } catch (_) {
-    state.aiContext = null;
+    return await promise;
+  } finally {
+    if (aiContextInflight && aiContextInflight.key === key) aiContextInflight = null;
   }
-  return state.aiContext;
 }
 
 // 渲染 AI 上下文预览 HTML。
@@ -5451,60 +5489,9 @@ function aiContextBlock() {
   const ctx = state.aiContext;
   if (!ctx) return '';
   // P2：提示词文本改由服务端**唯一装配器**产出（分层预算 + 裁剪清单 + 溢出标记）。
-  // 下面那段前端拼装没有预算——压力数据下同一章它会喂进约 7.4 万字，
-  // 而受预算约束的路径只有 2.4 万字。服务端给了 assembled 就用它。
-  // 保留旧拼装作为兜底：兼容尚未升级的服务端与浏览器缓存里的旧响应。
-  if (typeof ctx.assembled === 'string' && ctx.assembled) return ctx.assembled;
-  const parts = [];
-  if (ctx.characters?.length) {
-    const charText = ctx.characters.map((c) => {
-      let s = `【${c.name}】身份：${c.identity || ''}；性格：${c.personality || ''}；背景：${c.background || ''}；当前状态：${c.status || ''}`;
-      if (c.mes_example) s += `\n对话示例：${c.mes_example}`;
-      if (c.system_prompt) s += `\n角色系统提示：${c.system_prompt}`;
-      return s;
-    }).join('\n');
-    parts.push(`角色卡：\n${charText}`);
-  }
-  if (ctx.world_entries?.length) {
-    const worldText = ctx.world_entries.map((w) => `【${w.title}】${w.content}`).join('\n');
-    parts.push(`世界观设定：\n${worldText}`);
-  }
-  if (ctx.story_memory) {
-    parts.push(`长期记忆/故事摘要：\n${ctx.story_memory}`);
-  }
-  // OpenViking 语义召回层：按当前章节场景从共享记忆库召回的相关片段，注入写作提示词。
-  if (ctx.semantic_recall?.hits?.length) {
-    parts.push(`相关记忆检索（语义召回，来自共享记忆库）：\n${ctx.semantic_recall.hits.map((h) => `【${h.label}】（相关度 ${recallPercent(h.score)}%）\n${h.text}`).join('\n\n')}`);
-  }
-  const notes = [ctx.work_author_note, ctx.chapter_author_note].filter(Boolean).join('\n');
-  if (notes) parts.push(`作者注：\n${notes}`);
-  // 本章蓝图与目标字数（写作的常驻锚点）
-  const bp = ctx.chapter?.blueprint;
-  if (bp && Object.keys(bp).length) {
-    const bpText = [
-      bp.scene_goal && `场景目标：${bp.scene_goal}`,
-      bp.plot_points && `情节点：${bp.plot_points}`,
-      bp.conflicts && `冲突与转折：${bp.conflicts}`,
-      bp.character_changes && `出场角色状态变化：${bp.character_changes}`,
-      bp.hook && `下一章钩子：${bp.hook}`,
-      bp.references && `参考设定：${bp.references}`
-    ].filter(Boolean).join('\n');
-    if (bpText) parts.push(`【本章蓝图 · 写作必须遵守】\n${bpText}`);
-  }
-  parts.push(`每章目标字数：${ctx.chapter?.target_words || ctx.work?.default_chapter_words || 2000} 字（成文不足时请主动写满，不要输出残章）`);
-  if (ctx.work?.story_structure) parts.push(`故事结构：${ctx.work.story_structure}`);
-  if (ctx.work?.narrative_pov) parts.push(`叙事视角：${ctx.work.narrative_pov}`);
-  // 创作内核注入：前文衔接 + 最近事件 + 反 AI 腔红线（若服务端已提供）
-  if (ctx.story_tail) parts.push(`前文衔接（上一节/当前节尾部）：\n${ctx.story_tail.slice(0, 1500)}`);
-  if (ctx.recent_events?.length) {
-    parts.push(`最近发生的事件：\n${ctx.recent_events.slice(0, 12).map((e) => `- [${e.kind}] ${e.summary.slice(0, 150)}`).join('\n')}`);
-  }
-  // 未闭合伏笔层：直连成文没有 novel_consistency 工具兜底，必须内联进提示词（质量优先模式）。
-  if (ctx.open_foreshadows?.length) {
-    parts.push(`未闭合伏笔（写作必须照顾，可考虑推进或回收）：\n${ctx.open_foreshadows.map((f) => `- #${f.id} ${f.summary}`).join('\n')}`);
-  }
-  if (ctx.style_contract) parts.push(ctx.style_contract);
-  return parts.join('\n\n');
+  // 旧前端拼装没有预算，且历史上会绕过服务端装配器喂入约 7.4 万字；
+  // 这里不再保留该兜底：loadAIContext 会在缺少 assembled 时回退 /novel/context。
+  return typeof ctx.assembled === 'string' ? ctx.assembled : '';
 }
 
 

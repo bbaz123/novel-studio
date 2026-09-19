@@ -5,6 +5,9 @@
  */
 import { inflateRawSync } from 'node:zlib';
 
+const MAX_ENTRY_UNCOMPRESSED = 128 * 1024 * 1024; // 单条目解压上限
+const MAX_TOTAL_UNCOMPRESSED = 256 * 1024 * 1024; // 整包解压总量上限
+
 export function readZip(buffer) {
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   if (buf.length < 22) throw new Error('文件太小，不是有效的 ZIP/EPUB');
@@ -17,6 +20,7 @@ export function readZip(buffer) {
   const count = buf.readUInt16LE(eocd + 10);
   let offset = buf.readUInt32LE(eocd + 16);
   const entries = new Map();
+  let totalUncompressed = 0;
   for (let i = 0; i < count; i++) {
     if (offset + 46 > buf.length || buf.readUInt32LE(offset) !== 0x02014b50) {
       throw new Error('ZIP 中央目录损坏');
@@ -28,6 +32,13 @@ export function readZip(buffer) {
     const commentLen = buf.readUInt16LE(offset + 32);
     const localOffset = buf.readUInt32LE(offset + 42);
     const name = buf.toString('utf8', offset + 46, offset + 46 + nameLen);
+    const uncompSize = buf.readUInt32LE(offset + 24);
+    if (uncompSize > MAX_ENTRY_UNCOMPRESSED) {
+      throw new Error(`ZIP 条目过大（${name}）：解压后 ${uncompSize} 字节，超过单条目上限`);
+    }
+    if (totalUncompressed + uncompSize > MAX_TOTAL_UNCOMPRESSED) {
+      throw new Error('ZIP 解压总量超过上限，已拒绝继续解压');
+    }
     if (localOffset + 30 > buf.length || buf.readUInt32LE(localOffset) !== 0x04034b50) {
       throw new Error(`ZIP 本地头损坏：${name}`);
     }
@@ -41,11 +52,18 @@ export function readZip(buffer) {
     let data;
     try {
       if (method === 0) data = Buffer.from(raw);
-      else if (method === 8) data = inflateRawSync(raw);
+      else if (method === 8) data = inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_UNCOMPRESSED });
       else throw new Error(`不支持的 ZIP 压缩方式 ${method}`);
     } catch (e) {
       throw new Error(`解压失败（${name}）：${e.message}`);
     }
+    if (data.length > MAX_ENTRY_UNCOMPRESSED) {
+      throw new Error(`ZIP 条目解压后过大（${name}）：${data.length} 字节`);
+    }
+    if (totalUncompressed + data.length > MAX_TOTAL_UNCOMPRESSED) {
+      throw new Error('ZIP 解压总量超过上限，已拒绝继续解压');
+    }
+    totalUncompressed += data.length;
     entries.set(name, data);
     offset += 46 + nameLen + extraLen + commentLen;
   }

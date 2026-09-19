@@ -1304,17 +1304,35 @@ function saveStoryMemory(workId, summary, opts = {}) {
   }
 }
 
+// 把按行组织的一段提示词文本压缩进预算：优先保留全部条目（覆盖优先），
+// 每条按均分额度截断；总长最终仍受预算约束。
+function compactLinesWithinBudget(text, budget) {
+  const lines = String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const cap = Math.max(1, Math.floor(budget / lines.length));
+  let result = '';
+  for (const line of lines) {
+    const clipped = line.length > cap ? `${line.slice(0, cap)}…` : line;
+    if ((result ? result.length + 1 : 0) + clipped.length > budget) break;
+    result += (result ? '\n' : '') + clipped;
+  }
+  return result;
+}
+
 // 自动压缩作品内容为长期记忆摘要。
 async function compressStoryMemory(workId, onChunk, signal) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) throw new Error('作品不存在');
 
-  // 只取每章正文头部，避免大作品一次性拉取数十 MB 正文再丢弃。
-  const chapters = prepare('SELECT title, summary, substr(content, 1, 1500) AS content FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  // 只取每章正文头尾（各 2000 字），既避免一次性拉取数十 MB 正文，又覆盖后期才出场的实体。
+  const chapters = prepare(`SELECT title, summary,
+    substr(content, 1, 2000) AS content_head,
+    CASE WHEN length(content) <= 2000 THEN content ELSE substr(content, length(content) - 1999) END AS content_tail
+    FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC`).all(workId);
   const characters = prepare('SELECT name, identity, personality, status FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const worlds = prepare('SELECT title, content FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
 
-  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content, 500)}`).join('\n');
+  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content_head, 2000)} ${plainTextTail(c.content_tail, 2000)}`).join('\n');
 
   // 决策 D8-#3（用户 2026-09-16 规格）：按"**在章节里出现过没有**"把角色分成两侧。
   // 实测作品 #2：角色表 23 个，章节里真正出现过的只有 5 个。
@@ -1329,7 +1347,19 @@ async function compressStoryMemory(workId, onChunk, signal) {
   const worldText = worlds.filter((w) => appearedWorldTitles.has(w.title))
     .map((w) => `【${w.title}】${w.content}`).join('\n');
 
-  const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节：\n${chapterText.slice(0, 6000)}\n\n已出场角色（**只允许提到这些角色，不要引入任何未在此列的角色**）：\n${characterText.slice(0, 3000)}\n\n世界观：\n${worldText.slice(0, 3000)}\n\n请只输出压缩后的记忆摘要。`;
+  const chapterPromptText = (() => {
+    const summaryBudget = 4400;
+    const tailBudget = 1500;
+    const summaries = chapters.map((c) => `【${c.title}】${c.summary || plainTextHead(c.content_head, 260)}`).join('\n');
+    const summaryText = compactLinesWithinBudget(summaries, summaryBudget);
+    const recent = chapters.slice(-3).map((c) => `【${c.title} · 章节尾部】${plainTextTail(c.content_tail, 700)}`).join('\n');
+    const tailText = compactLinesWithinBudget(recent, tailBudget);
+    return `${summaryText}\n${tailText}`.trim();
+  })();
+  const characterPromptText = compactLinesWithinBudget(characterText, 3000);
+  const worldPromptText = compactLinesWithinBudget(worldText, 3000);
+
+  const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节（前为全部章节摘要，后为最近章节尾部）：\n${chapterPromptText}\n\n已出场角色（**只允许提到这些角色，不要引入任何未在此列的角色**）：\n${characterPromptText}\n\n世界观：\n${worldPromptText}\n\n请只输出压缩后的记忆摘要。`;
 
   // 记忆压缩是「读得多、写得少」的摘要任务。
   // 质量优先：产出的长期记忆会喂给之后**每一章**的上下文，质量影响是累积的。
@@ -1408,10 +1438,13 @@ compressStoryMemory = traceFn('compressStoryMemory（压缩长期记忆）', com
 // 靠工具显式标记来源（`guard:'agent'`）区分——**作者在界面手改不带标记，不受影响**。
 // 判据只取名字/标题，不拉正文：这是本地 SQLite 的索引查询，纳秒级，不进 AI 计费路径。
 function agentMemoryGuardOf(workId, summary) {
-  const chapters = prepare('SELECT title, summary, substr(content, 1, 1500) AS content FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+  const chapters = prepare(`SELECT title, summary,
+    substr(content, 1, 2000) AS content_head,
+    CASE WHEN length(content) <= 2000 THEN content ELSE substr(content, length(content) - 1999) END AS content_tail
+    FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC`).all(workId);
   const characters = prepare('SELECT name FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const worldEntries = prepare('SELECT title FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
-  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content, 500)}`).join('\n');
+  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content_head, 2000)} ${plainTextTail(c.content_tail, 2000)}`).join('\n');
   return agentMemoryUpdateVerdict({ characters, worldEntries, chapterText, summary });
 }
 
@@ -4683,8 +4716,21 @@ setInterval(() => {
 }, 200).unref();
 
 const server = http.createServer(async (req, res) => {
-  const { pathname, query } = getPath(req);
   const startedAt = performance.now();
+  let pathname = '';
+  let query = {};
+  try {
+    ({ pathname, query } = getPath(req));
+  } catch (e) {
+    log({
+      level: 'warn', layer: 'server', kind: 'http_bad_url',
+      message: `URL 解析失败：${String(e?.message || e)}`,
+      error: e,
+      context: { method: req.method, url: String(req.url || '').slice(0, 500) }
+    });
+    if (!res.destroyed && !res.headersSent) sendError(res, 400, '请求地址不合法');
+    return;
+  }
   try {
     if (pathname.startsWith('/api/')) {
       // traceRequest：录制中为本次请求建立追踪上下文，让整条 await 链归属同一个用户操作；
