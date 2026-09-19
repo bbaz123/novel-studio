@@ -54,9 +54,12 @@ function killTree(child) {
  *   readyTimeoutMs?: number, log?: (level:string, kind:string, message:string, ctx?:object)=>void,
  * }} o
  */
-export function createSpawnWorker({ harnessDir, profile, env, readyTimeoutMs = 120000, log = () => {} }) {
+export function createSpawnWorker({ harnessDir, profile, env, readyTimeoutMs = 120000, log = () => {}, launch: launchOverride = null }) {
   return async function spawnWorker(route) {
-    const launch = resolveDshLaunch(harnessDir);
+    // `launch` 可注入：源码仓库那份 dsh 用 `scripts.dsh` 启动；**包式安装**（npm 全局）没有
+    // `scripts.dsh`，只能 `node <pkg>/lib/bin.js`。把启动方式做成可注入，才能在两者之间做对照实验
+    // （本轮正是靠它把"协议/池写错了"与"启动的是哪一份构建"区分开）。
+    const launch = launchOverride || resolveDshLaunch(harnessDir);
     if (!launch) throw new Error(`无法从 ${harnessDir} 解析 dsh 启动方式（package.json 的 scripts.dsh）`);
     const child = spawn(process.execPath, [...launch.args, '--profile', String(profile)], {
       cwd: launch.cwd,

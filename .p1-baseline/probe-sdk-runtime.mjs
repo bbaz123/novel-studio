@@ -50,6 +50,24 @@ const check = (name, cond, detail = '') => {
   else { failures += 1; console.log(`FAIL  ${name}${detail ? '  — ' + detail : ''}`); }
 };
 
+/** 包式安装（npm 全局）没有 `scripts.dsh`，只能以 `node <pkg>/lib/bin.js` 启动。 */
+function resolvePackagedDshLaunch() {
+  const roots = [
+    path.join(process.env.APPDATA || '', 'npm-global', 'node_modules'),
+    path.join(process.env.APPDATA || '', 'npm', 'node_modules'),
+    path.join(os.homedir(), 'AppData', 'Roaming', 'npm-global', 'node_modules'),
+  ];
+  for (const root of roots) {
+    const pkgDir = path.join(root, '@deepseek-ai', 'dsh');
+    const bin = path.join(pkgDir, 'lib', 'bin.js');
+    if (fs.existsSync(bin)) return { args: [bin], cwd: pkgDir, version: readVersion(pkgDir) };
+  }
+  return null;
+}
+function readVersion(pkgDir) {
+  try { return JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).version || '?'; } catch { return '?'; }
+}
+
 let llm = null;
 let entry = null;
 try {
@@ -63,6 +81,19 @@ try {
   check('前置：解析到了 dsh 仓库且已构建', info.found && info.looks_like_dsh && info.built, info.dir);
   if (failures) throw new Error('前置不满足，无法继续');
 
+  // 2b) `--npm-dsh`：改用**包式安装**的那一份做对照实验。
+  //     动机：源码仓库这份（0.1.1-rc.2）没有 sdk-app bundle，"常驻起不来"到底是
+  //     "我的协议/池写错了"还是"这份构建里没这个 bundle"，必须用另一份构建把它分开。
+  let launchOverride = null;
+  let dirForWorker = info.dir;
+  if (process.argv.includes('--npm-dsh')) {
+    const pkgLaunch = resolvePackagedDshLaunch();
+    if (!pkgLaunch) throw new Error('找不到包式安装的 @deepseek-ai/dsh（--npm-dsh）');
+    launchOverride = { args: pkgLaunch.args, cwd: pkgLaunch.cwd };
+    dirForWorker = pkgLaunch.cwd;
+    console.log(`对照实验：改用**包式安装**的 dsh ${pkgLaunch.version}：${pkgLaunch.cwd}`);
+  }
+
   // 3) 子进程环境走**生产代码自己的**契约（顺带把模型端点指到假端点）
   const env = harnessChildEnv({
     peerId: 'sdk-probe',
@@ -73,10 +104,11 @@ try {
 
   // 4) 起一条常驻 dsh 并握手
   const spawnWorker = createSpawnWorker({
-    harnessDir: info.dir,
+    harnessDir: dirForWorker,
     profile: PROFILE,
     env,
     readyTimeoutMs: 180000,
+    launch: launchOverride,
     log: (lvl, kind, msg) => console.log(`      dsh[${lvl}/${kind}] ${msg}`),
   });
   const t0 = Date.now();
