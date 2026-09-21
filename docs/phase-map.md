@@ -31,8 +31,9 @@
 | **T** | 2026-09-19 轮：全仓代码审查与修复（Q1/Q2/Q4 + R1/R2 + O1/O2/C1/F1） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **U** | 2026-09-20 轮：接管被中断的第二轮审查（护栏作用范围 + 下限自适应 + 兼容性检查） | ✅ 可独立回滚 |
 | **V** | 2026-09-21 轮：双稿对照诊断 + 写作机制补齐（terms 层/未来章标记/场景预算/质检扩面） + 第 6 章定稿 | ✅ 可独立回滚 |
+| **W** | 2026-09-21 轮：仓库展示面与开源文档（README 首页重写 + 社区文件 + 仓库级 Topics/Description） | ✅ 可独立回滚 |
 
-**可独立回滚的阶段：U、V。**仅会让验收工具失效的：X。其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
+**可独立回滚的阶段：U、V、W。**仅会让验收工具失效的：X。其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
 ## 二、逐阶段明细
 
@@ -365,9 +366,21 @@
 - **本阶段认领的文件**（1 个）：
   - `docs/chapter-acceptance-checklist.md`
 
+### W · 2026-09-21 轮：仓库展示面与开源文档（README 首页重写 + 社区文件 + 仓库级 Topics/Description）
+
+- **回滚方式**：可独立回滚
+- **说明**：仓库展示面优化：README 首页重写（第一屏改为「30 秒讲清价值 + 它不做什么」，安装步骤紧随其后；原 30 行的「分支说明」块压到 2 行；新增环境变量配置表、Roadmap、参与贡献、License 说明与目录），旧 README 里写法成熟的章节按行**原样**保留（用重组脚本拼接，不手抄，避免中文正文抄写漂移）。README.md 已由更早阶段认领，故不重复列出；仓库级 Description 与 Topics 通过 GitHub API 写入，属于仓库设置而非文件，不进 git。
+- **验收证据**：`CONTRIBUTING.md`、`.github/ISSUE_TEMPLATE/bug_report.yml`
+- **本阶段认领的文件**（5 个）：
+  - `.github/ISSUE_TEMPLATE/bug_report.yml`
+  - `.github/ISSUE_TEMPLATE/config.yml`
+  - `.github/ISSUE_TEMPLATE/feature_request.yml`
+  - `.github/pull_request_template.md`
+  - `CONTRIBUTING.md`
+
 ## 三、归属核对
 
-- 真实改动集：**174** 个文件
+- 真实改动集：**179** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

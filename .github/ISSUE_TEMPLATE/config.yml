@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 新手入门（逐步骤讲解 + 逐条排错）
+    url: https://github.com/bbaz123/novel-studio/blob/refactor/p0-p6/docs/%E6%96%B0%E6%89%8B%E5%85%A5%E9%97%A8.md
+    about: 装不上、启动失败、报错看不懂 —— 先看这份
+  - name: 🆘 常见问题（Node 版本 / 端口占用 / 数据备份 / 卸载）
+    url: https://github.com/bbaz123/novel-studio/blob/refactor/p0-p6/README.md#-新手常见问题先看这里
+    about: README 里的新手常见问题表

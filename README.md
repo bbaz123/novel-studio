@@ -1,34 +1,76 @@
 # Novel Studio · 小说创作工坊
-> **注意：这是重构后的仓库，你正在看的 `p0-p6` 是重构后的版本（v0.9.6）。**
->
-> 重构前的代码在 [`main`](https://github.com/bbaz123/novel-studio/tree/main) ，
-> 想跑一个稳定版本，请前往main分支。
 
-Novel Studio 是一个本地运行的小说创作管理工具，用于管理多部作品的设定、剧情线、大纲、正文写作，并把 AI 辅助创作能力整合进一个清爽的界面。
+[![Node.js ≥ 22.13](https://img.shields.io/badge/node-%E2%89%A5%2022.13-3c873a?logo=node.js&logoColor=white)](https://nodejs.org)
+[![npm dependencies: 0](https://img.shields.io/badge/npm%20dependencies-0-brightgreen)](package.json)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-安装与运行详细步骤)
+[![data: 100% local](https://img.shields.io/badge/data-100%25%20local-blue)](#-数据与隐私)
+[![model: DeepSeek V4.1 Flash](https://img.shields.io/badge/model-DeepSeek%20V4.1%20Flash-4d6bfe)](ai/policy.mjs)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
-它不需要安装任何 npm 第三方依赖，使用 Node.js 内置能力与本地 SQLite 数据库即可运行。你的作品数据、API Key 默认只保存在本机。
+**本地运行的 AI 小说创作工坊。** 它把长篇写作必然会遇到的那几件事——**设定漂移、伏笔丢失、角色状态自相矛盾、AI 腔**——做成**可检查、可拦截的机制**，而不是靠提示词碰运气。
 
-**当前版本：v0.9.6（代码审查修复版，位于下方分支 `refactor/p0-p6`）**
+> 📌 你正在读的是当前开发版分支 **`refactor/p0-p6`（v0.9.6）**。`main` 是重构前的旧版（v0.9.3），安装方式与项目结构以本页为准。
 
-| 仓库 | 地址 | 说明 |
-| --- | --- | --- |
-| 应用本体 | <https://github.com/bbaz123/novel-studio> | 工坊主程序（本仓库），创作插件源码内置在 `harness-plugins/novel-writing/`，与工坊同仓维护、一起升级 |
-| 创作插件 | <https://github.com/bbaz123/novel-writing-plugin> | novel-writing 插件（DeepSeek Harness 创作内核）的独立发布镜像，内容与上面 `harness-plugins/novel-writing/` 同步 |
+## 🎯 30 秒讲清它解决什么问题
 
-> 🌿 **先看一下分支，再决定下载哪个**——本仓库有两条线：
->
-> - **`refactor/p0-p6`：最新代码（本页描述的即为它）**。含 AI 内核重构 P0–P6：`ai/context/` 上下文装配器、`ai/policy.mjs` 模型策略单点、专用 `novel` dsh profile、`.p1-baseline/` 验证套件等；比 `main` 领先 **50 个提交**。
-> - **`main`：已发布版本 v0.9.3**。只想要一个稳定可用的版本，用它就够。
->
-> 取最新代码：
->
-> ```bash
-> git clone -b refactor/p0-p6 https://github.com/bbaz123/novel-studio.git
-> ```
->
-> （`main` 上的 README 描述的是已发布版本，两处的安装/结构细节会有差异，属正常。）
+用对话式 AI 写长篇，通常写到第 20～80 章之间开始崩，症状很具体：
 
-**第一次用？直接看下面的「⚡ 三步跑起来」**——3 分钟就能开始写。每一步的细节与排错见「🚀 安装与运行（详细步骤）」和 **[docs/新手入门.md](docs/新手入门.md)**。
+- **设定漂移**：第 12 章写「李队」，第 40 章变成「队长」，前后对不上
+- **状态错乱**：第 3 章已经死掉的配角重新出场；角色处境与几十章前的设定冲突
+- **伏笔失踪**：埋的线没人回收，或者被当成既成事实提前用掉
+- **AI 腔**：满屏「心中一凛」「眼中闪过一丝复杂」
+- **失忆**：每次都要手动把设定贴进对话框——贴少了它编，贴多了超上下文
+
+**Novel Studio 的答案不是更长的提示词，而是四件机制：**
+
+- **上下文装配**：写作时自动装配 **14 层**上下文（作品 / 大纲 / 长期记忆 / 语义召回 / 事件账本 / 未闭合伏笔 / 当前场景 / 本章蓝图 / 前文衔接 / 出场角色卡 / 人物关系 / 世界观设定 / 相关设定词条 / 写作红线），按预算裁剪；每个层的「查回路径」都在 [`ai/context/layers.mjs`](ai/context/layers.mjs) 里显式声明，**裁剪不等于静默丢弃**
+- **零损失记忆护栏**：压缩长期记忆时，凡是正文里出场过的实体（含别名）**一个都不许丢**，违反直接**拒绝落库**并返回缺失名单
+- **反 AI 腔红线**：确定性正则扫描 + 正向风格契约（`writing_redlines` + `style_positive`），写作与审稿两条通道同源
+- **一致性核对**：成文后逐项对照未闭合伏笔 / 角色当前状态 / 事件账本 / 已登记命名实体 / 本章边界，冲突如实报出
+
+```text
+裸用对话式 AI 写长篇：
+  第 12 章「李队」写成「李队长」 · 第 3 章死掉的配角又出场 · 伏笔没人回收 · 每次都要手动贴设定
+
+换成 Novel Studio：
+  写作前自动装配 14 层上下文（含角色当前状态与未闭合伏笔）
+  成文后一致性核对逐项指出冲突；丢实体的记忆摘要被护栏拒绝入库
+```
+
+## 🚫 它不做什么 · 什么时候才需要它
+
+- **不需要联网，也不需要 AI**：手写、设定管理、大纲、导出全部本地完成、零费用。**不接 AI 它也是一个完整的小说管理工具**
+- **不把作品交给任何服务器**：数据是本机的一个 SQLite 文件；服务只监听 `127.0.0.1`，写请求还会校验 Origin/Host 是否本机（防 DNS rebinding）
+- **不含模型、不卖 token**：要用 AI 得自己填 API Key（直连你选的服务商，**会产生费用**）；默认推荐 DeepSeek-V4.1-Flash
+- **不是「一键成书机」**：AI 产出的事件/记忆先落「提案」，**你勾选之后才入账**；AI 写的正文写回章节之前也要你确认
+- **不替你做创作决策**：AI 会先一次只问一个问题来澄清需求（可以跳过），也可以全程不用 AI
+- **不是 SaaS**：没有账号、没有云同步、没有团队协作
+
+<details>
+<summary><b>📑 目录</b>（点开）</summary>
+
+- [30 秒讲清它解决什么问题](#-30-秒讲清它解决什么问题)
+- [它不做什么 · 什么时候才需要它](#-它不做什么--什么时候才需要它)
+- [它长什么样](#-它长什么样)
+- [三步跑起来（约 3 分钟）](#-三步跑起来windows-新手版--约-3-分钟)
+- [第一次打开，先做这 4 件事](#-第一次打开先做这-4-件事)
+- [我该看哪份文档](#-我该看哪份文档)
+- [功能亮点](#-功能亮点)
+- [安装与运行（详细步骤）](#-安装与运行详细步骤)
+- [AI 功能配置](#-ai-功能配置)
+- [配置项（环境变量）](#-配置项环境变量)
+- [界面导航速览](#-界面导航速览)
+- [新手常见问题](#-新手常见问题先看这里)
+- [进阶功能（可选）](#-进阶功能可选--不影响手动写作)
+- [测试与验证](#-测试与验证)
+- [数据与隐私](#-数据与隐私)
+- [项目结构](#-项目结构)
+- [Roadmap](#-roadmap)
+- [参与贡献](#-参与贡献)
+- [License](#-license)
+- [更新记录](#-更新记录)
+
+</details>
 
 ---
 
@@ -107,7 +149,7 @@ npm start
 
 > 💡 示例小说随时可以删：在「我的作品」页的「🧪 示例小说」区块点「删除示例数据」即可，你自己的作品不受影响。
 
-## 🧭 我该看哪份文档？
+## 📚 我该看哪份文档？
 
 | 你的情况 | 直接看 |
 | --- | --- |
@@ -115,23 +157,14 @@ npm start
 | 想先知道有哪些功能 | 本文「✨ 功能亮点」 |
 | 启动失败 / 报错看不懂 | 本文「🆘 新手常见问题」→ 详细版见 [docs/新手入门.md](docs/新手入门.md) |
 | 想接 AI 写作 | 本文「🤖 AI 功能配置」 |
-| 想改代码 / 了解 AI 内核与上下文装配 | [docs/ai-core.md](docs/ai-core.md) |
-| 想找某份具体文档 | [docs/README.md](docs/README.md)（全部文档索引） |
 | 想知道每个版本改了什么 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
+| 想改代码 / 了解 AI 内核与上下文装配 | [docs/ai-core.md](docs/ai-core.md)、上下文契约 [docs/context-contract.md](docs/context-contract.md) |
+| 想跑验证 / 看验收口径 | `node .p1-baseline/verify-all.mjs`；说明见 [.p1-baseline/README.md](.p1-baseline/README.md) |
+| 想参与开发 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 想找某份具体文档 | [docs/README.md](docs/README.md)（全部文档索引） |
 
-## 🆘 新手常见问题（先看这里）
-
-| 现象 | 原因 | 怎么办 |
-| --- | --- | --- |
-| 双击 `start-novel-studio.cmd` 后浏览器打不开，或提示「无法访问此网站」 | 服务还没启动完，或启动失败已退出 | 等 5 秒刷新页面；仍打不开，就看那个黑色服务窗口里的报错，对照下面几行 |
-| 服务窗口一闪就没了，或提示 `Node.js 22+ is required` | 没装 Node.js，或版本太旧 | 到 <https://nodejs.org> 装 LTS 版后重试 |
-| 报错里出现 `node:sqlite`（如 `No such built-in module: node:sqlite`，或提示需要 `--experimental-sqlite`） | Node.js 版本是 22.5 ~ 22.12：这个区间里 `node:sqlite` 还需要额外的 `--experimental-sqlite` 启动参数 | 升级到 **22.13 或更高**（推荐 24 LTS）。官方版本说明：v22.13.0 起该模块不再需要此参数 |
-| 报错 `listen EADDRINUSE: address already in use 127.0.0.1:3737` 然后窗口退出 | 3737 端口被别的程序占用了 | 换端口启动：`$env:PORT=3738; npm start`（PowerShell）或 `PORT=3738 npm start`（macOS/Linux）；想知道谁占用了就执行 `netstat -ano`，在输出里找结尾是 3737 的那一行，记下它的进程号（PID）去任务管理器结束 |
-| 想换端口 / 换数据目录 | 默认端口 3737，数据在项目里的 `data/` | 用 `PORT=3738` 换端口；用 `NOVELSTUDIO_DATA_DIR="D:\novel-data"` 换数据目录（多开或隔离测试时用） |
-| 需要联网吗？要花钱吗？ | — | **手动写作完全不联网、零费用**；只有使用 AI 功能时才会请求你配置的模型服务商并产生费用 |
-| 我的作品数据在哪？怎么备份？ | 全部数据都在项目里的 `data/` 目录 | 数据库是 `data/novel.db`（含全部作品与 API Key）。备份请**先关掉服务、再复制整个 `data` 文件夹**——数据库启用了 WAL 模式，只拷 `novel.db` 会漏掉最近的写入（它含密钥，别发给别人） |
-| 怎么彻底卸载？ | 程序是绿色免安装的 | 删掉整个项目文件夹即可，系统里不会有残留 |
-| 能在手机或另一台电脑上打开吗？ | 服务只监听 `127.0.0.1` | 默认不能。确实需要局域网访问，得自行修改 `server.js` 的监听地址（属进阶改动） |
+> 🔗 **相关仓库**：本仓库是工坊主程序，创作插件源码内置在 [`harness-plugins/novel-writing/`](harness-plugins/novel-writing/)，
+> 另有独立发布镜像 [bbaz123/novel-writing-plugin](https://github.com/bbaz123/novel-writing-plugin)。
 
 ---
 
@@ -344,6 +377,21 @@ node frontend-test.mjs
 
 ---
 
+### 卸载
+
+程序是**绿色免安装**的：没有安装目录、没有注册表项、没有系统服务、没有后台常驻进程。
+
+```bash
+# 1）停掉服务：在服务窗口按 Ctrl+C（会先把数据落盘再退出）
+# 2）需要的话先备份：整个项目里的 data/ 目录就是你的全部数据
+# 3）直接删掉项目文件夹
+```
+
+- 装过桌面快捷方式的话，顺手删掉桌面那个图标即可
+- **只想清空数据、保留程序**：关掉服务后删除 `data/` 目录，下次启动会自动重建空库
+
+---
+
 ## 🤖 AI 功能配置
 
 AI 相关功能需要先配置可用的模型后端。
@@ -403,6 +451,48 @@ npm start
 
 ---
 
+## ⚙️ 配置项（环境变量）
+
+全部可选。**只手动写作的话，一个都不需要设**；下面这些只在多实例、隔离测试、或想调整默认行为时才用。
+
+启动：
+
+- `PORT` —— 服务端口，默认 `3737`
+- `NOVELSTUDIO_DATA_DIR` —— 数据目录，默认项目内的 `data/`（多开或隔离测试时用）
+
+AI / 创作内核：
+
+- `NOVELSTUDIO_DSH_REPO` —— DeepSeek Harness 仓库所在目录（**优先于界面里填的路径**）
+- `NOVELSTUDIO_DSH_PROFILE` —— 写作任务使用的 dsh profile，默认 `novel`
+- `NOVELSTUDIO_DSH_LAUNCH` —— `source` / `built`，强制走源码或预构建产物（默认自动判断：产物存在且不比源码旧才用）
+- `NOVELSTUDIO_DSH_HOME` —— 给写作任务指定一份专用 dsh home（进阶）
+- `NOVELSTUDIO_HARNESS_POOL=1` —— 打开 dsh 热备池，默认关闭
+- `NOVELSTUDIO_CONTEXT_CACHE_TTL_MS` —— 上下文装配缓存 TTL，默认 10 分钟（只作兜底：索引一旦完成缓存立刻失效）
+
+记忆库与护栏：
+
+- `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1` —— 对「从未出场的实体被提及」也严格拒绝（默认只记日志放行）
+- `NOVELSTUDIO_COMPRESS_MIN_COVERAGE` —— 压缩覆盖率下限（0~1），用于放宽护栏
+- `NOVELSTUDIO_OV_DISABLED=1` —— 整体停用 OpenViking 集成（冒烟 / 隔离环境）
+- `NOVELSTUDIO_OV_AUTOINDEX=0` —— 关闭启动时的自动建索引
+- `NOVELSTUDIO_OPENVIKING_PEER_ID` —— 覆盖写作任务归属的记忆库 peer
+
+运行追踪：
+
+- `NOVELSTUDIO_TRACE_KEEP` —— 保留最近多少个录制会话文件，默认 20
+- `NOVELSTUDIO_TRACE_MAX_NODES` —— 单次操作最多采集多少个节点，默认 2000
+- `NOVELSTUDIO_TRACE_IDLE_MS` —— 前端心跳丢失后多久自动停止录制，默认 20 秒
+
+> 另有一组 `NOVELSTUDIO_BASE_URL` / `_WORK_ID` / `_CHAPTER_ID` / `_MODE` / `_PROPOSE_MODE`：
+> 那是**工坊下发给 dsh 子进程的**任务上下文，不是给你手动设的配置项（见 `server.js` 的 spawn 段）。
+
+```bash
+# 例：换端口 + 换数据目录（Windows PowerShell）
+$env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
+```
+
+---
+
 ## 🧭 界面导航速览
 
 | 入口 | 说明 |
@@ -417,6 +507,22 @@ npm start
 | 🧾 日志 | 作品内外均可访问：统一日志系统的错误/慢操作/进程异常记录 |
 
 > 顶栏常驻「🐞 运行追踪」按钮可直接开/关录制，不必先进入追踪页；录制中按钮显示「● 录制中」。
+
+---
+
+## 🆘 新手常见问题（先看这里）
+
+| 现象 | 原因 | 怎么办 |
+| --- | --- | --- |
+| 双击 `start-novel-studio.cmd` 后浏览器打不开，或提示「无法访问此网站」 | 服务还没启动完，或启动失败已退出 | 等 5 秒刷新页面；仍打不开，就看那个黑色服务窗口里的报错，对照下面几行 |
+| 服务窗口一闪就没了，或提示 `Node.js 22+ is required` | 没装 Node.js，或版本太旧 | 到 <https://nodejs.org> 装 LTS 版后重试 |
+| 报错里出现 `node:sqlite`（如 `No such built-in module: node:sqlite`，或提示需要 `--experimental-sqlite`） | Node.js 版本是 22.5 ~ 22.12：这个区间里 `node:sqlite` 还需要额外的 `--experimental-sqlite` 启动参数 | 升级到 **22.13 或更高**（推荐 24 LTS）。官方版本说明：v22.13.0 起该模块不再需要此参数 |
+| 报错 `listen EADDRINUSE: address already in use 127.0.0.1:3737` 然后窗口退出 | 3737 端口被别的程序占用了 | 换端口启动：`$env:PORT=3738; npm start`（PowerShell）或 `PORT=3738 npm start`（macOS/Linux）；想知道谁占用了就执行 `netstat -ano`，在输出里找结尾是 3737 的那一行，记下它的进程号（PID）去任务管理器结束 |
+| 想换端口 / 换数据目录 | 默认端口 3737，数据在项目里的 `data/` | 用 `PORT=3738` 换端口；用 `NOVELSTUDIO_DATA_DIR="D:\novel-data"` 换数据目录（多开或隔离测试时用） |
+| 需要联网吗？要花钱吗？ | — | **手动写作完全不联网、零费用**；只有使用 AI 功能时才会请求你配置的模型服务商并产生费用 |
+| 我的作品数据在哪？怎么备份？ | 全部数据都在项目里的 `data/` 目录 | 数据库是 `data/novel.db`（含全部作品与 API Key）。备份请**先关掉服务、再复制整个 `data` 文件夹**——数据库启用了 WAL 模式，只拷 `novel.db` 会漏掉最近的写入（它含密钥，别发给别人） |
+| 怎么彻底卸载？ | 程序是绿色免安装的 | 删掉整个项目文件夹即可，系统里不会有残留 |
+| 能在手机或另一台电脑上打开吗？ | 服务只监听 `127.0.0.1` | 默认不能。确实需要局域网访问，得自行修改 `server.js` 的监听地址（属进阶改动） |
 
 ---
 
@@ -495,7 +601,9 @@ npm start
 
 `harness.js`：harness 任务（会话级，含成功/失败/超时/取消四种结局）。
 
-### 测试
+---
+
+## 🧪 测试与验证
 
 ```bash
 # 后端接口回归（需要隔离实例在 127.0.0.1:3738 运行）
@@ -558,6 +666,35 @@ novel-studio/
 ├── create-desktop-shortcut.ps1
 └── data/               # 本地数据库（不会上传到 Git）
 ```
+
+---
+
+## 🗺️ Roadmap
+
+这一节只列**能在仓库里核对到现状**的条目；完整的待决清单与逐项代价见
+[docs/pending-decisions.md](docs/pending-decisions.md) 与最近的审查报告。
+
+- **声明开源许可证**：仓库目前还没有 LICENSE（默认保留所有权利）。在此之前若要复用或分发，请先开 issue 说明用途
+- **接入 CI**：把仓库里已有的**离线验证套件**（`node .p1-baseline/verify-all.mjs` 等）接进 GitHub Actions，让每次提交自动跑
+- **跨平台一键启动**：目前 `start-novel-studio.cmd` 只服务 Windows；macOS / Linux 需要 `npm start`
+- **可选的局域网访问开关**：当前服务只监听 `127.0.0.1`，想在平板或手机上写作得手动改 `server.js`
+- **更多导出格式**：现已支持整书 TXT / 整书 Markdown / 单章 TXT；EPUB / DOCX 尚未支持
+
+## 🤝 参与贡献
+
+这个项目目前由作者一个人维护，**Issue 与 PR 都欢迎**。动手之前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)，要点只有几条：
+
+- **先开 issue 再写大 PR**：避免几十行改动做完才发现方向不对
+- **改完先跑现状**：`node .p1-baseline/verify-all.mjs`（离线跑批；需要活实例或外部仓库的检查会明确标成「跳过」，**跳过不等于通过**）
+- **不要提交 `data/`**：里面是你的作品与 API Key（已在 `.gitignore` 内）
+- **代码风格**：零 npm 依赖、纯 ESM、中文注释解释**为什么**这么做，而不是复述代码在做什么
+- **`docs/` 里的历史报告描述的是当时的代码**：行号可能已过时，找代码请按符号名
+
+## 📄 License
+
+**本仓库目前尚未声明开源许可证**，因此默认**保留所有权利**（All rights reserved）。
+
+如果你想复用它（个人或商业用途），请先开一个 issue 说明用途；作者确认后再补一份明确的 LICENSE 文件。
 
 ---
 

@@ -431,6 +431,27 @@ export const PHASES = [
       + '作品 18 第 6 章已按 3800–4200 字合成定稿（3897 字，4 处冲突清零）。'
       + '两份来源 docx 未改动；未提交 git。',
   },
+  {
+    id: 'W',
+    title: '2026-09-21 轮：仓库展示面与开源文档（README 首页重写 + 社区文件 + 仓库级 Topics/Description）',
+    files: [
+      // 本轮**首次获得归属**的文件：社区健康度文件（对应 GitHub「Community Standards」清单）。
+      'CONTRIBUTING.md',
+      '.github/ISSUE_TEMPLATE/bug_report.yml',
+      '.github/ISSUE_TEMPLATE/feature_request.yml',
+      '.github/ISSUE_TEMPLATE/config.yml',
+      '.github/pull_request_template.md',
+    ],
+    evidence: ['CONTRIBUTING.md', '.github/ISSUE_TEMPLATE/bug_report.yml'],
+    // 'independent' 只描述这 5 个文件本身：它们不被任何生产代码 import，
+    // 删掉只影响 GitHub 上的展示与表单，不影响程序行为，也不会让任何验收工具失效。
+    rollback: 'independent',
+    note: '仓库展示面优化：README 首页重写（第一屏改为「30 秒讲清价值 + 它不做什么」，'
+      + '安装步骤紧随其后；原 30 行的「分支说明」块压到 2 行；新增环境变量配置表、Roadmap、'
+      + '参与贡献、License 说明与目录），旧 README 里写法成熟的章节按行**原样**保留'
+      + '（用重组脚本拼接，不手抄，避免中文正文抄写漂移）。README.md 已由更早阶段认领，故不重复列出；'
+      + '仓库级 Description 与 Topics 通过 GitHub API 写入，属于仓库设置而非文件，不进 git。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

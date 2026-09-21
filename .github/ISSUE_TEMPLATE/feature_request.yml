@@ -1,0 +1,42 @@
+name: 💡 功能建议
+description: 想要的新功能、想改的行为、想支持的场景
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个项目刻意保持「零 npm 依赖」与本地优先，所以有些方向（云同步、账号体系、托管服务）基本不会被采纳。
+        建议先说说**你要解决什么问题**，而不是直接给实现方案——问题往往有更轻的解法。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 现在你只能怎么做？哪里难受？
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你设想的做法（可选）
+      description: 如果已经有想法，写在这里；没有也没关系
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 试过的替代方案
+      description: 例如改用其它软件、手动处理、改 `server.js` 等
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: 大致属于哪一块
+      options:
+        - 写作 / 正文编辑器
+        - 小说设定（剧情线 / 大纲 / 设定库 / 角色 / 长期记忆）
+        - AI 创作与上下文装配
+        - 文档 / 新手体验
+        - 其它
+    validations:
+      required: true
