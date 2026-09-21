@@ -679,23 +679,7 @@ novel-studio/
 - **跨平台一键启动**：目前 `start-novel-studio.cmd` 只服务 Windows；macOS / Linux 需要 `npm start`
 - **可选的局域网访问开关**：当前服务只监听 `127.0.0.1`，想在平板或手机上写作得手动改 `server.js`
 - **更多导出格式**：现已支持整书 TXT / 整书 Markdown / 单章 TXT；EPUB / DOCX 尚未支持
-
-## 🤝 参与贡献
-
-这个项目目前由作者一个人维护，**Issue 与 PR 都欢迎**。动手之前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)，要点只有几条：
-
-- **先开 issue 再写大 PR**：避免几十行改动做完才发现方向不对
-- **改完先跑现状**：`node .p1-baseline/verify-all.mjs`（离线跑批；需要活实例或外部仓库的检查会明确标成「跳过」，**跳过不等于通过**）
-- **不要提交 `data/`**：里面是你的作品与 API Key（已在 `.gitignore` 内）
-- **代码风格**：零 npm 依赖、纯 ESM、中文注释解释**为什么**这么做，而不是复述代码在做什么
-- **`docs/` 里的历史报告描述的是当时的代码**：行号可能已过时，找代码请按符号名
-
-## 📄 License
-
-**本仓库目前尚未声明开源许可证**，因此默认**保留所有权利**（All rights reserved）。
-
-如果你想复用它（个人或商业用途），请先开一个 issue 说明用途；作者确认后再补一份明确的 LICENSE 文件。
-
+  
 ---
 
 ## 📝 更新记录
