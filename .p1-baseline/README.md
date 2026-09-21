@@ -283,3 +283,48 @@ node .p1-baseline/audit-llm-calls.mjs --since 2026-09-15T13:12:40Z --json
 node .p1-baseline/test-gate-assert.mjs                                # 断言逻辑的离线阴性对照（零成本）
 node .p1-baseline/test-harness-env.mjs                                # 子进程环境契约（零成本）
 ```
+
+### 一键复现：把 8 个 SKIP 跑成 PASS（2026-09-20 实测路径）
+
+`verify-all.mjs` 默认**不跑**需要活实例或授权 spawn 的检查（它们标 SKIP，不是通过）。
+要真正跑通它们，按下面两步做。**实测结果：通过 45 / 未通过 0 / 跳过 1**（剩下的那条是闸门，见第 2 步单独跑）。
+
+```powershell
+# ── 第 1 步：起一个隔离实例（端口 3739 + 压力库副本，六项隔离变量由你自己给）──
+#    ⚠️ 数据目录必须用**副本**，别指向真实库；带 WAL 一起复制（见本文件 §二）
+$data = "$env:TEMP\ns-suite-3739"; mkdir $data -Force | Out-Null
+Copy-Item .p1-baseline\stress-data\novel.db* $data -Force
+$env:PORT='3739'; $env:NOVELSTUDIO_DATA_DIR=$data; $env:NOVELSTUDIO_OV_DISABLED='1'
+node server.js            # 另开一个窗口跑；跑完关掉
+```
+
+```powershell
+# ── 第 2 步：带活实例 + spawn 授权跑套件 ──
+$env:NOVELSTUDIO_ALLOW_HARNESS_SPAWN='1'      # 放行两条"会真的 spawn dsh"的检查（脚本自设黑洞端点，零计费）
+node .p1-baseline/verify-all.mjs --base http://127.0.0.1:3739 --db .p1-baseline/stress-data/novel.db --work 16 --chapter 108
+# → 这一步会把 6 条原本 SKIP 的跑成 PASS：
+#   I4 端到端可查回 / 质量信号哨兵 / 主成文路径与创作内核同源（逐字节）/
+#   编辑距离测量点端到端 / 压缩提示在层内（活实例自发现）/ dsh profile 参数在真实 spawn 路径生效 /
+#   线路层：专用 profile 是否挂进请求
+```
+
+```powershell
+# ── 第 3 步：并发闸门（唯一需要 --gate-base 的那条，单独跑）──
+node .p1-baseline/gate-env.mjs                 # 前台起黑洞 + 隔离实例，屏幕会打印两个端口；记下它们
+#   另开窗口（端口按上一步打印的填）：
+$env:NOVELSTUDIO_GATE_CONFIRMED_ISOLATED='1'
+node .p1-baseline/verify-harness-gate.mjs http://127.0.0.1:<实例端口> --require-blackhole <黑洞端口>
+#   → 实测 12 通过 / 0 失败，含两道独立证明："黑洞端点确实收到本次连接" + "跑后审计零真实调用"
+node .p1-baseline/gate-env.mjs --stop          # 收工（清实例、黑洞与 marker）
+```
+
+跑完**必须**用总闸独立复核零计费（不要只信脚本自报）：
+
+```powershell
+node .p1-baseline/audit-llm-calls.mjs --since <本次开始时刻>
+# 判据：requests>0 且 assistantChars>0 才算计费。2026-09-20 实测：会话 3 个，计费 0 个。
+```
+
+> 2026-09-20 实测补记：三条"基线 JSON 被 .gitignore 排除"的跳过项在**本地**其实是能跑的
+> （`.p1-baseline/baselines-p5` / `-p5-real` / `-p3-real` / `-pre-hint` 各有 51/21/21/51 个用例 JSON），
+> 无需活实例即通过。只有**新克隆的仓库**里这些目录才是空的。

@@ -382,6 +382,55 @@ export const PHASES = [
       + '完整回滚用改动前的快照 `data/backup-review-v096-*`（12 个受影响文件，逐文件同构还原；'
       + '该目录在 .gitignore 内，不进仓库）。',
   },
+  {
+    id: 'U',
+    title: '2026-09-20 轮：接管被中断的第二轮审查（护栏作用范围 + 下限自适应 + 兼容性检查）',
+    files: [
+      // 本轮**唯一**首次获得归属的文件。其余改动都落在已被 P2–P5 / S / D8 认领的共享文件里
+      // （server.js 的 settleProposals / addMemoryProposal / agentMemoryGuardOf / compressStoryMemory、
+      //  db.js 的 story_memory_proposals 迁移、public/app.js 的 applySelectedProposals、
+      //  frontend-test.mjs、test/smoke.mjs、ai/memory-compress-guard.mjs），
+      // 所以按判据 1「每个改动都要有人能说清怎么回滚」在此只认领新增的验收记录。
+      //
+      // ⚠️ 与 T 阶段**不可互相替代**：T 的结论是"出场判定读头尾各 2000 字"，
+      //    本轮改成"读完整正文"，且 T 没有 guard 列、没有自适应下限。
+      'docs/code-review-2026-09-19-round2-summary.md',
+    ],
+    evidence: ['docs/code-review-2026-09-19-round2-summary.md'],
+    // ⚠️ 这个 'independent' 描述的是**本阶段自己认领的文件**（一份验收记录，没有任何东西 import 它），
+    //    **不是**说本轮的行为变更可以独立回滚——那部分永远撤不干净（见 note 第一句）。
+    //    别把它读成"这轮能单独撤"：判据是"这个文件撤掉影不影响别人"，不是"这轮改动撤不撤得干净"。
+    rollback: 'independent',
+    note: '⚠️ **本轮含一处真正的产品行为变更，不能单独回滚**：AI 自压缩的长期记忆摘要，'
+      + '字数下限不再固定 100 字，改为按作品规模自适应（`minCharsForStory`：篇幅分档 100→640，'
+      + '与"必须保留实体数 × 16 字"取 max，封顶 640 以不超过下游"≤800 字"产出目标）。'
+      + '撤掉它 = 长篇可以"名字全写上、剧情/伏笔/角色状态全丢光"照样过闸——那正是用户 2026-09-20 '
+      + '判定不成立的旧行为。另两处同属本轮的改动也在这条线上：`settleProposals` 只对带 '
+      + '`guard=\'agent\'` 的提案设闸（此前对所有提案设闸，把普通短提案一并拒掉），'
+      + '以及 `db.js` 给 `story_memory_proposals` 增加 `guard` 列（来源标记必须跨落库存活）。'
+      + '完整回滚用改动后快照 `data/backup-round2-final-*`（5 个文件逐字节副本）；'
+      + '只回到"第 2 步已验证版本"用 `data/backup-step3-preopt-*`。两个目录都在 .gitignore 内。',
+  },
+  {
+    id: 'V',
+    title: '2026-09-21 轮：双稿对照诊断 + 写作机制补齐（terms 层/未来章标记/场景预算/质检扩面） + 第 6 章定稿',
+    files: [
+      // 本轮唯一**首次获得归属**的文件：七项章节验收清单（批 2 固化产物）。
+      'docs/chapter-acceptance-checklist.md',
+    ],
+    evidence: ['docs/chapter-acceptance-checklist.md'],
+    // 'independent' 只描述这份清单本身（没有任何东西 import 它，可单独删除）；
+    // 本轮的机制改动都落在已被 P1–P5 / S / T / U 认领的共享文件里
+    // （ai/context/layers.mjs、server.js、public/app.js、harness-plugins/novel-writing/novel-tools.mjs、
+    //  frontend-test.mjs、test/smoke.mjs、docs/ai-core.md、docs/context-contract.md 等），
+    // 所以行为变更**不能单独回滚**——回滚用改动前快照或逐项对照 2026-09-21 双稿诊断报告。
+    rollback: 'independent',
+    note: 'terms 上下文层（cap 800、关键词/优先级抽选、查回路径）、未来章【禁止写入】标记式渲染、'
+      + '成文轮场景预算（3–5 场景）与质检扩面（未来章/未登记实体/有效场景数）、'
+      + 'style_positive 新增两条（物件密度/系统独白≤3 句）、七项验收清单固化为 docs/chapter-acceptance-checklist.md；'
+      + '作品 18 第 6 章已按 3800–4200 字合成定稿（3897 字，4 处冲突清零）。'
+      + '两份来源 docx 未改动；未提交 git。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

@@ -25,13 +25,13 @@
 - **模式**：`full` / `continuation` / `fragment` / `settings`
 - **输出**：结构化字段 + `assembled`（拼好的分层文本）+ `context_manifest` / `context_overflow` / `context_stats`（P2 新增）
 - **消费者**：前端上下文预览页签；dsh 侧 `novel_context` 工具
-- **预算**：13 层分层 cap + 总预算收敛（**实现在 `ai/context/`**，见 §三）
+- **预算**：14 层分层 cap + 总预算收敛（**实现在 `ai/context/`**，见 §三）
 
 ### P2 · `mode=settings`（设定类生成，轻量装配）
 
 - **入口**：前端 `genWorkContextBlock`（`public/app.js`）→ P1 端点 `mode=settings`
 - **差异**：跳过「当前场景 / 本章蓝图 / 前文衔接」三层——由层规格的 `skipInSettings` 声明
-  （`ai/context/layers.mjs`），层数 13 → 10
+  （`ai/context/layers.mjs`），层数 14 → 11
 - **注意**：源码注释曾称「三层合计最多省 ~6,700 字」——那是**三层 cap 之和**，
   不是实际节省；实际节省取决于这三层当时的真实长度（可能远小于上限）。
 
@@ -74,7 +74,8 @@
 | 10 | 出场角色卡 | ∞（实体上限 4000） | 不收缩 | `characters`（评分制选 ≤16）+ `buildCharacterCards` 5 级降级 |
 | 11 | 人物关系 | 800 | 条件层 | `character_relations`（仅出场角色之间） |
 | 12 | 激活的世界观设定（优先级排列） | 3000 | **弹性** | `world_entries`（pinned / 关键词命中 ≤30 × 每条 600 字） |
-| 13 | 写作风格红线 | 4000 | 不收缩 | `writing_redlines` + `style_positive` |
+| 13 | 相关设定词条（写作约束） | 800 | 条件层 | `terms`（标题/标签/正文关键词命中 + 最近更新优先，≤12 × 每条 300 字） |
+| 14 | 写作风格红线 | 4000 | 不收缩 | `writing_redlines` + `style_positive` |
 
 **弹性层顺序**：`ai/context/layers.mjs` 的 `FLEX_ORDER` —— `story_tail`、`outline`、`world`
 （即「前文衔接」「大纲」「世界观」）。
@@ -183,7 +184,7 @@ P3（检索覆盖面扩展）的目标就是让 I4 全绿：**做不到查回的
 | 8 召回对部分作品失效 | **根因已查明，待你决策** | 不是过滤问题：记忆库目录**只剩骨架**（`.overview.md` 头部标注 `trigger: content_delete`、`total_entries: 0`），而 `ov_indexed_at` 仍声称已索引。138 个作品目录中 **79 个（57%）**如此。详见 `docs/p3-retrieval-verification.md` §4.1 |
 | 9 上下文缓存无时间维度 | **已修（P2）** | 加 120s TTL（可用 `NOVELSTUDIO_CONTEXT_CACHE_TTL_MS` 覆盖）；已用 1ms/600000ms 对照实验验证 |
 
-**I4（凡裁剪必可查回）**：P3 已为全部 13 层声明查回路径，并用
+**I4（凡裁剪必可查回）**：P3 已为全部 14 层声明查回路径，并用
 `.p1-baseline/verify-retrieval.mjs` **端到端实测**（不看声明、实际调端点）——
 9 个被裁层全部可取回，`recall` 为 intrinsic（本层自身就是检索结果）。
 
