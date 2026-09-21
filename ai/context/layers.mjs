@@ -2,7 +2,7 @@
  * 上下文分层规格 —— **唯一来源**。
  *
  * 在 P2 之前，同一份层规格存在于两个地方：`server.js` 的 `buildNovelContext`
- * （真实的 13 层）与 `docs` 里的散文描述；`.p1-baseline/context-floor.mjs` 是 P1 冻结的
+ * （2026-09-21 起为 14 层，含 terms）与 `docs` 里的散文描述；`.p1-baseline/context-floor.mjs` 是 P1 冻结的
  * **快照副本**，用于对照。本文件是「活」的那一份，装配器与预算核算都从这里读。
  *
  * 术语（P2 起明确化，见 docs/context-contract.md）：
@@ -67,6 +67,8 @@ export const LAYERS = [
     source: 'character_relations（仅出场角色之间）' },
   { id: 'world', label: '激活的世界观设定（优先级排列）', kind: 'flex', cap: 3000, floor: 400,
     source: 'world_entries（pinned/关键词命中 ≤30 × 每条 600 字）' },
+  { id: 'terms', label: '相关设定词条（写作约束）', kind: 'cond', cap: 800,
+    source: 'terms（标题/标签/正文关键词命中 ≤12 × 每条 300 字，按命中权重排序）' },
   { id: 'redlines', label: '写作风格红线', kind: 'fixed', cap: 4000,
     source: 'writing_redlines + style_positive' },
 ];
@@ -102,8 +104,10 @@ export const RETRIEVAL = {
   characters:  { tool: 'novel_lookup', gap: '背景可检索，但 mes_example / system_prompt / appearance 不在检索字段内' },
   relations:   { tool: 'novel_lookup', endpoint: '/api/search', note: 'P3 起新增 relations 检索桶（含双方姓名与描述全文）' },
   world:       { tool: 'novel_lookup', endpoint: '/api/search', note: 'P3 新增 world_entries 检索桶' },
-  redlines:    { tool: 'novel_style_contract', endpoint: '/api/novel/redlines', countable: 'writing_redlines',
-                 gap: '端点返回红线规则全量；work.style_positive（正向风格契约）不在其中' },
+  terms:       { tool: 'novel_lookup', endpoint: '/api/search', countable: 'terms', note: '搜索端点含 terms 桶；被抽选掉的词条可用 novel_lookup 查回' },
+  // 2026-09-21：原 gap（“端点只回红线、不回 work.style_positive”）已补——
+  // /api/novel/redlines 与 novel_style_contract 现在同时返回正向风格契约，查回路径与装配路径同源。
+  redlines:    { tool: 'novel_style_contract', endpoint: '/api/novel/redlines', countable: 'writing_redlines' },
 };
 
 /**

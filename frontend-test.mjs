@@ -738,6 +738,72 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     }
   }
 
+  // 提案采纳：被零损失护栏拦下时必须**说明原因**（第 2 步新增的拒绝路径）。
+  // 背景：AI 自压缩提案在作者点「采纳」时过实体完整性护栏，不通过就保留 pending。
+  // 旧实现的 else 分支只说"提案已保留"——作者不知道是被拦了、还是自己没勾选，
+  // 也就无从修正。这里用五条断言钉住全部分支（被拦 / 未拦 / 旧服务端缺字段 / 正常采纳 / 超长原因截断）。
+  // ⚠️ 应用函数挂在 sandbox（真实 app.js 作用域）上，**不在** P（__probe 只挑了一部分）。
+  {
+    const saved = {
+      api: sandbox.api, toast: sandbox.toast,
+      qsa: sandbox.document.querySelectorAll, pending: P.state.pendingAIProposals
+    };
+    const msgs = [];
+    sandbox.toast = (m) => { msgs.push(String(m)); };
+    sandbox.document.querySelectorAll = () => [{ dataset: { proposalId: '7' } }];
+    P.state.pendingAIProposals = { workId: 2 };
+
+    // ① 被护栏拦下 → 必须报出条数与原因，而不是笼统的"已保留"
+    //    夹具刻意用**很长的 reasons**：toast 可见文案在 240 字处截断（完整内容挂 title），
+    //    所以断言要保证前缀（条数/原因标题）与缺失实体名都落在截断线内——否则等于没说。
+    const longReasons = ['实体覆盖率 50% 低于下限 100%（丢失 1/2）：林晚（社里人称“晚姐”）'
+      + '；' + '这项原因刻意写得很长'.repeat(20)];
+    sandbox.api = async () => ({
+      applied: { events: 0, memories: 0 },
+      guard_failed: [{ proposal_id: 7, reasons: longReasons }]
+    });
+    await sandbox.applySelectedProposals();
+    check('108h 被护栏拦下时说明原因（含缺失实体名），不再只说"已保留"',
+      msgs.length === 1 && msgs[0].includes('零损失护栏') && msgs[0].includes('林晚'),
+      msgs.join(' | ').slice(0, 90));
+    check('108h2 超长原因被截断后，缺失实体名仍在可见文案内（不被前缀挤出截断线）',
+      msgs.length === 1 && msgs[0].includes('林晚') && msgs[0].length < 300,
+      `len=${msgs[0] ? msgs[0].length : 0}`);
+
+    // ② 无被拦项（例如作者没勾选）→ 保持原有文案，不谎报护栏
+    // ⚠️ 函数入口会把 state.pendingAIProposals 置空（防重复提交），所以每个用例都要重设，
+    // 否则第二次调用直接 return，断言会"因为没跑到"而假失败。
+    msgs.length = 0;
+    P.state.pendingAIProposals = { workId: 2 };
+    sandbox.api = async () => ({ applied: { events: 0, memories: 0 }, guard_failed: [] });
+    await sandbox.applySelectedProposals();
+    check('108i 没有提案被拦时保持原有提示（不误报护栏拦截）',
+      msgs.length === 1 && msgs[0].includes('已保留') && !msgs[0].includes('护栏'),
+      msgs.join(' | ').slice(0, 90));
+
+    // ③ 旧服务端不返回 guard_failed → 不得因此报错或误报（向后兼容）
+    msgs.length = 0;
+    P.state.pendingAIProposals = { workId: 2 };
+    sandbox.api = async () => ({ applied: { events: 0, memories: 0 } });
+    await sandbox.applySelectedProposals();
+    check('108j 旧服务端不返回 guard_failed 时不误报、不抛错',
+      msgs.length === 1 && msgs[0].includes('已保留') && !msgs[0].includes('护栏'),
+      msgs.join(' | ').slice(0, 90));
+
+    // ④ 正常采纳 → 成功提示不受影响（回归）
+    msgs.length = 0;
+    P.state.pendingAIProposals = { workId: 2 };
+    sandbox.api = async () => ({ applied: { events: 1, memories: 1 }, guard_failed: [] });
+    await sandbox.applySelectedProposals();
+    check('108k 正常采纳仍提示已采纳条数（成功路径未受影响）',
+      msgs.length === 1 && msgs[0].includes('已采纳 2 条'), msgs.join(' | ').slice(0, 90));
+
+    sandbox.api = saved.api;
+    sandbox.toast = saved.toast;
+    sandbox.document.querySelectorAll = saved.qsa;
+    P.state.pendingAIProposals = saved.pending;
+  }
+
   // 付费调用的前置校验：底稿为空时**一次调用都不许发**。
   // ⚠️ 这是第四轮改动引入的新可能：'接回进度 / 查看上次审稿'那条路上，
   // 取目标章正文失败会让 info.article 为空 —— 空底稿的审稿/修稿是"必花钱、必无用"。

@@ -352,7 +352,90 @@ try {
       body: { work_id: gWork.id, delta: '本章新进展：两人约好三天后再见。', guard: 'agent' }
     });
     assert.equal(dl.status, 200, `delta 追加不应被拦，实际 ${dl.status}`);
-    ok('护栏：工具标记 + 只传 delta → 安全追加，不设闸');
+    // ⑤ 提案路径的来源标记必须**跨落库/读取存活**：只有带 `guard` 的 AI 自压缩提案
+    //    在作者采纳时才过零损失护栏；普通/历史提案（无标记）保持原有采纳语义。
+    //    ⚠️ 这一组是「提案落库→读回→采纳」的端到端断言：标记若在持久化时被丢掉，
+    //    真正的 AI 自压缩提案就会绕过护栏（静默丢角色），而普通提案又会被误拦。
+    //    两个方向都必须钉住，缺一个都能让上面那句注释变成假话。
+    //    ⚠️ 夹具字数必须真的过**本作品当时的**下限：④b 已把这部作品撑过 40 万档，
+    //    下限是 640 字，所以"合格摘要"必须 ≥640（`repeat(28)` ≈ 644 字）。
+    //    第一版用 138 字、第二版用 460 字，都被自适应下限**正确**拦下——是夹具不合法，不是护栏错。
+    //    教训：这道题的取值范围随作品规模变，夹具必须按当时的下限算，不能写死一个"看着够长"的数。
+    const lossy = '沈砚与林晚在拾线坊交换了线索，约定三天后再见。'.repeat(28); // ≈644 字 > 640 下限
+
+    // ④b 长篇规模下**实体齐全但字数不够**必须被拦（2026-09-20 用户规格）。
+    //     作品正文很小（本夹具不到 200 字）时下限是 100 字；把作品撑到长篇规模后，
+    //     同一个"名字都写了、但没有剧情/伏笔/状态承载空间"的摘要就该被拒——
+    //     这正是"长篇不能因为名字还在就判为零损失"的可执行形式。
+    //     ⚠️ 断言前先确认它确实变了判据（否则这条只是把 ④ 重复一遍）。
+    const shortButComplete = '沈砚与林晚在拾线坊交换了线索，约定三天后再见。'.repeat(6); // 138 字
+    const beforeScale = await jfetch('/api/story_memory', {
+      method: 'PUT', body: { work_id: gWork.id, summary: shortButComplete, guard: 'agent' }
+    });
+    assert.equal(beforeScale.status, 200, `小作品下同一摘要应通过（自适应不是一刀切），实际 ${beforeScale.status}`);
+    // 灌入约 42 万字的其他章节，把这部作品的规模推过 40 万档（下限 → 640 字）
+    const bulk = [];
+    for (let i = 0; i < 4; i++) {
+      const ch = (await jfetch('/api/chapters', {
+        method: 'POST', body: { work_id: gWork.id, title: `灌水章 ${i + 1}`, summary: '用于撑起作品规模。' }
+      })).data;
+      bulk.push((await jfetch('/api/novel/chapter_save', {
+        method: 'POST',
+        body: { work_id: gWork.id, chapter_id: ch.id, content: '无关正文内容。'.repeat(15000) } // 约 10.5 万字
+      })).status);
+    }
+    assert.ok(bulk.every((s) => s >= 200 && s < 300), `灌水章节应写回成功，实际 ${JSON.stringify(bulk)}`);
+    const scaled = await jfetch('/api/story_memory', {
+      method: 'PUT', body: { work_id: gWork.id, summary: shortButComplete, guard: 'agent' }
+    });
+    assert.equal(scaled.status, 409, `长篇里实体齐全但过短应 409，实际 ${scaled.status} ${JSON.stringify(scaled.data)}`);
+    assert.ok(/过短/.test(scaled.data.error || '') && /\d+ 字/.test(scaled.data.error || ''),
+      '拒绝原因应说明下限量级，模型才知道要写多长');
+    ok('护栏：长篇规模下"实体齐全但字数不够"→ 409（下限随规模自适应）');
+
+    // ⑤-1 带标记 + 丢出场角色 → 采纳必须被护栏拒绝，且提案保持 pending（不静默丢人）
+    const rp = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, summary: lossy.replace(/林晚/g, '那位记者'), proposed: true, guard: 'agent' }
+    });
+    assert.ok(rp.data.proposed && rp.data.proposal_id > 0, '应落成提案');
+    const pendingBefore = (await jfetch(`/api/story_memory?work_id=${gWork.id}`)).data.summary;
+    const rApply = await jfetch('/api/novel/proposals/apply', {
+      method: 'POST', body: { work_id: gWork.id, ids: [rp.data.proposal_id] }
+    });
+    assert.equal(rApply.data.applied.memories, 0, '带标记的丢人提案不得入账');
+    assert.equal(rApply.data.guard_failed.length, 1, '应报出被护栏拦下的提案');
+    assert.ok(rApply.data.guard_failed[0].reasons.join('').includes('林晚'),
+      '拒绝原因应指名缺失角色，作者才知道要补什么');
+    assert.equal((await jfetch(`/api/story_memory?work_id=${gWork.id}`)).data.summary, pendingBefore,
+      '被拒的提案绝不能改写长期记忆');
+    assert.ok((await jfetch(`/api/novel/proposals?work_id=${gWork.id}`)).data.proposals
+      .some((p) => p.type === 'memory' && p.id === rp.data.proposal_id), '被拦的提案应保留 pending，作者可修正后再采纳');
+    ok('护栏：带标记提案丢出场角色 → 采纳被拒，记忆未改写，提案保留待处理');
+
+    // ⑤-2 同一条提案补回角色后再次采纳 → 通过（标记仍在，说明它真的跨持久化存活）
+    const rp2 = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, summary: lossy, proposed: true, guard: 'agent' }
+    });
+    const rOK = await jfetch('/api/novel/proposals/apply', {
+      method: 'POST', body: { work_id: gWork.id, ids: [rp2.data.proposal_id] }
+    });
+    assert.equal(rOK.data.applied.memories, 1, '角色齐全的带标记提案应入账');
+    assert.equal((await jfetch(`/api/story_memory?work_id=${gWork.id}`)).data.summary, lossy);
+    ok('护栏：带标记提案补齐出场角色 → 采纳通过并写入（标记跨落库存活）');
+
+    // ⑤-3 ★ 阴性对照：无标记提案（普通/历史路径）即便丢角色也照原样采纳——不得被本次新增护栏改判
+    const plain = await jfetch('/api/story_memory', {
+      method: 'PUT',
+      body: { work_id: gWork.id, summary: lossy.replace(/林晚/g, '那位记者'), proposed: true }
+    });
+    const pApply = await jfetch('/api/novel/proposals/apply', {
+      method: 'POST', body: { work_id: gWork.id, ids: [plain.data.proposal_id] }
+    });
+    assert.equal(pApply.data.applied.memories, 1, '无标记提案必须保持原有采纳语义');
+    assert.equal(pApply.data.guard_failed.length, 0, '无标记提案不应进护栏');
+    ok('护栏：无标记提案（历史/普通）采纳语义不变 —— 未扩大 AI 护栏作用范围');
   }
 
   // 8. 一致性核对清单

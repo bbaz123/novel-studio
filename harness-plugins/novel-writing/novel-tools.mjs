@@ -332,8 +332,9 @@ export function apply(ctx, config) {
   })
 
   register('novel_consistency', [
-    '成文后核对一致性：把本章正文 text 与工坊里的“未闭合伏笔 / 出场角色当前状态 / 最近事件账本 / 长期记忆 / 红线扫描”逐项对照。',
+    '成文后核对一致性：把本章正文 text 与工坊里的“未闭合伏笔 / 出场角色当前状态 / 最近事件账本 / 长期记忆 / 红线扫描 / 正向风格要求 / 已登记命名实体”逐项对照。',
     '返回的是确定性装配的核对清单，你需要逐项判断：正文有没有与既有设定/角色状态冲突、有没有误回收或漏掉的伏笔、有没有把“未发生”的事写成既成事实。',
+    '2026-09-21 起还必须回答清单末尾的【本章边界与人格自检】：正文有没有写本章摘要/蓝图之外的情节（尤其“为后续章节做动机前置”）、有没有无依据升级对手、系统出场次数与吐槽占比、有没有未登记的具名实体。',
     '发现冲突时向作者报告：冲突点、依据（来自哪条事件/状态）、建议改法；没有冲突也要明确说“已核对”。',
     '适用于整章成文后的自检，也适用于润色/扩写后的复查。',
   ].join('\n'), {
@@ -372,6 +373,25 @@ export function apply(ctx, config) {
     } else {
       lines.push('\n正文出场角色：未能按姓名匹配到角色卡（可能为全新角色，提醒作者确认）')
     }
+    // 2026-09-21：正向风格要求（style_positive）与已登记命名实体一起进清单，
+    // 并把“本章边界 / 系统人格 / 未登记实体”做成必答自检项。
+    const positive = String(c.style_positive || '').trim()
+    if (positive) {
+      lines.push('\n正向风格要求（本作品的风格追求，请对照正文自检是否体现）：')
+      lines.push(positive)
+    }
+    const reg = c.registered_names || {}
+    const registered = [...(reg.characters || []), ...(reg.world_entries || []), ...(reg.terms || [])]
+    if (registered.length) {
+      lines.push(`\n已登记命名实体（正文里出现了不在此列表中的新名字＝未登记实体，必须先停机报告作者，不要直接落稿）：`)
+      lines.push(registered.join('、'))
+    }
+    lines.push('\n【本章边界与人格自检 · 逐项回答，不要跳过】')
+    lines.push('① 本章是否出现了"本章摘要 + 本章蓝图"之外的情节？特别是：有没有为后续章节做动机前置、有没有提前释放身份曝光类线索或设定升级？')
+    lines.push('② 对手/妖兽的阶位是否与本章摘要一致？本章内有没有无依据地升级对手强度？')
+    lines.push('③ 系统有效出场几次？其中几次是对话/吐槽？纯播报式【】占比有没有超过一半？')
+    lines.push('④ 有没有出现未登记的具名角色/地点/妖兽？有的话先报告作者。')
+    lines.push('⑤ 本章有效场景是否在 3～5 个之间？每个场景有没有明确地点与身体动作？')
     if (events.length) {
       lines.push('\n最近事件账本（检查正文是否与此前发生的事冲突）：')
       events.forEach((e) => lines.push(`- [${e.kind ?? ''}] ${String(e.summary ?? '').slice(0, 160)}`))
@@ -409,17 +429,26 @@ export function apply(ctx, config) {
   })
 
   register('novel_style_contract', [
-    '读取当前生效的写作风格契约（反 AI 腔红线清单：慎用词/慎用句式/句式模式）。',
-    '写作、润色前若不确定红线内容可调用；上下文里通常已含该段，非必需。',
+    '读取当前生效的写作风格契约：反 AI 腔红线清单（慎用词/慎用句式/句式模式）+ 本作品的正向风格要求（style_positive）。',
+    '写作、润色前若不确定风格契约内容可调用；上下文里通常已含该段，非必需。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份/全局红线）' },
   }, async (args) => {
     const workId = envId(args, 'work_id')
     const data = await jfetch(`/api/novel/redlines${workId !== undefined ? `?work_id=${encodeURIComponent(workId)}` : ''}`)
     const rows = Array.isArray(data.redlines) ? data.redlines : []
-    if (!rows.length) return '当前未启用任何红线规则。'
-    const lines = rows.map((r) => `- [${r.kind === 'regex' ? '句式模式' : r.kind === 'word' ? '慎用词' : '慎用句式'}] ${r.pattern}${r.note ? `（${r.note}）` : ''}`)
-    return '【写作风格红线 · 反 AI 腔】写作时主动避免以下词句，需要更具体、更有画面感的写法：\n' + lines.join('\n')
+    const positive = String(data.style_positive || '').trim()
+    const parts = []
+    if (rows.length) {
+      const lines = rows.map((r) => `- [${r.kind === 'regex' ? '句式模式' : r.kind === 'word' ? '慎用词' : '慎用句式'}] ${r.pattern}${r.note ? `（${r.note}）` : ''}`)
+      parts.push('【写作风格红线 · 反 AI 腔】写作时主动避免以下词句，需要更具体、更有画面感的写法：\n' + lines.join('\n'))
+    } else {
+      parts.push('当前未启用任何红线规则。')
+    }
+    // 2026-09-21：正向风格契约此前不在返回里（layers.mjs 曾把它记成 redlines 层的缺口），
+    // 导致工具查回的契约比装配进上下文的那份少一半——节奏比例/系统出场次数/爽点控制都在这里。
+    if (positive) parts.push('\n【正向风格要求 · 本作品的风格追求（请主动体现，而非仅仅避免红线）】\n' + positive)
+    return parts.join('\n')
   })
 
   register('novel_event_add', [
@@ -559,12 +588,12 @@ export function apply(ctx, config) {
     '把“本章写作蓝图”保存到章节（写前规划，落库后随上下文带入、一致性核对以其为锚点）。',
     '用法：先把蓝图草稿发给作者确认（场景目标/情节点/冲突与转折/角色状态变化/钩子/需回扣的设定），作者同意后再调用本工具保存。',
     'target_words 可选：本章目标字数，不传则用作品默认（每章目标字数）。',
-    '蓝图应只覆盖“一章”的容量：情节点 3-8 条，能撑起整章篇幅但不越章。',
+    '蓝图应只覆盖“一章”的容量：3～5 个场景，每个场景写明地点/出场人物/身体动作/冲突或转折，能撑起整章篇幅但不越章。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
     chapter_id: { type: 'string', description: '章节 id（必填）' },
     scene_goal: { type: 'string', description: '本场景目标（一句话）' },
-    plot_points: { type: 'string', description: '情节点，3-8 条，每条一行' },
+    plot_points: { type: 'string', description: '3-5 个场景，每个场景一行：地点、出场人物、身体动作、冲突/转折' },
     conflicts: { type: 'string', description: '冲突与转折' },
     character_changes: { type: 'string', description: '出场角色状态变化' },
     hook: { type: 'string', description: '下一章钩子' },

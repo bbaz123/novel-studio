@@ -127,6 +127,68 @@ console.log('\n【5. 阴性对照（变异体）：修复前的"整张角色表"
     V(GOOD).ok === true && legacy.ok === false);
 }
 
+console.log('\n【5b. 字数下限随作品规模自适应（2026-09-20 用户规格）】');
+{
+  // 用户规格：**长篇作品不能仅因实体名称仍然存在就判为零损失**——
+  // 100 字摘要可以把名字写全，却丢光剧情线程、未闭合伏笔、角色当前状态，
+  // 而这段记忆要喂给之后每一章。下限因此按「篇幅 + 承载对象数」推导。
+  //
+  // ⚠️ 这一段刻意**不迁就** GOOD 的 134 字（用户明确要求：不要为了兼容小夹具保留旧行为）。
+  //    GOOD 继续用于"实体核对"类用例（那是它要考的东西），
+  //    规模效应则由下面的 LARGE_GOOD（同一份内容按篇幅放大）来考。
+  const LARGE_WORK_CHARS = 184044;         // 压力库 work#16：120 章 / 50 角色
+  const LARGE_GOOD = GOOD.repeat(5);       // 670 字：实体齐全且够长
+  ok('夹具自检：LARGE_GOOD 实体齐全且长度足以通过长篇下限',
+    V(LARGE_GOOD, { storyChars: LARGE_WORK_CHARS }).ok === true,
+    `len=${LARGE_GOOD.length} ${JSON.stringify(V(LARGE_GOOD, { storyChars: LARGE_WORK_CHARS }).reasons)}`);
+
+  // ★ 这一条就是用户要的特性：实体**一个没丢**，但对长篇来说字数不够 → 必须拒绝
+  const shortButComplete = V(GOOD, { storyChars: LARGE_WORK_CHARS });
+  ok('★ 长篇里"实体齐全但只有 134 字"→ 拒绝（旧行为会放行）',
+    shortButComplete.ok === false && /过短/.test(shortButComplete.reasons.join('；')),
+    JSON.stringify(shortButComplete.reasons));
+  ok('拒绝原因说清"是按规模推导的下限"，而不是只说"太短"',
+    /作品正文 184044 字/.test(shortButComplete.reasons.join('；'))
+    && /需保留实体 4 个/.test(shortButComplete.reasons.join('；')),
+    JSON.stringify(shortButComplete.reasons));
+
+  // 小作品必须**不受**长篇规则牵连（判据变严不能变成"一律拒绝"）
+  ok('同一个 134 字摘要，小作品（1 千字）仍放行 —— 自适应不是一刀切',
+    V(GOOD, { storyChars: 1000 }).ok === true);
+
+  // 实体数驱动：23 个角色的小篇幅作品，下限被"承载对象"抬起来
+  const manyChars = Array.from({ length: 23 }, (_, i) => ({ name: `角色${i + 1}号` }));
+  const manyText = manyChars.map((c) => c.name).join('、') + '在这里活动。';
+  const manySummary = manyChars.map((c) => c.name).join('、') + '各自散开。'; // 实体全在，但很短
+  const byEntities = agentMemoryUpdateVerdict({
+    characters: manyChars, worldEntries: [], chapterText: manyText,
+    summary: manySummary, storyChars: 6000,
+  });
+  ok('实体数（23 个）把下限抬到 368 字 → 只写名字的短摘要被拒',
+    byEntities.ok === false && byEntities.guard.minChars === 368,
+    `minChars=${byEntities.guard.minChars} ${JSON.stringify(byEntities.reasons)}`);
+  ok('判据如实回报本次使用的下限（否则"自适应"无法被断言）',
+    typeof byEntities.guard.minChars === 'number' && byEntities.guard.minChars === 368);
+
+  // 配对契约：下限不得高于下游压缩提示词的产出目标
+  const { MAX_COMPRESSED_MIN_CHARS, minCharsForStory } = await import('../ai/memory-compress-guard.mjs');
+  ok('下限封顶值 = 640（≤ 下游提示词"不超过 800 字"的产出目标）',
+    MAX_COMPRESSED_MIN_CHARS === 640, String(MAX_COMPRESSED_MIN_CHARS));
+  ok('极端规模下也不会超过封顶（超长篇 + 300 实体）',
+    minCharsForStory({ storyChars: 5_000_000, entityCount: 300 }) === MAX_COMPRESSED_MIN_CHARS);
+  ok('规模未知（不带 storyChars）时退回绝对最低值 —— 向后兼容',
+    minCharsForStory({}) === 100 && minCharsForStory({ entityCount: 4 }) === 100);
+
+  // 单调性：篇幅变大，下限不得变小（分档表写错就会在这里露出来）
+  const samples = [0, 4999, 5000, 5001, 20000, 20001, 50000, 100000, 200000, 400000, 400001, 900000];
+  let monotonic = true;
+  for (let i = 1; i < samples.length; i++) {
+    if (minCharsForStory({ storyChars: samples[i] }) < minCharsForStory({ storyChars: samples[i - 1] })) monotonic = false;
+  }
+  ok('分档单调不降（含每个档位边界的两侧）', monotonic,
+    samples.map((s) => `${s}→${minCharsForStory({ storyChars: s })}`).join(' '));
+}
+
 console.log('\n【6. needsAgentMemoryGuard 真值表：该设闸的设闸，不该设闸的一个都不设】');
 {
   ok('工具标记 + summary → 设闸', needsAgentMemoryGuard({ guard: 'agent', summary: '正文' }) === true);

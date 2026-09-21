@@ -13,7 +13,7 @@ import { ovClient, pendingQueueLength, reloadOpenVikingClient, setOpenVikingWork
 import { assemble as assembleContext } from './ai/context/assembler.mjs';
 import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCapOfId, recallGapReason } from './ai/context/layers.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
-import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance, agentMemoryUpdateVerdict, needsAgentMemoryGuard } from './ai/memory-compress-guard.mjs';
+import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance, agentMemoryUpdateVerdict, needsAgentMemoryGuard, AGENT_GUARD_MARKER } from './ai/memory-compress-guard.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 import { MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, effortForTier, LONG_AI_TIMEOUT_MS, policySnapshot } from './ai/policy.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
@@ -1319,20 +1319,54 @@ function compactLinesWithinBudget(text, budget) {
   return result;
 }
 
+// 实体清单压缩：先保留每个角色/词条的名称，再把剩余预算分给描述。
+// 普通的按行截断会在预算耗尽时直接 break，导致后期实体连名字都进不了压缩提示词。
+function compactEntityLinesWithinBudget(text, budget) {
+  const lines = String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!lines.length || budget <= 0) return '';
+  const rows = lines.map((line) => {
+    const end = line.indexOf('】');
+    const prefix = end >= 0 ? line.slice(0, end + 1) : '';
+    return { prefix, rest: prefix ? line.slice(end + 1).trim() : line };
+  });
+  const mandatory = rows.reduce((n, r) => n + r.prefix.length, 0) + Math.max(0, rows.length - 1);
+  if (mandatory > budget) {
+    // 预算极端不足时仍按顺序写入可容纳的名称片段，并显式标记省略。
+    let out = '';
+    for (const row of rows) {
+      const sep = out ? '\n' : '';
+      const room = budget - out.length - sep.length;
+      if (room <= 0) break;
+      out += sep + row.prefix.slice(0, room);
+    }
+    return out;
+  }
+  const perRest = Math.max(0, Math.floor((budget - mandatory) / rows.length));
+  let remainder = Math.max(0, budget - mandatory - perRest * rows.length);
+  return rows.map((row) => {
+    const extra = perRest + (remainder-- > 0 ? 1 : 0);
+    const body = row.rest.slice(0, extra);
+    return `${row.prefix}${body}${body.length < row.rest.length ? '…' : ''}`;
+  }).join('\n');
+}
+
 // 自动压缩作品内容为长期记忆摘要。
 async function compressStoryMemory(workId, onChunk, signal) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) throw new Error('作品不存在');
 
-  // 只取每章正文头尾（各 2000 字），既避免一次性拉取数十 MB 正文，又覆盖后期才出场的实体。
-  const chapters = prepare(`SELECT title, summary,
-    substr(content, 1, 2000) AS content_head,
-    CASE WHEN length(content) <= 2000 THEN content ELSE substr(content, length(content) - 1999) END AS content_tail
+  // 章节正文**完整**读取：出场判定必须覆盖全文，只看头尾会漏掉长章节中段首次出现的实体，
+  // 从而把它排除在零损失护栏之外。该读取仅发生在显式记忆压缩/护栏路径，不进常规生成上下文。
+  const chapters = prepare(`SELECT title, summary, content
     FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC`).all(workId);
   const characters = prepare('SELECT name, identity, personality, status FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const worlds = prepare('SELECT title, content FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
 
-  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content_head, 2000)} ${plainTextTail(c.content_tail, 2000)}`).join('\n');
+  // 作品规模（正文总字数）：护栏的字数下限按它分档（2026-09-20 用户规格）。
+  // 从已读入的行求和，不额外查库。
+  const chapterChars = chapters.reduce((n, c) => n + String(c.content || '').length, 0);
+
+  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainText(c.content || '')}`).join('\n');
 
   // 决策 D8-#3（用户 2026-09-16 规格）：按"**在章节里出现过没有**"把角色分成两侧。
   // 实测作品 #2：角色表 23 个，章节里真正出现过的只有 5 个。
@@ -1356,8 +1390,8 @@ async function compressStoryMemory(workId, onChunk, signal) {
     const tailText = compactLinesWithinBudget(recent, tailBudget);
     return `${summaryText}\n${tailText}`.trim();
   })();
-  const characterPromptText = compactLinesWithinBudget(characterText, 3000);
-  const worldPromptText = compactLinesWithinBudget(worldText, 3000);
+  const characterPromptText = compactEntityLinesWithinBudget(characterText, 3000);
+  const worldPromptText = compactEntityLinesWithinBudget(worldText, 3000);
 
   const prompt = `你是一位小说长期记忆压缩器。请根据以下作品内容，生成一段不超过 800 字的中文长期记忆摘要，记录已经发生的重要剧情、伏笔、角色当前状态、世界设定关键信息，方便后续 AI 写作保持一致。\n\n作品名：${work.title}\n简介：${work.description}\n\n章节（前为全部章节摘要，后为最近章节尾部）：\n${chapterPromptText}\n\n已出场角色（**只允许提到这些角色，不要引入任何未在此列的角色**）：\n${characterPromptText}\n\n世界观：\n${worldPromptText}\n\n请只输出压缩后的记忆摘要。`;
 
@@ -1380,11 +1414,15 @@ async function compressStoryMemory(workId, onChunk, signal) {
 
   // D8-#3：零损失护栏（**两侧**）。压缩是**有损**操作，而长期记忆会喂给之后每一章——
   // 丢一个角色或一条世界观，摘要读起来照样通顺，**不会报错**，是最难发现的一类损失。
-  //   完整性：出场过的（主角+配角）一个都不许丢；
+  //   完整性：出场过的（主角+配角）一个都不许丢；且**字数下限随作品规模自适应**
+  //           （2026-09-20 用户规格：长篇不能因为"名字都还在"就判为零损失——
+  //            100 字摘要能把名字写全却丢光剧情线程/伏笔/角色状态）；
   //   无中生有：从未出场的**一个都不许冒出来**（用户 2026-09-16 规格）。
   const guard = checkCompression({
     compressed: output,
     mustKeep: mustKeepEntities({ characters: cast.appearedChars, worldEntries: cast.appearedWorlds }),
+    // 规模从**已读入内存的章节行**求和，不额外查库（正文总字数决定下限档位）。
+    storyChars: chapterChars,
   });
   const invention = checkNoInvention({
     compressed: output,
@@ -1436,16 +1474,17 @@ compressStoryMemory = traceFn('compressStoryMemory（压缩长期记忆）', com
 // 模型丢掉一个角色照样静默落库，而这段记忆会喂给之后每一章，且摘要读起来照样通顺。
 // 现在两条路共用同一份判据（`agentMemoryUpdateVerdict` 在 ai/memory-compress-guard.mjs），
 // 靠工具显式标记来源（`guard:'agent'`）区分——**作者在界面手改不带标记，不受影响**。
-// 判据只取名字/标题，不拉正文：这是本地 SQLite 的索引查询，纳秒级，不进 AI 计费路径。
+// 判据读取章节正文做确定性出场扫描：只发生在模型自压缩写回时，不进 AI 计费路径。
 function agentMemoryGuardOf(workId, summary) {
-  const chapters = prepare(`SELECT title, summary,
-    substr(content, 1, 2000) AS content_head,
-    CASE WHEN length(content) <= 2000 THEN content ELSE substr(content, length(content) - 1999) END AS content_tail
+  const chapters = prepare(`SELECT title, summary, content
     FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC`).all(workId);
   const characters = prepare('SELECT name FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const worldEntries = prepare('SELECT title FROM world_entries WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
-  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainTextHead(c.content_head, 2000)} ${plainTextTail(c.content_tail, 2000)}`).join('\n');
-  return agentMemoryUpdateVerdict({ characters, worldEntries, chapterText, summary });
+  const chapterText = chapters.map((c) => `【${c.title}】${c.summary || ''} ${plainText(c.content || '')}`).join('\n');
+  // 作品规模一并传入：字数下限按它自适应（2026-09-20）。
+  // 正文已在内存里，这里只是求和，不额外查库（实测 120 章规模下整条路径 ~8.7ms）。
+  const storyChars = chapters.reduce((n, c) => n + String(c.content || '').length, 0);
+  return agentMemoryUpdateVerdict({ characters, worldEntries, chapterText, summary, storyChars });
 }
 
 // ---------- 出场角色选择（评分制 · v0.8.0） ----------
@@ -1580,8 +1619,25 @@ function buildCharacterCards(chars, cap) {
   }
   // 极端兜底：所有长字段已丢弃仍超限时，逐卡按均分预算截断（核心信息尽量保留）。
   if (text.length > cap && chars.length) {
-    const per = Math.max(160, Math.floor(cap / chars.length));
-    text = chars.map((c) => cardOf(c, maxLevel).slice(0, per)).join('\n\n');
+    // 最后一级只移除可选长字段，绝不对整张卡做 slice，避免把靠后的角色核心信息切掉。
+    const coreText = chars.map((c) => coreOf(c)).join('\n\n');
+    if (coreText.length <= cap) {
+      const optionalBudget = cap - coreText.length;
+      const perOptional = Math.floor(optionalBudget / chars.length);
+      let extra = optionalBudget - perOptional * chars.length;
+      text = chars.map((c) => {
+        const optional = FIELD_LABELS.map(([field, label]) => {
+          const v = String(c[field] || '').trim();
+          return v ? `${label}：${v}` : '';
+        }).filter(Boolean).join('\n');
+        const take = perOptional + (extra-- > 0 ? 1 : 0);
+        return `${coreOf(c)}${take > 0 && optional ? `\n${optional.slice(0, take)}` : ''}`;
+      }).join('\n\n');
+    } else {
+      // 核心字段本身已超实体预算：保留完整核心信息，让装配器通过 overflow 显式报告，
+      // 不把人物身份/性格/状态静默截断成不可用的半句话。
+      text = coreText;
+    }
   }
   return level > 0 ? `${text}\n…（角色卡层超预算：长字段已分级压缩，每张卡核心信息完整）` : text;
 }
@@ -1602,6 +1658,40 @@ function pickWorldEntries(workId, corpus) {
     if (matched) out.push(entry);
   }
   return out;
+}
+
+// 设定词条筛选：与世界观词条同源思路，但 terms 表没有 pinned/priority，
+// 因此用「关键词命中权重 + 最近更新优先」作为稳定排序，保证最近归档的
+// 稀缺度/属性/素材库等写作约束在相关章节装配时优先可见。
+function pickTerms(workId, corpus) {
+  const rows = prepare('SELECT * FROM terms WHERE work_id = ? ORDER BY updated_at DESC, id DESC').all(workId);
+  const corpusLower = String(corpus || '').toLowerCase();
+  const tokens = corpusLower
+    .split(/[\s,，、。；;！？?：“”"'‘’（）()/\\]+/)
+    .map((k) => k.trim())
+    .filter((k) => k.length >= 2)
+    .slice(0, 60);
+  const scored = rows.map((t, idx) => {
+    const title = String(t.title || '').toLowerCase();
+    const tags = String(t.tags || '').toLowerCase();
+    const content = String(t.content || '').slice(0, 800).toLowerCase();
+    let score = 0;
+    for (const token of tokens) {
+      if (title.includes(token)) score += 3;
+      if (tags.includes(token)) score += 2;
+      if (content.includes(token)) score += 1;
+    }
+    // 标题含「体系/素材库」的词条是跨章写作约束（稀缺度、属性分类、收力素材），
+    // 视为 pinned 等价物置顶，避免被关键词命中权重挤到 cap 之外。
+    if (/体系|素材库|写作标准/.test(title)) score += 8;
+    if (idx < 6) score += 1; // 最近更新的词条视为当前写作约束的候选，避免全量不可见
+    return { t, score };
+  });
+  return scored
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.t.id - b.t.id)
+    .slice(0, 12)
+    .map((x) => x.t);
 }
 
 // 根据章节自动组装 AI 上下文：相关角色卡、激活的世界观词条、作者注。
@@ -1638,6 +1728,7 @@ function buildAIContext(chapterId) {
   });
 
   const worldEntries = pickWorldEntries(work.id, corpus);
+  const termEntries = pickTerms(work.id, corpus);
 
   const charNames = characters.map((c) => c.name).join('、');
   const replaceVars = (text = '') => String(text)
@@ -1671,6 +1762,7 @@ function buildAIContext(chapterId) {
     prev_chapter: prevChapRow ? { id: prevChapRow.id, title: prevChapRow.title } : null,
     characters,
     world_entries: worldEntries,
+    terms: termEntries,
     story_memory: getStoryMemory(work.id),
     story_tail: storyTail,
     recent_events: recentEvents.map((e) => ({ kind: e.kind, summary: e.summary, chapter_id: e.chapter_id, created_at: e.created_at })),
@@ -1961,11 +2053,11 @@ function addEventProposal(workId, fields) {
   return { proposed: true, proposal_id: Number(info.lastInsertRowid) };
 }
 
-function addMemoryProposal(workId, { summary, delta, note }) {
+function addMemoryProposal(workId, { summary, delta, note, guard }) {
   const info = prepare(`
-    INSERT INTO story_memory_proposals (work_id, summary, delta, note, status)
-    VALUES (?, ?, ?, ?, 'pending')
-  `).run(workId, asString(summary, ''), asString(delta, ''), asString(note, ''));
+    INSERT INTO story_memory_proposals (work_id, summary, delta, note, guard, status)
+    VALUES (?, ?, ?, ?, ?, 'pending')
+  `).run(workId, asString(summary, ''), asString(delta, ''), asString(note, ''), asString(guard, ''));
   return { proposed: true, proposal_id: Number(info.lastInsertRowid) };
 }
 
@@ -1974,6 +2066,7 @@ function settleProposals(workId, { ids, all, action }) {
   const mark = (table, id) => prepare(`UPDATE ${table} SET status = ? WHERE id = ? AND work_id = ? AND status = 'pending'`).run(action, id, workId);
   const applied = { events: 0, memories: 0 };
   const rejected = { events: 0, memories: 0 };
+  const guardFailed = [];
   let eventRows = [];
   let memoryRows = [];
   if (all) {
@@ -2004,6 +2097,23 @@ function settleProposals(workId, { ids, all, action }) {
       let summary = asString(p.summary, '');
       if (!summary && p.delta) summary = mergeMemoryDraft(getStoryMemory(workId), p.delta);
       if (summary.trim()) {
+        // AI 自压缩提案在作者点「采纳」时仍需过同一零损失护栏——提案先落库只是延迟作者确认，
+        // 不应成为绕过实体完整性检查的路径。
+        // ⚠️ 判据必须是**提案自己带的来源标记**（`guard`，创建时落库、读取时取回），
+        // 而不是"凡是带 summary 的提案"：普通/历史提案没有这个标记，它们的采纳语义
+        // 由作者自己负责，机器判据不得替作者改判（否则短提案会被护栏当成"记忆过短"直接拒掉）。
+        if (p.guard === AGENT_GUARD_MARKER && String(p.summary || '').trim()) {
+          const verdict = agentMemoryGuardOf(workId, summary);
+          if (!verdict.ok) {
+            guardFailed.push({
+              proposal_id: p.id,
+              reasons: verdict.reasons,
+              missing: verdict.guard.missing.slice(0, 20),
+              invented: verdict.invention.invented.slice(0, 20),
+            });
+            continue; // 保留 pending，作者可修正后再次采纳
+          }
+        }
         saveStoryMemory(workId, summary, { source: 'proposal', note: p.note || '作者确认的 AI 提案' });
         applied.memories += 1;
       } else {
@@ -2014,7 +2124,7 @@ function settleProposals(workId, { ids, all, action }) {
     }
     mark('story_memory_proposals', p.id);
   }
-  return { ok: true, work_id: workId, action, applied, rejected, pending: listProposals(workId).length };
+  return { ok: true, work_id: workId, action, applied, rejected, guard_failed: guardFailed, pending: listProposals(workId).length };
 }
 
 function safeParseJSON(text) {
@@ -2111,6 +2221,11 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
   const worldEntries = pickWorldEntries(workId, corpus);
   const worldEntriesText = worldEntries.map((w) => `【${w.title}】${String(w.content || '').slice(0, 600)}`).join('\n');
 
+  // 设定词条：与世界观同源的分层约束。terms 没有 pinned/priority，按「命中权重 + 最近更新」排序；
+  // 每条截 300 字，层 cap 由 layers.mjs 的 terms 层统一核算。
+  const termEntries = pickTerms(workId, corpus);
+  const termEntriesText = termEntries.map((t) => `【${t.title}】${String(t.content || '').slice(0, 300)}`).join('\n');
+
   // 大纲层：卷 + 剧情线 + 章节标题/摘要（长作品只给前 30 + 最近 40，中间省略计数）
   const outlineLines = [];
   for (const v of volumes) outlineLines.push(`【卷】${v.title}${v.summary ? `：${v.summary.slice(0, 200)}` : ''}`);
@@ -2119,9 +2234,14 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
   const skip = total > 70 ? total - 40 : -1;
   const shown = allChapters.filter((c, i) => skip < 0 || i < 30 || i >= skip || c.id === chapter?.id);
   if (skip >= 0) outlineLines.push(`（中间 ${total - 70} 章已省略，仅列最近进展）`);
+  // 说明句放在章节列表**之前**：层是按 cap 从头部截断的（见长期记忆层的同源教训），
+  // 挂在末尾必然先被 2800 字预算切掉，模型永远看不见这条规则。
+  if (chapterIndex >= 0) outlineLines.push('（大纲中标注【未来章·禁止写入】的条目仅用于避免矛盾，不得提前写入正文）');
   for (const c of shown) {
     const marker = c.id === chapter?.id ? '★' : '';
-    outlineLines.push(`第${c.position + 1}节${marker} ${c.title}${c.summary ? `：${c.summary.slice(0, 120)}` : ''}`);
+    const future = chapterIndex >= 0 && allChapters.indexOf(c) > chapterIndex;
+    const prefix = future ? '【未来章·禁止写入】' : '';
+    outlineLines.push(`${prefix}第${c.position + 1}节${marker} ${c.title}${c.summary ? `：${c.summary.slice(0, 120)}` : ''}`);
   }
   const outlineText = outlineLines.join('\n');
 
@@ -2245,6 +2365,7 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     L('characters', charCardsText),
     relationsText ? L('relations', relationsText) : null,
     L('world', worldEntriesText),
+    termEntriesText ? L('terms', termEntriesText) : null,
     L('redlines', styleContract),
   ].filter(Boolean);
 
@@ -2272,6 +2393,7 @@ async function buildNovelContext(workId, chapterId, mode = 'full') {
     scene_characters: sceneCharacters.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status, aliases: c.aliases || '', forced: forcedIds.includes(c.id) })),
     scene_character_ids: sceneIdList,
     world_entries: worldEntries.map((w) => ({ id: w.id, title: w.title, pinned: Number(w.is_pinned) === 1, priority: Number(w.priority ?? 50), keywords: w.keywords, content_preview: String(w.content || '').slice(0, 600) })),
+    terms: termEntries.map((t) => ({ id: t.id, title: t.title, category_id: t.category_id, tags: t.tags, content_preview: String(t.content || '').slice(0, 300) })),
     relations: relations.map((r) => ({ from: nameById.get(r.from_character_id) || null, to: nameById.get(r.to_character_id) || null, relation: r.relation, description: r.description })),
     redlines: redlines.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note })),
     style_contract: styleContract,
@@ -3619,7 +3741,10 @@ async function handleAPI(req, res, pathname, query) {
       const result = addMemoryProposal(workId, {
         summary: asString(body.summary, ''),
         delta: asString(body.delta, ''),
-        note: asString(body.note, 'dsh 创作插件提案')
+        note: asString(body.note, 'dsh 创作插件提案'),
+        // 来源标记必须随提案落库：作者点「采纳」时再判闸，靠的就是这个字段。
+        // 不带标记的调用方（作者/历史路径）落空串，采纳时按普通提案处理。
+        guard: asString(body.guard, '')
       });
       return sendJSON(res, 200, { ok: true, ...result, work_id: workId });
     }
@@ -3629,7 +3754,9 @@ async function handleAPI(req, res, pathname, query) {
       summary = mergeMemoryDraft(getStoryMemory(workId), asString(body.delta, ''));
     }
     // D8-#3 续：**模型自压缩**也走同一零损失护栏。判据是纯函数（needsAgentMemoryGuard），
-    // 语义为「工具显式标记来源 + 传了 summary」；作者手改、delta 追加、提案路径都不设闸。
+    // 语义为「工具显式标记来源 + 传了 summary」；作者手改、delta 追加不在本防区。
+    // 提案路径（`proposed:true`）在此**不设闸**——提案先落库、不碰正式账本，闸设在
+    // `settleProposals` 的作者采纳那一刻，且只对带 `guard` 标记的提案生效。
     if (needsAgentMemoryGuard(body)) {
       const verdict = agentMemoryGuardOf(workId, summary);
       if (!verdict.ok) {
@@ -3869,7 +3996,15 @@ async function handleAPI(req, res, pathname, query) {
   }
   if (resource === 'novel' && segments[2] === 'redlines' && method === 'GET') {
     const workId = Number(query.work_id) || null;
-    return sendJSON(res, 200, { work_id: workId, redlines: listRedlines(workId) });
+    // 正向风格契约（style_positive）与红线同属“写作风格红线”这一层：装配侧本来就是
+    // `renderStyleContract(redlines, work.style_positive)`（见 buildAIContext 的 style_contract）。
+    // 但本端点此前只回红线，于是 novel_style_contract 工具查回的契约比上下文里那份少一半
+    // （节奏比例/系统出场次数/爽点控制都在 style_positive 里），ai/context/layers.mjs 因此
+    // 记了一条风格层缺口。这里补齐：查回路径与装配路径同源。
+    const stylePositive = workId
+      ? asString(prepare('SELECT style_positive FROM works WHERE id = ?').get(workId)?.style_positive, '')
+      : '';
+    return sendJSON(res, 200, { work_id: workId, redlines: listRedlines(workId), style_positive: stylePositive });
   }
   if (resource === 'novel' && segments[2] === 'redlines' && method === 'PUT') {
     const body = await readBody(req);
@@ -3990,6 +4125,14 @@ async function handleAPI(req, res, pathname, query) {
       }));
     const scan = scanAgainstRedlines(listRedlines(workId), text);
     const memory = getStoryMemory(workId);
+    // 2026-09-21：新增两项，供 novel_consistency 做“本章边界 / 系统人格 / 未登记命名实体”自检。
+    // registered_names 让模型能自己发现“我造了个设定库里没有的名字”，比事后靠人去抓早一步——
+    // 第 5 章实测：工坊 AI 新造了郑涛（C级·铁骨）、裂背獴、裂缝事件统计，设定库里一个都没有。
+    const registeredNames = {
+      characters: prepare('SELECT name FROM characters WHERE work_id = ?').all(workId).map((c) => c.name).filter(Boolean),
+      world_entries: prepare('SELECT title FROM world_entries WHERE work_id = ?').all(workId).map((w) => w.title).filter(Boolean),
+      terms: prepare('SELECT title FROM terms WHERE work_id = ?').all(workId).map((t) => t.title).filter(Boolean),
+    };
     return sendJSON(res, 200, {
       ok: true, work_id: workId,
       checklist: {
@@ -3997,6 +4140,8 @@ async function handleAPI(req, res, pathname, query) {
         present_characters: presentCharacters,
         recent_events: recentEvents,
         story_memory: memory,
+        style_positive: asString(work?.style_positive, ''),
+        registered_names: registeredNames,
         style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) }
       }
     });
@@ -4629,7 +4774,8 @@ function serveStatic(req, res, pathname) {
   } else {
     filePath = path.join(publicDir, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
   }
-  if (!filePath.startsWith(publicDir)) {
+  const relative = path.relative(publicDir, filePath);
+  if (relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
     res.writeHead(403);
     return res.end('Forbidden');
   }

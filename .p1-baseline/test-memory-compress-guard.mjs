@@ -206,6 +206,45 @@ console.log('\n【9. 接线：两侧判据都接上了，且喂给模型的只�
   ok('完整性不过时拒绝落库；"无中生有"按策略处置（默认放行）',
     /if \(!guard\.ok \|\| inventionAction === 'reject'\)/.test(body));
   ok('落库仍在两次检查之后', body.indexOf('saveStoryMemory(') > body.indexOf('checkNoInvention('));
+  // 2026-09-20 用户规格：字数下限随作品规模自适应——服务端压缩路径必须把规模传进去，
+  // 否则它会退回"规模未知"的绝对最低值（100 字），长篇的保护就漏掉了。
+  ok('压缩路径把作品规模传给护栏（storyChars）',
+    /storyChars:\s*chapterChars/.test(body), body.match(/storyChars[^\n]*/)?.[0] || '未找到');
+  ok('chapterChars 由已读入的章节行求和得出（不额外查库）',
+    /const chapterChars = chapters\.reduce\(/.test(body));
+}
+
+console.log('\n【11. 字数下限随作品规模自适应（2026-09-20 用户规格）】');
+{
+  // 用户规格原文：「长篇作品不能仅因实体名称仍存在就判定为零损失，
+  // 需要保证剧情线程、伏笔和角色状态等核心记忆有足够承载空间」。
+  // 于是下限 = max(按篇幅分档, 按承载实体数)，并封顶在 640（≤ 提示词 800 字产出目标）。
+  const { minCharsForStory, MAX_COMPRESSED_MIN_CHARS } = await import('../ai/memory-compress-guard.mjs');
+  ok('极小作品 → 仍是绝对最低值 100 字（不牵连小作品）',
+    minCharsForStory({ storyChars: 800, entityCount: 2 }) === 100);
+  ok('篇幅分档单调上升（5k/2万/5万/10万/20万/40万）',
+    [5000, 20000, 50000, 100000, 200000, 400000].map((n) => minCharsForStory({ storyChars: n })).join(',')
+      === '100,150,220,300,400,520');
+  ok('真实 work#2 规模（7141 字 / 23 个必须保留）→ 由承载对象数抬到 368 字',
+    minCharsForStory({ storyChars: 7141, entityCount: 23 }) === 368);
+  ok('超长篇封顶 640（与提示词产出目标成对）',
+    minCharsForStory({ storyChars: 900000, entityCount: 100 }) === MAX_COMPRESSED_MIN_CHARS);
+
+  // ★ 关键行为：实体一个没丢，但对长篇来说太短 → 必须拒绝（旧行为放行）
+  const bigWork = { compressed: GOOD, mustKeep: ENTITIES, storyChars: 184044 };
+  const r = checkCompression(bigWork);
+  ok('★ 长篇里"实体齐全但 136 字"→ 被拒（这正是修复的缺陷）',
+    r.ok === false && /过短/.test(r.reasons.join('；')), JSON.stringify(r.reasons));
+  ok('同一份摘要在小作品（1 千字）里仍通过 —— 自适应不是一刀切',
+    checkCompression({ ...bigWork, storyChars: 1000 }).ok === true);
+  ok('如实回报本次使用的下限（可断言，不必读代码）',
+    r.minChars === 400 && checkCompression({ ...bigWork, storyChars: 1000 }).minChars === 100,
+    `${r.minChars} / ${checkCompression({ ...bigWork, storyChars: 1000 }).minChars}`);
+  ok('显式 minChars 优先于自适应（离线单测要能钉死策略）',
+    checkCompression({ ...bigWork, minChars: 50 }).ok === true);
+  // 配对契约：下限不得高于下游提示词的产出目标
+  ok('下限封顶 640 ≤ 下游"不超过 800 字"的产出目标（成对契约）',
+    MAX_COMPRESSED_MIN_CHARS <= 800, String(MAX_COMPRESSED_MIN_CHARS));
 }
 
 console.log('\n【10. "无中生有"的处置策略：默认放行、严格可开（用户 2026-09-16 决定）】');

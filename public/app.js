@@ -98,6 +98,12 @@ const state = {
   demoStatusLoaded: false, // F-30：示例状态缓存，避免每次渲染都请求 /demo/status
   demoStatus: null,
   savedRange: null,
+  // 弹窗「未保存内容」判据（点遮罩关闭前的闸）：
+  //   modalBaseline  = openModal 那一刻的表单快照（只含 [name] 字段）
+  //   modalProtected = 这个弹窗点外部**一律不关**（AI 交互弹窗：点外部等于取消，
+  //                    而取消只能靠 ✕ / 取消按钮——误触一次就丢掉提问/结果，代价不对称）
+  modalBaseline: null,
+  modalProtected: false,
   pendingAIApply: null,
   pendingAIInstruction: null,
   pendingAIQuestion: null,
@@ -528,7 +534,7 @@ function enhanceModalGenFill() {
   foot.insertBefore(btn, saveBtn);
 }
 
-function openModal({ title, body, footer = '', large = false } = {}) {
+function openModal({ title, body, footer = '', large = false, protectedBackdrop = false } = {}) {
   const root = $('#modal-root');
   root.innerHTML = `
     <div class="modal-backdrop" data-modal-backdrop>
@@ -541,7 +547,23 @@ function openModal({ title, body, footer = '', large = false } = {}) {
         ${footer ? `<div class="modal-foot">${footer}</div>` : ''}
       </div>
     </div>`;
+  // 点遮罩关闭前的闸：记下此刻的表单快照，供"脏了就不关"判定（见 modalDirty）。
+  // 只读弹窗没有 [name] 字段 → 快照为空 → 永远判为"不脏" → 行为与从前完全一致。
+  state.modalBaseline = JSON.stringify(collectModalData(root));
+  state.modalProtected = protectedBackdrop === true;
   enhanceModalGenFill();
+}
+
+/**
+ * 弹窗里有没有**未保存的输入**。
+ * 判据用"与打开时的快照逐字段比较"，而不是监听 input —— 后者要覆盖动态生成的字段、
+ * 程序性赋值（reopenEntityModal / setModalField 会直接改 .value）与撤销修改后回到原值，
+ * 比较快照天然都覆盖，且不会因为"改了又改回来"误判为脏。
+ */
+function modalDirty() {
+  const root = $('#modal-root');
+  if (!root || !root.innerHTML) return false;
+  try { return JSON.stringify(collectModalData(root)) !== state.modalBaseline; } catch (_) { return false; }
 }
 
 function closeModal() {
@@ -574,6 +596,9 @@ function closeModal() {
   // 所有 pending* 都必须在同一个边界收口，否则"某条路径忘了清"就变成长期泄漏。
   state.pendingAIApply = null;
   state.pendingReviewDiff = null;
+  // 弹窗关闭闸的状态同理：必须在同一处清空，否则下一个弹窗会继承上一个的快照/保护位。
+  state.modalBaseline = null;
+  state.modalProtected = false;
   $('#modal-root').innerHTML = '';
 }
 
@@ -3394,7 +3419,7 @@ function openSTCharacterModal(character = null) {
         <div class="field full"><label>背景</label><textarea name="background" rows="3">${esc(character?.background || '')}</textarea></div>
         <div class="field"><label>当前状态</label><input name="status" value="${esc(character?.status || '')}" placeholder="当前状态"></div>
         <div class="field"><label>标签（逗号分隔）</label><input name="tags" value="${esc(character?.tags || '')}" placeholder="主角, 天才"></div>
-        <div class="field full"><label>别名/称呼（逗号分隔，用于上下文命中）</label><input name="aliases" value="${esc(character?.aliases || '')}" placeholder="例如：云仔、李队"></div>
+        <div class="field full"><label>别名/称呼（逗号分隔，用于上下文命中）</label><input name="aliases" value="${esc(character?.aliases || '')}" placeholder="例如：云仔、李队"><div class="muted mt-4" style="font-size:12px">留空 = 正文里只认主名。填了简称/绰号，改稿或续写时用简称提到他也能被认出（别名参与出场判定与一致性核对）。</div></div>
         <div class="field full"><label>对话示例 mes_example</label><textarea name="mes_example" rows="4" placeholder="用于教 AI 该角色怎么说话">${esc(character?.mes_example || '')}</textarea></div>
         <div class="field full"><label>系统提示 / 全局指令</label><textarea name="system_prompt" rows="4" placeholder="该角色专属的额外系统提示">${esc(character?.system_prompt || '')}</textarea></div>
         <input type="hidden" name="work_id" value="${state.workId}">
@@ -4559,6 +4584,17 @@ async function directAIWrite(messages, opts = {}) {
   const config = await getActiveAIConfig();
   if (!config || !config.api_key) return null;
   const baseMax = Number(opts.maxTokens ?? config.max_tokens) || 4096;
+  const metaFrom = (data) => {
+    const choice = data?.raw?.choices?.[0] || {};
+    const usage = data?.raw?.usage || {};
+    return {
+      finishReason: choice.finish_reason || null,
+      completionTokens: Number.isFinite(Number(usage.completion_tokens)) ? Number(usage.completion_tokens) : null,
+      reasoningTokens: Number.isFinite(Number(usage.completion_tokens_details?.reasoning_tokens))
+        ? Number(usage.completion_tokens_details.reasoning_tokens)
+        : null
+    };
+  };
   const attempt = async (overrides = {}) => {
     const data = await api('/ai/write', {
       method: 'POST',
@@ -4572,19 +4608,46 @@ async function directAIWrite(messages, opts = {}) {
       },
       timeout: longAiTimeout() // 与直连长生成同档（F-45）
     });
-    return String(data.reply || '').trim();
+    return { text: String(data.reply || '').trim(), meta: metaFrom(data) };
   };
+  const emptyContext = (meta, maxTokens) => ({
+    max_tokens: maxTokens,
+    finish_reason: meta.finishReason,
+    completion_tokens: meta.completionTokens,
+    reasoning_tokens: meta.reasoningTokens
+  });
   try {
     const first = await attempt();
-    if (first) return first;
+    if (first.text) return first.text;
     const largerMax = Math.min(16384, Math.max(8192, baseMax * 2));
-    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: `[AI] 直连通道返回空内容（max_tokens=${baseMax}，疑似思考吃光预算）；先保持原思考强度并放宽上限到 ${largerMax} 重试一次` });
-    const sameEffortRetry = await attempt({ maxTokens: largerMax });
-    if (sameEffortRetry) return sameEffortRetry;
-    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 保持原思考强度重试后仍为空，改为低思考预算 + 更大上限兜底一次' });
+    const budgetExhausted = first.meta.finishReason === 'length' &&
+      (first.meta.completionTokens === null || first.meta.completionTokens >= baseMax);
+    reportClientLog({
+      level: 'warn',
+      kind: 'ai_direct_empty',
+      message: budgetExhausted
+        ? `[AI] 直连通道返回空内容（max_tokens=${baseMax}，finish_reason=length，思考吃光预算）；直接降思考预算 + 更大上限兜底一次`
+        : `[AI] 直连通道返回空内容（max_tokens=${baseMax}，疑似思考吃光预算）；先保持原思考强度并放宽上限到 ${largerMax} 重试一次`,
+      context: emptyContext(first.meta, baseMax)
+    });
+    if (!budgetExhausted) {
+      const sameEffortRetry = await attempt({ maxTokens: largerMax });
+      if (sameEffortRetry.text) return sameEffortRetry.text;
+      reportClientLog({
+        level: 'warn',
+        kind: 'ai_direct_empty',
+        message: '[AI] 保持原思考强度重试后仍为空，改为低思考预算 + 更大上限兜底一次',
+        context: emptyContext(sameEffortRetry.meta, largerMax)
+      });
+    }
     const lowEffortRetry = await attempt({ reasoningEffort: 'low', maxTokens: largerMax });
-    if (lowEffortRetry) return lowEffortRetry;
-    reportClientLog({ level: 'warn', kind: 'ai_direct_empty', message: '[AI] 直连通道重试后仍为空，调用方将回退慢通道' });
+    if (lowEffortRetry.text) return lowEffortRetry.text;
+    reportClientLog({
+      level: 'warn',
+      kind: 'ai_direct_empty',
+      message: '[AI] 直连通道重试后仍为空，调用方将回退慢通道',
+      context: emptyContext(lowEffortRetry.meta, largerMax)
+    });
     return null;
   } catch (e) {
     reportClientLog({ level: 'warn', kind: 'ai_direct_fallback', message: `[AI] 直连通道失败：${e.message}` });
@@ -4713,8 +4776,8 @@ async function streamAIDirectWrite(body, stageLabel) {
   }
 }
 
-// flash 轻量质检轮：核对「蓝图达成 + 一致性硬伤」；返回 { pass, issues, skipped }。
-// 只标记硬伤（蓝图要点遗漏/设定冲突/伏笔冲突/大段 AI 腔），轻微瑕疵放行；通道不可用时不阻塞交付。
+// flash 轻量质检轮：核对「蓝图达成 + 一致性硬伤 + 章节边界 + 未登记实体」；返回 { pass, issues, skipped }。
+// 只标记硬伤，轻微瑕疵放行；通道不可用时不阻塞交付。
 async function verifyAIDraft(blueprint, article, targetWords) {
   const bpText = blueprint
     ? [
@@ -4729,7 +4792,7 @@ async function verifyAIDraft(blueprint, article, targetWords) {
   const prompt = [
     '你是严格的小说质检员。请核对下面这篇刚生成的章节正文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"verdict":"pass 或 issues","issues":["硬伤描述，逐条可执行"]}',
-    '只标记真正的硬伤：与本章蓝图要点明显不符/重要情节点遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句。轻微瑕疵不判 issues。',
+    '只标记真正的硬伤：与本章蓝图要点明显不符/重要场景遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句、提前消费未来章内容（大纲中标注【未来章·禁止写入】或后续章节摘要的内容）、新增未登记的具名角色/地点/妖兽、有效场景不足 3 个或场景缺少空间与身体动作。轻微瑕疵不判 issues。',
     '',
     '【本章蓝图 · 写作必须遵守】',
     bpText,
@@ -4745,6 +4808,7 @@ async function verifyAIDraft(blueprint, article, targetWords) {
   const reply = await directAIWrite([{ role: 'user', content: prompt }], {
     model: policyModel('fast'),
     maxTokens: 1500,
+    reasoningEffort: 'low',
     temperature: 0.2
   });
   if (!reply) return { pass: true, skipped: true }; // 质检通道不可用：不阻塞成文交付
@@ -4753,7 +4817,9 @@ async function verifyAIDraft(blueprint, article, targetWords) {
   const issues = Array.isArray(parsed.issues)
     ? parsed.issues.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).filter(Boolean)
     : [];
-  return { pass: String(parsed.verdict) !== 'issues' || issues.length === 0, issues, skipped: false };
+  const pass = String(parsed.verdict) !== 'issues' || issues.length === 0;
+  const blocked = issues.some((x) => /未来章|禁止写入|未登记|具名角色|具名地点|妖兽/.test(x));
+  return { pass, issues, skipped: false, blocked };
 }
 
 // 质检不过时走 harness 精写内核修复：保留大部分正文、只修硬伤；
@@ -5282,7 +5348,7 @@ function openCharacterModal(character = null) {
         <div class="field full"><label>背景</label><textarea name="background" rows="5">${esc(character?.background || '')}</textarea></div>
         <div class="field full"><label>当前状态</label><textarea name="status" rows="2">${esc(character?.status || '')}</textarea></div>
         <div class="field full"><label>标签（逗号分隔）</label><input name="tags" value="${esc(character?.tags || '')}" placeholder="主角, 天才"></div>
-        <div class="field full"><label>别名/称呼（逗号分隔，用于上下文命中）</label><input name="aliases" value="${esc(character?.aliases || '')}" placeholder="例如：云仔、李队"></div>
+        <div class="field full"><label>别名/称呼（逗号分隔，用于上下文命中）</label><input name="aliases" value="${esc(character?.aliases || '')}" placeholder="例如：云仔、李队"><div class="muted mt-4" style="font-size:12px">留空 = 正文里只认主名。填了简称/绰号，改稿或续写时用简称提到他也能被认出（别名参与出场判定与一致性核对）。</div></div>
         <div class="field full"><label>对话示例 mes_example</label><textarea name="mes_example" rows="3">${esc(character?.mes_example || '')}</textarea></div>
         <div class="field full"><label>系统提示 / 全局指令</label><textarea name="system_prompt" rows="3">${esc(character?.system_prompt || '')}</textarea></div>
         <input type="hidden" name="work_id" value="${state.workId}">
@@ -5457,6 +5523,9 @@ function renderAIContextPreview() {
   const worlds = ctx.world_entries?.length
     ? ctx.world_entries.map((w) => `<div>【${esc(w.title)}】${esc((w.content || '').slice(0, 80))}</div>`).join('')
     : '<span class="muted">无</span>';
+  const terms = ctx.terms?.length
+    ? ctx.terms.map((t) => `<div>【${esc(t.title)}】${esc((t.content || '').slice(0, 80))}</div>`).join('')
+    : '<span class="muted">无</span>';
   const notes = [ctx.work_author_note, ctx.chapter_author_note].filter(Boolean).map((n) => `<div>${esc(n.slice(0, 120))}</div>`).join('') || '<span class="muted">无</span>';
   const bp = ctx.chapter?.blueprint && Object.keys(ctx.chapter.blueprint).length
     ? `<div>【场景目标】${esc(ctx.chapter.blueprint.scene_goal || '—').slice(0, 120)}</div>
@@ -5467,6 +5536,7 @@ function renderAIContextPreview() {
     <div class="ai-context-section"><b>本章蓝图 · 目标 ${ctx.chapter?.target_words || ctx.work?.default_chapter_words || 2000} 字</b><div>${bp}</div></div>
     <div class="ai-context-section"><b>角色卡</b><div>${chars}</div></div>
     <div class="ai-context-section"><b>世界观</b><div>${worlds}</div></div>
+    <div class="ai-context-section"><b>设定词条</b><div>${terms}</div></div>
     <div class="ai-context-section"><b>作者注</b><div>${notes}</div></div>`;
 }
 
@@ -5665,7 +5735,7 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = fal
 - 第一行必须严格是【蓝图】，随后只输出一个 JSON 对象（不要 Markdown 代码块、不要解释），字段如下：
 {
   "scene_goal": "本场景目标（一句话）",
-  "plot_points": "情节点，3-8 条，每条一行，足以撑起整章篇幅",
+  "plot_points": "3-5 个场景，每个场景一行：地点、出场人物、身体动作、冲突/转折",
   "conflicts": "冲突与转折",
   "character_changes": "出场角色状态变化",
   "hook": "下一章钩子（收尾悬念）",
@@ -5673,7 +5743,15 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = fal
 }
 - ${auto ? '直接输出【蓝图】。' : '每轮最多只能问一个问题。'}`);
   lines.push(``);
-  lines.push(`蓝图容量要求：本章目标字数 ${targetWords} 字，蓝图的情节点与冲突要足以展开到这个篇幅，同时只覆盖“一章”的容量，不要规划成多章内容。`);
+  lines.push(`蓝图容量要求：本章目标字数 ${targetWords} 字（只作区间参考，不设配额）。场景 3～5 个，靠"把每个场景写足"达到篇幅，**不要靠增加场景或情节点凑字数**；只覆盖“一章”的容量，不要规划成多章内容。`);
+  // 2026-09-21：补章节边界。此前只有“不要规划成多章”这一句，它禁止的是**一次规划多章**，
+  // 并不禁止为后续章节做动机前置——实测第 5 章的蓝图里就写着“为第七章转学海澜市做动机前置”，
+  // 把第 7 章的转学动机、第 10 章的测试题材、第 46～50 章的身份曝光线索提前消费掉了。
+  lines.push(`章节边界（硬约束，必须遵守）：`);
+  lines.push(`- 本章只允许写"本章摘要 + 本蓝图情节点"覆盖的内容。`);
+  lines.push(`- 不得为后续章节做动机前置；不得提前释放后续章节的悬念、身份曝光类线索或设定升级（例如妖兽阶位、组织介入、城市危机等级）。`);
+  lines.push(`- 不得引入未登记的具名角色/地点/妖兽。确需新名字时，只能写进 references 并标注"待作者确认的提案"，不得直接写进情节点。`);
+  lines.push(`- 大纲里标注【未来章·禁止写入】的条目只用于规划与避免矛盾，正文不得提前消费其中任何一条。`);
   lines.push(``);
   lines.push(`【当前小说上下文】`);
   lines.push(aiContextBlock() || '无');
@@ -5719,7 +5797,17 @@ function buildAIWritingProsePrompt(initial, blueprint, targetWords) {
     `【本章蓝图 · 写作必须遵守】`,
     bpText || '（未提供蓝图，按用户需求自由成文）',
     ``,
-    `【篇幅要求（重要）】整章正文以纯文本计不少于 ${targetWords} 字（上限 ${targetWords + 1000} 字左右）；把蓝图里的每个情节点写足，环境、动作、心理、对话、转折都要展开；篇幅不足时补细节与节奏、推进情节，不要提前收尾，也不要注水。`,
+    // 2026-09-21：删掉“推进情节”。它是越界许可证——第 5 章只有一条摘要事件，目标 4000 字的
+    // 压力加上这句授权，模型就去借第 7 章的转学动机与第 46～50 章的身份曝光钩子来填篇幅。
+    // 缺料只允许在已有情节点内部补细节，不允许新增情节。
+    `【篇幅要求（重要）】整章正文以纯文本计约 ${targetWords} 字（区间 ${Math.max(2000, targetWords - 1000)}～${targetWords + 1000} 字）；先把蓝图里的 3～5 个场景写完整：每个场景必须有明确地点、出场人物、身体动作和冲突/转折，再在场景内部补环境、动作、心理、对话与节奏（用具体动作、感官细节替换模板句）。**不得为凑字数新增场景或情节点**，不得引入后续章节的动机、悬念或身份曝光线索，不得新增未登记的具名角色/地点/妖兽；不要提前收尾，也不要注水。`,
+    ``,
+    `【章节边界（硬约束）】只写"本章摘要 + 本章蓝图"覆盖的内容。大纲里标注【未来章·禁止写入】的条目只用于避免矛盾，正文不得提前消费其中任何一条。`,
+    ``,
+    `【本章自检（写完后逐项自查，未通过就改）】`,
+    `① 对手/妖兽的阶位必须与本章摘要一致；本章内不得无依据升级对手强度。`,
+    `② 系统有效出场保持 5～15 次，其中至少 2～3 次是对话/吐槽；纯播报式【】不超过一半。`,
+    `③ 若出现未登记的具名角色/地点/妖兽，先停下并报告作者，不要直接写进正文。`,
     ``,
     `【当前小说上下文】`,
     aiContextBlock() || '无',
@@ -6091,7 +6179,20 @@ async function applySelectedProposals() {
     const data = await api('/novel/proposals/apply', { method: 'POST', body: { work_id: info.workId, ids: checked } });
     const count = (data.applied?.events || 0) + (data.applied?.memories || 0);
     if (count) toast(`已采纳 ${count} 条入账提案`, 'success');
-    else toast('提案已保留，可稍后在「长期记忆」页处理');
+    else {
+      // 零损失护栏拦下的提案必须说明**为什么**，否则作者只看到"提案没入账"，
+      // 而提案仍留在待处理里——不知道原因就无从修正（第 2 步新增的拒绝路径）。
+      // ⚠️ 字段可能不存在（旧服务端 / 未被拦）：只在真的有被拦项时才走这条分支。
+      // ⚠️ toast 可见文案在 240 字处截断（完整内容挂在 title 悬停）——而 `reasons` 可能很长，
+      //    所以先截原因再拼前缀，避免"缺失名单"被前缀挤到截断线之外，等于没说。
+      const blocked = Array.isArray(data.guard_failed) ? data.guard_failed : [];
+      if (blocked.length) {
+        const why = blocked.map((g) => (g.reasons || []).join('；')).filter(Boolean).join(' ／ ');
+        toast(`有 ${blocked.length} 条记忆提案未通过零损失护栏（已保留待处理，可修正后再采纳）：${why.slice(0, 180)}`, 'error');
+      } else {
+        toast('提案已保留，可稍后在「长期记忆」页处理');
+      }
+    }
   } catch (e) {
     toast('提案采纳失败：' + e.message, 'error');
   }
@@ -6811,10 +6912,12 @@ async function performToolbarAIWrite(requirement) {
         }
         // 直连路径没有代理现场入账 → 交付后后台补提案；harness 路径已按纪律入账。
         let needsLedger = proseData.via === 'direct';
+        let blockedDraft = false;
         if (proseData.via === 'direct') {
           // flash 轻量质检轮：核对蓝图达成与一致性硬伤（秒级，替代部分 novel_consistency 职责）
           const verdict = await verifyAIDraft(blueprintForProse, article, target);
           if (!verdict.pass && (verdict.issues || []).length) {
+            blockedDraft = verdict.blocked;
             toast('质检发现硬伤，自动改用精写内核修复…', 'info');
             proseData = await runHarnessJob(
               { ...jobBase, prompt: buildAIWriteRepairPrompt(article, verdict.issues, blueprintForProse, target) },
@@ -6824,6 +6927,10 @@ async function performToolbarAIWrite(requirement) {
             if (repaired.trim()) {
               article = repaired;
               needsLedger = false; // 修复走 harness：内核已做一致性/红线自检并提交入账提案
+              blockedDraft = false;
+            } else if (blockedDraft) {
+              toast('检测到章节边界或未登记实体硬伤，且自动修复未返回正文：已停止写入，请人工修改后重试。', 'error');
+              return;
             }
           }
         }
@@ -8229,6 +8336,20 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (backdrop && e.target === backdrop) {
+    // 刻意只拦"点遮罩"这一条路径：点 ✕ / 点"取消"**仍然立即关闭**。
+    // 理由：那两个动作本身就是明确的"放弃修改"，再拦一次等于把决定权又丢回给用户；
+    // 而点遮罩更可能是误触（尤其长表单里想滚页面/点空白处），代价不对称。
+    if (state.modalProtected) {
+      // AI 交互弹窗：关闭等于把 pending* resolve 成 null（取消任务/丢弃结果），
+      // 而这类弹窗已去掉"取消"按钮——用户若真想取消，走 ✕（明确表达意图）。
+      toast('这是 AI 交互弹窗，请用右上角 ✕ 或按钮关闭', 'error');
+      return;
+    }
+    if (modalDirty()) {
+      // 有未保存输入：不关，并说明怎么继续。静默不关会让人以为界面卡住了。
+      toast('有未保存的修改，已取消关闭；要放弃请点「取消」', 'error');
+      return;
+    }
     closeModal();
     return;
   }

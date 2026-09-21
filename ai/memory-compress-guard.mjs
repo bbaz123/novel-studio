@@ -21,8 +21,67 @@
  * 纯函数、零依赖，可离线单测（含阴性对照）。
  */
 
-/** 低于这个字数就认为摘要装不下必要信息（默认值，可按作品调整）。 */
+/**
+ * 压缩后摘要的**字数下限**——按作品规模自适应（2026-09-20 用户规格）。
+ *
+ * ── 为什么不再是一个固定值 ────────────────────────────────────────────────────
+ * 原实现是固定 `100` 字。用户 2026-09-20 判定这不成立：
+ * **长篇作品不能仅因实体名称仍然存在就被判为"零损失"**——一段 100 字的摘要可以把所有
+ * 角色名与世界观词条都写上，却把剧情线程、未闭合伏笔、角色当前状态全部丢光，
+ * 而这段记忆要喂给之后**每一章**。名称检查（`checkCompression` 的完整性那一半）
+ * 只回答"人还在不在"，回答不了"事还记不记得"。
+ *
+ * ── 于是下限由两个**可推导**的量决定，而不是拍一个数字 ──────────────────────
+ *   `max(按篇幅的下限, 按承载对象的下限)`，再夹到 `[MIN_COMPRESSED_CHARS, 上限]`：
+ *
+ *   ① 按篇幅：摘要要装下"已经发生的事"（剧情线程 / 未闭合伏笔），作品越长事越多。
+ *      分档（每档上界含，单位：正文总字数）：
+ *        ≤5k → 100 字 ｜ ≤2万 → 150 ｜ ≤5万 → 220 ｜ ≤10万 → 300
+ *        ≤20万 → 400 ｜ ≤40万 → 520 ｜ >40万 → 640
+ *   ② 按承载对象：每个必须保留的实体都要能带上"它现在怎么样了"，约 16 字/个。
+ *      例：23 个 → 368 字；40 个以上 → 640 字（封顶）。
+ *
+ * ⚠️ 两者取 **max 而不是相加**：`MIN_COMPRESSED_CHARS` 是"任何摘要都得装下剧情与伏笔"的
+ *    通用底量，本身就是按篇幅那一路在最小作品处的取值；再叠一层基数会把"实体少"的小作品
+ *    也一起抬高（第一版写成 `100 + n×16`，实测把 134 字的正常摘要判成过短——判据过紧同样是缺陷）。
+ *    谁更需要空间就按谁来：实体少由 ① 兜底，篇幅小由 ② 兜底。
+ *
+ * ⚠️ **上限压到 640 而不是更高**，是因为下游压缩提示词的既定产出目标是"不超过 800 字"
+ *    （`compressStoryMemory` 的 prompt 与 `docs/ai-core.md`）。下限**不得超过**产出目标，
+ *    否则护栏会要求一个模型被明确告知不要写到的长度——自相矛盾的判据。
+ *    要再抬高下限，必须**同时**抬高那条产出目标：两者是成对契约（本仓库的老教训）。
+ *
+ * 缺省：`checkCompression` **不知道**作品规模时按 `MIN_COMPRESSED_CHARS`（极小作品的绝对最低值），
+ * 并仍按必须保留的实体数抬高——低层判据在离线单测里行为可预测，
+ * 生产路径由 `agentMemoryUpdateVerdict` 传入真实 `storyChars`。
+ */
 export const MIN_COMPRESSED_CHARS = 100;
+
+/** 下限上限：不得高于下游压缩提示词的产出目标（800 字），见上文成对契约。 */
+export const MAX_COMPRESSED_MIN_CHARS = 640;
+
+/** 每个必须保留的实体需要预留的承载字数（"它现在怎么样了"）。 */
+const CHARS_PER_ENTITY = 16;
+
+/** 按篇幅分档的下限（升序，逐档比较；最后一项为兜底上界）。 */
+const SCALE_TIERS = [
+  [5000, 100], [20000, 150], [50000, 220], [100000, 300],
+  [200000, 400], [400000, 520], [Infinity, 640],
+];
+
+/**
+ * 按作品规模算出摘要字数下限。
+ * @param {{storyChars?: number, entityCount?: number}} o
+ *        `storyChars` 正文总字数（未知时传 0/省略）；`entityCount` 必须保留的实体数。
+ */
+export function minCharsForStory({ storyChars = 0, entityCount = 0 } = {}) {
+  const byLength = Number.isFinite(storyChars) && storyChars > 0
+    ? (SCALE_TIERS.find(([upper]) => storyChars <= upper) || SCALE_TIERS[SCALE_TIERS.length - 1])[1]
+    : MIN_COMPRESSED_CHARS;
+  const n = Number.isFinite(entityCount) && entityCount > 0 ? entityCount : 0;
+  const byEntities = n * CHARS_PER_ENTITY;
+  return Math.min(MAX_COMPRESSED_MIN_CHARS, Math.max(MIN_COMPRESSED_CHARS, byLength, byEntities));
+}
 
 /**
  * 必须保留的实体**覆盖率**下限（默认 1 = 一个都不许丢）。
@@ -76,17 +135,22 @@ export function entityVariants(name) {
 }
 
 /**
- * @param {{compressed?: string, mustKeep?: string[], minChars?: number}} o
+ * @param {{compressed?: string, mustKeep?: string[], minChars?: number, storyChars?: number, minCoverage?: number}} o
  *        `mustKeep` 里的每一项可以是「主名（别名）」形式的原始串。
- * @returns {{ok: boolean, reasons: string[], missing: string[], kept: number, checked: number, length: number}}
+ *        `minChars` 省略时按 `minCharsForStory` 自适应（`storyChars` + `mustKeep` 条数）。
+ * @returns {{ok: boolean, reasons: string[], missing: string[], kept: number, checked: number, length: number, minChars: number}}
  */
-export function checkCompression({ compressed, mustKeep = [], minChars = MIN_COMPRESSED_CHARS, minCoverage = MIN_ENTITY_COVERAGE } = {}) {
+export function checkCompression({ compressed, mustKeep = [], minChars, storyChars = 0, minCoverage = MIN_ENTITY_COVERAGE } = {}) {
   const text = String(compressed ?? '');
   const trimmed = text.trim();
   const length = trimmed.length;
 
-  // 空项会「永远包含于任何文本」，是最典型的假通过，必须先剔掉。
+  // 空项会「永远包含于任何实体检查」，是最典型的假通过，必须先剔掉。
   const wanted = [...new Set(mustKeep.map((k) => String(k ?? '').trim()).filter(Boolean))];
+  // 自适应下限：调用方显式给了就尊重（离线单测要能钉死策略），否则按规模推导。
+  const floor = Number.isFinite(minChars)
+    ? minChars
+    : minCharsForStory({ storyChars, entityCount: wanted.length });
   // 每个实体只要有**任一变体**出现就算保留。
   const missing = wanted.filter((raw) => {
     const variants = entityVariants(raw);
@@ -98,14 +162,22 @@ export function checkCompression({ compressed, mustKeep = [], minChars = MIN_COM
 
   const reasons = [];
   if (!trimmed) reasons.push('压缩结果为空');
-  else if (length < minChars) reasons.push(`压缩结果过短（${length} < ${minChars} 字），装不下角色状态与伏笔`);
+  else if (length < floor) {
+    // 报因要能指导修正：说清"为什么这个长度不够"，而不只是"太短"。
+    const basis = Number.isFinite(minChars)
+      ? '调用方指定下限'
+      : `作品正文 ${storyChars > 0 ? `${storyChars} 字` : '规模未知'} / 需保留实体 ${wanted.length} 个`;
+    reasons.push(`压缩结果过短（${length} < ${floor} 字），装不下剧情线程、未闭合伏笔与角色当前状态（${basis}）`);
+  }
   if (wanted.length && coverage < minCoverage) {
     const pct = (coverage * 100).toFixed(0);
     reasons.push(`实体覆盖率 ${pct}% 低于下限 ${(minCoverage * 100).toFixed(0)}%`
       + `（丢失 ${missing.length}/${wanted.length}）：${missing.join('、')}`);
   }
 
-  return { ok: reasons.length === 0, reasons, missing, kept, checked: wanted.length, coverage, length };
+  // `minChars` 一并回报：调用方（与测试）要能看见**这次实际用的是哪个下限**，
+  // 否则"下限随规模自适应"这件事无法被断言，只能靠读代码相信。
+  return { ok: reasons.length === 0, reasons, missing, kept, checked: wanted.length, coverage, length, minChars: floor };
 }
 
 /** 由作品数据算出"必须保留"的实体清单（角色名 + 世界观标题）。 */
@@ -202,15 +274,18 @@ export function checkNoInvention({ compressed, mustNotMention = [] } = {}) {
  *   · 完整性：**出场过的**（主角+配角，含别名变体）一个都不许丢 → 拒绝落库；
  *   · 无中生有：从未出场的被提及 → 默认放行（`allow`），严格模式才拒绝。
  *
- * ⚠️ `strictInvention` / `minCoverage` 做成**参数**而不是只读模块级常量：测试必须能把
+ * ⚠️ `strictInvention` / `minCoverage` / `minChars` 做成**参数**而不是只读模块级常量：测试必须能把
  *    策略显式钉住，否则用例会随调用方的环境变量漂移（这个坑在 D8 里犯过两次）。
+ *    省略 `minChars` 时按 `storyChars` + 必须保留实体数**自适应**（见 `minCharsForStory`）——
+ *    这正是 2026-09-20 用户要求的行为：长篇不能因为"名字都还在"就判为零损失。
  */
 export function agentMemoryUpdateVerdict({
   characters = [],
   worldEntries = [],
   chapterText = '',
   summary = '',
-  minChars = MIN_COMPRESSED_CHARS,
+  storyChars = 0,
+  minChars,
   minCoverage = MIN_ENTITY_COVERAGE,
   strictInvention = STRICT_NO_INVENTION,
 } = {}) {
@@ -219,6 +294,7 @@ export function agentMemoryUpdateVerdict({
     compressed: summary,
     mustKeep: mustKeepEntities({ characters: cast.appearedChars, worldEntries: cast.appearedWorlds }),
     minChars,
+    storyChars,
     minCoverage,
   });
   const invention = checkNoInvention({

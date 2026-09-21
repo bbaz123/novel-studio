@@ -267,12 +267,17 @@ CREATE TABLE IF NOT EXISTS story_event_proposals (
 );
 
 -- 记忆更新提案：headless 生成任务里 AI 提交的长期记忆先落提案，作者确认后写入并留版本快照。
+-- guard：**来源标记**（AI 自压缩为 'agent'，其余为空）。提案表原先只保存内容，
+-- 来源在落库时被丢掉，于是作者点「采纳」时无法区分「模型自压缩的完整摘要」与
+-- 「普通/历史提案」——前者必须过零损失护栏，后者必须保持原有采纳语义。
+-- 空串默认值让旧记录与旧行为完全不变（按普通提案处理）。
 CREATE TABLE IF NOT EXISTS story_memory_proposals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
   summary TEXT NOT NULL DEFAULT '',
   delta TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
+  guard TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -364,6 +369,9 @@ const MIGRATIONS = [
   // 用户关掉弹窗（含「先审稿再应用」）不再等于稿件静默消失。
   // 默认 'manual' 让既有历史版本行为与语义完全不变。
   `ALTER TABLE chapter_save_versions ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'`,
+  // 提案来源标记（AI 自压缩 = 'agent'）：让「来源」能跨落库/读取存活到作者采纳那一刻。
+  // 默认空串 → 存量提案仍按普通提案处理，采纳语义不变。
+  `ALTER TABLE story_memory_proposals ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,
 ];
 for (const sql of MIGRATIONS) {
   try { db.exec(sql); } catch (e) {
