@@ -14,13 +14,15 @@
 import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { startBlackhole, readBlackholeLog } from './blackhole.mjs';
 import {
   classifyBlockedProbe, classifyIdleProbe, classifyEnvMatch, classifyBlackholeProof,
   isGateRejection, portOfBase, GATE_LIMIT,
 } from './verify-harness-gate.mjs';
-import { countRealCallsSince } from './audit-llm-calls.mjs';
+import { countRealCallsSince, HARNESS_SESSION_DIR } from './audit-llm-calls.mjs';
 
 const GATE_BODY = JSON.stringify({ ok: false, error: `已有任务运行中，请稍后再试（并发上限 ${GATE_LIMIT}）` });
 const PROVIDER_429 = JSON.stringify({ error: 'Rate limit reached for deepseek-flash in organization org-x' });
@@ -99,13 +101,44 @@ console.log('\n【3c. 证明闸：没有黑洞流量就不许判过】');
 
 console.log('\n【4. 真实调用探测器：两个方向都要能测出来】');
 {
-  // 阳性对照：已知有真实调用的历史窗口（2026-09-15T13:12:40Z 起共 5 条）
-  const past = countRealCallsSince(new Date('2026-09-15T13:12:40Z').getTime());
-  ok(`历史窗口能检出真实调用（检出 ${past.real} 条）`, past.real > 0,
-    '若为 0，说明探测器是坏的，跑后闸形同虚设');
-  // 阴性对照：未来的窗口必然为空
-  const future = countRealCallsSince(Date.now() + 3600 * 1000);
-  ok('未来窗口检出 0 条（无调用时不会误报）', future.real === 0, `real=${future.real}`);
+  // ⚠️ 2026-09-26 修：此处原本是「已知有真实调用的**历史窗口**（2026-09-15T13:12:40Z 起共 5 条）」——
+  // 那要读**作者本机**的会话转录。CI 的干净 runner 上那份数据不存在，于是检出 0 条、
+  // 这条阳性对照必然报红（离线清单的纪律是"不得依赖作者私有数据"，这是检查缺前置，不是产品缺陷）。
+  // 现在改成**自足 fixture**：在临时 home 里现造一份已知形态的转录，断言探测器能读出它。
+  // 这比原来的写法更严——原来只证明"这台机器上恰好有 5 条"，现在证明"给定这份输入必然读出 1 条"。
+  // 形态取自 auditSessions() 的真实判据：`request/header` 计一次请求，
+  // `assistant/chunk` 的 `data.chunk.text` 计入模型正文（两者同时成立才是 isRealCall）。
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-gate-assert-'));
+  const fixtureHome = path.join(fixtureRoot, 'dsh-novel');
+  const fixtureDir = path.join(fixtureHome, 'sessions', HARNESS_SESSION_DIR, 'fixture-session');
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  const fixtureText = [
+    JSON.stringify({ type: 'request/header', model: 'fixture-model' }),
+    JSON.stringify({ type: 'assistant/chunk', data: { chunk: { type: 'text', text: 'fixture-assistant-text' } } }),
+    '',
+  ].join('\n');
+  const fixtureFile = path.join(fixtureDir, 'session.v3.jsonl.zstd');
+  fs.writeFileSync(fixtureFile, zlib.zstdCompressSync(Buffer.from(fixtureText, 'utf8')));
+  // 用 fixture 自己的 mtime 做窗口下界（而不是写死一个日期）：夹具什么时候写，窗口就从什么时候算。
+  const fixtureMtime = fs.statSync(fixtureFile).mtimeMs;
+
+  const prevHome = process.env.NOVELSTUDIO_DSH_HOME;
+  process.env.NOVELSTUDIO_DSH_HOME = fixtureHome;
+  try {
+    // 前置条件先自证，免得下面两条测的是空气（fixture 没被扫到时，阳性对照会假红）
+    const found = countRealCallsSince(fixtureMtime - 60_000);
+    ok('前置条件：自造 fixture 能被扫到（会话目录 + 单帧 zstd 可解码）',
+      found.total >= 1, `检到会话 ${found.total} 条`);
+    ok(`自造 fixture 检出 1 条真实调用（检出 ${found.real} 条）`, found.real === 1,
+      `若为 0，说明探测器是坏的，跑后闸形同虚设；若 >1，说明把非调用也算了进去（real=${found.real}）`);
+    // 阴性对照：未来的窗口必然为空
+    const future = countRealCallsSince(Date.now() + 3600 * 1000);
+    ok('未来窗口检出 0 条（无调用时不会误报）', future.real === 0, `real=${future.real}`);
+  } finally {
+    if (prevHome === undefined) delete process.env.NOVELSTUDIO_DSH_HOME;
+    else process.env.NOVELSTUDIO_DSH_HOME = prevHome;
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 console.log('\n【5. 前置闸：未授权时必须拒绝运行（子进程实测）】');

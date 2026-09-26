@@ -19,6 +19,23 @@ import path from 'node:path';
 
 let pass = 0;
 const fails = [];
+
+/**
+ * 给「专用 home」这一组断言备一个**自足**的前置条件（2026-09-26 修）。
+ *
+ * 为什么必须自己造：`dedicatedHomeUsable()` 的判据是「该目录下真的有 profiles/」，
+ * 而默认路径 `~/.dsh-novel` 只有**作者本机**存在。此前这几条断言直接读进程环境，
+ * 于是在 CI 的干净 runner 上必然得到 `overridesAmbient === false` 而报红——
+ * 那是**检查缺前置**，不是产品缺陷（离线清单的纪律正是"不得依赖作者私有数据"）。
+ * 这里用一个临时 home（含 profiles/）并通过 NOVELSTUDIO_DSH_HOME 指过去，
+ * 断言的对象因此是**行为**而不是"这台机器上装没装专用 home"。
+ */
+const hermeticRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-harness-env-'));
+const hermeticHome = path.join(hermeticRoot, 'dsh-novel');
+fs.mkdirSync(path.join(hermeticHome, 'profiles'), { recursive: true });
+const ambientDedicatedHome = process.env[DEDICATED_HOME_ENV];
+process.env[DEDICATED_HOME_ENV] = hermeticHome;
+
 function ok(name, cond, detail = '') {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fails.push({ name, detail }); console.log(`  ✗ ${name}${detail ? '  — ' + detail : ''}`); }
@@ -96,14 +113,20 @@ console.log('\n【6. 决策 B：写作任务的专用 DSH_HOME】');
   ok('可用时把 DSH_HOME 下发给子进程', eOk.DSH_HOME === usable, `实际 ${eOk.DSH_HOME}`);
   const eNo = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { [DEDICATED_HOME_ENV]: unusable } });
   ok('不可用时**不设** DSH_HOME（退回共用，不把任务打挂）', eNo.DSH_HOME === undefined, `实际 ${eNo.DSH_HOME}`);
-  const eBase = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { DSH_HOME: 'C:/somewhere-else' } });
+  // ⚠️ 2026-09-26 修：`baseEnv` 一旦传进来就会**整体取代** process.env（见 harnessChildEnv 的实现），
+  // 所以路径解析只看这个注入对象。此前这里只注入 `{DSH_HOME}`，等于**专用 home 这个前置从未进入被测函数**，
+  // 断言实际依赖的是"运行测试那台机器的 process.env 里恰好有可用的 NOVELSTUDIO_DSH_HOME"——
+  // 作者本机满足（~/.dsh-novel 存在），CI 上不满足，于是假红。现在显式把自备 home 注入进去。
+  const eBase = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { DSH_HOME: 'C:/somewhere-else', [DEDICATED_HOME_ENV]: hermeticHome } });
   // ⚠️ 这条断言的方向是**故意的**：实测 `DSH_HOME` 会随启动方式变——从 DSH 派生的终端
   // 启动工坊时环境里已经带着它，从桌面快捷方式启动时没有。若让"继承环境"说了算，
   // 同一份代码就会看启动方式决定行为。所以专用 home **覆盖**它，并把这件事显式报出来。
+  ok('前置条件：本测试自备的专用 home 已生效（否则下面两条测的是空气）',
+    dedicatedHomePath(process.env) === hermeticHome, `实际 ${dedicatedHomePath(process.env)}`);
   ok('专用 home **有意覆盖**环境里已有的 DSH_HOME（不看启动方式决定行为）',
-    eBase.DSH_HOME === path.join(os.homedir(), DEFAULT_DEDICATED_HOME), `实际 ${eBase.DSH_HOME}`);
+    eBase.DSH_HOME === hermeticHome, `实际 ${eBase.DSH_HOME}`);
   ok('覆盖这件事是可观测的（taskHomeInfo 会报 overridesAmbient）',
-    taskHomeInfo({ DSH_HOME: 'C:/somewhere-else' }).overridesAmbient === true);
+    taskHomeInfo({ DSH_HOME: 'C:/somewhere-else', [DEDICATED_HOME_ENV]: hermeticHome }).overridesAmbient === true);
   ok('专用 home 不存在时不做覆盖（退回继承环境，= 改动前行为）',
     harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { DSH_HOME: 'C:/keep-me', [DEDICATED_HOME_ENV]: unusable } }).DSH_HOME === 'C:/keep-me');
   const eCaller = harnessChildEnv({ port: 3737, peerId: 'p', baseEnv: { [DEDICATED_HOME_ENV]: usable }, env: { DSH_HOME: 'C:/caller-wins' } });
@@ -144,6 +167,11 @@ console.log('\n【8. 接线：审计工具必须能看见专用 home，否则总
   ok('扫描列表里含专用 home', /\.dsh-novel/.test(src));
   ok('每行标注来自哪个 home（"看不见"不能伪装成"没发生"）', /home: path\.basename/.test(src));
 }
+
+// 收尾：撤掉自备前置（临时 home + 环境变量），不给同进程后续测试留残留。
+fs.rmSync(hermeticRoot, { recursive: true, force: true });
+if (ambientDedicatedHome === undefined) delete process.env[DEDICATED_HOME_ENV];
+else process.env[DEDICATED_HOME_ENV] = ambientDedicatedHome;
 
 console.log(`\n══════════════════════════════`);
 console.log(`harness 子进程环境测试：通过 ${pass} / 失败 ${fails.length}`);
