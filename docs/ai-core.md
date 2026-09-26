@@ -60,18 +60,29 @@ HTTP 服务 (server.js)
 
 纯函数、零依赖、不碰数据库：数据由调用方按层给好，它只负责「预算内如何排布」。
 
-产出三样东西：
+产出（2026-09-24 起含身份/完整性/溯源三件，详见 `docs/context-contract.md` §八）：
 
 - `text` —— 交给模型的分层文本
-- `manifest` —— **逐层裁剪清单**：每层的原始长 / 采用长 / 渲染占用 / 被裁字数
+- `manifest` —— **逐层裁剪清单**：每层的原始长 / 采用长 / 渲染占用 / 被裁字数 / 溯源（`sourceIds` / `scores`）/ 查回路径
 - `overflow` —— 压到下限仍超预算时的**显式标记**（不静默超限）
+- `stats` —— 本次装配的规模摘要（含 `estimatedTokens`：**只用于横向比较，不参与预算/裁剪决策**）
+- `contextId` —— 内容哈希（`sha256(text)` 前 12 位）：同一份上下文永远同一个 id
+- `integrity` —— 清单与文字是否自洽的判定（C1–C8；PASS / WARNING / FAIL）。**WARNING 不等于通过**，
+  它表示"现状可接受但有已知缺口"（如某个被裁的层暂时没有查回工具），必须一直看得见；
+  FAIL 不拦截生成（拦截会改变真实用户行为），而是**响亮记录**：`error` 级日志 + 响应字段 + 验收断言
+- `envelope` —— 本次装配的信封（身份 + 预算 + `selected` / `trimmed` / `excluded`），随两条端点下发
+
+> 两条端点的响应字段：`context_id` / `context_request_id` / `context_integrity` / `context_envelope`。
+> **不许重新引入无预算的兜底上下文**：提示词正文只有 `assembled` 一个来源；前端拿不到它会去
+> 重新请求 `/api/novel/context`，而不是自己再拼一份（旧版那种拼法没有预算、也没有裁剪清单）。
 
 ### 预算
 
-- 总预算 `TOTAL_BUDGET`：full/continuation/fragment = 26,000；settings = 18,000
+- 总预算 `TOTAL_BUDGET`：full/continuation/fragment = 26,000；settings = 19,000
 - **可执行下限由 `computeFloor()` 自动核算**，不靠手写常量（历史失误：曾把 settings 预算设成
   12,000，而各层 cap 之和已超过它，收敛永远压不到）
-- 当前下限：full **20,547** / settings **17,356**
+- 当前下限：full **21,364** / settings **18,173**（2026-09-22：新增 `terms` 层后下限上涨，
+  settings 预算随之上调到 19,000，详见 `docs/context-contract.md` §三）
 
 ---
 
@@ -97,10 +108,28 @@ HTTP 服务 (server.js)
 
 > **2026-09-16（D8-#2）更新**：以前只能靠改写全局 `~/.dsh/settings.yaml` 来切模型，
 > 而那是全局副作用，所以 harness 任务必须**串行**——服务端允许 2 并发、**实际吞吐却只有 1**。
-> 现在改走「**每任务一份独立 settings 文档** + `dsh --patch` 指过去」：不碰任何全局状态，
+> 现在改走「**每任务一份补丁层** + `dsh --patch` 指过去」：不碰任何全局状态，
 > 因此不需要互斥，吞吐回到 2。建立失败时**回退**到旧的全局改写 + 互斥路径，行为与历史一致。
 > 证据：`.p1-baseline/exp-concurrent-models.mjs`（两个并发任务各自读到自己的模型、
 > 全局 settings 逐字节未变、零计费）与 `.p1-baseline/test-task-settings.mjs`。
+>
+> **2026-09-24（DSH 0.1.7 适配）更新**：上报的那层从「重定向 settings 文档」换成「**直接覆盖
+> `agent-default-model` 条目的 `config`**」——0.1.7 删掉了 `packages/settings/settings-file`，
+> 旧写法静默失效（见 `ai/task-settings.mjs` 的 `buildModelOverridePatch`）。同一次升级里
+> `settings.yaml` 变成**一次性导入**：启动时被改名成 `.imported`，各分节写进 profile 的
+> `cordis.patch.yml`；但**启动带 `--patch` 且该补丁覆盖 `agent-default-model` 时这一节会导入
+> 失败**（上游缺陷），而工坊几乎每个任务都带这种补丁。因此 `resolveDefaultSelection()` 按
+> 「settings.yaml → profile 补丁 → `.imported` → 出厂默认」取值，并对"迁移还悬着"告警
+> （`warnIfLegacyImportPending`）。
+>
+> **同一次升级的另一处硬变更（2026-09-25 才确认）**：`llm-deepseek` 的**线路协议换成了 Messages API**——
+> `$DEEPSEEK_BASE_URL` 现在被当作 **Messages 兼容根**，适配器在其后追加 `/v1/messages`
+> （官方根 `https://api.deepseek.com/anthropic`），不再是 OpenAI 形状的 `/chat/completions`。
+> （依据：dsh 仓库 `packages/llm/llm-deepseek/README.md`「Endpoint and wire format」与
+> `deepseek-official` 的默认根；实测把该变量指向本机假端点，请求行就是 `POST /v1/messages`。）影响：
+> ① 生产不受影响——走的是 dsh 自带 provider，用户无需干预；② **自设**该变量的人必须指向
+> Messages 兼容根，否则慢通道会 404；③ 本仓「零成本验证」的假端点必须同时实现两种形状，
+> 否则慢通道的冷启动/工具循环测量会全部退化成「端点没收到请求」——`.p1-baseline/fake-llm.mjs` 已补上。
 
 ---
 
@@ -131,6 +160,11 @@ HTTP 服务 (server.js)
 用哪个 profile 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFILE` 决定；
 切换步骤与回滚见 `docs/p6-cutover-runbook.md`。
 
+慢通道与直连的真正差别不是延迟，而是**工具循环**（模型 → 工具 → 模型）：读回被裁层的原文、
+写回记忆提案都要走它。零计费的实测证据在 `.p1-baseline/probe-harness-tool-loop.mjs`
+（需 `NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1`，自设假端点；断言含「工具结果里真的出现被请求的文件」，
+所以"工具被策略拒绝、却照常回灌 tool_result"这种假通过过不了）。
+
 ---
 
 ## 七、怎么验证
@@ -146,6 +180,10 @@ node .p1-baseline/verify-all.mjs        # 一键跑完全部验证并输出汇�
 > 2026-09-15 曾因假定「`DEEPSEEK_BASE_URL` 指向死端口 = 零成本」而产生了未经批准的
 > 真实调用（含一次写进生产记忆库）。现在这些检查需要显式授权，且套件最后一条是
 > **总闸**——检出真实调用即判未通过。详见 `.p1-baseline/README.md` §六。
+>
+> **总闸（2026-09-25 起）不只看「有没有模型文本」，还要求逐条归属**：零计费探针用本地假端点
+> 充当模型时转录形态与真调用相同，必须由端点自证（回环地址 / 实收请求数 ≥ 转录请求数 /
+> 转录正文等于罐头正文 / 时段重叠，四缺一即红灯）；**归属不了的文本会话仍然是红灯**。
 
 **改这个内核时的两条纪律**：
 1. 层规格只在 `layers.mjs`、模型名只在 `policy.mjs`——不要在业务代码里重新内联。

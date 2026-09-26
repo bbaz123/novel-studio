@@ -34,7 +34,26 @@ const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
  * 实测 `zstdDecompressSync(整文件)` 只解出第一帧（13260B → 191B），
  * 差点据此误判「没有模型回复」。必须按魔数切帧、逐帧解、再拼接。
  */
+/**
+ * 能力自检：本工具依赖 `zlib.zstdDecompressSync`，而它**到 Node 22.15 才有**
+ * （22.13 上 `typeof` 是 undefined；实测：v22.13.0 → undefined，v22.15.0 → function）。
+ *
+ * 为什么缺能力时必须**响亮地失败**而不是返回空：这个文件是「本地到底有没有真的花过钱」的
+ * 总闸（verify-all 的「套件总闸」直接吃它的结论）。静默返回 0 = 把"真的调用了模型"
+ * 报成"没有调用"——那正是 2026-09-15 事故的形态：以为在看着，其实没看着。
+ * 返回：按魔数切帧、逐帧解压后拼接的 UTF-8 文本（截断帧忽略）。
+ */
+export function assertZstdAvailable() {
+  if (typeof zlib.zstdDecompressSync !== 'function') {
+    throw new Error(`当前 Node（${process.version}）没有 zlib.zstdDecompressSync，无法审计 dsh 转录：`
+      + '请改用 Node ≥ 22.15（22.13 缺这个 API）。'
+      + '本工具是"花钱总闸"，缺能力时宁可响亮失败，也不能静默报 0。');
+  }
+}
+
+/** 解码 dsh 的追加写多帧 zstd 转录；缺能力时由 assertZstdAvailable 响亮失败。 */
 export function decodeZstdFrames(buf) {
+  assertZstdAvailable();
   const starts = [];
   let i = buf.indexOf(ZSTD_MAGIC, 0);
   while (i !== -1) { starts.push(i); i = buf.indexOf(ZSTD_MAGIC, i + 4); }
@@ -75,6 +94,7 @@ export function harnessHomes(baseEnv = process.env) {
  * @param {{sinceMs?: number, dirName?: string, homes?: string[]}} opts
  */
 export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, homes } = {}) {
+  assertZstdAvailable(); // 先证明"看得见"，再谈"看到了几条"
   const roots = (homes || harnessHomes()).map((h) => path.join(h, 'sessions', dirName));
   const rows = [];
   for (const root of roots) {
@@ -100,6 +120,9 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, home
 
       let model = '', requests = 0, chunks = 0, texts = 0, reason = 0, toolCalls = 0;
       let assistantChars = 0, retries = 0, errorFinishes = 0;
+      // 模型正文**原文**：只在本进程内供总闸做归属核对（见 attributeSyntheticSessions），
+      // 不打印、不落盘、不进日志。
+      let assistantText = '';
       let firstTurn = 0;
       const tools = new Set();
       const userMsgs = [];
@@ -123,7 +146,7 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, home
           else {
             chunks++;
             const txt = c?.text ?? o.data?.text ?? o.text ?? o.delta;
-            if (typeof txt === 'string' && txt) assistantChars += txt.length;
+            if (typeof txt === 'string' && txt) { assistantChars += txt.length; assistantText += txt; }
           }
         }
         if (t === 'llm/retry') retries++;
@@ -133,9 +156,9 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, home
           if (Array.isArray(arr)) {
             for (const x of arr) {
               const s = typeof x === 'string' ? x : (x?.text ?? '');
-              if (s) assistantChars += s.length;
+              if (s) { assistantChars += s.length; assistantText += s; }
             }
-          } else if (typeof arr === 'string') assistantChars += arr.length;
+          } else if (typeof arr === 'string') { assistantChars += arr.length; assistantText += arr; }
         }
         if (t === 'reasoning-chunks') reason++;
         if (t === 'assistant/message') {
@@ -144,9 +167,9 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, home
           if (Array.isArray(c)) {
             for (const x of c) {
               const s = typeof x === 'string' ? x : (x?.text ?? '');
-              if (s) assistantChars += s.length;
+              if (s) { assistantChars += s.length; assistantText += s; }
             }
-          } else if (typeof c === 'string') assistantChars += c.length;
+          } else if (typeof c === 'string') { assistantChars += c.length; assistantText += c; }
         }
         if (t === 'tool/call') {
           toolCalls++;
@@ -177,6 +200,8 @@ export function auditSessions({ sinceMs = 0, dirName = HARNESS_SESSION_DIR, home
         model, requests, toolCalls,
         // 产出以**模型文本字符数**为准（不再是"chunk 个数"）。
         assistantChars,
+        // 正文原文：只给总闸做归属核对（与本地假端点申报的罐头正文比对）；不打印。
+        assistantText,
         textChunks: texts, chunks, reasoningEntries: reason,
         retries, errorFinishes,
         tools: [...tools].slice(0, 8),
@@ -194,9 +219,103 @@ export function countRealCallsSince(sinceMs, dirName = HARNESS_SESSION_DIR) {
   return { total: rows.length, real: real.length, rows: real };
 }
 
+// ── 总闸第二层：把「拿到模型文本」的会话逐条**归属**（2026-09-25 新增）──────────
+// 为什么需要：套件里有检查**故意**用本地假端点充当模型（零计费探针：工具循环、冷启动）。
+// 这类会话在转录里与「真的调了远端模型」形态相同（`request/header` + 模型正文），
+// 于是总闸把它们误判成花钱——实测：工具循环探针一进套件，总闸立刻假红，
+// 而它按构造不可能出海（端点绑 127.0.0.1、应答是罐头文本）。
+//
+// 但判据不能改成「信探针一句话」，否则总闸就成了能随便哄的看门狗。所以要求**四重自证**，
+// 缺一即记「未归属」（= 红灯）：
+//   1. 申报端点必须是**回环地址**——远端端点一律不认（真花钱的形态正是它）；
+//   2. 端点自报的**实收请求数 ≥ 转录里的请求数**——转录多出来的那条说明有流量没走本地；
+//   3. 转录里的模型正文**包含**端点申报的罐头正文——文本对不上就不是它服务的；
+//   4. 申报时段与会话时间**必须有交集**——防止一条陈旧申报替另一次运行背书。
+// 另外：一条申报只能认领**一个**会话（一次本地假端点运行服务不了两条会话的全部流量）。
+//
+// 与旧判据（有文本即真实调用）相比，这一层**只严不松**：无法解释的文本会话仍然是红灯。
+/** 端点是不是**本机**（回环）——只有本机端点才可能"零计费"。 */
+export function isLoopbackEndpoint(url) {
+  try {
+    const h = new URL(String(url)).hostname.toLowerCase();
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
+  } catch { return false; }
+}
+
+/**
+ * 逐条归属「拿到模型文本」的会话。
+ * @param {Array} rows auditSessions() 的 rows（需要 assistantText 字段）
+ * @param {Array} declarations 申报：{endpoint, servedRequests, finalText, servedFrom, servedTo}
+ * @returns {{textSessions: Array, attributed: Array<{session: object, decl: object}>, unexplained: Array}}
+ */
+export function attributeSyntheticSessions(rows, declarations = [], { slackMs = 120000 } = {}) {
+  const textSessions = (rows || []).filter((r) => r.assistantChars > 0);
+  const used = new Set();
+  const attributed = [];
+  const unexplained = [];
+  for (const s of textSessions) {
+    const sEnd = new Date(s.ts).getTime();
+    const sStartRaw = new Date(s.startTs || s.ts).getTime();
+    const sFrom = (Number.isFinite(sStartRaw) ? sStartRaw : sEnd) - slackMs;
+    const sTo = sEnd + slackMs;
+    const hit = declarations.find((d, i) => {
+      if (used.has(i)) return false;
+      if (!isLoopbackEndpoint(d?.endpoint)) return false;
+      if (!(Number(d?.servedRequests) >= s.requests)) return false;
+      if (!d?.finalText || !String(s.assistantText || '').includes(String(d.finalText))) return false;
+      const dFrom = Number(d.servedFrom);
+      const dTo = Number(d.servedTo);
+      if (!Number.isFinite(dFrom) || !Number.isFinite(dTo)) return false;
+      return dFrom <= sTo && sFrom <= dTo;   // 时段有交集
+    });
+    if (hit) { used.add(declarations.indexOf(hit)); attributed.push({ session: s, decl: hit }); }
+    else unexplained.push(s);
+  }
+  return { textSessions, attributed, unexplained };
+}
+
+/**
+ * 归属判据的自检（含阴性对照）：`--self-test`。
+ * 每一种「看起来像自证、其实不成立」的形态都必须判红——否则总闸会被一条坏申报哄过去。
+ */
+export function selfTestMoneyGate() {
+  const T0 = Date.parse('2026-09-25T00:00:00Z');
+  const iso = (ms) => new Date(ms).toISOString();
+  const row = (over = {}) => ({
+    session: 'session-synthetic-1', ts: iso(T0 + 30000), startTs: iso(T0 + 1000),
+    model: 'deepseek-flash', requests: 2, assistantChars: 6, assistantText: '工具循环完成',
+    userMsgs: ['probe'], ...over,
+  });
+  const decl = (over = {}) => ({
+    endpoint: 'http://127.0.0.1:53123', servedRequests: 2, finalText: '工具循环完成',
+    servedFrom: T0, servedTo: T0 + 60000, ...over,
+  });
+  const cases = [
+    ['本地假端点自证 → 归属', [row()], [decl()], 1, 0],
+    ['没有任何申报 → 未归属（红灯）', [row()], [], 0, 1],
+    ['申报端点是远端（真花钱的形态）→ 不认', [row()], [decl({ endpoint: 'https://api.deepseek.com/anthropic' })], 0, 1],
+    ['端点实收数少于转录请求数 → 有流量没走本地', [row({ requests: 3 })], [decl()], 0, 1],
+    ['罐头正文对不上 → 不认', [row()], [decl({ finalText: '另一段正文' })], 0, 1],
+    ['时段无交集（陈旧申报）→ 不认', [row()], [decl({ servedFrom: T0 - 86400000, servedTo: T0 - 86000000 })], 0, 1],
+    ['一条申报不能认领两个会话', [row(), row({ session: 'session-synthetic-2' })], [decl()], 1, 1],
+    ['没有模型文本的会话不参与归属', [row({ assistantChars: 0, assistantText: '' })], [], 0, 0],
+  ];
+  let fail = 0;
+  for (const [name, rows, decls, wantAttr, wantUnexp] of cases) {
+    const r = attributeSyntheticSessions(rows, decls);
+    const ok = r.attributed.length === wantAttr && r.unexplained.length === wantUnexp;
+    if (!ok) fail++;
+    console.log(`${ok ? '✓' : '✗'} ${name}　— 归属=${r.attributed.length}（期望 ${wantAttr}）未归属=${r.unexplained.length}（期望 ${wantUnexp}）`);
+  }
+  console.log(`\n花钱总闸归属判据自检：通过 ${cases.length - fail} / 失败 ${fail}`);
+  return fail === 0;
+}
+
 // ── CLI ────────────────────────────────────────────────────────────────────
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
+  // 自检是纯函数（不读转录、不需要 zstd）：缺 zstd 的 Node 也能跑它。
+  if (process.argv.includes('--self-test')) process.exit(selfTestMoneyGate() ? 0 : 1);
   const arg = (n, d) => {
     const i = process.argv.indexOf(n);
     return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d;

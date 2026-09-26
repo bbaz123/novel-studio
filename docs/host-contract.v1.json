@@ -1,0 +1,722 @@
+{
+  "$comment": "Host Contract 的可机读契约面（由真实代码导出，不是手抄）。任何字段的变化都必须走主体变更流程：改代码 → 改本文件 → 改 docs/host-contract.md → 跑 .p1-baseline/test-host-contract.mjs。",
+  "host_contract": "1.2.0",
+  "frozen_at": "2026-09-26",
+  "host": {
+    "service": "novel-studio",
+    "engine": "novel-core",
+    "ping_endpoint": "GET /api/novel/ping",
+    "response_error_shape": {
+      "error": "string"
+    }
+  },
+  "context": {
+    "endpoints": [
+      "GET /api/novel/context?work_id=&chapter_id=&mode=",
+      "GET /api/ai_context?chapter_id="
+    ],
+    "modes": [
+      "full",
+      "continuation",
+      "fragment",
+      "settings"
+    ],
+    "layers": [
+      {
+        "id": "work",
+        "kind": "fixed",
+        "cap": 900,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "outline",
+        "kind": "flex",
+        "cap": 2800,
+        "cap_continuation": null,
+        "floor": 400,
+        "entity_cap": null
+      },
+      {
+        "id": "memory",
+        "kind": "fixed",
+        "cap": 2200,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "recall",
+        "kind": "cond",
+        "cap": 1400,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "events",
+        "kind": "fixed",
+        "cap": 1800,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "foreshadows",
+        "kind": "fixed",
+        "cap": 1200,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "scene",
+        "kind": "cond",
+        "cap": 1200,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "blueprint",
+        "kind": "cond",
+        "cap": 1500,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "story_tail",
+        "kind": "flex",
+        "cap": 1600,
+        "cap_continuation": 4000,
+        "floor": 400,
+        "entity_cap": null
+      },
+      {
+        "id": "characters",
+        "kind": "entity",
+        "cap": null,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": 4000
+      },
+      {
+        "id": "relations",
+        "kind": "cond",
+        "cap": 800,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "world",
+        "kind": "flex",
+        "cap": 3000,
+        "cap_continuation": null,
+        "floor": 400,
+        "entity_cap": null
+      },
+      {
+        "id": "terms",
+        "kind": "cond",
+        "cap": 800,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      },
+      {
+        "id": "story_state",
+        "kind": "cond",
+        "cap": 2400,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null,
+        "gated": true
+      },
+      {
+        "id": "redlines",
+        "kind": "fixed",
+        "cap": 4000,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null
+      }
+    ],
+    "flex_order": [
+      "story_tail",
+      "outline",
+      "world"
+    ],
+    "flex_caps": [
+      2400,
+      1600,
+      800,
+      400
+    ],
+    "total_budget": {
+      "settings": 19000,
+      "default": 26000
+    },
+    "floor": {
+      "settings": 18173,
+      "full": 21364
+    },
+    "retrieval": {
+      "work": {
+        "tool": "novel_works",
+        "intrinsic": false
+      },
+      "outline": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "memory": {
+        "tool": "novel_memory_read",
+        "intrinsic": false
+      },
+      "recall": {
+        "tool": "",
+        "intrinsic": true
+      },
+      "events": {
+        "tool": "novel_events",
+        "intrinsic": false
+      },
+      "foreshadows": {
+        "tool": "novel_foreshadows",
+        "intrinsic": false
+      },
+      "scene": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "blueprint": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "story_tail": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "characters": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "relations": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "world": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "terms": {
+        "tool": "novel_lookup",
+        "intrinsic": false
+      },
+      "redlines": {
+        "tool": "novel_style_contract",
+        "intrinsic": false
+      },
+      "story_state": {
+        "tool": "novel_state",
+        "intrinsic": false
+      }
+    },
+    "manifest_layer_fields": [
+      "bodyLength",
+      "declaredCap",
+      "dropped",
+      "emitted",
+      "empty",
+      "estimatedTokens",
+      "id",
+      "kind",
+      "knowledgeScope",
+      "knownGap",
+      "label",
+      "note",
+      "outcomeReason",
+      "reason",
+      "recoveryPath",
+      "renderedLength",
+      "scores",
+      "selection",
+      "shrunk",
+      "source",
+      "sourceId",
+      "temporalScope",
+      "trimPriority",
+      "truncated"
+    ],
+    "envelope_fields": [
+      "budget",
+      "chapterId",
+      "contextId",
+      "estimatedTokens",
+      "excluded",
+      "integrity",
+      "length",
+      "mode",
+      "requestId",
+      "selected",
+      "tokenEstimateNote",
+      "trimmed",
+      "workId"
+    ],
+    "assemble_result_fields": [
+      "contextId",
+      "envelope",
+      "integrity",
+      "manifest",
+      "overflow",
+      "shrinkLog",
+      "stats",
+      "text"
+    ],
+    "integrity": {
+      "checks": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "C7",
+        "C8"
+      ],
+      "statuses": [
+        "PASS",
+        "WARNING",
+        "FAIL"
+      ],
+      "blocked_generation": false
+    },
+    "cache_scope": "in-process; invalidated on 写操作（touchWork）与外部状态变化"
+  },
+  "policy": {
+    "models": {
+      "fast": "deepseek-flash",
+      "quality": "deepseek-flash"
+    },
+    "known_models": [
+      "deepseek-flash",
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-vision-exp",
+      "deepseek-v4-pro"
+    ],
+    "efforts": [
+      "off",
+      "low",
+      "high",
+      "max"
+    ],
+    "pipeline_effort_by_mode": {
+      "fast": "low",
+      "balanced": "high",
+      "deep": "max"
+    },
+    "effort_by_tier": {
+      "fast": "",
+      "quality": "high"
+    },
+    "long_ai_timeout_ms": 1800000
+  },
+  "ai_route": {
+    "direct_actions": [
+      "write",
+      "write_stream",
+      "personality",
+      "outline",
+      "chat",
+      "polish",
+      "expand",
+      "pipeline",
+      "generate_novel",
+      "test"
+    ],
+    "sse_actions": [
+      "write_stream"
+    ],
+    "policy_endpoint": "GET /api/ai/policy",
+    "method_not_allowed": 405,
+    "upstream_error_status": 502,
+    "reasoning_effort_values": [
+      "off",
+      "low",
+      "high",
+      "max"
+    ]
+  },
+  "task_run": {
+    "endpoints": [
+      "POST /api/harness/job",
+      "GET /api/harness/job?id=",
+      "POST /api/harness/run",
+      "POST /api/harness/cancel",
+      "GET /api/harness/status"
+    ],
+    "job_response_fields": [
+      "ok",
+      "id",
+      "status",
+      "kind",
+      "stage",
+      "model_slot",
+      "model_waiters",
+      "chapter_id",
+      "work_id",
+      "elapsed_ms",
+      "tail",
+      "output",
+      "result",
+      "scan",
+      "proposals",
+      "error"
+    ],
+    "job_statuses": [
+      "queued",
+      "running",
+      "done",
+      "failed",
+      "timeout",
+      "cancelled"
+    ],
+    "cancel_transient_status": "cancelling",
+    "named_jobs": [
+      "generate_novel",
+      "compress_memory"
+    ]
+  },
+  "trace": {
+    "log_layers": [
+      "server",
+      "db",
+      "harness",
+      "ai",
+      "openviking",
+      "sync",
+      "plugin",
+      "frontend",
+      "process"
+    ],
+    "remote_layers": [
+      "frontend",
+      "plugin"
+    ],
+    "levels": [
+      "debug",
+      "info",
+      "warn",
+      "slow",
+      "error"
+    ],
+    "log_fields": [
+      "ts",
+      "layer",
+      "level",
+      "kind",
+      "message",
+      "code_file",
+      "code_line",
+      "code_func",
+      "stack",
+      "context",
+      "dedup_key"
+    ],
+    "log_endpoint": "POST /api/logs",
+    "query_endpoint": "GET /api/logs",
+    "trace_headers": [
+      "X-Trace-Op",
+      "X-Trace-Title"
+    ],
+    "debug_endpoints": [
+      "GET /api/logs",
+      "POST /api/debug/start",
+      "POST /api/debug/stop",
+      "GET /api/debug/state",
+      "GET /api/debug/ops",
+      "GET /api/debug/op"
+    ],
+    "context_identity_fields": [
+      "context_id",
+      "context_request_id",
+      "context_id=内容哈希"
+    ]
+  },
+  "settings_isolation": {
+    "env": [
+      "NOVELSTUDIO_DATA_DIR",
+      "PORT",
+      "NOVELSTUDIO_WORK_ID",
+      "NOVELSTUDIO_CHAPTER_ID",
+      "NOVELSTUDIO_MODE",
+      "NOVELSTUDIO_PROPOSE_MODE",
+      "NOVELSTUDIO_OV_DISABLED",
+      "NOVELSTUDIO_HARNESS_POOL"
+    ],
+    "per_task_default_model": true,
+    "task_settings_source": "settings 文档 → profile 补丁层 → 出厂默认（三级取值）",
+    "forbidden": [
+      "改写宿主全局 app_settings（除既有 /api/novel/* 端点）",
+      "改写 ~/.dsh 下的全局配置",
+      "把 harness 子进程指向作者的 3737 实例"
+    ]
+  },
+  "cancellation_recovery": {
+    "endpoints": [
+      "POST /api/harness/cancel",
+      "GET /api/harness/recoverable?work_id=&chapter_id=",
+      "GET /api/harness/recovered?id=",
+      "POST /api/harness/mark_applied"
+    ],
+    "cancelled_error_code": "HARNESS_CANCELLED",
+    "cancel_status": "cancelled",
+    "recovery_survives_restart": true,
+    "not_found_is_404": true
+  },
+  "db": {
+    "tables": [
+      "ai_error_logs",
+      "ai_eval_events",
+      "api_configs",
+      "app_logs",
+      "app_settings",
+      "categories",
+      "chapter_contracts",
+      "chapter_reviews",
+      "chapter_save_versions",
+      "chapters",
+      "character_knowledge",
+      "character_relations",
+      "characters",
+      "creation_tasks",
+      "harness_jobs",
+      "memory_versions",
+      "plotline_characters",
+      "plotlines",
+      "story_entities",
+      "story_entity_aliases",
+      "story_event_proposals",
+      "story_events",
+      "story_facts",
+      "story_memories",
+      "story_memory_proposals",
+      "story_snapshots",
+      "story_state_config",
+      "story_state_proposals",
+      "story_timeline_entries",
+      "story_validations",
+      "terms",
+      "volumes",
+      "works",
+      "world_entries",
+      "writing_redlines"
+    ],
+    "migration_style": "additive-only（CREATE TABLE IF NOT EXISTS + try ALTER TABLE ADD COLUMN，绝不 DROP/RENAME 用户数据）",
+    "pragmas": [
+      "journal_mode = WAL",
+      "foreign_keys = ON",
+      "busy_timeout = 5000"
+    ],
+    "old_db_schema_sha16_at_freeze": "3cb7e5d9ac4f67b9",
+    "frozen_tables": [
+      "ai_error_logs",
+      "ai_eval_events",
+      "api_configs",
+      "app_logs",
+      "app_settings",
+      "categories",
+      "chapter_reviews",
+      "chapter_save_versions",
+      "chapters",
+      "character_relations",
+      "characters",
+      "creation_tasks",
+      "harness_jobs",
+      "memory_versions",
+      "plotline_characters",
+      "plotlines",
+      "story_event_proposals",
+      "story_events",
+      "story_memories",
+      "story_memory_proposals",
+      "terms",
+      "volumes",
+      "works",
+      "world_entries",
+      "writing_redlines"
+    ],
+    "tables_added_in_v1_1": [
+      "chapter_contracts",
+      "character_knowledge",
+      "story_entities",
+      "story_entity_aliases",
+      "story_facts",
+      "story_snapshots",
+      "story_state_config",
+      "story_state_proposals",
+      "story_timeline_entries",
+      "story_validations"
+    ]
+  },
+  "plugin_adapter": {
+    "tools": [
+      "novel_context",
+      "novel_works",
+      "novel_lookup",
+      "novel_foreshadows",
+      "novel_events",
+      "novel_foreshadow_update",
+      "novel_consistency",
+      "novel_scan",
+      "novel_style_contract",
+      "novel_event_add",
+      "novel_memory_read",
+      "novel_memory_update",
+      "novel_blueprint",
+      "novel_review",
+      "novel_chapter_save",
+      "novel_state",
+      "novel_contract",
+      "novel_preflight",
+      "novel_validate",
+      "novel_state_propose",
+      "novel_state_commit",
+      "novel_snapshot",
+      "novel_write_pipeline"
+    ],
+    "endpoints": [
+      "GET /api/novel/ping",
+      "GET /api/works",
+      "GET /api/search?q=&work_id=",
+      "GET /api/novel/context?work_id=&chapter_id=&mode=",
+      "GET/PUT /api/novel/redlines?work_id=",
+      "GET/PUT /api/novel/semantic",
+      "POST /api/novel/scan",
+      "GET/POST /api/novel/events",
+      "GET /api/novel/foreshadows?work_id=&status=",
+      "POST /api/novel/foreshadows/:id/status",
+      "POST /api/novel/consistency",
+      "PUT /api/novel/chapter_blueprint",
+      "PUT /api/novel/review",
+      "GET /api/novel/review?chapter_id=",
+      "PUT /api/novel/review/checklist",
+      "GET /api/novel/empty_chapters?work_id=",
+      "POST /api/novel/chapter_save",
+      "GET /api/novel/proposals?work_id=",
+      "POST /api/novel/proposals/apply|reject",
+      "PUT /api/story_memory",
+      "GET /api/story_memory?work_id=",
+      "GET /api/story_memory/versions?work_id=",
+      "POST /api/story_memory/rollback",
+      "POST /api/logs",
+      "POST /api/import",
+      "GET /api/export/txt|md?work_id=|chapter_id=",
+      "GET /api/novel/story_state?work_id=",
+      "PUT /api/novel/story_state",
+      "GET /api/novel/state/timeline?work_id=&chapter_id=",
+      "GET /api/novel/state/entities?work_id=",
+      "GET /api/novel/state/knowledge?work_id=&character_id=&chapter_id=",
+      "GET /api/novel/state/foreshadows?work_id=&chapter_id=",
+      "GET /api/novel/state/contract?chapter_id=",
+      "PUT /api/novel/state/contract",
+      "POST /api/novel/state/preflight",
+      "POST /api/novel/state/validate",
+      "POST /api/novel/state/quality",
+      "GET /api/novel/state/proposals?work_id=&state=",
+      "POST /api/novel/state/proposals",
+      "POST /api/novel/state/proposals/review|apply|reject",
+      "GET /api/novel/state/snapshots?work_id=",
+      "POST /api/novel/state/snapshot",
+      "POST /api/novel/state/rollback",
+      "GET /api/novel/state/facts?work_id=&chapter_id="
+    ],
+    "log_layer": "plugin",
+    "identity_env": [
+      "NOVELSTUDIO_WORK_ID",
+      "NOVELSTUDIO_CHAPTER_ID",
+      "NOVELSTUDIO_MODE"
+    ],
+    "propose_mode_env": "NOVELSTUDIO_PROPOSE_MODE",
+    "register_api": "ctx.tools.register"
+  },
+  "errors": {
+    "statuses": [
+      200,
+      201,
+      400,
+      403,
+      404,
+      405,
+      413,
+      429,
+      500,
+      502
+    ],
+    "retryable": {
+      "400": false,
+      "403": false,
+      "404": false,
+      "405": false,
+      "413": false,
+      "429": true,
+      "500": true,
+      "502": true
+    },
+    "empty_reply_retry": "ladder: 保持原思考强度 + 放宽 max_tokens → 仍空才降 effort → 仍空才回退/报错",
+    "half_stream": "半截流（有正文但没等到完成信号）必须报错，绝不交付"
+  },
+  "boundaries": {
+    "plugin_may": [
+      "GET /api/novel/context（唯一的上下文来源；插件不得自行拼装或扩大）",
+      "GET /api/ai/policy（读取策略快照）",
+      "GET /api/harness/job 等作业端点（进度/取消/恢复）",
+      "POST /api/logs（layer 只能是 plugin）",
+      "POST /api/novel/*（事件账本、红线、蓝图、审稿、章节保存等，见 plugin_adapter.endpoints）",
+      "POST /api/story_memory 及版本/回滚端点"
+    ],
+    "plugin_must_not": [
+      "绕过 context budget：不得自行拼接/追加超出 assembled 的上下文",
+      "直接写宿主全局 settings（app_settings / ~/.dsh 全局配置）",
+      "自建第二套 task/run/trace/recovery（必须用宿主 endpoint）",
+      "直接写数据库文件（novel.db / -wal）",
+      "调用 /api/ai/* 绕开策略表（模型/强度必须来自 /api/ai/policy）",
+      "把 layer 报成 server/db/harness/ai（远端只允许 frontend/plugin）",
+      "依赖未列入本契约的内部文件路径或函数名"
+    ]
+  },
+  "invariants": [
+    "默认小说生成路径的语义不因本契约改变（相同输入 ⇒ 相同 assembled，逐字节）",
+    "原有 novel_* 工具名与端点映射保持兼容（插件可以新增工具，不能悄悄改名/改语义）",
+    "旧作品/旧章节/旧记忆继续可打开（schema 只增不减，零删除）",
+    "上下文预算规则（TOTAL_BUDGET / 各层 cap / FLEX_ORDER）不得因\"更规范\"而无依据改变",
+    "默认 AI route（直连 vs 慢通道的选择）不得因\"统一\"而无依据改变",
+    "Context Manifest 必须与真正发送的上下文一致（C1 逐字节 + 内容哈希 C6）"
+  ],
+  "reopen_conditions": [
+    "真实用户受影响（旧作品打不开、生成质量下降、数据丢失）",
+    "核心质量或安全阻塞（上下文丢失、越权写入、注入）",
+    "性能回归有实测证据且必须在宿主侧修",
+    "以上之外：优先在插件侧 adapter 解决，不改 Host"
+  ],
+  "contract_history": [
+    {
+      "version": "1.0.0",
+      "frozen_at": "2026-09-25",
+      "note": "首版冻结（主体 V2 验收 A PASS 之后）"
+    },
+    {
+      "version": "1.1.0",
+      "frozen_at": "2026-09-26",
+      "note": "附加式扩展：门控上下文层 story_state、确定性故事状态内核 10 张新表、17 条状态端点、8 个插件工具。旧字段语义、预算常量、层顺序、默认生成路径**均未改变**（逐字节基线 50/50 复验）。"
+    },
+    {
+      "version": "1.2.0",
+      "frozen_at": "2026-09-26",
+      "note": "附加式：新增只读端点 GET /api/novel/state/facts（事实清单 + 按章可见/计划/未来 id），补齐 supersede/merge/split 所需的 id 读回能力；同轮修正派生视图里的章序展示（0 基下标 → 人读序号）。默认生成路径与预算未变。"
+    }
+  ]
+}

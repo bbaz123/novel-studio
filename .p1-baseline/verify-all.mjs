@@ -13,11 +13,13 @@
  * 用法:
  *   node .p1-baseline/verify-all.mjs                 # 有活实例就跑全量
  *   node .p1-baseline/verify-all.mjs --base http://127.0.0.1:3739 --db .p1-baseline/stress-data/novel.db --work 16 --chapter 227
+ *   node .p1-baseline/verify-all.mjs --real-db <对比副本> --live-db <真实库>   # 两个库各有用处，别混（见 LIVE_DB）
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { countRealCallsSince } from './audit-llm-calls.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { auditSessions, attributeSyntheticSessions } from './audit-llm-calls.mjs';
 
 // 套件起点：用于跑完之后审计「本次到底有没有真的调用 LLM」。
 // 2026-09-15 事故的核心问题是**花钱没有信号**；这里把它变成一条红灯。
@@ -30,6 +32,10 @@ const arg = (n, d) => {
 const BASE = arg('--base', 'http://127.0.0.1:3739');
 const DB = arg('--db', '.p1-baseline/stress-data/novel.db');
 const REAL_DB = arg('--real-db', '.p1-baseline/data/novel.db');
+// ⚠️ REAL_DB 名字叫「真实」，实际是 diff-log-noise 用来对比的**副本**（可能早于真实库：
+// 实测副本里只有示例作品 2/9，比真实库少 113 行日志）。「连续性预检在真实作品上成立」
+// 那条要的是**真的写过章节的那个库**，所以它单独一个入口——传错库会把"测不了"伪装成一条失败。
+const LIVE_DB = arg('--live-db', 'data/novel.db');
 const WORK = arg('--work', '16');
 const CHAPTER = arg('--chapter', '227');
 // 并发闸门检查会真建 harness 作业，必须显式指向 dead-port 隔离实例；
@@ -55,17 +61,46 @@ function pickEvidence(out) {
   return (verdict.slice(-1)[0] || lines.slice(-1)[0] || '').slice(0, 96);
 }
 
-/** 跑一条命令，只取退出码；输出里挑一行结论作为证据。 */
+/**
+ * 跑一条命令，只取退出码；输出里挑一行结论作为证据。
+ *
+ * 退出码约定：0 = 通过；**2 = 跑不了**（工具自己声明"没有可测对象"——比较器空目录、
+ * 连续性预检在没有已写正文的章节上都属于这一类）→ 标成跳过，而不是未通过。
+ * 这两件事必须分开：前者是环境缺料，后者是回归——混在一起红灯就失去意义了。
+ * （此前只有 `requires` 这一个前置口径，于是"工具自报跑不了"仍被记成未通过。）
+ */
+/**
+ * 零计费探针的**自证行**：用本地假端点充当模型的检查会打一行
+ * `SYNTHETIC_MODEL_SESSION {...}`（契约见 audit-llm-calls.mjs 的 attributeSyntheticSessions）。
+ * 总闸据此把「拿到模型文本」的会话逐条归属；**归属不了仍然判红**——
+ * 这行只是自证材料，不是豁免券。
+ */
+const SYNTHETIC_DECL_RE = /^SYNTHETIC_MODEL_SESSION (\{.*\})$/gm;
+const syntheticDeclarations = [];
+function collectSyntheticDeclarations(out) {
+  for (const m of String(out).matchAll(SYNTHETIC_DECL_RE)) {
+    try {
+      const d = JSON.parse(m[1]);
+      if (d && typeof d.endpoint === 'string') syntheticDeclarations.push(d);
+    } catch { /* 申报行坏掉 = 没有自证：那条会话随后会因无法归属判红 */ }
+  }
+}
+
 function run(label, cmd, args, { cwd = process.cwd(), requires, skipReason } = {}) {
   if (requires && !requires()) {
     results.push({ label, status: SKIP, evidence: skipReason || '前置不满足', cmd: `${cmd} ${args.join(' ')}` });
     return;
   }
   const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 600000 });
+  const out = `${r.stdout || ''}${r.stderr || ''}`;
+  collectSyntheticDeclarations(out);   // 自证行（见本文件 collectSyntheticDeclarations）
+  const status = r.status === 0 ? OK : (r.status === 2 ? SKIP : FAIL);
   results.push({
     label,
-    status: r.status === 0 ? OK : FAIL,
-    evidence: pickEvidence(`${r.stdout || ''}${r.stderr || ''}`),
+    status,
+    evidence: status === SKIP && r.status === 2
+      ? `工具自报「跑不了」（退出码 2）：${pickEvidence(out) || '未给出原因'}`
+      : pickEvidence(out),
     cmd: `${cmd} ${args.join(' ')}`,
   });
 }
@@ -77,6 +112,39 @@ async function reachable(url) {
   } catch { return false; }
 }
 const hasBase = await reachable(`${BASE}/api/works`);
+
+/**
+ * 活实例里那几条检查要拿"某个真实章节"当探针，而 --work/--chapter 的默认值是**压力测试库**
+ * 的口径（16/227）。换库（--base 指向真实作品）却不换这两个参数时，探针会指向一个不存在的
+ * 章节 → 工具抛错 → 被记成"未通过"，把"参数没配对"伪装成"能力退化"。
+ * 所以先确认探针在**本库**里真的存在；不存在就按"跑不了"跳过（与 hasCases 同一原则）。
+ */
+function probeTargetReady() {
+  if (!fs.existsSync(DB)) return false;
+  try {
+    const db = new DatabaseSync(DB, { readOnly: true });
+    const row = db.prepare('SELECT COUNT(*) AS n FROM chapters WHERE id = ?').get(Number(CHAPTER));
+    db.close();
+    return (row?.n ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+const PROBE_HINT = `探针章节 #${CHAPTER} 不在 ${DB}（--work/--chapter 默认值是压力测试库口径）；`
+  + '换成别的库请一并传 --db/--work/--chapter';
+
+/**
+ * 探针要**两边都认**：库里查得到（上面那条），活实例也认得（实例可能服务的是另一个库）。
+ * 只有一边认账就说明探针指错了库——那仍然属于"跑不了"，不该记成能力退化。
+ */
+const probeInDb = probeTargetReady();
+const probeInLive = hasBase
+  ? (await fetch(`${BASE}/api/ai_context?chapter_id=${CHAPTER}`)).ok
+  : false;
+const probeReady = probeInDb && probeInLive;
+const PROBE_SKIP = probeInDb
+  ? `活实例 ${BASE} 里没有章节 #${CHAPTER}（实例服务的是别的库）；请传与该实例一致的 --db/--work/--chapter`
+  : PROBE_HINT;
 
 /**
  * 目录里是否**真的有可比较的用例**。
@@ -179,6 +247,16 @@ run('模型档位·强度补偿·长任务超时（策略单点）', process.exe
 run('前端执行验证（vm + DOM 桩：渲染/交互/回归断言）', process.execPath, ['frontend-test.mjs']);
 run('工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', process.execPath, ['env-tools-test.mjs']);
 run('插件工具面与版本一致', process.execPath, ['.p1-baseline/verify-plugin-tools.mjs']);
+// 第三步：Host Contract 冻结后，契约漂移必须能被一键验收抓到（离线、零计费）：
+//   代码↔契约（层/预算/清单字段/策略/工具面/端点面/日志层级/表清单）、文档↔契约、边界是否真的成立、旧库兼容。
+run('Host Contract 契约测试（含负向对照）', process.execPath, ['.p1-baseline/test-host-contract.mjs']);
+// 第四步：确定性故事状态内核的**活实例端到端**测试（零计费：自建作品、自清理，不调模型）。
+// 三条只能对着真库/真 HTTP 才能证明的事：开关关掉时真的什么都不发生、提案真的会陈旧、回滚真的不删行。
+// 2026-09-26 增补（第五步 Golden Novel 联合回归抓到的两个真实缺陷的回归）：S14 角色知识提案端到端
+// （ON CONFLICT 谓词缺失曾让整条路不可用）、S15 知识可见窗口三态方向（unknown 只在学到之前显示）。
+run('故事状态端到端（开关/提案/陈旧/回滚/预检/校验）', process.execPath,
+  ['.p1-baseline/test-story-state-api.mjs', '--base', BASE],
+  { requires: () => hasBase, skipReason: '需要活实例（该测试自建作品并自清理，零计费）' });
 // 编码类缺陷定点检查（2026-09-18 扩了两处覆盖）：
 //   A 非法 UTF-8（git 按字节存，不会报错）；B **含非 ASCII 的 .ps1 必须带 BOM**
 //   ——PS 5.1 把无 BOM 文件按 ANSI 读，中文会吞掉后续 ASCII 字节，脚本静默变成语法错误。
@@ -285,7 +363,7 @@ run('层规格常量单点核对（entityCap / continuation 上限）', process.
 // ── 5. I4 端到端可查回（需活实例）──────────────────────────────────────
 run('I4 端到端可查回（被裁层逐个实调端点）', process.execPath,
   ['.p1-baseline/verify-retrieval.mjs', BASE, DB, WORK, CHAPTER],
-  { requires: () => hasBase && fs.existsSync(DB) });
+  { requires: () => probeReady, skipReason: PROBE_SKIP });
 
 // ── 5b. 质量信号哨兵（需活实例；只读 GET，零计费）───────────────────────
 // 它衡量"你改了多少"（采纳率/编辑距离/体量），**不衡量"写得好不好"**。
@@ -300,13 +378,25 @@ run('命名任务的作业接线（静态）', process.execPath,
 // D8-#3：记忆压缩的零损失护栏（实体变体匹配 + 覆盖率下限；含真实数据教出来的假阳性回归）
 run('记忆压缩零损失护栏', process.execPath,
   ['.p1-baseline/test-memory-compress-guard.mjs']);
+// 2026-09-24：记忆压缩**提示词输入**的离线单测（含阴性对照）。
+// 它钉的是一个静默缺陷：提示词里"最近章节尾部"那段曾经恒为空（引用了已被删除的查询别名）。
+run('记忆压缩提示词输入（含阴性对照）', process.execPath,
+  ['.p1-baseline/test-memory-compress-prompt.mjs']);
+// 2026-09-24：上下文清单 / 完整性 / 溯源（主体 V2 的 P0）。
+// 关键在阴性对照：把清单或文字故意改坏，完整性判据必须判 FAIL —— 否则那套检查只是装饰。
+run('上下文清单/完整性/溯源（含阴性对照）', process.execPath,
+  ['.p1-baseline/test-context-manifest.mjs']);
+// 2026-09-24：记忆压缩输入的前后对照（真实作品数据、只读、零计费）。
+run('记忆压缩输入前后对照（真实数据）', process.execPath,
+  ['.p1-baseline/verify-memory-compress-input.mjs', '--db', DB, '--all'],
+  { requires: () => fs.existsSync(DB), skipReason: `找不到数据库 ${DB}` });
 // D8-#3：自动压缩开关（静态部分零成本；活体段会写库并建作业，需显式授权 + 隔离实例）
 run('自动压缩开关（默认关闭，"不打开不花钱"）', process.execPath,
   ['.p1-baseline/verify-auto-compress.mjs']);
 
 run('主成文路径与创作内核同源（逐字节）', process.execPath,
   ['.p1-baseline/verify-p3-unified.mjs', BASE, DB, CHAPTER],
-  { requires: () => hasBase && fs.existsSync(DB) });
+  { requires: () => probeReady, skipReason: PROBE_SKIP });
 
 // ── 5a2. 编辑距离测量点端到端（需活实例；不触发任何 harness 任务，零费用）──
 run('编辑距离测量点端到端（采纳→保存→回填）', process.execPath,
@@ -344,6 +434,21 @@ run('全量快照工具离线测试（排除/包含/指纹/manifest 自洽）', 
 // 拿真实改动集对账，出现「没归属的改动」即失败；文档由数据生成，防止手写漂移。
 run('阶段映射核对（改动归属 + 证据存在 + 文档一致）', process.execPath,
   ['.p1-baseline/verify-phase-map.mjs']);
+
+// ── 5b3d. 确定性连续性预检（零成本，默认跑）─────────────────────────────
+// 2026-09-22 报告第 1 步：审稿前先把**机器能判定**的四件事算掉（角色卡时点 / 系统出场频率 /
+// 篇幅口径 / 剧情线推进）。两条都零网络、零计费：
+//   · 离线那条跑真值表与**阴性对照**——它防的是最危险的一类缺陷：「写了判据但从没被用上」
+//     与「缺判据时猜一个」（猜出来的假阳性会让作者关掉整个预检）；
+//   · 真实库那条是**通过线**的测量：在作品 18 上必须命中第 5/6 章审稿报告里可确定复现的那几条，
+//     同时**不许**报已经改好的旧草稿问题（第 6 章篇幅）——拿旧结论报新定稿的预检是坏的预检。
+// ⚠️ 真实库那条只读打开（`readOnly: true`），不会写任何作品数据。
+run('确定性连续性预检（真值表 + 阴性对照 + 接线）', process.execPath,
+  ['.p1-baseline/test-continuity-guard.mjs']);
+run('连续性预检在真实作品上成立（命中/误报/豁免闭环）', process.execPath,
+  ['.p1-baseline/verify-continuity-guard-on-real-data.mjs', '--db', LIVE_DB],
+  { requires: () => fs.existsSync(LIVE_DB),
+    skipReason: `需要真实库 ${LIVE_DB}（可用 --live-db 指定；该脚本只读打开，不写任何作品数据）` });
 
 // ── 5b4. 编辑距离算得对不对（零成本，默认跑）──────────────────────────
 // 这个数字会直接进「上下文质量有没有变好」的结论，算错比算不出来更糟。
@@ -383,9 +488,16 @@ run('harness 并发闸门（会建真实任务，需显式授权）', process.ex
 // ── 5d. 隔离保证核验（离线只读）────────────────────────────────────────
 // 抓的是「探针把噪声写进基线副本、被误读成真实库被动过」这类误判。
 // diff-real-db.mjs 会报 app_logs 有差异；必须能证明差异方向是「副本多」而非「真实库少」。
-run('真实库未被写入（app_logs 差集归因）', process.execPath,
+// 判据（2026-09-22 校正）：把「真实库有、副本没有」拆成**副本采样之后的正常增长**（不判红）
+// 与「副本 id 范围内缺失 / 带探针特征的新增」（判红）。旧版一律判红——副本是某次采样，
+// 真实库是活的，于是正常使用下恒为假警（实测 113 行正常日志被误报成「真实库被删过」）。
+// 自检那条把两个方向都钉住：正常增长必须绿、探针写入与分叉必须红。
+const REAL_DB_NOTE = '（REAL_DB 是**副本**：默认 .p1-baseline/data/novel.db，可用 --real-db 指定）';
+run('真实库未被删改（app_logs 差集归因；正常增长不判红）', process.execPath,
   ['.p1-baseline/diff-log-noise.mjs', REAL_DB],
-  { requires: () => fs.existsSync(REAL_DB) });
+  { requires: () => fs.existsSync(REAL_DB), skipReason: `需要副本库 ${REAL_DB}${REAL_DB_NOTE}` });
+run('日志差集归因判据自检（正常增长不判红 / 探针写入与分叉判红）', process.execPath,
+  ['.p1-baseline/diff-log-noise.mjs', '--self-test']);
 
 // ── 6. spawn 路径（**默认不跑**：会真的调起 dsh）─────────────────────
 // 这条检查自身把 LLM 端点指向死端口（verify-harness-profile.mjs 第 20 行），
@@ -409,18 +521,42 @@ run('线路层：专用 profile 是否把创作内核挂进请求（会调起 ds
     skipReason: '会真的 spawn dsh（黑洞端点接收、自带跑后审计，零计费）；需 NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1',
   });
 
+// 工具循环：慢通道与直连的**真正差别**（模型 → 工具 → 模型）。同样要 spawn dsh。
+// 为什么值得占一条：这条链路此前只能靠读代码推断（假端点只会回正文），
+// 而它是"读回被裁层 / 写回提案"这类创作能力的必经之路。
+run('工具循环：模型 → 工具 → 模型 真的跑通（会调起 dsh）', process.execPath,
+  ['.p1-baseline/probe-harness-tool-loop.mjs'],
+  {
+    requires: () => process.env.NOVELSTUDIO_ALLOW_HARNESS_SPAWN === '1'
+      && fs.existsSync('../deepseek-harness/package.json'),
+    skipReason: '会真的 spawn dsh（自设假端点、零计费）；需 NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1',
+  });
+
 // ── 7. 套件总闸：本次运行有没有真的调用 LLM ────────────────────────────
 // 判据来自 dsh 自己的会话转录（`request/header` + 流式产出），不靠印象。
 // 有真实调用 → 判失败：要么隔离没做到，要么某条检查被授权得不该跑。
+//
+// 2026-09-25 加第二层：凡「拿到模型文本」的会话都要**逐条归属**。零计费探针
+// （工具循环 / 冷启动）用本地假端点充当模型，形态与真调用相同，必须由端点自己打
+// 自证行（SYNTHETIC_MODEL_SESSION）；四重核对见 audit-llm-calls.mjs 的
+// attributeSyntheticSessions()。**归属不了的文本会话仍然是红灯**——这一层只严不松。
 {
-  const { total, real, rows } = countRealCallsSince(SUITE_T0);
+  const { rows } = auditSessions({ sinceMs: SUITE_T0 });
+  const { attributed, unexplained } = attributeSyntheticSessions(rows, syntheticDeclarations);
+  const hosts = [...new Set(attributed.map((a) => {
+    try { return new URL(a.decl.endpoint).host; } catch { return String(a.decl.endpoint); }
+  }))];
   results.push({
     label: '套件总闸：本次未产生真实 LLM 调用',
-    status: real > 0 ? FAIL : OK,
-    evidence: real > 0
-      ? `检出 ${real} 条真实调用（会话 ${total} 条）：`
-        + rows.map((r) => `${r.ts} ${r.model}「${(r.userMsgs[0] || '?').slice(0, 30)}」`).join('；')
-      : `未检出（窗口内 dsh 会话 ${total} 条，均无「请求 + 模型产出」）`,
+    status: unexplained.length ? FAIL : OK,
+    evidence: unexplained.length
+      ? `检出 ${unexplained.length} 条**无法归属**的模型文本（会话 ${rows.length} 条）：`
+        + unexplained.map((r) => `${r.ts} ${r.model || '?'}「${(r.userMsgs[0] || '?').slice(0, 30)}」`).join('；')
+        + '；要么真花了钱，要么某条零计费探针漏打自证行（SYNTHETIC_MODEL_SESSION）'
+      : (attributed.length
+        ? `未检出（窗口内 dsh 会话 ${rows.length} 条：其中 ${attributed.length} 条拿到模型文本，`
+          + `全部由本地假端点自证归属 ${hosts.join(', ')}——回环端点 + 实收数≥转录数 + 正文等于罐头文本）`
+        : `未检出（窗口内 dsh 会话 ${rows.length} 条，均无「请求 + 模型产出」）`),
     cmd: 'node .p1-baseline/audit-llm-calls.mjs --since <套件起点> --json',
   });
 }

@@ -10,7 +10,7 @@ import { log, readableErrorMessage } from './logger.js';
 import { traceHarness, traceNow } from './debug-trace.js';
 import { EFFORTS, LONG_AI_TIMEOUT_MS } from './ai/policy.mjs';
 import { harnessChildEnv, resolveTaskDshHome, taskHomeInfo } from './ai/harness-env.mjs';
-import { buildSettingsRedirectPatch, buildTaskArgs, TASK_SETTINGS_PREFIX } from './ai/task-settings.mjs';
+import { buildModelOverridePatch, resolveDefaultSelection, buildTaskArgs, promptFitsArgv, normalizeTaskPrompt, TASK_SETTINGS_PREFIX } from './ai/task-settings.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -121,6 +121,56 @@ export function dshSettingsPath() {
   if (explicit) return explicit;
   const home = resolveTaskDshHome();
   return home ? path.join(home, 'settings.yaml') : path.join(os.homedir(), '.dsh', 'settings.yaml');
+}
+
+// 决策 D8-#2（2026-09-24，dsh 0.1.7 迁移）：默认模型的**持久化位置**已从 settings.yaml 变成
+// profile 的 cordis.patch.yml（settings.yaml 只在首次启动时被导入一次）。每任务覆盖层需要
+// `provider` 这个必填字段，所以这里再给一个取值来源；读不到返回 null，由三级取值兜底。
+export function dshProfilePatchPath() {
+  const home = resolveTaskDshHome() || path.join(os.homedir(), '.dsh');
+  return path.join(home, 'profiles', DSH_PROFILE, 'cordis.patch.yml');
+}
+
+function readProfilePatch() {
+  try {
+    return fs.readFileSync(dshProfilePatchPath(), 'utf8');
+  } catch (_) {
+    return null;
+  }
+}
+
+// 0.1.7 的一次性导入会把 `<home>/settings.yaml` 改名成 `settings.yaml.imported`。
+// 为什么要读这份"已导入快照"：上游有个**实测复现**的缺陷——启动时带着覆盖
+// `agent-default-model` 的补丁层（正是我们的每任务补丁）时，该分节的导入会静默失败，
+// 用户原值只剩在这份 .imported 里。取证：`.dsh-upgrade-recon/import-single-patch.mjs`
+// （单进程带补丁 0/3 落地）对照 `import-race4.mjs`（空补丁层 3/3 落地）。
+export function dshImportedSettingsPath() {
+  return `${dshSettingsPath()}.imported`;
+}
+
+function readImportedSettings() {
+  try {
+    return fs.readFileSync(dshImportedSettingsPath(), 'utf8');
+  } catch (_) {
+    return null;
+  }
+}
+
+// 一次性迁移还悬着（settings.yaml 还在）却又要带补丁启动 = 上游"丢写"缺陷的触发条件。
+// 这里**只告警、不擅自迁移**：改用户的持久配置是 dsh 的职责，工坊只保证"不静默"。
+// 进程内只报一次，避免每个任务都刷同一条。
+let pendingLegacyImportWarned = false;
+function warnIfLegacyImportPending(settingsYaml, importedYaml) {
+  if (pendingLegacyImportWarned || settingsYaml == null || importedYaml != null) return;
+  pendingLegacyImportWarned = true;
+  log({
+    level: 'warn', layer: 'harness', kind: 'settings_legacy_import_pending',
+    message: `检测到 ${dshSettingsPath()} 还没被 dsh 导入（0.1.7 的一次性迁移）。带着 --patch 启动会让这次导入静默失败`
+      + `（上游缺陷：文件会被改名成 .imported，但 agent-default-model 这一节不会写进 profile 补丁）——本次任务的模型/强度仍按你的设置下发，`
+      + `但本 profile 的持久默认值会降级。完成迁移必须跑一次**不带补丁**的启动；而本 profile 的 app 是 headless，`
+      + `任何"启动"都等于跑一个任务——所以 ⚠️ 别用 \`--profile ${DSH_PROFILE} web\`（web 会被当成任务文本真发一次请求），`
+      + `应把 LLM 端点指向黑洞/死端口后再跑一次（零计费），或手工把该条目写进 profile 补丁层。`
+  });
 }
 
 // 决策 B：**首次真正跑任务时**如实打印写作任务的 home 决策。
@@ -600,28 +650,40 @@ export function willWaitForModelSlot(takesSlot) {
 }
 
 /**
- * 决策 D8-#2：为本任务物化一份**独立**的 settings 文档 + 指向它的补丁层。
+ * 决策 D8-#2：为本任务物化一份**独立**的默认模型覆盖补丁层。
  *
  * 成功（返回对象）→ 该任务不需要改写全局 settings，因此**不需要互斥**，可以真并行。
  * 失败（返回 null）→ 调用方回退到旧的「全局改写 + 互斥」路径，行为与历史一致。
  * 之所以保留回退而不是"失败就让任务挂掉"：读不到 settings 时历史行为是
  * 告警后继续跑（settings_patch_skipped），不该因为这次优化把可用性变差。
  *
- * @returns {{dir:string, settingsPath:string, patchPath:string}|null}
+ * 为什么不再写一份 settings 文档：0.1.7 删除了 settings-file 插件、settings.yaml 只在首次
+ * 启动时导入 profile 一次，文档路径**不可再重定向**（实测见 `.dsh-upgrade-recon/c8-probe.mjs`）。
+ * 现在改为 `--patch` 直接覆盖真正决定默认模型的 `agent-default-model` 条目。
+ *
+ * @returns {{dir:string, patchPath:string}|null}
  */
 function materializeTaskSettings({ model, reasoningEffort }) {
   try {
-    const original = readSettings();
-    if (original == null) return null;
-    const content = patchAgentDefault(original, { model, reasoningEffort });
+    // 取值顺序：调用方请求 → settings 文档 → profile 补丁 → 已导入快照 → dsh 出厂默认 provider。
+    const settingsYaml = readSettings();
+    const importedYaml = readImportedSettings();
+    warnIfLegacyImportPending(settingsYaml, importedYaml);
+    const selection = resolveDefaultSelection({
+      settingsYaml,
+      profilePatchYaml: readProfilePatch(),
+      importedYaml,
+    });
+    const content = buildModelOverridePatch({
+      provider: selection.provider,
+      model: model || selection.model,
+      reasoningEffort: reasoningEffort || selection.reasoningEffort,
+    });
+    if (content == null) return null;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), TASK_SETTINGS_PREFIX));
-    const settingsPath = path.join(dir, 'settings.yaml');
-    const patchPath = path.join(dir, 'redirect-settings.patch.yml');
-    // 整份拷贝而不是只写 agent-default-model 分节：settings 里还可能有提供方/路由配置，
-    // 少写一段就会让子进程的模型解析与全局不一致（那是很难查的"只在某台机器上复现"）。
-    fs.writeFileSync(settingsPath, content, 'utf8');
-    fs.writeFileSync(patchPath, buildSettingsRedirectPatch(settingsPath), 'utf8');
-    return { dir, settingsPath, patchPath };
+    const patchPath = path.join(dir, 'override-default-model.patch.yml');
+    fs.writeFileSync(patchPath, content, 'utf8');
+    return { dir, patchPath };
   } catch (e) {
     log({
       level: 'warn', layer: 'harness', kind: 'task_settings_failed',
@@ -752,13 +814,34 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           reject(new Error('未找到 dsh 启动方式（无 scripts.dsh 且未找到 pnpm 的 corepack 入口），无法运行 dsh 任务'));
           return;
         }
-        // 决策 D8-#2：走每任务独立 settings 时，用 `--patch` 把本子进程的 settings 文档
-        // 指过去——全局文件一个字节都不动，因此多个任务可以真并行。
+        // 决策 D8-#2：走每任务独立设置时，用 `--patch` 把本子进程的默认模型条目覆盖掉
+        // （0.1.7 起不再重定向 settings 文档路径）——全局文件一个字节都不动，因此多个任务可以真并行。
         // 参数顺序由 ai/task-settings.mjs 的纯函数保证（选项必须在任务文本之前）。
+        const fixedArgs = launch ? launch.args : [pnpmJs, 'dsh'];
+        // 任务文本的长度上限由**整条命令行**决定（Windows 32767 个 UTF-16 码元），
+        // 所以 exe 路径与固定选项的占用要一起算进去。
+        const reservedUnits = process.execPath.length + 3
+          + fixedArgs.reduce((n, a) => n + String(a).length + 3, 0);
+        const promptBeyondArgv = !promptFitsArgv(prompt, reservedUnits);
+        // 只在 Windows 上换通道：32767 码元是 CreateProcessW 的限制；POSIX 的 ARG_MAX 约 2MB，
+        // 那边走 argv 的现状没有任何缺陷要修——不制造无必要的跨平台行为差异。
+        const argvLimitApplies = process.platform === 'win32';
+        if (promptBeyondArgv && !launch && argvLimitApplies) {
+          // pnpm 回退链路仍把任务文本放在 argv 里：该链路经 cmd.exe 转一手，
+          // "stdin 能否转发到 dsh"没有实测过，不擅自改行为。这里如实告警，
+          // 免得长任务文本再以一句没头没脑的 ENAMETOOLONG 失败。
+          log({
+            level: 'warn', layer: 'harness', kind: 'prompt_arg_limit_fallback',
+            message: `任务文本 ${String(prompt ?? '').length} 字，已超过 Windows 命令行上限的安全余量；当前是 pnpm 回退启动方式（仓库 package.json 里没有可直接 node 启动的 scripts.dsh），无法改用 stdin 通道，任务可能以 spawn ENAMETOOLONG 失败。`,
+            dedupMs: 5 * 60 * 1000
+          });
+        }
+        const useStdinPrompt = promptBeyondArgv && Boolean(launch) && argvLimitApplies;
         const taskArgs = buildTaskArgs({
           profile: DSH_PROFILE,
           prompt,
           patchPath: taskSettings ? taskSettings.patchPath : null,
+          stdin: useStdinPrompt,
         });
         const spawnArgs = launch ? [...launch.args, ...taskArgs] : [pnpmJs, 'dsh', ...taskArgs];
         const spawnCwd = launch ? launch.cwd : harnessDir();
@@ -769,8 +852,19 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           cwd: spawnCwd,
           shell: false,
           windowsHide: true,
-          env: childEnv
+          env: childEnv,
+          // 任务文本走 stdin 时必须显式给 stdin 管道；其余情况**不传 stdio**，
+          // 保持与改动前逐字相同的默认行为（三者皆 pipe）。
+          ...(useStdinPrompt ? { stdio: ['pipe', 'pipe', 'pipe'] } : {})
         });
+        if (useStdinPrompt) {
+          // 任务文本经 stdin 送（`dsh … -`）。子进程可能在我们写完之前就退出
+          // （未知选项、启动即失败），此时写入会产生 EPIPE —— 绝不能让一个
+          // 未捕获的流错误打断任务：真正的失败原因由下面的 close/exit 分支
+          // 按 stderr 定性，那个信息比 EPIPE 准确得多。
+          child.stdin.on('error', () => { /* 交给 close/exit 分支定性 */ });
+          child.stdin.end(normalizeTaskPrompt(prompt));
+        }
 
         let stdout = '';
         let stderr = '';

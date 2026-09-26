@@ -41,10 +41,29 @@ const info = harnessRuntimeInfo();
 const PROMPT = '不要调用任何工具，也不要读写文件，只回复两个字：好的';
 const PROFILE = 'novel';
 
-/** 跑一次一次性任务；返回 { totalMs, coldMs, reply, exitCode }。 */
+/**
+ * 冷启动 = 进程启动 → **第一个聊天请求**到达假端点（端点侧时间戳，不是猜测）。
+ * 测不到时必须说清「为什么」——只报「没收到请求」会把「走错端点」的 404 说成「没连上」，
+ * 这是本脚本踩过的坑（dsh 0.1.7 走 /v1/messages，本假端点只有 /chat/completions）。
+ * 因此这里改用 hits 分辨：没请求 / 有请求但路径不认识。
+ */
+function coldFromHits(llm, hitsBefore, requestsBefore, t0) {
+  const first = llm.requests.slice(requestsBefore).map((r) => Date.parse(r.ts)).filter(Number.isFinite);
+  if (first.length) return { coldMs: Math.min(...first) - t0, note: null };
+  const seen = llm.hits.slice(hitsBefore);
+  if (!seen.length) return { coldMs: null, note: '端点没收到任何请求（进程可能没起、或没指到本端点）' };
+  const paths = [...new Set(seen.map((h) => h.method + ' ' + h.path + '(' + h.reason + ')'))].join('、');
+  return {
+    coldMs: null,
+    note: '端点收到 ' + seen.length + ' 条请求但都不在 /v1/chat/completions 上：' + paths,
+  };
+}
+
+/** 跑一次一次性任务；返回 { totalMs, coldMs, note, reply, exitCode }。 */
 function runOnce(launch, env, llm) {
   return new Promise((resolve) => {
     const before = llm.count();
+    const hitsBefore = llm.hitsCount();
     const t0 = Date.now();
     const child = spawn(process.execPath, [...launch.args, '--profile', PROFILE, PROMPT], {
       cwd: launch.cwd, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -57,10 +76,8 @@ function runOnce(launch, env, llm) {
     child.on('close', (code) => {
       clearTimeout(kill);
       const totalMs = Date.now() - t0;
-      // 冷启动 = 从进程启动到**第一个模型请求到达假端点**（用端点侧时间戳，不是猜测）
-      const first = llm.requests.slice(before).map((r) => Date.parse(r.ts)).filter(Number.isFinite);
-      const coldMs = first.length ? Math.min(...first) - t0 : null;
-      resolve({ totalMs, coldMs, reply: out.trim(), exitCode: code, calls: llm.count() - before, err });
+      const { coldMs, note } = coldFromHits(llm, hitsBefore, before, t0);
+      resolve({ totalMs, coldMs, note, reply: out.trim(), exitCode: code, calls: llm.count() - before, err });
     });
   });
 }
@@ -79,13 +96,16 @@ const env = harnessChildEnv({
 });
 
 const summary = [];
+/** 冷启动测不到时的原因集合：必须打出来，否则「测不到」会再次被读成「没连上」。 */
+const coldNotes = new Set();
 for (const { name, launch } of launches) {
   console.log(`== ${name} ==`);
   const times = [];
   for (let i = 0; i < RUNS; i += 1) {
     const r = await runOnce(launch, env, llm);
     times.push(r);
-    console.log(`   第 ${i + 1} 次：总 ${r.totalMs}ms｜冷启动 ${r.coldMs == null ? '(端点没收到请求!)' : r.coldMs + 'ms'}｜模型请求 ${r.calls} 次｜退出码 ${r.exitCode}｜回复 ${JSON.stringify(r.reply.slice(0, 24))}`);
+    if (r.note) coldNotes.add(r.note);
+    console.log(`   第 ${i + 1} 次：总 ${r.totalMs}ms｜冷启动 ${r.coldMs == null ? '(测不到：' + r.note + ')' : r.coldMs + 'ms'}｜模型请求 ${r.calls} 次｜退出码 ${r.exitCode}｜回复 ${JSON.stringify(r.reply.slice(0, 24))}`);
     if (r.err) console.log(`   stderr 尾部：${r.err.slice(-300)}`);
   }
   const cold = times.map((t) => t.coldMs).filter((x) => x != null);
@@ -100,6 +120,7 @@ for (const { name, launch } of launches) {
   const times = [];
   for (let i = 0; i < RUNS; i += 1) {
     const before = llm.count();
+    const hitsBefore = llm.hitsCount();
     const t0 = Date.now();
     let reply = '';
     let failed = null;
@@ -107,10 +128,10 @@ for (const { name, launch } of launches) {
       reply = await runHarnessTaskWithProgress(PROMPT, { timeout: 240000, env: env.DEEPSEEK_BASE_URL ? { DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY } : {} }, () => {});
     } catch (e) { failed = e; }
     const totalMs = Date.now() - t0;
-    const first = llm.requests.slice(before).map((r) => Date.parse(r.ts)).filter(Number.isFinite);
-    const coldMs = first.length ? Math.min(...first) - t0 : null;
+    const { coldMs, note } = coldFromHits(llm, hitsBefore, before, t0);
+    if (note) coldNotes.add(note);
     times.push({ totalMs, coldMs });
-    console.log(`   第 ${i + 1} 次：总 ${totalMs}ms｜冷启动 ${coldMs == null ? '(端点没收到请求!)' : coldMs + 'ms'}｜回复 ${JSON.stringify(String(reply).slice(0, 24))}${failed ? `｜失败：${failed.message}` : ''}`);
+    console.log(`   第 ${i + 1} 次：总 ${totalMs}ms｜冷启动 ${coldMs == null ? '(测不到：' + note + ')' : coldMs + 'ms'}｜回复 ${JSON.stringify(String(reply).slice(0, 24))}${failed ? `｜失败：${failed.message}` : ''}`);
   }
   const cold = times.map((t) => t.coldMs).filter((x) => x != null);
   summary.push({ name: 'C 生产路径：harness.js 实际选择的启动方式', cold: cold.length ? Math.round(cold.reduce((a, b) => a + b, 0) / cold.length) : null, total: Math.round(times.reduce((a, b) => a + b.totalMs, 0) / times.length) });
@@ -120,6 +141,10 @@ try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* 忽略 
 
 console.log('\n== 汇总（均值）==');
 for (const s of summary) console.log(`   ${s.name}\n      冷启动 ${s.cold == null ? '—' : s.cold + 'ms'}｜端到端 ${s.total}ms`);
+if (coldNotes.size) {
+  console.log('\n   冷启动测不到的原因（hits 留痕；「走错端点」不等于「没连上」）：');
+  for (const n of coldNotes) console.log('     · ' + n);
+}
 if (summary.length === 2 && summary[0].cold != null && summary[1].cold != null) {
   console.log(`\n   两条路径的冷启动差：${summary[0].cold - summary[1].cold}ms`);
 }

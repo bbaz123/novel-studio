@@ -76,7 +76,9 @@ console.log('\n【3. 接线：三个使用点同源（不允许各写一份 if�
   ok('server.js 从内核模块导入它',
     /import \{[^}]*recallGapReason[^}]*\} from '\.\/ai\/context\/layers\.mjs'/.test(src));
   ok('装配时用它决定是否插占位层',
-    /recallGapText \? L\('recall', recallGapText\)/.test(src));
+    // 允许占位层带**可选的溯源 meta**（2026-09-24 起装配器给每层附 provenance）：
+    // 这里钉的是「决定权在 recallGapText 手上」这条意图，不是调用形态的字节。
+    /recallGapText \? L\('recall', recallGapText[,)]/.test(src));
   const uses = (src.match(/recallGapReason\(/g) || []).length;
   ok('两个响应端点都调用了同一个判据（导入行之外出现 2 次以上）', uses >= 2, `出现 ${uses} 次`);
   ok('两个端点都回传 gap / gap_reason（界面不能只靠 status 猜）',

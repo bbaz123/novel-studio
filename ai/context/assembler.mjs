@@ -17,7 +17,10 @@
 import {
   headerOf, truncationNotice, EMPTY_PLACEHOLDER,
   FLEX_ORDER, FLEX_CAPS, TOTAL_BUDGET, computeFloor, RETRIEVAL,
+  provenanceOf, trimPriorityOf, LAYERS,
 } from './layers.mjs';
+import { estimateTokens, TOKEN_ESTIMATE_NOTE } from './tokens.mjs';
+import { verifyContextIntegrity, shortHash } from './integrity.mjs';
 
 /**
  * 渲染一层。
@@ -72,6 +75,11 @@ export function assemble(layers, options = {}) {
     cap: l.cap,
     text: l.text,
     section: null,
+    // 与**数据相关**的那一半溯源：这次到底取了哪几行、命中分数如何。
+    // 由调用方按层传入（只有它知道），装配器只负责放进清单、不编造。
+    sourceIds: Array.isArray(l.sourceIds) ? l.sourceIds : null,
+    scores: l.scores && typeof l.scores === 'object' ? l.scores : null,
+    note: typeof l.note === 'string' ? l.note : '',
   }));
   for (const r of rows) r.section = renderSection(r.label, r.text, r.cap, renderOptionsOf(r.id));
 
@@ -103,19 +111,49 @@ export function assemble(layers, options = {}) {
         hint: '所有弹性层已压到下限仍超出预算：应下调不收缩层的 cap，或提高总预算。' }
     : null;
 
-  const manifest = rows.map((r) => ({
-    id: r.id,
-    label: r.label,
-    kind: r.kind,
-    declaredCap: Number.isFinite(r.cap) ? r.cap : null,   // 声明的正文上限（entity 层为构建函数上限）
-    bodyLength: r.section.bodyLength,                     // 原始正文长度
-    emitted: r.section.emitted,                           // 实际进入上下文的正文字数
-    renderedLength: r.section.text.length,                // 该层在 assembled 中的真实占用
-    truncated: r.section.truncated,
-    shrunk: !!r.shrunk,                                   // 是否被总预算收敛循环压过（仅弹性层可能为 true）
-    empty: r.section.empty,
-    dropped: r.section.bodyLength - r.section.emitted,    // 被裁掉的正文字数（零损失审计用）
-  }));
+  const manifest = rows.map((r) => {
+    const dropped = r.section.bodyLength - r.section.emitted;
+    const prov = provenanceOf(r.id);
+    const recovery = RETRIEVAL[r.id] || null;
+    return {
+      id: r.id,
+      label: r.label,
+      kind: r.kind,
+      declaredCap: Number.isFinite(r.cap) ? r.cap : null,   // 声明的正文上限（entity 层为构建函数上限）
+      bodyLength: r.section.bodyLength,                     // 原始正文长度
+      emitted: r.section.emitted,                           // 实际进入上下文的正文字数
+      renderedLength: r.section.text.length,                // 该层在 assembled 中的真实占用
+      truncated: r.section.truncated,
+      shrunk: !!r.shrunk,                                   // 是否被总预算收敛循环压过（仅弹性层可能为 true）
+      empty: r.section.empty,
+      dropped,                                              // 被裁掉的正文字数（零损失审计用）
+      estimatedTokens: estimateTokens(r.section.text),      // 该层大约占多少 token（估算，不参与裁剪）
+      // ── 2026-09-24 起新增（全部为 additive，旧消费方不受影响）──
+      // 溯源：这段字从哪来、讲的是哪个时间、怎么选出来的、被裁时怎么取回、为什么它值得占位置
+      source: prov ? prov.source : '',
+      sourceId: r.sourceIds,                 // 本次实际取用的行 id（null = 该层未声明）
+      temporalScope: prov ? prov.temporal_scope : '',
+      knowledgeScope: prov ? prov.knowledge_scope : '',
+      selection: prov ? prov.selection : '',
+      trimPriority: trimPriorityOf(r.id),    // 从 FLEX_ORDER/kind 派生，不另设一套数字
+      reason: prov ? prov.reason : '',
+      knownGap: prov && prov.known_gap ? prov.known_gap : '',
+      scores: r.scores,                      // 检索类层的命中分布（如语义召回）
+      note: r.note || '',
+      recoveryPath: recovery
+        ? { tool: recovery.tool || '', intrinsic: recovery.intrinsic === true,
+            endpoint: recovery.endpoint || '', note: recovery.note || '', gap: recovery.gap || '' }
+        : null,
+      // 「为什么最后是这个样子」——由**实测结果**推导，不是另记一份可能漂移的说明
+      outcomeReason: r.section.empty ? '本层没有数据（占位说明）'
+        : (dropped > 0
+          ? (r.shrunk ? `被总预算收敛压到 ${r.section.emitted} 字（原 ${r.section.bodyLength} 字）`
+                      : `超过本层上限，截到 ${r.section.emitted} 字（原 ${r.section.bodyLength} 字）`)
+          : '完整进入上下文'),
+    };
+  });
+
+  const contentId = shortHash(joined);
 
   const stats = {
     mode,
@@ -126,9 +164,55 @@ export function assemble(layers, options = {}) {
     truncatedLayers: manifest.filter((m) => m.truncated).length,
     droppedChars: manifest.reduce((n, m) => n + m.dropped, 0),
     shrinkSteps: shrinkLog.length,
+    // 2026-09-24 新增（additive）：规模估算。**不参与**任何预算/裁剪决策，只用于横向比较。
+    estimatedTokens: estimateTokens(joined),
+    tokenEstimateNote: TOKEN_ESTIMATE_NOTE,
   };
 
-  return { text: joined, manifest, overflow, shrinkLog, stats };
+  // ── 完整性：清单与文字必须自洽（不合格要响亮，不许"看起来有护栏"）──
+  const integrity = verifyContextIntegrity({
+    text: joined, manifest, overflow, budget, contextId: contentId,
+  });
+
+  // ── 本次装配的信封（request/context 身份 + 预算 + selected/trimmed/excluded）──
+  // 「被排除的层」由**层规格**反推：声明了却没进这次装配的层，以及它为什么不在。
+  const presentIds = new Set(manifest.map((m) => m.id));
+  // 门控层（gated）不进 excluded：它在未打开开关的作品里**根本不属于这一套层**，
+  // 列进"被排除的层"会让每部作品的信封凭空多一条，也会误导读者以为"这次本可以有它"。
+  const excluded = LAYERS
+    .filter((spec) => !presentIds.has(spec.id) && spec.gated !== true)
+    .map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      reason: (mode === 'settings' && spec.skipInSettings)
+        ? '本模式（settings：设定类生成）按层规格跳过该层'
+        : '本次没有该层的数据（条件层未命中 / 构建结果为空）',
+    }));
+
+  const envelope = {
+    requestId: options.requestId || '',
+    contextId: contentId,
+    workId: options.workId ?? null,
+    chapterId: options.chapterId ?? null,
+    mode,
+    budget,
+    length: joined.length,
+    estimatedTokens: stats.estimatedTokens,
+    tokenEstimateNote: TOKEN_ESTIMATE_NOTE,
+    selected: manifest.map((m) => m.id),
+    trimmed: manifest.filter((m) => m.truncated || m.dropped > 0).map((m) => ({
+      id: m.id,
+      dropped: m.dropped,
+      emitted: m.emitted,
+      bodyLength: m.bodyLength,
+      recoveryTool: m.recoveryPath ? (m.recoveryPath.tool || '') : '',
+      recoveryIntrinsic: !!(m.recoveryPath && m.recoveryPath.intrinsic),
+    })),
+    excluded,
+    integrity,
+  };
+
+  return { text: joined, manifest, overflow, shrinkLog, stats, contextId: contentId, integrity, envelope };
 }
 
 export { computeFloor };

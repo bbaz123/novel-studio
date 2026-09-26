@@ -1,34 +1,119 @@
 {
   "name": "novel-writing",
-  "version": "0.9.0",
-  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核。0.9.0 起按 P0–P6 重构后的内核对齐——标准 dsh bundle（junction 引用工坊仓库，无副本）、专用 profile `novel` + 专用 DSH_HOME，并把内核的硬规则接进模型侧：**模型自压缩也走同一零损失护栏**（出场角色一个都不许丢，拒绝时返回缺失名单与 delta 逃生口）、语义召回缺口显式占位、上下文预算与查回路径（I1–I7）写进人设。（内核能力：上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化。）",
+  "version": "0.10.0",
+  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核。0.10.0 起在 0.9.0 的 P0–P6 内核之上新增「确定性故事状态内核」——正典事实 / 时间线 / 角色知识边界 / 章节契约 / 写前预检 / 写后校验 / 提案事务（陈旧检查 + 快照 + 回滚）/ 实体与伏笔派生 / 语义上下文元数据；全部为**门控**能力，作品开关默认关，未开启的作品生成路径与之前逐字节一致。0.9.0 起按 P0–P6 重构后的内核对齐——标准 dsh bundle（junction 引用工坊仓库，无副本）、专用 profile `novel` + 专用 DSH_HOME，并把内核的硬规则接进模型侧：**模型自压缩也走同一零损失护栏**（出场角色一个都不许丢，拒绝时返回缺失名单与 delta 逃生口）、语义召回缺口显式占位、上下文预算与查回路径（I1–I7）写进人设。（内核能力：上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化。）",
   "integration": "builtin",
   "host": "novel-studio",
   "dshPlugin": {
     "entry": "novel-tools.mjs",
     "contract": {
-      "exports": ["name", "inject", "apply"],
+      "exports": [
+        "name",
+        "inject",
+        "apply"
+      ],
       "registersToolsVia": "ctx.tools.register"
     },
-    "identityEnv": ["NOVELSTUDIO_WORK_ID", "NOVELSTUDIO_CHAPTER_ID", "NOVELSTUDIO_MODE"],
+    "identityEnv": [
+      "NOVELSTUDIO_WORK_ID",
+      "NOVELSTUDIO_CHAPTER_ID",
+      "NOVELSTUDIO_MODE"
+    ],
     "proposeModeEnv": "NOVELSTUDIO_PROPOSE_MODE"
   },
   "tools": [
-    { "name": "novel_context", "description": "写作前取 ST 式分层上下文（大纲/记忆/事件/伏笔/蓝图/场景/角色卡/世界观/红线），分层预算截断。" },
-    { "name": "novel_works", "description": "列出作品，确认 work_id。" },
-    { "name": "novel_lookup", "description": "按关键词检索角色/设定词条/章节/剧情线/世界观/人物关系；也是被预算截断内容（世界观/蓝图/关系）的查回入口。" },
-    { "name": "novel_foreshadows", "description": "列出未闭合（或全部）伏笔；回收在 novel_event_add 用 resolves_event_id 完成。" },
-    { "name": "novel_events", "description": "读取事件账本（比上下文「最近事件」层更早的记录），可按类型/章节过滤。" },
-    { "name": "novel_foreshadow_update", "description": "标记伏笔状态（resolved/dropped/open，可回链回收事件）。" },
-    { "name": "novel_consistency", "description": "成文后核对一致性：未闭合伏笔/出场角色状态/最近事件 vs 正文。" },
-    { "name": "novel_scan", "description": "确定性反 AI 腔红线扫描，可跳过引号内对话。" },
-    { "name": "novel_style_contract", "description": "读取当前写作红线清单。" },
-    { "name": "novel_event_add", "description": "事件/伏笔/状态变化入账（伏笔状态、回收关联、幂等去重；headless 先落提案）。" },
-    { "name": "novel_memory_read", "description": "读取完整长期记忆摘要（上下文里的该层按预算截断到 2200 字）。" },
-    { "name": "novel_memory_update", "description": "长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案）。传 summary 时服务端会用零损失护栏核对：出场过的角色与世界观词条一个都不能丢、未出场的不要写进去；被拒会返回缺失名单，补齐后重交一次，装不下就改传 delta。" },
-    { "name": "novel_blueprint", "description": "保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），落库后随上下文带入并作为一致性核对锚点。" },
-    { "name": "novel_review", "description": "保存成文的审稿报告（总评/问题清单/优点），作者在工坊界面确认清单并按清单修稿。" },
-    { "name": "novel_chapter_save", "description": "成稿写回章节正文（旧稿自动存历史版本，返回红线扫描）。" }
+    {
+      "name": "novel_context",
+      "description": "写作前取 ST 式分层上下文（大纲/记忆/事件/伏笔/蓝图/场景/角色卡/世界观/红线），分层预算截断。"
+    },
+    {
+      "name": "novel_works",
+      "description": "列出作品，确认 work_id。"
+    },
+    {
+      "name": "novel_lookup",
+      "description": "按关键词检索角色/设定词条/章节/剧情线/世界观/人物关系；也是被预算截断内容（世界观/蓝图/关系）的查回入口。"
+    },
+    {
+      "name": "novel_foreshadows",
+      "description": "列出未闭合（或全部）伏笔；回收在 novel_event_add 用 resolves_event_id 完成。"
+    },
+    {
+      "name": "novel_events",
+      "description": "读取事件账本（比上下文「最近事件」层更早的记录），可按类型/章节过滤。"
+    },
+    {
+      "name": "novel_foreshadow_update",
+      "description": "标记伏笔状态（resolved/dropped/open，可回链回收事件）。"
+    },
+    {
+      "name": "novel_consistency",
+      "description": "成文后核对一致性：未闭合伏笔/出场角色状态/最近事件 vs 正文。"
+    },
+    {
+      "name": "novel_scan",
+      "description": "确定性反 AI 腔红线扫描，可跳过引号内对话。"
+    },
+    {
+      "name": "novel_style_contract",
+      "description": "读取当前写作红线清单。"
+    },
+    {
+      "name": "novel_event_add",
+      "description": "事件/伏笔/状态变化入账（伏笔状态、回收关联、幂等去重；headless 先落提案）。"
+    },
+    {
+      "name": "novel_memory_read",
+      "description": "读取完整长期记忆摘要（上下文里的该层按预算截断到 2200 字）。"
+    },
+    {
+      "name": "novel_memory_update",
+      "description": "长期记忆摘要压缩/增量提交（版本快照可回滚；headless 先落提案）。传 summary 时服务端会用零损失护栏核对：出场过的角色与世界观词条一个都不能丢、未出场的不要写进去；被拒会返回缺失名单，补齐后重交一次，装不下就改传 delta。"
+    },
+    {
+      "name": "novel_blueprint",
+      "description": "保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），落库后随上下文带入并作为一致性核对锚点。"
+    },
+    {
+      "name": "novel_review",
+      "description": "保存成文的审稿报告（总评/问题清单/优点），作者在工坊界面确认清单并按清单修稿。"
+    },
+    {
+      "name": "novel_chapter_save",
+      "description": "成稿写回章节正文（旧稿自动存历史版本，返回红线扫描）。"
+    },
+    {
+      "name": "novel_state",
+      "description": "读作品确定性故事状态的一个切片（overview/facts/timeline/knowledge/entities/foreshadows/contract，只读）。"
+    },
+    {
+      "name": "novel_contract",
+      "description": "保存本章章节契约（目标/必须与禁止的情节点/实体/事件/状态变化/伏笔/风格/连续性/验收项），版本化可追溯。"
+    },
+    {
+      "name": "novel_preflight",
+      "description": "写前预检：用确定性内核报出这一章可能写崩的地方（未来泄漏/时间线倒置/死人复活/未登记实体/伏笔逾期/知识越界），带证据，不阻断创作。"
+    },
+    {
+      "name": "novel_validate",
+      "description": "写后校验：对照章节契约逐项核对并做一致性检查，只给结论与证据，不改正文。"
+    },
+    {
+      "name": "novel_state_propose",
+      "description": "把正文确认发生的状态变化登记成提案（不直接写状态）：canon_fact / character_knowledge / timeline_entry / foreshadow / entity_* / memory / event。"
+    },
+    {
+      "name": "novel_state_commit",
+      "description": "复核/应用/驳回状态提案：应用前做陈旧检查、落快照、单事务执行，基线不一致即拒绝覆盖。"
+    },
+    {
+      "name": "novel_snapshot",
+      "description": "故事状态快照与回滚（回滚不删除任何行，只改回取值并把新增标记为 superseded）。"
+    },
+    {
+      "name": "novel_write_pipeline",
+      "description": "写作编排层（推荐主入口）：一次调用完成状态读取 → 写前预检 → 唯一上下文 → 写作简报；正文仍由模型创作。"
+    }
   ],
   "engineEndpoints": [
     "GET /api/novel/ping",
@@ -56,6 +141,24 @@
     "POST /api/story_memory/rollback",
     "POST /api/logs",
     "POST /api/import",
-    "GET /api/export/txt|md?work_id=|chapter_id="
+    "GET /api/export/txt|md?work_id=|chapter_id=",
+    "GET /api/novel/story_state?work_id=",
+    "PUT /api/novel/story_state",
+    "GET /api/novel/state/timeline?work_id=&chapter_id=",
+    "GET /api/novel/state/entities?work_id=",
+    "GET /api/novel/state/knowledge?work_id=&character_id=&chapter_id=",
+    "GET /api/novel/state/foreshadows?work_id=&chapter_id=",
+    "GET /api/novel/state/contract?chapter_id=",
+    "PUT /api/novel/state/contract",
+    "POST /api/novel/state/preflight",
+    "POST /api/novel/state/validate",
+    "POST /api/novel/state/quality",
+    "GET /api/novel/state/proposals?work_id=&state=",
+    "POST /api/novel/state/proposals",
+    "POST /api/novel/state/proposals/review|apply|reject",
+    "GET /api/novel/state/snapshots?work_id=",
+    "POST /api/novel/state/snapshot",
+    "POST /api/novel/state/rollback",
+    "GET /api/novel/state/facts?work_id=&chapter_id="
   ]
 }

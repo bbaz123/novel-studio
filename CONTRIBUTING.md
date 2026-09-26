@@ -49,4 +49,6 @@ node .p1-baseline/check-utf8.mjs         # 文本文件必须是合法 UTF-8
 
 ## 许可证
 
-⚠️ 本仓库**目前尚未声明开源许可证**（默认保留所有权利）。在补上 LICENSE 之前提交 PR，请知悉：作者尚未就衍生作品的分发条款作出授权。
+**MIT**（见 [LICENSE](LICENSE)）。提交 PR 即表示你同意以 MIT 条款分发你的贡献。
+
+第三方资产（`vendor/models/*.gguf` 等）遵循其上游许可，详见 README 的「License」一节与 [vendor/README.md](vendor/README.md)。

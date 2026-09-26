@@ -134,16 +134,23 @@ if (!text || raw.length < 200) {
   // 不排除这个假象就会把"人设里提了一嘴"当成"工具真的挂上了"。所以再钉两条
   // 只有**工具定义**才会有的判据：`"tools"` 这个 JSON 键，以及 JSON Schema 的 `"parameters"`。
   const hasToolsKey = /"tools"\s*:/.test(text);
-  const hasParams = /"parameters"\s*:/.test(text);
-  const toolDefs = (text.match(/"type"\s*:\s*"function"/g) || []).length;
+  // 0.1.1 的工具定义是 OpenAI 形（function.parameters）；0.1.7 起走 DeepSeek Messages
+  // API，同一位置变成 input_schema。两版都算数——否则升级后这里数出 0 条，
+  // 会把"工具挂上了"误判成"工具没了"（实测 15 个 novel_* 全在 tools 数组里）。
+  const hasParams = /"parameters"\s*:/.test(text) || /"input_schema"\s*:/.test(text);
+  const toolDefs = (text.match(/"type"\s*:\s*"function"/g) || []).length
+    + (text.match(/"input_schema"\s*:/g) || []).length;
   check('请求体里有 `"tools"` 键（不只是人设提到工具名）', hasToolsKey);
-  check('请求体里有 JSON Schema 的 `"parameters"`（工具定义的特征）', hasParams);
+  check('请求体里有工具 JSON Schema（`parameters` 或 `input_schema`）', hasParams);
   check('工具定义条数 ≥ 清单条数', toolDefs >= toolNames.length,
     `实测 ${toolDefs} 条，清单 ${toolNames.length} 条`);
   const personaOk = text.includes(PERSONA_MARK);
   check('创作人设（novel profile 注入的 persona）在请求体里', personaOk, personaOk ? `含「${PERSONA_MARK}」` : '未找到');
-  check('请求是发往黑洞端点的 chat/completions',
-    /chat\/completions/.test(reqLine) || /chat\/completions/.test(text.slice(0, 2000)));
+  // 路径也换了：0.1.1 = POST {base}/chat/completions，0.1.7 = POST {base}/v1/messages。
+  // 这条只钉"打的是 LLM 那条路径"（"确实落到黑洞"由抓包文件本身证明），两版都接受。
+  check('请求走的是 LLM 路径（chat/completions 或 messages）',
+    /chat\/completions|\/v1\/messages|\/messages/.test(reqLine)
+    || /chat\/completions/.test(text.slice(0, 2000)));
 }
 
 console.log('\n【2. 跑后审计：这一段到底有没有花钱】');

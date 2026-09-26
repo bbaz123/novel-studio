@@ -293,6 +293,196 @@ CREATE TABLE IF NOT EXISTS chapter_reviews (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- 确定性故事状态内核（novel-writing 插件阶段 · 全部为**附加式**新增，1.1.0）
+--
+-- 为什么是附加式：这些表支撑「正典事实 / 时间线 / 知识边界 / 章节契约 / 提案 /
+-- 快照 / 校验记录」，全部由作品级开关 story_state_config.enabled 控制是否接入生成
+-- 链路。**开关默认 0**：未开启的作品，上下文装配、预算、生成路径与开启前逐字节一致。
+--
+-- 与既有表的关系：不替代 story_events / story_event_proposals / story_memory_proposals /
+-- chapter_reviews —— 那些表的语义与 API 一律不变；这里存的是**确定性的结构状态**，
+-- 由内核读写，供上下文层与提案事务使用。
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- 作品级开关：是否把确定性故事状态接入上下文与校验链路（默认关，避免"机制生效即强制接入"）。
+CREATE TABLE IF NOT EXISTS story_state_config (
+  work_id INTEGER PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 时间线：故事时间 / chapter_index / scene_index / relative_time / 生效窗口 / 前后事件约束。
+-- effective_from(chapter_index，含) 与 effective_to(不含) 是**阻止未来数据泄漏**的机械依据：
+-- 装配第 N 章时必须滤掉 effective_from > N 的条目。
+CREATE TABLE IF NOT EXISTS story_timeline_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  event_id INTEGER,
+  chapter_index INTEGER NOT NULL DEFAULT 0,
+  scene_index INTEGER NOT NULL DEFAULT 0,
+  seq INTEGER NOT NULL DEFAULT 0,
+  story_time TEXT NOT NULL DEFAULT '',
+  relative_time TEXT NOT NULL DEFAULT '',
+  day_offset REAL,
+  effective_from INTEGER NOT NULL DEFAULT 0,
+  effective_to INTEGER,
+  before_event_id INTEGER,
+  after_event_id INTEGER,
+  kind TEXT NOT NULL DEFAULT 'event',
+  label TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '{}',
+  source TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 正典事实：subject/predicate/value + 知识域（AUTHOR/CANON/CHARACTER）+ 状态机
+-- （established | planned | retracted | superseded）+ 生效窗口。
+-- 「把 planned 当 established 用」是长篇最隐蔽的崩法之一，所以状态是一等字段。
+CREATE TABLE IF NOT EXISTS story_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  entity_id INTEGER,
+  subject TEXT NOT NULL DEFAULT '',
+  predicate TEXT NOT NULL DEFAULT '',
+  value TEXT NOT NULL DEFAULT '',
+  scope TEXT NOT NULL DEFAULT 'CANON_KNOWLEDGE',
+  state TEXT NOT NULL DEFAULT 'known',
+  status TEXT NOT NULL DEFAULT 'established',
+  superseded_by INTEGER,
+  holder_id INTEGER,
+  effective_from INTEGER NOT NULL DEFAULT 0,
+  effective_to INTEGER,
+  story_time TEXT NOT NULL DEFAULT '',
+  source_event_id INTEGER,
+  confidence REAL NOT NULL DEFAULT 1,
+  dedup_key TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 角色知识边界：谁知道 / 不知道 / 怀疑 / 误信，以及是第几章第几场知道的。
+-- state ∈ known | unknown | suspected | false_belief（与 story_facts.state 同词表）。
+CREATE TABLE IF NOT EXISTS character_knowledge (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  character_id INTEGER NOT NULL,
+  fact_id INTEGER,
+  fact_key TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'known',
+  learned_chapter_id INTEGER,
+  learned_chapter_index INTEGER NOT NULL DEFAULT 0,
+  learned_scene_index INTEGER NOT NULL DEFAULT 0,
+  story_time TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 实体登记：稳定 id + 别名/历史名 + merge/split/rename 可追踪。
+-- ref_table/ref_id 指向宿主既有行（characters / world_entries / terms…），
+-- 内核不复制宿主数据，只管理「身份」。
+CREATE TABLE IF NOT EXISTS story_entities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'character',
+  canonical_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  merged_into INTEGER,
+  split_from INTEGER,
+  renamed_to INTEGER,
+  ref_table TEXT NOT NULL DEFAULT '',
+  ref_id INTEGER,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 别名与历史名：valid_from/valid_to 为 chapter_index 区间（NULL = 无界）。
+-- 改名后旧名仍能解析到同一实体 —— 这是「别名实体冲突」检测的基础。
+CREATE TABLE IF NOT EXISTS story_entity_aliases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  entity_id INTEGER NOT NULL REFERENCES story_entities(id) ON DELETE CASCADE,
+  alias TEXT NOT NULL DEFAULT '',
+  normalized TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'alias',
+  valid_from INTEGER,
+  valid_to INTEGER,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 章节契约：**同一份契约贯穿 preflight → context → generation → validation →
+-- repair → proposal → acceptance**。按 (chapter_id, version) 追加式保存，
+-- version 最大的一条是当前生效契约（历史版本保留，便于回答"当时按什么写的"）。
+CREATE TABLE IF NOT EXISTS chapter_contracts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL DEFAULT 1,
+  contract_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  contract_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 统一状态变更提案：canon / 角色状态 / 事件 / 伏笔 / 实体 / 记忆 / 章节状态 一律先落提案，
+-- 复核后带 base_state_hash 做**陈旧检查**，再在快照保护下原子应用。
+-- state ∈ pending | applied | rejected | stale | superseded
+CREATE TABLE IF NOT EXISTS story_state_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL DEFAULT 'state_change',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  base_state_hash TEXT NOT NULL DEFAULT '',
+  context_hash TEXT NOT NULL DEFAULT '',
+  contract_hash TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending',
+  conflict_level TEXT NOT NULL DEFAULT 'info',
+  auto_fixable INTEGER NOT NULL DEFAULT 0,
+  requires_author INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  dedup_key TEXT NOT NULL DEFAULT '',
+  applied_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 状态快照：应用提案前落盘，是 rollback 的唯一依据（未落快照不许改状态）。
+CREATE TABLE IF NOT EXISTS story_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  label TEXT NOT NULL DEFAULT '',
+  state_hash TEXT NOT NULL DEFAULT '',
+  snapshot_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 校验记录：preflight（写前预测）与 post（写后验证）共用一张表，用 phase 区分。
+-- 存**规则化结论 + 证据**，不存模型的自然语言评价（那是审稿报告的职责）。
+CREATE TABLE IF NOT EXISTS story_validations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  phase TEXT NOT NULL DEFAULT 'post',
+  contract_hash TEXT NOT NULL DEFAULT '',
+  state_hash TEXT NOT NULL DEFAULT '',
+  passed INTEGER NOT NULL DEFAULT 0,
+  critical_count INTEGER NOT NULL DEFAULT 0,
+  high_count INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
 -- AI 效果埋点（P5）：记录「生成 → 采纳/丢弃」的行为信号，用于回答
 -- 「上下文质量到底有没有变好」——这是契约里唯一无法靠结构化断言回答的问题。
 --   action      generate（产出草稿）| adopt（写回正文）| discard（丢弃）
@@ -468,6 +658,21 @@ CREATE INDEX IF NOT EXISTS idx_app_logs_kind ON app_logs(kind);
 CREATE INDEX IF NOT EXISTS idx_ai_eval_work ON ai_eval_events(work_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_eval_chapter ON ai_eval_events(chapter_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_eval_draft ON ai_eval_events(draft_key);
+-- 确定性故事状态内核（1.1.0 附加式）：按 (work_id, 章节序) 取数的路径必须走索引，
+-- 否则长篇（数百章）里装配一次上下文会退化成全表扫描。
+CREATE INDEX IF NOT EXISTS idx_story_timeline_work ON story_timeline_entries(work_id, chapter_index, scene_index, seq);
+CREATE INDEX IF NOT EXISTS idx_story_timeline_chapter ON story_timeline_entries(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_story_facts_work ON story_facts(work_id, effective_from, status);
+CREATE INDEX IF NOT EXISTS idx_char_knowledge_work ON character_knowledge(work_id, character_id);
+CREATE INDEX IF NOT EXISTS idx_char_knowledge_fact ON character_knowledge(work_id, fact_key);
+CREATE INDEX IF NOT EXISTS idx_story_entities_work ON story_entities(work_id, kind, status);
+CREATE INDEX IF NOT EXISTS idx_story_entity_aliases ON story_entity_aliases(work_id, normalized);
+CREATE INDEX IF NOT EXISTS idx_story_entity_aliases_entity ON story_entity_aliases(entity_id);
+CREATE INDEX IF NOT EXISTS idx_chapter_contracts_chapter ON chapter_contracts(chapter_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_state_proposals_work ON story_state_proposals(work_id, state, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_state_proposals_chapter ON story_state_proposals(chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_story_snapshots_work ON story_snapshots(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_story_validations_chapter ON story_validations(chapter_id, phase, created_at DESC);
 `);
 
 // 幂等去重唯一约束兜底（addStoryEvent 的 SELECT 查重与写入分离存在并发竞态）。
@@ -477,3 +682,16 @@ try {
 } catch (e) {
   console.warn(`[db] 唯一去重索引创建失败（存量库存在重复 dedup_key）：${e.message}`);
 }
+
+// 确定性故事状态内核（1.1.0）：三处「同一事物只应有一条」的约束靠**条件唯一索引**兜底，
+// 与 story_events 的 dedup 兜底同一种做法（SELECT 查重与写入之间存在并发竞态）。
+// 存量库若已有重复，创建失败只告警、不阻断启动（内核写入路径仍会先 SELECT 查重）。
+const STORY_STATE_UNIQUE = [
+  [`CREATE UNIQUE INDEX IF NOT EXISTS idx_story_facts_dedup_uq ON story_facts(work_id, dedup_key) WHERE dedup_key != ''`, 'story_facts 去重唯一索引'],
+  [`CREATE UNIQUE INDEX IF NOT EXISTS idx_char_knowledge_key_uq ON character_knowledge(work_id, character_id, fact_key) WHERE fact_key != ''`, 'character_knowledge 唯一索引'],
+  [`CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_contracts_version_uq ON chapter_contracts(chapter_id, version)`, 'chapter_contracts 版本唯一索引'],
+];
+for (const [sql, label] of STORY_STATE_UNIQUE) {
+  try { db.exec(sql); } catch (e) { console.warn(`[db] ${label}创建失败：${e.message}`); }
+}
+

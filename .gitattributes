@@ -1,1 +1,9 @@
 * text=auto eol=lf
+
+# 随源码走的二进制资产：绝不做行尾/编码转换（转换会直接毁掉 GGUF 与归档的字节内容）
+*.gguf   binary
+*.zip    binary
+*.7z     binary
+*.tar.gz binary
+*.ico    binary
+*.png    binary

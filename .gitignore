@@ -33,4 +33,9 @@ temp/
 Thumbs.db
 desktop.ini
 
+# 注意：vendor/ 是**故意**随源码走的二进制资产（OpenViking 的本地向量模型），不要加进忽略规则。
+# 它存在的理由与校验方式见 vendor/README.md；配置方法见 docs/openviking-embedding-setup.md。
+# 只忽略下载过程中的半成品，避免把"看起来存在、其实半截"的模型提交上去。
+vendor/**/*.part
+
 pnpm-lock.yaml

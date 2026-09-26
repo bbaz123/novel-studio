@@ -4,6 +4,10 @@
 按“反 AI 腔”风格契约输出，生成后自动收尾（一致性核对 → 红线扫描 → 事件/记忆**提案** → 作者确认入账）。
 本插件是 novel-studio 的内置组件，**与工坊同仓维护**，不存在独立补丁仓库漂移问题。
 
+> **宿主契约（稳定性承诺）见 `docs/host-contract.md`（版本 1.0.0；机读面 `docs/host-contract.v1.json`）。**
+> 本文下面的接口都属于该契约——插件只依赖这份契约，不依赖宿主内部实现；运行时可从 `GET /api/novel/ping`
+> 读到 `host_contract` 版本。契约由 `.p1-baseline/test-host-contract.mjs` 断言（含负向对照），漂移会报红。
+
 ## 一、架构（两层）
 
 ```
@@ -50,13 +54,13 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 ### 3. 分层上下文预算（P1–P2 重构后：**规格已单点机读**）
 
 > ⚠️ 本节**刻意不再重抄各层数字**——上一版就是把 cap 表抄进文档，重构后整段失效。
-> 唯一真源是 `ai/context/layers.mjs` 的 `LAYERS`（**13 层**，分 `fixed` / `flex` / `cond` / `entity` 四类）
+> 唯一真源是 `ai/context/layers.mjs` 的 `LAYERS`（**14 层**，分 `fixed` / `flex` / `cond` / `entity` 四类）
 > 与 `RETRIEVAL`（查回路径）；契约与不变量见 `docs/context-contract.md`，逐条验收见 `.p1-baseline/verify-retrieval.mjs`。
 
 - **零损失层**（`fixed`：作品 / 长期记忆 / 最近事件 / 未闭合伏笔 / 写作红线）**永不参与收敛收缩**；
   角色卡是 `entity` 类，正文边界由 `buildCharacterCards` 的 5 级降级决定，**每卡的名字/身份/性格/当前状态必保**。
-- 总预算 full/continuation/fragment **26,000** / settings **18,000**；**可执行下限由 `computeFloor()` 自动核算**
-  （当前 full 20,547 / settings 17,356），不再手写常量。历史失误：settings 预算曾设成 12,000，
+- 总预算 full/continuation/fragment **26,000** / settings **19,000**；**可执行下限由 `computeFloor()` 自动核算**
+  （当前 full 21,364 / settings 18,173），不再手写常量。历史失误：settings 预算曾设成 12,000，
   而各层 cap 之和已超过它 → **收敛永远压不到，等于没有预算**。
 - 压到下限仍超预算时，装配器产出**显式 `overflow` 标记**（不静默超限），以及 `manifest`（逐层裁剪清单）。
 - **凡裁剪必可查回**（不变量 I4）：做不到查回的层**不允许裁剪**；模型侧入口见 §五。
@@ -162,19 +166,30 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 - 记忆版本界面：长期记忆页「🕘 历史版本」——版本列表、一键回滚（自动再记回滚快照）、
   「对比当前」句子级差异预览（红=旧有、绿=新增）。
 
-### 5. 模型切换：从"改写全局文件 + 互斥"改为"每任务一份 settings"（D8-#2）
+### 5. 模型切换：从"改写全局文件 + 互斥"改为"每任务一份补丁层"（D8-#2）
 
 dsh 的默认模型只存在于**进程级**的 `settings.yaml`，而 headless CLI **没有任务级模型参数**
 （`.p0-recon/headless.help.txt` 实抓）。历史实现因此只能"改写全局文件 → 跑 → CAS 还原"，
 再靠进程内互斥串行化——结果是**服务端允许 2 并发，界面路径的实际吞吐只有 1**。
 
-现在改走「**每任务一份独立 settings 文档** + `dsh --patch` 指过去」（`ai/task-settings.mjs`）：
+现在改走「**每任务一份补丁层** + `dsh --patch` 指过去」（`ai/task-settings.mjs`）：
 不碰任何全局状态，因此**不需要互斥，吞吐回到 2**。建立失败时**回退**到旧的全局改写 + 互斥路径，
 行为与历史一致——「等待模型槽位」的界面提示保留为这条回退路径的安全网（D4）。
 
-⚠️ 有一件事必须跟着走：专用 `DSH_HOME`（决策 B）启用后，**设置文件也要跟着走**。
-否则回退路径改的是 GUI 的 `settings.yaml`，而子进程读的是新 home 的——**改了等于没改**，
-还会静默以默认模型运行。`harness.js` 里取这个路径的 `dshSettingsPath()` 因此跟随 `resolveTaskDshHome()`。
+⚠️ 0.1.7 适配（2026-09-24）：补丁层**不再指向一份 settings 文档**，而是直接覆盖
+`agent-default-model` 条目的 `config`（0.1.7 删掉了 `packages/settings/settings-file`，
+旧写法静默失效）；`provider` 是该条目的必填字段，所以取值走三级：
+`settings.yaml` → profile 的 `cordis.patch.yml` → 出厂默认（`resolveDefaultSelection`）。
+
+⚠️ 有一件事必须跟着走：专用 `DSH_HOME`（决策 B）启用后，**配置也要跟着走**。
+回退路径改的是 GUI 的 `settings.yaml`，而子进程读的是新 home 的——**改了等于没改**，
+还会静默以默认模型运行。取这两个路径的 `dshSettingsPath()` / `dshProfilePatchPath()`
+因此都跟随 `resolveTaskDshHome()`。
+
+⚠️ 同一次升级把 `settings.yaml` 变成**一次性导入**：启动时改名成 `.imported`，各分节写进
+profile 补丁层；**带 `--patch` 且该补丁覆盖 `agent-default-model` 时这一节会导入失败**
+（上游缺陷，而工坊几乎每个任务都带这种补丁）。所以取值多一个来源 `.imported`，并在
+「迁移还悬着」时告警（`warnIfLegacyImportPending`）：只告警，不替用户改持久配置。
 
 证据：`.p1-baseline/exp-concurrent-models.mjs`（两个并发任务各自读到自己的模型、
 全局 `settings.yaml` **逐字节未变**、零计费）与 `.p1-baseline/test-task-settings.mjs`。

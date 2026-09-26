@@ -24,6 +24,9 @@
 | `test-gate-assert.mjs` | **闸门断言的离线阴性对照**（零成本）：给每条断言喂「应该失败」的输入，含上游 429 与闸门 429 的区分、环境错配、预检穿透 |
 | `gate-env.mjs` | **隔离环境一键搭建**：黑洞 LLM 端点 + 隔离实例（六项隔离变量）+ marker 登记；`--stop` 收工 |
 | `blackhole.mjs` | 「黑洞」LLM 端点：接受连接、记录首字节、**永不响应**。既让作业占得住槽，又让隔离可自证 |
+| `fake-llm.mjs` | 「假 LLM」端点：**会真的应答**的零成本替身，本地两条线路——OpenAI 形状 `POST /v1/chat/completions`（本仓直连通道）与 **Messages 形状 `POST /v1/messages`**（dsh 0.1.7 的 `llm-deepseek` 走它，官方根 `https://api.deepseek.com/anthropic`）。默认只记元信息不落 prompt 原文（要原文须显式 `--dump`）；`hits[]` 给**每条**请求留痕（ts/method/path/handled/reason，含 404/405），用来分开「走错端点」与「没连上」——只记认得的聊天请求时这两件事在日志里长得一样。默认只回正文；显式 `--tool-call '{"name":…,"arguments":{…}}'` 后可回**一轮**工具调用（两条线路都支持），判据只有一条：**请求里已经带了工具结果 → 回正文，否则 → 回工具调用**——于是「模型 → 工具 → 模型」的最小循环可以零成本复现（见 `probe-harness-tool-loop.mjs`）。它不做多步工具链规划，也不校验工具参数的业务语义 |
+| `probe-harness-tool-loop.mjs` | 「模型 → 工具 → 模型」循环的零计费证据（需 `NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1`）：自设假端点让"模型"第一轮调用 `glob`，然后断言 ① 端点收到 ≥2 条请求 ② 第一条是工具轮 ③ 第二条**带回了工具结果** ④ 任务用罐头正文收尾 ⑤ 工具结果里确实出现被请求的文件（识破"被策略拒绝也照常回灌一条 tool_result"这种假通过）。实测 7/7、约 11s |
+| `probe-cold-start.mjs` | 把「每任务冷启动」拆成**进程启动 → 首个模型请求到达**（端点侧时间戳）与其余部分，对照 tsx 现场转译 / 预构建产物 / harness.js 实际选择的生产路径三条。测不到时用 `hits` 说清原因（2026-09-25 实测：生产路径冷启动均值 4.4s、样本 4.29–4.55s；预构建产物比 tsx 现场转译省 ≈2.2s） |
 | `test-harness-env.mjs` | **dsh 子进程环境契约**单测（零成本）：钉住「任务必须回连发起它的实例，不得回落写死的 3737」 |
 | `test-edit-distance.mjs` | **编辑距离**离线单测（零成本，30 项）：精确/近似/空串/单字符/对称性/三角不等式/归一 |
 | `test-model-switch-gate.mjs` | **模型切换互斥语义**离线单测（零成本，30 项）：闸门真值表、互斥真的不交错、失败不卡队列、**排队计数不泄漏**（D4）——它决定实际吞吐是 1 还是 2 |
@@ -33,7 +36,7 @@
 | `verify-memory-hint.mjs` | **长期记忆压缩提示是否真进上下文**（离线读基线 / 活实例自发现两模式）：层按 cap 从头部截断，提示挂在末尾会被自己截掉——这条把它钉住 |
 | `compare-memory-hint.mjs` | **刻画式基线对照**：要求两套基线的差异**恰好**是「压缩提示从末尾挪到开头」（含代价量化），比"看起来一样"更强 |
 | `verify-eval-metric.mjs` | **编辑距离测量点端到端**（需活实例；不触发 harness，零费用）：采纳→保存→回填、幂等、无采纳不测量 |
-| `audit-llm-calls.mjs` | **真实调用审计**（只读）：从 dsh 会话转录数出「何时、用哪个模型、真的发了多少请求」，兼作套件总闸 |
+| `audit-llm-calls.mjs` | **真实调用审计**（只读）：从 dsh 会话转录数出「何时、用哪个模型、真的发了多少请求」，兼作套件总闸。2026-09-25 起有**归属第二层**：凡「拿到模型文本」的会话必须被一条本地假端点自证解释掉（回环端点 / 实收请求数 ≥ 转录请求数 / 转录正文等于罐头正文 / 时段重叠），归属不了仍判红；`--self-test` 8 条（含 5 条阴性对照） |
 | `read-dsh-session.mjs` | 解析单条 dsh 会话转录（多帧 zstd）；用于「这次任务到底有没有真的调模型」的取证 |
 | `census.mjs` | 现场普查：进程 ↔ 端口 ↔ 数据目录 ↔ 日志 一次对齐，避免打错实例 |
 | `probe-live.mjs` | 只读探测活实例身份（作品清单判定数据目录、策略快照） |
@@ -77,6 +80,26 @@
 | `diff-real-db.mjs` | 真实库"一行未失"的差集方向归因 |
 | `probe-ov-find.mjs` / `probe-recall.mjs` / `probe-retrieval.mjs` | 检索链路的分步探针（`probe-*` 一族） |
 
+### 一之三、主体 V2 新增的工具（2026-09-24/25）
+
+| 文件 | 作用 |
+|---|---|
+| `test-context-manifest.mjs` | 上下文**清单 / 完整性 / 溯源 / 信封**的离线断言（44 条）：C1–C8 判据真值表 + 阴性对照（把判据改回旧行为必须被判红）+ 溯源与信封的形状约束 |
+| `test-memory-compress-prompt.mjs` | 记忆压缩提示词的离线单测（20 条）：**最近几章的正文确实进了提示词**（含变异测试：缺正文时必须判失败）、预算上限、覆盖优先（108 章每章都还有自己那行）、模板外置后不得各写一份 |
+| `verify-memory-compress-input.mjs` | 压缩输入的**前后对照**（只读数据库，零成本）：修前「最近章节尾部」恒为空 vs 修后带上的正文，逐作品报数 |
+| `bench-context-build.mjs` | 上下文构建的**耗时基线**（热路径 vs 冷路径；冷路径用幂等写作废缓存）。只报数不下结论，判定看 p50/p95 |
+
+配套（在 `scripts/`，**不在本目录**）：
+
+- `scripts/ci-offline-checks.mjs` —— CI 离线检查清单的**唯一来源**（31 条）；
+  `node scripts/ci-offline-checks.mjs` 本地跑的就是 CI 跑的那一批，零计费；
+- `scripts/ci-isolated-run.mjs` —— 起隔离实例 → 跑命令 → 关掉（跨平台 Node 代码，不用各平台各写一份 shell）。
+  ⚠️ 2026-09-25 修：它此前**只把隔离变量给服务端、没给被跑的命令**，于是 `api-test-suite.mjs` 的封卷三条
+  （I3ac/I3ad/I3ae）读的是另一个空目录、恒红。现在 `PORT` 与 `NOVELSTUDIO_DATA_DIR` 一并传给命令。
+
+> 另：`audit-llm-calls.mjs`（「到底有没有花钱」的总闸）2026-09-25 起在缺 `zlib.zstdDecompressSync` 时
+> **响亮失败**而不是静默报 0 —— 实测 Node 22.13 没有这个 API（22.15 才有），而静默报 0 会让总闸形同虚设。
+
 > `verify-phase-map.mjs` 有两处 2026-09-18 的修复值得记一笔（都是"工具自身在说谎"）：
 > ① 基线改为**候选 ref**（`main` → `origin/main`）——本地 `main` 被刻意删除后它会退回 HEAD，
 > 而那个基线**系统性偏乐观**（把 shared 报成可独立回滚）；
@@ -101,6 +124,13 @@ node .p1-baseline/capture-baseline.mjs --base http://127.0.0.1:3738 --db .p1-bas
 
 **复制真实库必须带 WAL**：`data/` 当时有一个 3.2MB 未合并的 `novel.db-wal`，
 只复制 `novel.db` 会丢掉里面的数据。三件套一起复制后再 `PRAGMA wal_checkpoint(TRUNCATE)`。
+
+> ⚠️ **临时跑的隔离实例（`gate-env.mjs --data-dir` 或手动 `NOVELSTUDIO_DATA_DIR`）请沿用
+> 已被忽略的目录名**（`gate-data/`、`stress-data/`、`data/`… 清单在 `.p1-baseline/.gitignore`）。
+> 2026-09-22 复盘踩到：随手新造的名字（`api-isolated/`、`probe-data/`）没进忽略清单，
+> `git status -uall` 把它们记成**未归属改动** → 阶段映射判红；`git add -A` 还有把隔离库
+> （含 1.9MB WAL）提交进去的历史先例（见 `.gitignore` 里那条 gate-data 的教训）。
+> **教训**：新工具/新跑法引入新目录时，先看它在不在忽略清单里，再决定目录名。
 
 ### ⚠️ 数据库隔离 ≠ 记忆库隔离（P3 发现）
 
@@ -249,7 +279,8 @@ node .p1-baseline/probe-ov-recall-chain.mjs                          # find→�
   它不校验黑洞，只负责断言排队可见。所以必须配合 `gate-env.mjs` 使用
   （黑洞日志里"没有连接"是**正常**的——作业常在 dsh 启动完成前就被取消，
   不要据此判定隔离失败；真正的保证是跑后审计 + 哨兵 Key）。
-- 套件最后一条是**总闸**：本次窗口内检出任何真实调用即判未通过。
+- 套件最后一条是**总闸**：本次窗口内检出任何真实调用即判未通过；零计费探针必须自证归属
+  （`SYNTHETIC_MODEL_SESSION` 行），否则按"未归属"判红——只严不松。
 - **429 断言必须校验响应体**。`server.js` 会把上游错误也映射成 429
   （`e.status === 429 ? 429 : …`），只看状态码会把「被限流」误判成「被闸门拦住」。
 - **「槽位已满」是有寿命的前置条件**：作业结束后放行是合法的，不是缺陷。
@@ -323,6 +354,8 @@ node .p1-baseline/gate-env.mjs --stop          # 收工（清实例、黑洞与 
 ```powershell
 node .p1-baseline/audit-llm-calls.mjs --since <本次开始时刻>
 # 判据：requests>0 且 assistantChars>0 才算计费。2026-09-20 实测：会话 3 个，计费 0 个。
+# 2026-09-25 起：有文本的会话还要能**归属**（本地假端点自证）；归属不了的照样判红。
+node .p1-baseline/audit-llm-calls.mjs --self-test   # 归属判据自检（8 条，含 5 条阴性对照）
 ```
 
 > 2026-09-20 实测补记：三条"基线 JSON 被 .gitignore 排除"的跳过项在**本地**其实是能跑的

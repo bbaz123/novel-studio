@@ -4430,13 +4430,17 @@ async function runHarnessJob(body, stageLabel, endpoint = '/harness/run') {
   // 🐞 运行追踪：AI 长任务归属到一条独立的长流程操作（含它触发的上下文装配与多次 API）。
   if (typeof traceLongOp === 'function') traceLongOp(stageLabel || 'AI 任务（慢通道）');
   const progress = showAITaskProgress(stageLabel);
+  // ⏱ 客户端观测耗时（入队 + 轮询 + 服务端执行）。服务端另记 dsh 的 duration_ms，
+  // 两者相减就是「轮询与入队的净开销」—— 这段与模型能力无关，是可以直接省掉的时间。
+  const clientStartedAt = Date.now();
   try {
     const started = await api(endpoint, { method: 'POST', body });
     if (!started.job_id) {
       // 兼容旧服务端：直接返回同步结果（无取消通道，停止按钮不出现）
-      return { output: started.output || '', scan: started.scan || null, proposals: started.proposals || null, result: started };
+      return { output: started.output || '', scan: started.scan || null, proposals: started.proposals || null, result: started, ms: Date.now() - clientStartedAt };
     }
-    return await pollHarnessJob(started.job_id, progress, { timeoutMs: Number(body?.timeout || longAiTimeout()) + 120000 });
+    const job = await pollHarnessJob(started.job_id, progress, { timeoutMs: Number(body?.timeout || longAiTimeout()) + 120000 });
+    return { ...job, ms: Date.now() - clientStartedAt };
   } finally {
     progress.close();
     state.aiTaskRunning = false;
@@ -4462,12 +4466,22 @@ async function pollHarnessJob(jobId, progress, { timeoutMs = 720000 } = {}) {
     progress.note('正在取消任务…');
     api('/harness/cancel', { method: 'POST', body: { job_id: jobId } }).catch(() => { /* 服务端取消失败时轮询仍会读到终态 */ });
   });
-  // F-10：轮询总超时 = 任务 timeout + 固定余量（120s）；轮询间隔做简单退避（1.5s 起，上限 10s）。
+  // F-10：轮询总超时 = 任务 timeout + 固定余量（120s）；轮询间隔做简单退避（1.5s 起）。
+  //
+  // ⏱ 上限 3s（2026-09-25 从 10s 收紧）。为什么是"收紧一个常量"而不是"新增 SSE 推送端点"：
+  //   发现延迟 ≈ 下一个轮询时刻 − 任务真正完成的时刻 —— **上界就是轮询间隔上限**，与任务时长无关。
+  //   按本文件这段退避推算：中位 65s 的任务在 10s 上限下平均晚 **4.5–5s** 才被发现，
+  //   3s 上限下平均晚约 **1.5s**；p90 169s、max 567s 的长任务同样是这个绝对差（间隔早已触顶）。
+  //   代价只有请求数 ×3 —— 每次回包 `job.tail.slice(-600)`（最多 600 字，见 server.js），
+  //   服务端只读内存里的任务表、不碰数据库，在本机是免费的。
+  //   而新增推送端点相对这条只多回收约 1.5s/轮，却要引入断线重连语义与双路径兼容 —— 不值得。
+  //   进度"像卡死"那一半也不成立：本函数已经用 `job.tail` 在刷进度卡（下面 progress.update）。
+  //   回退办法：把下面两个数字改回 10000 即可，没有别的耦合。
   const startedAt = Date.now();
   let pollDelay = 1500;
   for (;;) {
     await new Promise((r) => setTimeout(r, pollDelay));
-    pollDelay = Math.min(10000, pollDelay + 1000);
+    pollDelay = Math.min(3000, pollDelay + 1000);
     if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
     if (Date.now() - startedAt > timeoutMs) {
       const err = new Error(`任务轮询超时（已等待超过 ${Math.round(timeoutMs / 1000)}s，可在进度卡点「停止」取消）`);
@@ -4574,6 +4588,25 @@ async function getActiveAIConfig() {
   return state.apiConfigs?.find((c) => c.id === state.activeConfigId) || state.apiConfigs?.[0] || null;
 }
 
+// 🧠 思考余量（2026-09-25 修，真实事故驱动）：
+// 思考型模型的 max_tokens 是「思考 + 正文」的**总**预算，不是正文额度。只按正文需要给额度，
+// 思考就会把整份预算吃光、content 返回空（finish_reason=length）。
+// 真实链路（2026-09-21，同一天两条完整失败链）：一次小缺口补足只给了 1500 ——
+//   第 1 次 思考 1500/1500 吃光、正文 0 字；第 2 次 8192/8192 又吃光；
+//   第 3 次 换 low 思考强度 + 8192 仍然 8192/8192 全吃光 → 回退精写内核，白等 2–6 分钟。
+// 所以凡是"要模型产出 X 字"的地方，额度必须是 X 的额度**再加一份思考余量**。
+// 取 8192 不是拍脑袋：它就是上面那次实测里被思考吃光的量（此前只出现在 largerMax 里）。
+// 这**不是**降思考强度、也不是抬模型能力 —— 上限抬高不会凭空产生 token，只是别把预算卡在思考下面。
+//
+// ⚠️ 只给"按正文长度定额度"的非流式调用（补足 / 质检 / 提问轮）；**成文流式路径不动**：
+// 真实库里 7 次空回复**全部**来自非流式路径，成文流式（ai_write_stream_empty_retry）0 次，
+// 且成文轮的额度本来就已有约 2 倍余量。没有证据的地方不改。
+const THINKING_HEADROOM_TOKENS = 8192;
+function withThinkingHeadroom(outputTokens, cap = 16384) {
+  const need = Math.max(0, Math.ceil(Number(outputTokens) || 0));
+  return Math.min(cap, need + THINKING_HEADROOM_TOKENS);
+}
+
 // 非流式直连单次调用（flash 质检/小缺口补足/蓝图 用）；失败或无配置返回 null，调用方回退 harness。
 //
 // ⚠️ 2026-09-18 实测（真实调用，用户授权）：**长提示词下 flash 的思考 token 会把 max_tokens 吃光**，
@@ -4592,7 +4625,11 @@ async function directAIWrite(messages, opts = {}) {
       completionTokens: Number.isFinite(Number(usage.completion_tokens)) ? Number(usage.completion_tokens) : null,
       reasoningTokens: Number.isFinite(Number(usage.completion_tokens_details?.reasoning_tokens))
         ? Number(usage.completion_tokens_details.reasoning_tokens)
-        : null
+        : null,
+      // 输入侧两项：prompt 规模与**缓存命中**。空回复事故里"思考吃光预算"与"前缀没命中"是两种
+      // 完全不同的成因，只记输出侧就永远分不开。
+      promptTokens: Number.isFinite(Number(usage.prompt_tokens)) ? Number(usage.prompt_tokens) : null,
+      cachedTokens: Number.isFinite(Number(usage.prompt_cache_hit_tokens)) ? Number(usage.prompt_cache_hit_tokens) : null
     };
   };
   const attempt = async (overrides = {}) => {
@@ -4614,39 +4651,57 @@ async function directAIWrite(messages, opts = {}) {
     max_tokens: maxTokens,
     finish_reason: meta.finishReason,
     completion_tokens: meta.completionTokens,
-    reasoning_tokens: meta.reasoningTokens
+    reasoning_tokens: meta.reasoningTokens,
+    prompt_tokens: meta.promptTokens,
+    cached_tokens: meta.cachedTokens
   });
+  // 🧾 整条阶梯的留痕：此前每次空回复只留一句各自为政的日志（2026-09-14 那两条连 context 都是空的），
+  // 事后根本回答不了"到底试了几次、每次给了多少额度、思考吃掉了多少"。现在统一收在一条 ai_empty_ladder 里。
+  const ladder = [];
   try {
     const first = await attempt();
     if (first.text) return first.text;
     const largerMax = Math.min(16384, Math.max(8192, baseMax * 2));
     const budgetExhausted = first.meta.finishReason === 'length' &&
       (first.meta.completionTokens === null || first.meta.completionTokens >= baseMax);
+    ladder.push({ step: 1, ...emptyContext(first.meta, baseMax) });
     reportClientLog({
       level: 'warn',
       kind: 'ai_direct_empty',
       message: budgetExhausted
-        ? `[AI] 直连通道返回空内容（max_tokens=${baseMax}，finish_reason=length，思考吃光预算）；直接降思考预算 + 更大上限兜底一次`
+        ? `[AI] 直连通道返回空内容（max_tokens=${baseMax}，finish_reason=length，思考吃光预算）；先保持原思考强度、放宽上限到 ${largerMax} 重试一次`
         : `[AI] 直连通道返回空内容（max_tokens=${baseMax}，疑似思考吃光预算）；先保持原思考强度并放宽上限到 ${largerMax} 重试一次`,
       context: emptyContext(first.meta, baseMax)
     });
-    if (!budgetExhausted) {
-      const sameEffortRetry = await attempt({ maxTokens: largerMax });
-      if (sameEffortRetry.text) return sameEffortRetry.text;
-      reportClientLog({
-        level: 'warn',
-        kind: 'ai_direct_empty',
-        message: '[AI] 保持原思考强度重试后仍为空，改为低思考预算 + 更大上限兜底一次',
-        context: emptyContext(sameEffortRetry.meta, largerMax)
-      });
-    }
+    // 第一次重试**一律保持原思考强度**，只放宽输出上限。为什么不再按 budgetExhausted 直接跳到 low（2026-09-25 修）：
+    //   ① 本函数头注释本来就写着"放宽输出上限再试一次；只有仍为空时才降思考预算兜底"——实现此前与它自相矛盾；
+    //   ② 纪律要求"第一重试优先保持当前 reasoning effort，仍为空时才允许受控降级"，与成文流式路径同一条；
+    //   ③ 降思考强度换速度正是被明令禁止的取舍。
+    // 而这条改动**只在上一轮产出 0 字时才会被触发**，因此它不可能降低任何一次成功生成的正文质量；
+    // 最坏情况只是失败路径上多花一轮直连。
+    const sameEffortRetry = await attempt({ maxTokens: largerMax });
+    if (sameEffortRetry.text) return sameEffortRetry.text;
+    ladder.push({ step: 2, ...emptyContext(sameEffortRetry.meta, largerMax) });
+    reportClientLog({
+      level: 'warn',
+      kind: 'ai_direct_empty',
+      message: '[AI] 保持原思考强度重试后仍为空，改为低思考预算 + 更大上限兜底一次',
+      context: emptyContext(sameEffortRetry.meta, largerMax)
+    });
     const lowEffortRetry = await attempt({ reasoningEffort: 'low', maxTokens: largerMax });
     if (lowEffortRetry.text) return lowEffortRetry.text;
+    ladder.push({ step: 3, ...emptyContext(lowEffortRetry.meta, largerMax) });
     reportClientLog({
       level: 'warn',
       kind: 'ai_direct_empty',
       message: '[AI] 直连通道重试后仍为空，调用方将回退慢通道',
       context: emptyContext(lowEffortRetry.meta, largerMax)
+    });
+    reportClientLog({
+      level: 'warn',
+      kind: 'ai_empty_ladder',
+      message: `[AI] 直连 ${ladder.length} 次都只有思考、没有正文（输出预算被思考吃光），交给调用方回退慢通道`,
+      context: { base_max: baseMax, larger_max: largerMax, attempts: ladder }
     });
     return null;
   } catch (e) {
@@ -4669,9 +4724,21 @@ async function streamAIDirectWrite(body, stageLabel) {
   if (typeof traceLongOp === 'function') traceLongOp(stageLabel || 'AI 写作（直连流式）');
   state.aiTaskRunning = true;
   const progress = showAITaskProgress(stageLabel);
+  // ⏱ 本轮墙钟起点与首字延迟（TTFT）。TTFT 把「模型想多久」和「吐字多久」分成两段 ——
+  // 这两段的优化手段完全不同（前者靠上下文/前缀缓存，后者靠输出长度），混成一个总时长就分不清该改哪。
+  const startedAt = Date.now();
+  let ttftMs = null;
   let cancelled = false;
+  // 🔁 已经收到的正文（逐字追加）。取消 / 超时 / 断流时，界面此前把这部分**连同进度卡一起丢掉**——
+  // 错误文案自己都写着"白等"，而这是口径 B（点击 → 拿到能用的稿子）上最贵的一种损失。
+  // 现在把它绑在抛出的错误上，由调用方落草稿兜底。只搬运，不参与任何生成决策。
+  let partial = '';
+  const withPartial = (err) => {
+    err.partialText = partial;
+    return err;
+  };
   const cancelledErr = () => {
-    const err = new Error('任务已取消');
+    const err = withPartial(new Error('任务已取消'));
     err.cancelled = true;
     return err;
   };
@@ -4685,6 +4752,7 @@ async function streamAIDirectWrite(body, stageLabel) {
     // 单次流式尝试。**不发 done 时不抛错**，而是返回 complete:false —— 由下面决定
     // "能不能重试"与"该不该回退"，这样空回复重试与"半截流"是两条不同的出口。
     const attempt = async (reqBody) => {
+      const attemptStartedAt = Date.now();
       const resp = await fetch('/api/ai/write_stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(traceHeaders() || {}) },
@@ -4718,10 +4786,22 @@ async function streamAIDirectWrite(body, stageLabel) {
           if (!line.startsWith('data:')) continue;
           let evt;
           try { evt = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
-          if (typeof evt.delta === 'string') { full += evt.delta; paint(); }
+          if (typeof evt.delta === 'string') {
+            // 首字时刻只取第一次：服务端下发的 delta 是**正文**增量（reasoning_content 不在此列），
+            // 所以这个数字就是"模型思考结束、开始写正文"的真实时刻。
+            if (ttftMs === null) ttftMs = Date.now() - attemptStartedAt;
+            full += evt.delta; partial = full; paint();
+          }
+          else if (evt.phase === 'thinking') {
+            // 模型在思考、正文还没开始吐。此前这段时间客户端一帧都收不到，进度卡上一直是"已 0 字"，
+            // 长时间思考（10–30s）看起来就是卡死。这里把这一秒真正在做的事说出来。
+            // 纯展示：不改额度、不改思考强度、不改任何生成参数。
+            progress.update('模型正在思考（正文还没开始输出）…', 'AI 写作（2/3 成文）· 模型正在思考…');
+          }
           else if (evt.done) {
             if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
-            return { text: String(evt.text || full), scan: evt.scan || null, complete: true };
+            // usage 是服务端随 done 下发的附加用量（缓存命中 / 思考 token）；老服务端没有它就记 null。
+            return { text: String(evt.text || full), scan: evt.scan || null, complete: true, usage: evt.usage || null };
           } else if (evt.error) throw new Error(evt.error);
         }
       }
@@ -4758,25 +4838,49 @@ async function streamAIDirectWrite(body, stageLabel) {
       }
     }
     if (!String(result.text || '').trim()) {
-      const err = new Error(result.complete
+      const err = withPartial(new Error(result.complete
         ? '直连通道返回空内容（思考可能吃光了输出预算），已重试两次仍为空'
-        : '流式连接中断，未收到完成信号（可重试或改用精写内核）');
+        : '流式连接中断，未收到完成信号（可重试或改用精写内核）'));
       err.emptyReply = true;
       throw err;
     }
     // 半截流（收到了正文但没等到 done）**保持原语义**：抛错，绝不把残缺正文当成品交付。
-    if (!result.complete) throw new Error('流式连接中断，未收到完成信号（可重试或改用精写内核）');
-    return { text: result.text, scan: result.scan, proposals: null, via: 'direct' };
+    // 「不当作成品交付」与「就地销毁」是两件事：前者是质量纪律，后者只是白白扔掉作者的等待。
+    if (!result.complete) throw withPartial(new Error('流式连接中断，未收到完成信号（可重试或改用精写内核）'));
+    // ⏱ ms 是本轮流式直连的墙钟总耗时（含重试），ttftMs 是首字延迟，usage 是服务端随 done 下发的用量。
+    // 三者都只是测量值，调用方不拿它们做任何判断。
+    return { text: result.text, scan: result.scan, proposals: null, via: 'direct', ms: Date.now() - startedAt, ttftMs, usage: result.usage || null };
   } catch (e) {
-    if (e.name === 'AbortError') throw cancelled ? cancelledErr() : new Error('流式生成连接中断');
-    throw e;
+    if (e.name === 'AbortError') throw cancelled ? cancelledErr() : withPartial(new Error('流式生成连接中断'));
+    // 其余异常（网络层 TypeError、读取中断等）同样带上已收到的正文 ——
+    // 「断流」和「超时」与「点停止」是同一种损失，没有理由只保住其中一种。
+    // ⚠️ 这不放松任何质量纪律：函数仍然抛错、仍然不把残缺正文当成品返回，只是不再把它销毁。
+    throw withPartial(e);
   } finally {
     progress.close();
     state.aiTaskRunning = false;
   }
 }
 
-// flash 轻量质检轮：核对「蓝图达成 + 一致性硬伤 + 章节边界 + 未登记实体」；返回 { pass, issues, skipped }。
+// 取消 / 超时 / 断流时，把"已经拿到的正文"落成草稿（**只保存，绝不自动应用**）。
+// 为什么值得单独做一件事：这些路径此前把几分钟的产出连同进度卡一起丢掉，作者手里什么都不剩 ——
+// 口径 B（点击 → 真正拿到能用的稿子）上这是最贵的一种损失，而它本可以只损失"未完成的部分"。
+// 两条纪律：
+//   ① 只保存、不应用：正文永远由作者自己点「应用到正文」写回，这里不碰正文一个字；
+//   ② 低于门槛的碎片不存：getLatestDraft 只取最新一份，一次误点「停止」不该把上一份好稿
+//      从「取回生成稿」里顶掉（200 字是"已经写出了一段"而不是"刚点了下按钮"的分界）。
+const MIN_SALVAGE_CHARS = 200;
+async function saveInterruptedDraft(text, chapterId) {
+  const clean = String(text || '').trim();
+  if (!chapterId || clean.length < MIN_SALVAGE_CHARS) return 0;
+  try {
+    const r = await api('/novel/draft', { method: 'POST', body: { chapter_id: chapterId, content: clean }, timeout: 5000 });
+    return Number(r && r.chars) || clean.length;
+  } catch (_) {
+    // 兜底落库失败不影响主流程（与结果弹窗的草稿落库同一条纪律），只是这次真的没保住。
+    return 0;
+  }
+}
 // 只标记硬伤，轻微瑕疵放行；通道不可用时不阻塞交付。
 async function verifyAIDraft(blueprint, article, targetWords) {
   const bpText = blueprint
@@ -4807,7 +4911,9 @@ async function verifyAIDraft(blueprint, article, targetWords) {
   ].join('\n');
   const reply = await directAIWrite([{ role: 'user', content: prompt }], {
     model: policyModel('fast'),
-    maxTokens: 1500,
+    // 质检要读 1.2 万字正文再出结论，1500 的总额度连思考都不够 —— 思考吃光就返回空，
+    // 而空回复在这里等价于"质检静默跳过"（下面的 skipped 分支），质量门会无声消失。
+    maxTokens: withThinkingHeadroom(1500),
     reasoningEffort: 'low',
     temperature: 0.2
   });
@@ -5984,8 +6090,10 @@ function plainLength(text) {
 }
 
 // 当前章节生效的目标字数：章节覆盖 > 作品默认 > 2000。
-function resolveTargetWords() {
-  const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
+// `chapterId` 可显式传入：审稿/修稿这类流程在**入口**就把章号定死了（期间作者切章很正常），
+// 现读 state.currentChapterId 会把别章的篇幅目标算进来。
+function resolveTargetWords(chapterId = state.currentChapterId) {
+  const chapter = state.chapters.find((c) => c.id === chapterId) || {};
   return Number(chapter.target_words) > 0 ? Number(chapter.target_words)
     : Number(state.work?.default_chapter_words) > 0 ? Number(state.work.default_chapter_words)
     : 2000;
@@ -6048,6 +6156,71 @@ function redlineScanSummaryHtml(scan) {
   return `<div class="redline-scan warn">⚠️ 红线自检命中 ${scan.total} 处反 AI 腔词句：${samples || '—'}。已提示模型规避，如需改写可在预览中手动调整。</div>`;
 }
 
+// 确定性连续性预检的结果渲染（2026-09-22 报告 · 第 1 步）。
+// 与上面的红线自检并列：两者都是**零 token**算出来的东西——红线管"词句"，
+// 这里管"设定/篇幅/剧情线"。它不替代 AI 审稿，只是先把机器能判定的部分算掉。
+// ⚠️ finding.key 由服务端算好随响应下发，前端**不重复实现键的拼法**：
+//    两处实现必然漂移，而漂移的后果是"豁免点了不管用"（界面上看不出来）。
+function continuityGuardSummaryHtml(guard, chapterId = null) {
+  if (!guard) return '';
+  const findings = Array.isArray(guard.findings) ? guard.findings : [];
+  const exempted = Array.isArray(guard.exempted) ? guard.exempted : [];
+  // ⚠️ 没给章号时只跑作品级的「剧情线推进」——不能写成"四项均未发现问题"，
+  //    那是"缺判据却假装零命中"（坏预检比不跑更糟）。
+  const chapterScoped = !!(guard.checked && guard.checked.chapterLabel);
+  if (!findings.length && !exempted.length) {
+    return chapterScoped
+      ? '<div class="redline-scan ok">🔎 连续性预检通过：角色卡时点 / 系统出场 / 篇幅 / 剧情线均未发现问题</div>'
+      : '<div class="redline-scan ok">🔎 连续性预检通过（未指定章节：本次只检查了剧情线推进）</div>';
+  }
+  const workId = Number(state.workId) || '';
+  const chId = Number(chapterId) || '';
+  const findingRow = (f) => `<div class="muted mt-4">· <span class="chip ${f.severity === 'warning' ? 'warn' : ''}">${esc(String(f.severity || 'info'))}</span> `
+    + `${esc(String(f.message || ''))}`
+    + `${f.suggestion ? `<div class="muted">建议：${esc(String(f.suggestion))}</div>` : ''}`
+    + `<button class="btn small secondary" data-action="continuity-exempt" data-work-id="${workId}" data-chapter-id="${chId}"`
+    + ` data-key="${esc(String(f.key || ''))}" title="记下「这是故意的」——改措辞或换章都不会让它复活">这是故意的</button></div>`;
+  // 显示**当初那条话**（键只是内部标识，作者看不懂 `character:67`）；message 缺失时才退回键。
+  // 恢复按钮同样带章号：刷新必须与列表同一口径，否则会算出别的章/空章号的条目（2026-09-22 复盘实测）。
+  const exRows = exempted.map((f) => `<div class="muted mt-4">· 已忽略：${esc(String(f.message || f.key || ''))}`
+    + `<button class="btn small secondary" data-action="continuity-restore" data-work-id="${workId}" data-chapter-id="${chId}"`
+    + ` data-key="${esc(String(f.key || ''))}" title="${esc(String(f.key || ''))}">恢复</button></div>`).join('');
+  const head = findings.length
+    ? `<div class="redline-scan warn">🔎 连续性预检命中 ${findings.length} 条（零 token 算出，供参考；不必逐条改）：</div>`
+    : (chapterScoped
+      ? '<div class="redline-scan ok">🔎 连续性预检：本次正文没有新问题</div>'
+      : '<div class="redline-scan ok">🔎 连续性预检：本次正文没有新问题（未指定章节：只检查了剧情线推进）</div>');
+  return head + findings.map(findingRow).join('')
+    + (exempted.length ? `<div class="muted mt-4">已忽略 ${exempted.length} 条：</div>${exRows}` : '');
+}
+
+/** 取一次预检结果（只读端点）。失败返回 null——**绝不阻塞**写作与审稿，只是少一层提示。 */
+async function loadContinuityGuard(chapterId, text) {
+  const workId = state.workId || (state.work && state.work.id) || null;
+  if (!workId) return null;
+  try {
+    // text 传空串 = "用库里这一章的正文"（服务端口径：空串按没传处理）
+    return await api('/novel/continuity_guard', {
+      method: 'POST',
+      body: { work_id: workId, chapter_id: Number(chapterId) || null, text: String(text == null ? '' : text) }
+    });
+  } catch (e) {
+    reportClientLog({ level: 'warn', kind: 'continuity_guard_failed', message: `[预检] 不可用：${e.message}` });
+    return null;
+  }
+}
+
+/** 把预检结果渲染成**给 AI 审稿用的一段**（与红线扫描那段并排）。
+ *  拿不到结果时返回空串 → 提示词里不会出现这一段（缺判据时不假装"零命中"）。 */
+function buildContinuityGuardText(guard) {
+  const findings = guard && Array.isArray(guard.findings) ? guard.findings : [];
+  if (!guard) return '';
+  if (!findings.length) return '零命中（角色卡时点 / 系统出场 / 篇幅 / 剧情线都没有算出问题）';
+  return findings.slice(0, 12)
+    .map((f) => `- [${f.severity}] ${f.message}${f.suggestion ? `（建议：${f.suggestion}）` : ''}`)
+    .join('\n');
+}
+
 // 入账提案（headless 任务里 AI 提交的事件/记忆，未写入作品账本）渲染。
 function proposalItemHtml(p) {
   const icon = p.type === 'memory' ? '🧠' : (p.kind === 'foreshadow' ? '🎯' : '📌');
@@ -6083,6 +6256,42 @@ function articleLengthHint(article, targetWords) {
 // 弹窗展示最终文章，让用户选择如何应用。
 // jobId：这版文章来自哪条 harness 长任务。弹窗一打开就代表结果已经交到用户手里，
 // 顺手把任务标记为已应用，恢复条才不会永远挂着「已完成，结果待应用」。
+// ---------- 成文耗时账本（先测量后优化） ----------
+// 为什么需要它：一次成文由「蓝图 → 成文 → 质检 → 补足」多轮模型往返组成，
+// 只记一个总时长回答不了"时间到底花在哪一轮"，而"先测量后优化"要求分轮记账。
+//
+// ★ 两个口径必须分开看（混在一起就会得出错误结论）：
+//   A 机器时间 = 点「AI 写本章」→ 草稿出现在结果弹窗（本对象的 total_ms）
+//   B 交付时间 = 点「AI 写本章」→ 作者点「应用到正文」采纳
+//                （= ai_eval_events 里同 draft_key 的 adopt.created_at − generate.created_at，
+//                  由埋点表天然记下，不需要额外测量代码）
+//
+// 纪律：只测量、不干预。全部是 Date.now() 差值，不参与任何决策；
+// 任何异常都在内部吞掉，绝不影响创作（与埋点同一条纪律）。
+function newWriteTiming() {
+  const startedAt = Date.now();
+  const phases = [];
+  const int = (v) => Math.max(0, Math.round(Number(v) || 0));
+  return {
+    /** 记一轮模型往返。extra 只放能自证成因的字段（通道 / 轮次 / TTFT / 字数）。 */
+    round(name, ms, extra = {}) {
+      try { phases.push({ name, ms: int(ms), ...extra }); } catch (_) { /* 测量失败静默 */ }
+    },
+    summary() {
+      const byVia = (via) => phases.filter((p) => p.via === via).reduce((sum, p) => sum + p.ms, 0);
+      const prose = phases.find((p) => p.name === 'prose' && p.ttft_ms != null);
+      return {
+        total_ms: Date.now() - startedAt,
+        ttft_ms: prose ? prose.ttft_ms : null,
+        rounds: phases.length,
+        direct_ms: byVia('direct'),
+        harness_ms: byVia('harness'),
+        phases
+      };
+    }
+  };
+}
+
 // ---------- AI 效果埋点（P5） ----------
 // 契约的结构化不变量只能回答「预算有没有超、内容能不能查回」，回答不了
 // 「上下文质量到底有没有变好」——那只能靠作者的真实行为：一次成文用不用得上、
@@ -6122,6 +6331,27 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
       channel: meta.channel || '', model: meta.model || '',
       chars_in: aiEvalContextSize(), chars_out: draftLen, ms: Number(meta.ms) || 0
     });
+    // ⏱ 分轮耗时账（口径 A）：只记数字与枚举，不记正文（与埋点表同一条纪律）。
+    // 口径 B（交付时间）不需要新增代码 —— 上面那条埋点的 draft_key 会和随后的
+    // adopt 行配上，两个 created_at 相减就是"点了生成到采纳"的真实交付时间。
+    if (meta.timing) {
+      reportClientLog({
+        level: 'info', kind: 'ai_write_timing',
+        message: `[AI] 成文耗时 ${(meta.timing.total_ms / 1000).toFixed(1)}s`
+          + `（${meta.timing.rounds} 轮模型往返：直连 ${(meta.timing.direct_ms / 1000).toFixed(1)}s / 慢通道 ${(meta.timing.harness_ms / 1000).toFixed(1)}s`
+          + (meta.timing.ttft_ms != null ? `，首字 ${(meta.timing.ttft_ms / 1000).toFixed(1)}s` : '') + '）',
+        context: {
+          draft_key: draftKey,
+          work_id: evalBase.work_id,
+          chapter_id: evalBase.chapter_id,
+          channel: meta.channel || '',
+          model: meta.model || '',
+          chars_in: aiEvalContextSize(),
+          chars_out: draftLen,
+          ...meta.timing
+        }
+      });
+    }
 
     if (draftChapterId && String(article || '').trim()) {
       api('/novel/draft', { method: 'POST', body: { chapter_id: draftChapterId, content: article } })
@@ -6154,6 +6384,7 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
         ${articleLengthHint(article, targetWords)}
         ${redlineScanSummaryHtml(scan)}
+        <div id="continuity-guard-slot"></div>
         ${proposalsSummaryHtml(proposals)}
         <div class="muted mt-8">请选择如何应用到正文：</div>`,
       footer: `
@@ -6164,6 +6395,14 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
         <button class="btn secondary" data-action="ai-writing-append">追加到文末</button>
         <button class="btn" data-action="ai-writing-insert">插入光标处</button>`,
       large: true
+    });
+    // 确定性连续性预检：正文还没落盘，所以把草稿文本传过去让服务端装配判据。
+    // 与红线扫描同一处置口径——**失败不影响主流程**，只是少一层提示。
+    // 异步填充而不是 await：预检是本地 SQLite 查询，通常几十毫秒，
+    // 但不该让"能不能弹出结果"取决于预检可不可用。
+    loadContinuityGuard(draftChapterId, article).then((guard) => {
+      const slot = $('#continuity-guard-slot');
+      if (slot && guard) slot.innerHTML = continuityGuardSummaryHtml(guard, draftChapterId);
     });
   });
 }
@@ -6220,15 +6459,28 @@ function buildRedlineScanText(scan) {
     .join('、');
 }
 
-function buildAIReviewPrompt(article, redlineScanText = '') {
+function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText = '', targetWords = 0) {
   return [
     '你是严格的中文网络小说审稿编辑。请审读下面这篇章节正文，并对照小说上下文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"summary":"总评（两三句）","issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"strengths":[{"text":"写得好的地方"}]}',
     'issues 覆盖：剧情逻辑/与既有设定冲突/人物言行一致/AI 腔与模板句/节奏与钩子/篇幅；strengths 1-3 条。',
+    // 2026-09-22：把篇幅的**权威口径**写进提示词（在此之前模型只能自己挑一把尺子，于是
+    // work#18 第 5、6 章被反复报「篇幅不足」——AI 写作按本章目标 3000 字补足，审稿却按
+    // 作品默认 4000 / 风格区间判）。这里给的是**与写作路径同源**的取值：章节覆盖 > 作品默认。
+    ...(Number(targetWords) > 0 ? [`篇幅口径：本章目标 ${Number(targetWords)} 字（与写作路径同源）。`
+      + '作品默认字数与风格文本里的区间只作参考——三者不一致时不要据此报"篇幅不足"，'
+      + '只报相对本章目标的实际缺口或明显超出。'] : []),
     '',
     WRITING_DISCIPLINE,
     ...(redlineScanText ? ['', '【确定性红线扫描结果（工具给出，与你的判断并列）】', redlineScanText,
       '要求：AI 腔相关的问题必须与上面的扫描结果一致——扫描命中的要写进 issues 并指出位置；扫描零命中就不要臆造"存在 AI 腔命中"。'] : []),
+    // 2026-09-22 报告 · 第 4 步：findings 作为**起始上下文**。
+    // 与红线那段同一形态，但判据不同：红线管词句，这里管设定/篇幅/剧情线（零 token 算出来的）。
+    // 措辞上把它定义成"已知事实"而不是"必须报"：模型可以否决（判据是字面统计，
+    // 而作者要的是"有效出场"这类概念），但不该对此一无所知——这正是它作为起始上下文的价值。
+    ...(continuityGuardText ? ['', '【确定性连续性预检结果（零 token 算出的已知事实，与你的判断并列）】', continuityGuardText,
+      '要求：上面每一条都当作**已知事实**看待——你确认成立的，写进 issues 并指出它在正文的位置；'
+      + '你判断不成立的（例如字面统计与"有效出场"的差异），不必写进 issues，但要在 summary 里用一句话说明为什么。'] : []),
     '',
     '【当前小说上下文】',
     aiContextBlock() || '无',
@@ -6307,8 +6559,15 @@ async function runArticleReview(info) {
     } catch (e) {
       reportClientLog({ level: 'warn', kind: 'redline_scan_failed', message: `[审稿] 红线扫描不可用：${e.message}` });
     }
+    // 第二条零 token 判据（报告第 1 步 + 第 4 步）：连续性预检的结果与红线扫描并排进提示词。
+    // 顺序有讲究：**先算免费的，再交给付费的**——审稿一次要等几分钟且计费，
+    // 让模型去数"系统出现几次""这章多少字"既是浪费，也不可靠（它会算错）。
+    const guard = await loadContinuityGuard(reviewChapterId, info.article);
+    const continuityGuardText = buildContinuityGuardText(guard);
+    // 篇幅的权威口径随章一起定下来（章号在入口已定死，这里按同一个章号解析目标字数）。
+    const reviewTargetWords = resolveTargetWords(reviewChapterId);
     const reviewData = await runHarnessJob(
-      { ...jobBase, prompt: buildAIReviewPrompt(info.article, redlineScanText), kind: 'review', stage: 'AI 审稿' },
+      { ...jobBase, prompt: buildAIReviewPrompt(info.article, redlineScanText, continuityGuardText, reviewTargetWords), kind: 'review', stage: 'AI 审稿' },
       'AI 审稿 · 正在通读全文并生成审稿报告…'
     );
     const rawOutput = String(reviewData.output || '');
@@ -6805,11 +7064,18 @@ async function performToolbarAIWrite(requirement) {
     kind: 'prose',
     stage: 'AI 写作'
   };
+  // 🔁 成文轮流式中断时已经收到的正文。**为什么必须记在这一层**：成文流一出问题就回退慢通道
+  // 从头重新生成（质量优先下的正确选择），于是 streamAIDirectWrite 抛的那个错误会被换成
+  // 慢通道自己的错误 —— 不在管线层接住，那段正文就随着被替换掉的错误一起消失了。
+  // 只在整条管线最终失败时才落草稿：慢通道成功就不需要它，免得顶掉「取回生成稿」里的好稿。
+  let interruptedPartial = '';
   try {
     const initial = buildAIWritingInitialRequest(requirement || '');
     const history = [];
     const targetWords = resolveTargetWords();
     let maxTurns = 10;
+    // ⏱ 成文耗时账本（口径 A：点击 → 草稿进结果弹窗）。只测量，不参与任何决策。
+    const timing = newWriteTiming();
 
     // 阶段 A：澄清 → 章节蓝图
     while (maxTurns-- > 0) {
@@ -6826,6 +7092,8 @@ async function performToolbarAIWrite(requirement) {
       // 两道保险：① 上下文被预算截断时不用直连（慢通道能取回被截断的原文）；
       //           ② 直连失败/空回复 → 自动回退慢通道（directAIWrite 内部已对"思考吃光预算"重试过一次）。
       let raw = '';
+      // ⏱ 这一轮蓝图（直连 + 可能的慢通道回退）的墙钟耗时
+      const blueprintStartedAt = Date.now();
       // 慢通道那条路的结果（scan / proposals / job_id）——直连时为 null。
       // ⚠️ 必须在**循环体外**声明：下面 6705/6725 两个降级分支要用它。
       // 重审抓到过一版把它写成 if 块内的 `const data`，块外引用即 ReferenceError（node --check 查不出来）。
@@ -6853,6 +7121,8 @@ async function performToolbarAIWrite(requirement) {
         err.rawOutput = '（AI 任务输出为空）';
         throw err;
       }
+      // ⏱ 记这一轮蓝图：via 是**实际**用到的通道（直连失败回退慢通道时记 harness）
+      timing.round('blueprint', Date.now() - blueprintStartedAt, { via: jobMeta ? 'harness' : 'direct' });
       const parsed = parseAIWritingOutput(raw);
 
       if (parsed.blueprint) {
@@ -6883,6 +7153,9 @@ async function performToolbarAIWrite(requirement) {
         // 阶段 B（2/3）：按蓝图成文——质量优先模式：直连流式（快，正文逐字可见）+ flash 质检轮（保质量）。
         // 直连不可用或质检发现硬伤时自动回退 harness 精写内核。
         let proseData = null;
+        // ⏱ 成文轮（含可能的慢通道回退）—— 一次成文里最长的一段，单独记账
+        const proseStartedAt = Date.now();
+        let proseRoute = 'direct';
         const maxTokens = Math.min(16384, Math.ceil(target * 2 + 2000)); // 目标字数×2+余量，防长文截断
         const activeConfig = await getActiveAIConfig();
         if (activeConfig && activeConfig.api_key) {
@@ -6897,14 +7170,27 @@ async function performToolbarAIWrite(requirement) {
             }, 'AI 写作（2/3 成文）· 正在流式生成正文…');
           } catch (e) {
             if (e.cancelled) throw e;
+            // 回退慢通道是对的（质量优先），但这段已经写出来的正文不该跟着这个错误一起消失。
+            interruptedPartial = String(e.partialText || '');
             reportClientLog({ level: 'warn', kind: 'ai_write_stream_fallback', message: `[AI] 成文流式直连失败，回退 harness：${e.message}` });
             proseData = null;
           }
         }
         if (!proseData) {
+          proseRoute = 'harness';
           proseData = await runHarnessJob({ ...jobBase, prompt: prosePrompt }, 'AI 写作（2/3 成文）· 精写内核生成中（这一步最慢，通常 2–6 分钟）…');
         }
         let article = parseAIWritingOutput(proseData.text ?? proseData.output ?? '').finalText || '';
+        // ⏱ 成文轮如实记账：TTFT 只有流式直连测得出来，慢通道记 null（不假装有数）。
+        // token 明细（缓存命中 / 思考占比）同样只有流式直连才有 usage；慢通道拿不到就不编。
+        const proseUsage = proseData.usage || null;
+        const proseTokens = proseUsage ? {
+          prompt_tokens: Number(proseUsage.prompt_tokens) || 0,
+          cached_tokens: Number(proseUsage.prompt_cache_hit_tokens) || 0,
+          completion_tokens: Number(proseUsage.completion_tokens) || 0,
+          reasoning_tokens: Number(proseUsage.completion_tokens_details?.reasoning_tokens) || 0
+        } : {};
+        timing.round('prose', Date.now() - proseStartedAt, { via: proseRoute, ttft_ms: Number.isFinite(proseData.ttftMs) ? proseData.ttftMs : null, chars: article.length, ...proseTokens });
         if (!article.trim()) {
           const err = new Error('AI 没有返回正文内容');
           err.rawOutput = String(proseData.output ?? proseData.text ?? '').slice(-2000) || '（AI 任务输出为空）';
@@ -6919,12 +7205,17 @@ async function performToolbarAIWrite(requirement) {
           if (!verdict.pass && (verdict.issues || []).length) {
             blockedDraft = verdict.blocked;
             toast('质检发现硬伤，自动改用精写内核修复…', 'info');
+            // ⏱ 质检不合格 → 精写内核返工：这是「一次成文没写对」的真实代价，必须单独记一笔
+            const repairStartedAt = Date.now();
             proseData = await runHarnessJob(
               { ...jobBase, prompt: buildAIWriteRepairPrompt(article, verdict.issues, blueprintForProse, target) },
               'AI 写作（2/3 成文）· 精写内核修复硬伤中…'
             );
             const repaired = parseAIWritingOutput(proseData.output || '').finalText || '';
+            timing.round('repair', Date.now() - repairStartedAt, { via: 'harness', issues: (verdict.issues || []).length, accepted: !!repaired.trim() });
             if (repaired.trim()) {
+              // 最终交付的正文来自精写内核：埋点的 channel 要如实反映**交付来源**，不能停留在"首选通道"
+              proseRoute = 'harness';
               article = repaired;
               needsLedger = false; // 修复走 harness：内核已做一致性/红线自检并提交入账提案
               blockedDraft = false;
@@ -6942,22 +7233,30 @@ async function performToolbarAIWrite(requirement) {
           const gap = Math.max(0, target - plainLength(article));
           const contPrompt = buildAIWritingContinuationPrompt(article, target);
           let more = '';
+          // ⏱ 补足是"目标字数没到"的追加轮次：轮数本身就是成文质量的信号（补得越多说明一次成文越不准）
+          const contStartedAt = Date.now();
+          let contVia = 'direct';
           if (gap <= Math.max(200, Math.ceil(target * 0.15))) {
             const reply = await directAIWrite([{ role: 'user', content: contPrompt }], {
               model: policyModel('fast'),
-              maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))
+              maxTokens: withThinkingHeadroom(Math.ceil(gap * 2 + 1000))
             });
             more = parseAIWritingOutput(reply || '').finalText || '';
           }
           if (!more.trim()) {
+            contVia = 'harness';
             const cont = await runHarnessJob(
               { ...jobBase, prompt: contPrompt },
               `AI 写作（3/3 补足）· 篇幅不足，正在续写补足（${rounds}/2）…`
             );
             more = parseAIWritingOutput(cont.output || '').finalText || '';
           }
-          if (!more.trim()) break;
+          if (!more.trim()) {
+            timing.round('continuation', Date.now() - contStartedAt, { via: contVia, round: rounds, gap, ok: false });
+            break;
+          }
           article = `${article}\n\n${more}`;
+          timing.round('continuation', Date.now() - contStartedAt, { via: contVia, round: rounds, gap, ok: true, chars: more.length });
         }
         // 全文确定性红线扫描（成文+补足合并后）：本地正则零成本，覆盖直连路径与补足新增段落。
         try {
@@ -6967,7 +7266,17 @@ async function performToolbarAIWrite(requirement) {
           });
           proseData.scan = { enabled: true, total: fullScan.total || 0, hits: fullScan.hits || [] };
         } catch (_) { /* 扫描失败不阻塞交付 */ }
-        const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target, proseData && proseData.job_id, { chapterId: writeChapterId });
+        // ⏱ 收口：把这一轮的真实通道/模型/耗时交给埋点（口径 A 的终点就在这里）。
+        // 此前这三项从来没被传进来过，于是 ai_eval_events 里 ms 恒为 0、channel/model 恒为空串 ——
+        // 测量口径失效，"提速有没有生效"就永远无法被证明。
+        const writeTiming = timing.summary();
+        const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target, proseData && proseData.job_id, {
+          chapterId: writeChapterId,
+          channel: proseRoute,
+          model: policyModel('fast'),
+          ms: writeTiming.total_ms,
+          timing: writeTiming
+        });
         if (mode === null) return;
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
         await applyAIWritingArticle(mode, article, writeChapterId);
@@ -6977,7 +7286,14 @@ async function performToolbarAIWrite(requirement) {
 
       if (parsed.finalText) {
         // 模型跳过蓝图直接给了正文（降级路径，兼容旧行为）
-        const mode = await showAIWritingResult(parsed.finalText, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, { chapterId: writeChapterId });
+        const writeTiming = timing.summary();
+        const mode = await showAIWritingResult(parsed.finalText, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, {
+          chapterId: writeChapterId,
+          channel: jobMeta ? 'harness' : 'direct',
+          model: policyModel('fast'),
+          ms: writeTiming.total_ms,
+          timing: writeTiming
+        });
         if (mode === null) return;
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
         await applyAIWritingArticle(mode, parsed.finalText, writeChapterId);
@@ -6997,7 +7313,14 @@ async function performToolbarAIWrite(requirement) {
       }
 
       // 兜底：按最终结果处理
-      const mode = await showAIWritingResult(raw, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, { chapterId: writeChapterId });
+      const writeTiming = timing.summary();
+      const mode = await showAIWritingResult(raw, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, {
+        chapterId: writeChapterId,
+        channel: jobMeta ? 'harness' : 'direct',
+        model: policyModel('fast'),
+        ms: writeTiming.total_ms,
+        timing: writeTiming
+      });
       if (mode === null) return;
       if (mode === 'regenerate') return performToolbarAIWrite(requirement);
       await applyAIWritingArticle(mode, raw, writeChapterId);
@@ -7008,14 +7331,22 @@ async function performToolbarAIWrite(requirement) {
   } catch (e) {
     if (e.cancelled) {
       traceWriteCancelled = true;
-      toast('已取消 AI 写作', 'success');
+      // 已生成的正文此前连同进度卡一起丢掉 —— 作者白等几分钟、手里什么都没有。
+      // 现在够长就落成草稿（**只保存、不应用**），并如实告诉作者去哪里取。
+      const kept = await saveInterruptedDraft(e.partialText || interruptedPartial, writeChapterId);
+      toast(kept
+        ? `已取消 AI 写作；已生成的 ${kept} 字已存为草稿，可在章节里「取回生成稿」`
+        : '已取消 AI 写作', 'success');
     } else {
       // N-02：失败必须可见。弹窗说明原因并回显 AI 原始输出尾部，替代此前一闪而过的 toast。
       const detail = e.rawOutput || e.tail || e.message || '未知错误';
+      // 断流/超时同理：已经写出来的部分不销毁，只说清它在哪里（弹窗仍然照旧弹出、原因仍照旧展示）。
+      const kept = await saveInterruptedDraft(e.partialText || interruptedPartial, writeChapterId);
       openModal({
         title: '⚠️ AI 写作未完成',
         body: `
           <div class="muted mb-8">任务已结束，但没有得到可用的写作结果。常见原因：AI 拒绝执行、创作内核通道异常（如中文需求在传输中被损坏）、或返回内容无法解析。下方是原始输出尾部，可复制反馈排查：</div>
+          ${kept ? `<div class="muted mb-8">已经写出来的 ${kept} 字没有丢：已存为草稿，可在章节里「取回生成稿」。</div>` : ''}
           <pre style="white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto;background:rgba(0,0,0,.25);padding:10px;border-radius:6px;font-size:12px">${esc(String(detail).slice(-2000))}</pre>`,
         footer: '<button class="btn" data-close-modal>知道了</button>'
       });
@@ -7138,7 +7469,7 @@ async function batchGenerateChapters(count) {
         if (gap <= Math.max(200, Math.ceil(target * 0.15))) {
           const reply = await directAIWrite([{ role: 'user', content: contPrompt }], {
             model: policyModel('fast'),
-            maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))
+            maxTokens: withThinkingHeadroom(Math.ceil(gap * 2 + 1000))
           });
           more = parseAIWritingOutput(reply || '').finalText || '';
         }
@@ -7652,7 +7983,9 @@ async function runGenAskLoop({ system, initial }) {
     let output = null;
     if (forceQuestion) {
       // 直连提问轮：固定 flash，秒级、成本低；仅在需要澄清的首轮使用。
-      output = await directAIWrite([{ role: 'user', content: prompt }], { model: policyModel('fast'), maxTokens: 1500 });
+      // 提问轮只要几十字的产出，但额度同样要覆盖思考：1500 的总额度一旦被思考吃光，
+      // 澄清问题就变成"直连空手而归 → 回退慢通道"，用户为一句提问等 2–6 分钟。
+      output = await directAIWrite([{ role: 'user', content: prompt }], { model: policyModel('fast'), maxTokens: withThinkingHeadroom(1500) });
     }
     if (!output) {
       // 无可用 API 配置 / 直连失败 / 空回复：回退 Harness 慢通道（含后续成文轮）。
@@ -8988,6 +9321,36 @@ async function handleAction(action, actionEl, e) {
       case 'foreshadow-goto': {
         state.currentChapterId = Number(actionEl.dataset.id);
         await render();
+        break;
+      }
+
+      // 确定性连续性预检：把某条 finding 记成「这是故意的」/ 恢复（2026-09-22 报告 · 第 1 步）。
+      // 为什么要有这个按钮：预检是**字面判据**（"系统"出现几次、字数多少、卡上写的哪一卷），
+      // 作者知道哪些是刻意的。没有豁免入口，重复出现的提示会让人对整个预检脱敏——
+      // 那比不检查更糟。豁免键不含措辞与章节，所以改稿、换章都不会让它复活。
+      case 'continuity-exempt':
+      case 'continuity-restore': {
+        const workId = Number(actionEl.dataset.workId) || Number(state.workId) || null;
+        const key = actionEl.dataset.key || '';
+        if (!workId || !key) break;
+        const restoring = action === 'continuity-restore';
+        try {
+          await api('/novel/continuity_exemption', {
+            method: 'POST',
+            body: { work_id: workId, key, action: restoring ? 'restore' : 'exempt' }
+          });
+          toast(restoring ? '已恢复这条预检提示' : '已记为「这是故意的」，这条以后不再重复报', 'success');
+          // 就地刷新预检块（章节内容没变，不必整页重渲染）
+          const slot = $('#continuity-guard-slot');
+          if (slot) {
+            const chapterId = Number(actionEl.dataset.chapterId) || null;
+            const draft = (state.pendingAIArticle && state.pendingAIArticle.article) || '';
+            const fresh = await loadContinuityGuard(chapterId, draft);
+            if (fresh) slot.innerHTML = continuityGuardSummaryHtml(fresh, chapterId);
+          }
+        } catch (e) {
+          toast('操作失败：' + e.message, 'error');
+        }
         break;
       }
 

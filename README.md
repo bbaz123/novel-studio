@@ -449,6 +449,12 @@ npm start
 
 > 单轮短任务（润色 / 扩写 / 性格校对 / 细纲等）会优先走「AI 设置」里配置的 API 直连通道（秒级响应），只有需要调用创作内核（角色卡 / 世界观 / 红线）的任务才会经过 Harness 慢通道。
 
+> ⚠️ **如果你手动设过 `DEEPSEEK_BASE_URL`**：dsh 0.1.7 起它的模型客户端走 **Messages API**，
+> 该变量必须是 **Messages 兼容根**（官方根 `https://api.deepseek.com/anthropic`，客户端会在其后追加
+> `/v1/messages`）。指向 **OpenAI 兼容**的第三方网关会让**慢通道**任务报
+> `HTTP_404: DeepSeek Messages request failed`，而直连通道不受影响——这是最容易误判成
+> 「工坊坏了」的一种配置错。**没设过这个变量就不用管**（默认走 dsh 自带的 `deepseek-official`）。
+
 ---
 
 ## 🔧 配置项（环境变量）
@@ -466,7 +472,7 @@ AI / 创作内核：
 - `NOVELSTUDIO_DSH_PROFILE` —— 写作任务使用的 dsh profile，默认 `novel`
 - `NOVELSTUDIO_DSH_LAUNCH` —— `source` / `built`，强制走源码或预构建产物（默认自动判断：产物存在且不比源码旧才用）
 - `NOVELSTUDIO_DSH_HOME` —— 给写作任务指定一份专用 dsh home（进阶）
-- `NOVELSTUDIO_HARNESS_POOL=1` —— 打开 dsh 热备池，默认关闭
+- dsh 热备池（`ai/harness-pool.mjs`）—— **尚未接线到生产路径**（没有环境变量开关，`harness.js` 仍走"每任务一个子进程"）。冷启动收益现在来自"优先用预构建产物"，不是热备池；接线前需先测收益
 - `NOVELSTUDIO_CONTEXT_CACHE_TTL_MS` —— 上下文装配缓存 TTL，默认 10 分钟（只作兜底：索引一旦完成缓存立刻失效）
 
 记忆库与护栏：
@@ -523,6 +529,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 | 我的作品数据在哪？怎么备份？ | 全部数据都在项目里的 `data/` 目录 | 数据库是 `data/novel.db`（含全部作品与 API Key）。备份请**先关掉服务、再复制整个 `data` 文件夹**——数据库启用了 WAL 模式，只拷 `novel.db` 会漏掉最近的写入（它含密钥，别发给别人） |
 | 怎么彻底卸载？ | 程序是绿色免安装的 | 删掉整个项目文件夹即可，系统里不会有残留 |
 | 能在手机或另一台电脑上打开吗？ | 服务只监听 `127.0.0.1` | 默认不能。确实需要局域网访问，得自行修改 `server.js` 的监听地址（属进阶改动） |
+| AI 任务报 `HTTP_404: DeepSeek Messages request failed`（慢通道 / 深度写作） | 你手动设的 `DEEPSEEK_BASE_URL` 指向了 **OpenAI 兼容**的地址，而 dsh 0.1.7 起走 **Messages API** | 把它改成 Messages 兼容根（官方：`https://api.deepseek.com/anthropic`），或**直接清掉这个变量**用 dsh 自带配置。详见「配置 DeepSeek Harness」一节的提示 |
 
 ---
 
@@ -544,6 +551,11 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 - **环境变量**：`NOVELSTUDIO_OV_DISABLED=1` 整体停用集成（冒烟测试/隔离环境）；`NOVELSTUDIO_OV_AUTOINDEX=0` 关闭启动自动建索引；OpenViking 地址/凭证走 `OPENVIKING_*` 环境变量 → **AI 设置页「OpenViking 记忆库」卡里填的值** → `~/.openviking/ovcli.conf` → `~/.openviking/ov.conf` → 默认 `http://127.0.0.1:1933`
 - **在界面里配置（v0.9.4）**：`✨ AI 创作 → ⚙️ AI 设置 → 🧠 OpenViking 记忆库` 可直接填地址/访问令牌并「测试连接」，「保存并生效」当场重建客户端、无需重启；卡上标出**这份凭证当前来自哪一层**。「写入全局配置」会把生效的 `url` + `api_key` 写进 `~/.openviking/ovcli.conf`（**先自动备份、只改这两个字段、其它字段原样保留**；原文件不是合法 JSON 时直接拒绝写入），这样 GUI 会话与写作任务读到的就是同一份凭证——否则容易出现「工坊连上了、AI 写作却召回不到」的错觉。
 - **降级**：OpenViking 服务器不可用时语义召回静默跳过，写作与装配完全不受影响。
+- **模型从哪来（不必联网）**：公开端口用的本地 embedding 模型 `bge-small-zh-v1.5-f16` 已经随源码带了一份
+  （`vendor/models/`，47.9 MB，SHA256 可校验），把 OpenViking 的 `ov.conf` 里 `embedding.dense.model_path`
+  指过来即可 —— 服务端就不会再去 HuggingFace 下载。完整下载地址、配置字段说明、验证清单与常见问题见
+  **[docs/openviking-embedding-setup.md](docs/openviking-embedding-setup.md)**；
+  核对或补齐那一份用 `node scripts/fetch-embedding-model.mjs --verify-only`（去掉 `--verify-only` 即补齐）。
 
 ---
 
@@ -606,12 +618,21 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 ## 🧪 测试与验证
 
 ```bash
-# 后端接口回归（需要隔离实例在 127.0.0.1:3738 运行）
-node api-test-suite.mjs
+# 离线清单（31 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
+node scripts/ci-offline-checks.mjs
+
+# 活实例回归：起一个隔离实例（临时数据目录 + 停用 OpenViking）再跑，跑完自动关掉
+node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
+node scripts/ci-isolated-run.mjs --port 3738 -- node harness-plugins/novel-writing/test/smoke.mjs
 
 # 前端执行验证（最小 DOM 桩里真跑 public/app.js：渲染、开关、节点上报、形状摘要）
 node frontend-test.mjs
 ```
+
+> 这三条都有 CI 兜底（`.github/workflows/ci.yml`：Windows + Linux、Node 24，另有一格
+> Node 22.15 验证依赖下限）。CI **绝不调用真实模型**——离线项只读文件，活实例项用本机
+> 假端点/死端口。要跑齐**全部**验收（含需要你自己数据的那些）用
+> `node .p1-baseline/verify-all.mjs`，缺前置的项会被标成「跳过」而**不是**通过。
 
 ---
 
@@ -674,17 +695,85 @@ novel-studio/
 这一节只列**能在仓库里核对到现状**的条目；完整的待决清单与逐项代价见
 [docs/pending-decisions.md](docs/pending-decisions.md) 与最近的审查报告。
 
-- **声明开源许可证**：仓库目前还没有 LICENSE（默认保留所有权利）。在此之前若要复用或分发，请先开 issue 说明用途
-- **接入 CI**：把仓库里已有的**离线验证套件**（`node .p1-baseline/verify-all.mjs` 等）接进 GitHub Actions，让每次提交自动跑
+- ~~声明开源许可证~~ → **已定案：MIT**（见 [LICENSE](LICENSE)）
+- ~~接入 CI~~ → **已落地**：`.github/workflows/ci.yml`（离线 31 条 × Windows/Linux + 依赖下限 22.15 + 活实例 2 条）。
+  每个 job 先打**平台事实**（platform/release/arch/node/路径分隔符）；ubuntu 两格本机没有 Linux 可预演，
+  首次真红要**修脚本**，不许整格 `continue-on-error`（确需临时放行只对该 step 并注明）
 - **跨平台一键启动**：目前 `start-novel-studio.cmd` 只服务 Windows；macOS / Linux 需要 `npm start`
 - **可选的局域网访问开关**：当前服务只监听 `127.0.0.1`，想在平板或手机上写作得手动改 `server.js`
 - **更多导出格式**：现已支持整书 TXT / 整书 Markdown / 单章 TXT；EPUB / DOCX 尚未支持
-  
+
+## 🤝 参与贡献
+
+这个项目目前由作者一个人维护，**Issue 与 PR 都欢迎**。动手之前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)，要点只有几条：
+
+- **先开 issue 再写大 PR**：避免几十行改动做完才发现方向不对
+- **改完先跑现状**：`node .p1-baseline/verify-all.mjs`（离线跑批；需要活实例或外部仓库的检查会明确标成「跳过」，**跳过不等于通过**）
+- **不要提交 `data/`**：里面是你的作品与 API Key（已在 `.gitignore` 内）
+- **代码风格**：零 npm 依赖、纯 ESM、中文注释解释**为什么**这么做，而不是复述代码在做什么
+- **`docs/` 里的历史报告描述的是当时的代码**：行号可能已过时，找代码请按符号名
+
+## 📄 License
+
+**MIT**（见 [LICENSE](LICENSE)）——可自由使用、修改、分发、商用，只需保留版权与许可声明。
+
+选 MIT 的理由（一句话）：本项目的价值在「能长期自己掌控的写作工具」而不在许可限制；
+与它协作的 DeepSeek Harness 本身也是 MIT，保持一致最省沟通成本。想改回更严格的许可，
+改 `LICENSE` 一个文件即可（历史提交不受影响）。
+
+**第三方资产**（不在 MIT 覆盖范围内，各自遵循上游条款）：
+
+- `vendor/models/bge-small-zh-v1.5-f16.gguf` —— 上游模型 `BAAI/bge-small-zh-v1.5`
+  （模型卡标注 MIT），GGUF 转换件来自 `CompendiumLabs/bge-small-zh-v1.5-gguf`；
+  本仓库**原样**随源码分发（不改字节），SHA256 见 [vendor/README.md](vendor/README.md)
+- DeepSeek Harness（`dsh`）与 OpenViking 是**独立项目**，不包含在本仓库内
+
 ---
 
 ## 📝 更新记录
 
-### 🛠️ 最近更新（2026-09 · 代码审查修复版 v0.9.6）
+### 🛠️ 最近更新（2026-09 · 主体 V2：上下文可追问 + 压缩输入修复 + CI）
+
+这一轮把「模型到底看到了什么」从**只能翻日志**变成**可追问、可核对**，期间**没有改动生成行为**：
+同一批 50 个装配用例（6 部作品 × 5 种模式）的提示词正文逐字节 **50/50 相同**，热/冷路径 p50 差异在噪声内。
+完整报告：[docs/main-v2-upgrade-2026-09-24.md](docs/main-v2-upgrade-2026-09-24.md)。
+
+- **上下文身份与完整性**：每次装配产出 `context_id`（内容哈希）与 `context_request_id`（本次装配的身份），
+  并由 `/api/novel/context`、`/api/ai_context` 两条端点下发；清单与**真正发给模型的文字**必须逐字节对得上
+  （C1–C8 逐条重算 + 内容哈希复核）。不合格时不拦截生成（那会改变你的可见行为），而是**响亮记录**：
+  `error` 级日志 + 响应字段 + 验收断言
+- **每层可溯源**：14 个上下文层逐层声明来源 / 时间视角 / 知识范围 / 选择方式 / 为什么需要它 / 已知缺口，
+  与「这次到底用了哪几条 id、检索命中了什么分数」合并进清单；裁剪优先级从既有的收敛顺序**派生**，不另设表
+- **修掉一个静默的质量缺陷**：记忆压缩提示词引用了已被删除的 SQL 别名，「最近章节尾部」**永远是空的**——
+  压缩器只能靠摘要工作，而新章的摘要往往还没生成，于是最新剧情最可能被漏掉（且摘要读起来照样通顺）。
+  实测（只读对照）：真实库《雾都缝匠》提示词里的章节正文 0 → **912 字**，压力作品 0 → 700/912/1429 字
+- **记忆压缩提示词组装箱**：整段组装搬进 `ai/memory-compress-prompt.mjs`（纯函数、可离线断言），
+  模板逐字未改；「从头截断」改成**保前缀 + 取尾部**（不再把最新正文丢掉）
+- **首次接入 CI**（`.github/workflows/ci.yml`）：离线 31 条 + 活实例 2 条，Windows/Linux 双平台，**零计费**；
+  每个 job 开头先打**平台事实**（platform/release/arch/node/路径分隔符），ubuntu 两格本机没有 Linux 可预演——
+  首次真红要**修脚本**，不许整格 `continue-on-error`（确需临时放行只对该 step 并注明）；
+  依赖下限定为 Node **22.15**（实测：22.13 有 `node:sqlite` 但没有 `zlib.zstdDecompressSync`，
+  而后者是「到底有没有花钱」那台审计工具的必需品——缺能力时它现在会**响亮报错**，不再静默报 0）
+- **隔离包装器修掉一个真实缺陷**：`scripts/ci-isolated-run.mjs` 此前只把隔离变量给了服务端、没给被跑的命令，
+  于是测试读的是另一个目录（封卷三条恒红）。修后 API 套件 **183 通过 / 0 失败 / 4 跳过**、插件冒烟 **39/39**
+- **慢通道（harness）冷启动重新可测**：dsh 0.1.7 把与模型的线路换成了 **Messages API**
+  （适配器发 `{base}/v1/messages`，官方根 `https://api.deepseek.com/anthropic`），而本仓的零成本
+  「假 LLM」端点只实现 OpenAI 形状——于是冷启动测量全部变成「端点没收到请求」（一个把「走错端点」
+  读成「没连上」的测量盲区，**不是**产品缺陷：生产走 dsh 自带 provider，线路没问题）。本轮给假端点补上
+  Messages 形状与逐请求留痕 `hits[]`，实测**生产路径冷启动均值 4.4s**（样本 4.29–4.55s）、
+  预构建产物比源码现场转译省 **≈2.2s**（`node .p1-baseline/probe-cold-start.mjs --runs 2`，自设假端点，零计费）。
+  假端点默认只回正文；显式 `--tool-call` 后可以回**一轮**工具调用（两条线路都支持，判据只有一条：
+  请求里已带工具结果 → 回正文，否则 → 回工具调用），于是「模型 → 工具 → 模型」的最小循环也能零成本复现：
+  `.p1-baseline/probe-harness-tool-loop.mjs` 实测 **7/7**（断言含「工具结果里真的出现被请求的文件」，
+  用来识破"工具被策略拒绝、却照常回灌 tool_result"这种假通过）。
+  ⚠️ 诚实边界：它不做多步工具链规划，也不校验工具参数的业务语义
+- **花钱总闸加了第二层（归属）**：零计费探针用本地假端点充当模型时，转录形态与"真调用"一模一样，
+  总闸一度把自己的探针判成"花钱"（假红，见报告 4.7）。现在每条「拿到模型文本」的会话都必须**自证归属**：
+  回环端点 + 端点实收请求数 ≥ 转录请求数 + 转录正文等于罐头正文 + 时段重叠，四缺一即红灯；
+  探针打 `SYNTHETIC_MODEL_SESSION` 行自证，判据自检 **8/8**（含 5 条阴性对照，`node .p1-baseline/audit-llm-calls.mjs --self-test`）
+- **许可证定案 MIT**（`LICENSE`）：与 dsh 一致；第三方资产（`vendor/models/bge-small-zh-v1.5-f16.gguf`，
+  上游 `BAAI/bge-small-zh-v1.5` 模型卡亦为 MIT）单列说明。该 GGUF（**47.9MB**）**随仓库提交**——
+  `.gitattributes` 标 `binary` 免得行尾转换，校验方式与"不想要就删掉"的路径见 [vendor/README.md](vendor/README.md)
 
 一轮完整的「只读审查 → 修复 → 复核」闭环（5 步，报告见 [docs/code-review-2026-09-19.md](docs/code-review-2026-09-19.md) 与 [docs/code-review-2026-09-19-summary.md](docs/code-review-2026-09-19-summary.md)）。全程**质量优先**：没有为了"跑通"而降低 AI 文本质量、上下文连贯性或生成速度。
 

@@ -253,8 +253,13 @@ globalThis.__probe = {
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
   WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
+  continuityGuardSummaryHtml,
   streamAIDirectWrite,
-  performToolbarAIWrite
+  performToolbarAIWrite,
+  newWriteTiming,
+  withThinkingHeadroom,
+  verifyAIDraft,
+  pollHarnessJob
 };
 `;
 const ctx = vm.createContext(sandbox);
@@ -581,6 +586,33 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('97 审稿提示词带确定性红线扫描结果', withScan.includes('【确定性红线扫描结果') && withScan.includes('嘴角勾起'));
   check('98 扫描不可用时不出现空标题（不编造"零命中"）', !withoutScan.includes('【确定性红线扫描结果'));
   check('98b 审稿提示词不带蓝图专用字段（references 对不上审稿的 JSON 契约）', !withoutScan.includes('写进 references'));
+  // 2026-09-22：篇幅的**权威口径**必须进提示词。此前模型只能自己挑尺子：AI 写作按本章目标
+  // （3000）补足、审稿却按作品默认/风格区间（4000）判，于是 work#18 第 5、6 章被反复误报
+  // 「篇幅不足」——一条由口径不一致制造、却被记成正文问题的假 issue。
+  const withTarget = P.buildAIReviewPrompt('正文内容', '', '', 3000);
+  check('98e 审稿提示词声明篇幅权威口径（本章目标字数）',
+    withTarget.includes('篇幅口径：本章目标 3000 字') && withTarget.includes('不要据此报"篇幅不足"'));
+  check('98f 拿不到目标字数时不编造数字（不出现空的篇幅口径段）',
+    !P.buildAIReviewPrompt('正文内容').includes('篇幅口径'));
+  // 2026-09-22 复盘（REV-1 / REV-2）：预检块的两条"如实性"——
+  // 没给章号时只跑了作品级检查，不能写成"四项均未发现问题"；已忽略项要显示当初那句话，
+  // 内部键（character:67 之类）作者看不懂，只配放在 title 里给排查用。
+  const guardWithChapter = P.continuityGuardSummaryHtml(
+    { findings: [], exempted: [], checked: { chapterLabel: '第五章' } }, 123);
+  const guardNoChapter = P.continuityGuardSummaryHtml(
+    { findings: [], exempted: [], checked: { chapterLabel: '' } }, null);
+  check('98g 有章号时零命中照旧写"四项均未发现问题"', guardWithChapter.includes('均未发现问题'));
+  check('98h 无章号时如实标注"未指定章节"（不谎称四项都通过）',
+    guardNoChapter.includes('未指定章节') && !guardNoChapter.includes('均未发现问题'));
+  const exemptedHtml = P.continuityGuardSummaryHtml({
+    findings: [],
+    exempted: [{ key: 'system_frequency:chapter:123', message: '系统出场 20 次，超过上限 15 次', severity: 'info' }],
+    checked: { chapterLabel: '第五章' },
+  }, 123);
+  check('98i 已忽略项显示原话、键退到 title（作者看得懂忽略的是哪条）',
+    exemptedHtml.includes('系统出场 20 次') && exemptedHtml.includes('title="system_frequency:chapter:123"'));
+  check('98j 「恢复」按钮带章号（刷新必须与列表同口径）',
+    exemptedHtml.includes('data-action="continuity-restore"') && exemptedHtml.includes('data-chapter-id="123"'));
 
   // ⚠️ 第四轮重审抓到的真缺陷：S2 的扫描文本用了 `h.word`，而服务端返回的是 `pattern`
   // —— 提示词里实际是「命中 6 处：undefined×3」，模型拿到的是噪声（却还被要求"与扫描一致"）。
@@ -899,6 +931,15 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   const metaArg = resultArgs[0] && resultArgs[0][5];
   check('108f 结果弹窗拿到入口捕获的章号（不是弹窗出现时的当前章）',
     !!metaArg && Number(metaArg.chapterId) === 107, JSON.stringify(metaArg));
+  // 成文耗时账本（口径 A）：结果弹窗还必须拿到**真实**的通道 / 模型 / 分轮耗时 ——
+  // 2026-09-21 的真实库里这三项从来是空串与 0（4 行全部如此），这条断言钉的正是那个失效的测量口径。
+  check('108h 结果弹窗拿到真实的通道/模型与分轮耗时账本（埋点不再记空串与 0）',
+    !!metaArg && typeof metaArg.channel === 'string' && metaArg.channel !== ''
+      && typeof metaArg.model === 'string' && metaArg.model !== ''
+      && Number.isFinite(Number(metaArg.ms)) && Number(metaArg.ms) >= 0
+      && !!metaArg.timing && Array.isArray(metaArg.timing.phases) && metaArg.timing.phases.length >= 1
+      && Number.isFinite(metaArg.timing.total_ms),
+    JSON.stringify(metaArg && { channel: metaArg.channel, model: metaArg.model, ms: metaArg.ms, phases: metaArg.timing && metaArg.timing.phases }));
   // 应用动作也必须写回同一章：让"写作期间切章"真的发生（在结果弹窗打开的那一刻改当前章），
   // 断言应用动作拿到的仍是入口捕获的 107 —— 这正是缺陷现场（旧实现会写 999）。
   {
@@ -1133,6 +1174,442 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   sandbox.fetch = savedFetch;
   sandbox.TextDecoder = savedTextDecoder;
   sandbox.reportClientLog = savedReport;
+}
+
+// --- 12b) 成文耗时账本落地：埋点必须真的收到通道/模型/耗时，并留下可核对的分轮明细 ---
+// 依据是真实库实测（2026-09-21）：ai_eval_events 共 4 行，**全部** ms=0、channel/model 为空串 ——
+// 三处 showAIWritingResult 调用从来没把 meta.channel/model/ms 传进来过。
+// 只断言"参数传进去了"不算证明：必须断言**落库请求**里就是真值，否则等于没修。
+{
+  const posts = [];
+  const timingLogs = [];
+  const savedApi = sandbox.api;
+  const savedToast = sandbox.toast;
+  const savedReport = sandbox.reportClientLog;
+  const savedContext = P.state.aiContext;
+  sandbox.api = async (p, o = {}) => { if (p === '/ai/eval') posts.push(o.body); return {}; };
+  sandbox.toast = () => {};
+  sandbox.reportClientLog = (o) => { timingLogs.push(o); return savedReport && savedReport(o); };
+  P.state.aiContext = { assembled: '上下文', context_stats: { length: 1234 } };
+  const t = P.newWriteTiming();
+  t.round('blueprint', 1200, { via: 'direct' });
+  t.round('prose', 30500, { via: 'direct', ttft_ms: 2100, chars: 8000 });
+  const sum = t.summary();
+  const pending = sandbox.showAIWritingResult('正文', null, null, 3000, null,
+    { chapterId: 107, channel: 'direct', model: 'deepseek-flash', ms: sum.total_ms, timing: sum });
+  const gen = posts[0] || {};
+  check('112a 成文埋点写入了真实通道/模型/上下文规模（不再是空串与 0）',
+    gen.action === 'generate' && gen.channel === 'direct' && gen.model === 'deepseek-flash' && Number(gen.chars_in) === 1234,
+    JSON.stringify(gen));
+  const tl = timingLogs.find((l) => l.kind === 'ai_write_timing');
+  check('112b 每次成文留下分轮耗时账（总时长 / 首字 / 直连与慢通道分量可核对）',
+    !!tl && tl.context.total_ms === sum.total_ms && tl.context.ttft_ms === 2100
+      && tl.context.direct_ms === 31700 && tl.context.phases.length === 2 && tl.context.draft_key === gen.draft_key,
+    JSON.stringify(tl && tl.context));
+  P.state.pendingAIFinal('insert');
+  await pending;
+  const adopt = posts.find((p) => p.action === 'adopt');
+  check('112c 采纳行与生成行共用 draft_key（口径 B 交付时间 = 两行时间之差，可直接算出来）',
+    !!adopt && adopt.draft_key === gen.draft_key && String(adopt.draft_key || '') !== '',
+    JSON.stringify(posts.map((p) => ({ a: p.action, k: p.draft_key }))));
+  sandbox.api = savedApi;
+  sandbox.toast = savedToast;
+  sandbox.reportClientLog = savedReport;
+  P.state.aiContext = savedContext;
+}
+
+// --- 13) 空回复阶梯与「思考 + 正文」额度：非流式直连路径 ---
+// 依据（真实库 + 真实日志，2026-09-21）：7 次空回复**全部**来自非流式路径（成文流式 0 次），
+// 其中同一天两条完整失败链，每次都是「1500 被思考吃光 → 8192 又被吃光 → 换 low + 8192 还是被吃光
+// → 回退精写内核」，一个 gap≈250 字的补足白等 2–6 分钟。
+// 另据本函数头注释：它一直写着"放宽输出上限再试一次；只有仍为空时才降思考预算兜底"，
+// 但实现在 budgetExhausted 时**跳过**了保持原强度的那次重试 —— 实现与自己的描述自相矛盾。
+{
+  const savedApi = sandbox.api;
+  const savedReport = sandbox.reportClientLog;
+  const savedConfigs = P.state.apiConfigs;
+  const savedActive = P.state.activeConfigId;
+  const savedToast = sandbox.toast;
+  const bodies = [];
+  const logs = [];
+  sandbox.api = async (p, o = {}) => {
+    if (String(p).startsWith('/ai/write')) {
+      bodies.push(o.body);
+      return {
+        reply: '',
+        raw: {
+          choices: [{ finish_reason: 'length' }],
+          usage: { completion_tokens: 1500, completion_tokens_details: { reasoning_tokens: 1500 } }
+        }
+      };
+    }
+    return {};
+  };
+  sandbox.reportClientLog = (o) => { logs.push(o); return savedReport && savedReport(o); };
+  sandbox.toast = () => {};
+  P.state.apiConfigs = [{ id: 7, api_key: 'sk-test', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', temperature: 0.8, max_tokens: 393216 }];
+  P.state.activeConfigId = 7;
+
+  const empty = await P.directAIWrite([{ role: 'user', content: '续写' }], { model: 'deepseek-flash', maxTokens: 1500 });
+  check('113a 预算被思考吃光时也走完整的 3 次阶梯（不再跳过"保强度"的那次重试）',
+    empty === null && bodies.length === 3,
+    JSON.stringify(bodies.map((b) => ({ e: b.reasoning_effort, m: b.max_tokens }))));
+  check('113b 第一次重试保持原思考强度、只放宽输出上限（不拿降强度换速度）',
+    bodies.length === 3 && bodies[0].reasoning_effort === undefined && bodies[1].reasoning_effort === undefined
+      && Number(bodies[1].max_tokens) > Number(bodies[0].max_tokens),
+    JSON.stringify(bodies.map((b) => ({ e: b.reasoning_effort, m: b.max_tokens }))));
+  check('113c 只有第三次才允许受控降级到 low（前两次都是原强度）',
+    bodies.length === 3 && bodies[2].reasoning_effort === 'low' && Number(bodies[2].max_tokens) === Number(bodies[1].max_tokens),
+    JSON.stringify(bodies.map((b) => ({ e: b.reasoning_effort, m: b.max_tokens }))));
+  const ladderLog = logs.find((l) => l.kind === 'ai_empty_ladder');
+  check('113d 整条失败阶梯留一条可诊断的结构化日志（每次的额度 / 结束原因 / 思考 token 都在）',
+    !!ladderLog && !!ladderLog.context && Array.isArray(ladderLog.context.attempts)
+      && ladderLog.context.attempts.length === 3
+      && ladderLog.context.attempts[0].reasoning_tokens === 1500
+      && Number(ladderLog.context.base_max) === 1500 && Number(ladderLog.context.larger_max) === 8192,
+    JSON.stringify(ladderLog && ladderLog.context));
+
+  bodies.length = 0;
+  logs.length = 0;
+  sandbox.api = async (p, o = {}) => {
+    if (String(p).startsWith('/ai/write')) {
+      bodies.push(o.body);
+      return { reply: '{"verdict":"pass"}', raw: { choices: [{ finish_reason: 'stop' }], usage: {} } };
+    }
+    return {};
+  };
+  const verdict = await P.verifyAIDraft(null, '正文正文', 3000);
+  check('113e 质检轮的额度带上了思考余量（不再是连思考都不够的 1500）',
+    !!verdict && bodies.length === 1 && Number(bodies[0].max_tokens) === P.withThinkingHeadroom(1500)
+      && Number(bodies[0].max_tokens) >= 8192 + 1500,
+    JSON.stringify({ v: verdict && verdict.pass, m: bodies.map((b) => b.max_tokens) }));
+  check('113f 思考余量函数本身：只抬上限、封顶 16384（不凭空产生 token）',
+    P.withThinkingHeadroom(1500) === 9692 && P.withThinkingHeadroom(8000) === 16192 && P.withThinkingHeadroom(100000) === 16384 && P.withThinkingHeadroom(0) === 8192,
+    [P.withThinkingHeadroom(1500), P.withThinkingHeadroom(8000), P.withThinkingHeadroom(100000), P.withThinkingHeadroom(0)].join(','));
+  check('113g 两个补足点（交互 + 批量）都换成了带思考余量的额度，且旧写法已不存在',
+    (src.split('withThinkingHeadroom(Math.ceil(gap * 2 + 1000))').length - 1) === 2
+      && src.indexOf('maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))') === -1,
+    'hit=' + (src.split('withThinkingHeadroom(Math.ceil(gap * 2 + 1000))').length - 1));
+
+  sandbox.api = savedApi;
+  sandbox.reportClientLog = savedReport;
+  sandbox.toast = savedToast;
+  P.state.apiConfigs = savedConfigs;
+  P.state.activeConfigId = savedActive;
+}
+
+// --- 14b) 流式成文的用量回传：把「预算到底花在哪了」变成可实测的数字 ---
+// 依据（真实代码，先测量后优化）：server.js 的 callAIStream 早就把流式最后一个 chunk 的 usage
+// 收进了 streamUsage（server.js:834 定义 / 880 赋值），却**从来没有向外传过**。于是两个直接决定
+// 成文耗时的问题一直只能靠猜：
+//   ① 前缀缓存命不命中（prompt_cache_hit_tokens）—— 长上下文的重复发送是成文时间的大头；
+//   ② 思考吃掉了多少输出预算（reasoning_tokens）—— 空回复事故的根因就在这里（见上面 113 组）。
+// 不把这两个数测出来，任何"提速"改动都无法证明自己真的省了时间、也没有多烧 token。
+// 这一组钉住三段链路：服务端随 done 下发 → 客户端透传到返回值 → 落进成文耗时账本的成文轮。
+{
+  const savedFetch = sandbox.fetch;
+  const savedTextDecoder = sandbox.TextDecoder;
+  const savedReport = sandbox.reportClientLog;
+  sandbox.TextDecoder = class { decode(bytes) { return bytes ? Buffer.from(bytes).toString('utf8') : ''; } };
+  sandbox.reportClientLog = () => {};
+  const sse = (frames) => {
+    const bytes = Buffer.from(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join(''), 'utf8');
+    let sent = false;
+    return {
+      ok: true, status: 200,
+      body: { getReader: () => ({ read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })) }) },
+      json: async () => ({}), text: async () => ''
+    };
+  };
+  const runOnce = async (frames) => {
+    sandbox.fetch = async (url) => (String(url).includes('/api/ai/write_stream')
+      ? sse(frames)
+      : { ok: true, status: 200, json: async () => ({}), text: async () => '{}' });
+    P.state.aiTaskRunning = false;
+    try {
+      return { ok: true, value: await P.streamAIDirectWrite({ config_id: 1, messages: [{ role: 'user', content: 'x' }], max_tokens: 4096 }, '测试成文') };
+    } catch (e) {
+      return { ok: false, error: e };
+    }
+  };
+  const liveUsage = {
+    prompt_tokens: 12980, prompt_cache_hit_tokens: 11520,
+    completion_tokens: 4210, completion_tokens_details: { reasoning_tokens: 1830 }
+  };
+  const withUsage = await runOnce([{ delta: '正文一句' }, { done: true, text: '正文一句', usage: liveUsage }]);
+  check('114a 服务端随 done 下发的用量被如实透传（缓存命中 / 思考 token 都留得下来）',
+    withUsage.ok && !!withUsage.value.usage
+      && withUsage.value.usage.prompt_cache_hit_tokens === 11520
+      && withUsage.value.usage.completion_tokens_details.reasoning_tokens === 1830,
+    JSON.stringify(withUsage.ok ? withUsage.value.usage : String(withUsage.error)));
+  // 阴性对照：旧服务端（done 帧不带 usage）必须记 null —— 宁可"这次没数"，也不能编一个看起来正常的数。
+  const noUsage = await runOnce([{ delta: '旧服务端正文' }, { done: true, text: '旧服务端正文' }]);
+  check('114b 旧服务端不下发用量时记 null（不编造、不拿 0 冒充实测值）',
+    noUsage.ok && noUsage.value.usage === null && noUsage.value.text === '旧服务端正文',
+    JSON.stringify(noUsage.ok ? noUsage.value.usage : String(noUsage.error)));
+
+  // 跨文件契约：DOM 桩只能证明"收到 usage 会透传"，证明不了服务端真的发了 —— 所以这里直接读 server.js。
+  // 三处缺一不可：① 流式收尾把 usage 交给调用方；② 路由注册回调；③ done 帧带上它。
+  const serverSrc = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
+  check('114c 服务端确实把流式用量随 done 下发（回流 + 回调 + 下发三处齐全）',
+    serverSrc.includes('if (streamUsage && typeof options.onUsage === \'function\') options.onUsage(streamUsage);')
+      && serverSrc.includes('onUsage: (u) => { usage = u; }')
+      && serverSrc.includes('send({ done: true, text, scan, usage });'),
+    JSON.stringify({
+      emit: serverSrc.includes('options.onUsage(streamUsage)'),
+      wire: serverSrc.includes('onUsage: (u) => { usage = u; }'),
+      frame: serverSrc.includes('send({ done: true, text, scan, usage });')
+    }));
+
+  // 成文耗时账本：拿到了 usage 还必须真的记下来，否则"测到了"等于白测。
+  const measured = P.newWriteTiming();
+  measured.round('prose', 1234, { via: 'direct', ttft_ms: 900, chars: 3000, prompt_tokens: 12980, cached_tokens: 11520, completion_tokens: 4210, reasoning_tokens: 1830 });
+  const prosePhase = measured.summary().phases.find((p) => p.name === 'prose') || {};
+  check('114d 成文轮的账本保留 token 明细（缓存命中与思考占比能逐轮核对）',
+    prosePhase.cached_tokens === 11520 && prosePhase.reasoning_tokens === 1830 && prosePhase.prompt_tokens === 12980,
+    JSON.stringify(prosePhase));
+  check('114e 前端接线完整：成文轮把 usage 展开进账本，非流式留痕也带上输入侧用量',
+    src.includes('const proseUsage = proseData.usage || null;')
+      && src.includes('...proseTokens')
+      && src.includes('promptTokens: Number.isFinite(Number(usage.prompt_tokens))')
+      && src.includes('cachedTokens: Number.isFinite(Number(usage.prompt_cache_hit_tokens))')
+      && src.includes('prompt_tokens: meta.promptTokens')
+      && src.includes('cached_tokens: meta.cachedTokens'),
+    '');
+
+  sandbox.fetch = savedFetch;
+  sandbox.TextDecoder = savedTextDecoder;
+  sandbox.reportClientLog = savedReport;
+}
+
+// --- 15) 取消 / 超时不再丢已生成的正文（P0-3） ---
+// 背景：一次成文要跑 30s–6min。此前点「停止」或连接中断时，**已经写出来的正文连同进度卡一起被丢掉**，
+// 错误文案自己都写着"白等" —— 而这是口径 B（点击 → 真正拿到能用的稿子）上最贵的一种损失：
+// 机器时间白烧了，作者手里还什么都没有。
+// 现在的口径：够长就落成草稿（**只保存、不应用**，正文永远由作者自己决定要不要写回），
+// 并如实告诉作者去哪里取；碎片段不存 —— getLatestDraft 只取最新一份，一次误点「停止」
+// 不该把上一份好稿从「取回生成稿」里顶掉。
+{
+  const savedFetch = sandbox.fetch;
+  const savedDecoder = sandbox.TextDecoder;
+  const savedReport = sandbox.reportClientLog;
+  const savedToast = sandbox.toast;
+  const savedApi = sandbox.api;
+  const savedConfirm = sandbox.showBlueprintConfirm;
+  const savedCardFn = sandbox.showAITaskProgress;
+  const savedDirect = sandbox.directAIWrite;
+  const savedApply = sandbox.applyAIWritingArticle;
+  // ⚠️ 全局 DOM 桩的 AbortController 只有 signal、没有 abort()：真实浏览器里点「停止」会调用
+  // controller.abort()，在这套桩里直接 TypeError（本测试第一版就崩在 app.js:4740）。
+  // 只在本段换成"有 abort() 的最小实现"，不碰全局桩 —— 其他段不走取消路径，改全局是没必要的面。
+  const savedAbort = sandbox.AbortController;
+  const drafts = [];
+  let capturedCancel = null;
+  let lastToasts = [];
+  let applyCalls = 0;
+
+  P.state.aiContext = { assembled: '上下文', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+  P.state.apiConfigs = [{ id: 1, api_key: 'sk-test', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 }];
+  P.state.activeConfigId = 1;
+  P.state.currentChapterId = 107;
+  P.state.workId = 2;
+  P.state.work = { id: 2, title: '测试作品' };
+  P.state.chapters = [{ id: 107, title: '第107章', content: '<p>原文</p>' }];
+  containers['#editor-content'] = mkEl('editor-content');
+  containers['#editor-content'].innerHTML = '<p>原文</p>';
+  containers['#editor-content'].dataset = { chapterId: '107' };
+
+  sandbox.TextDecoder = class { decode(b) { return b ? Buffer.from(b).toString('utf8') : ''; } };
+  sandbox.reportClientLog = () => {};
+  sandbox.toast = (m) => { lastToasts.push(String(m)); };
+  // 蓝图轮直连返回一份合法蓝图，并跳过确认弹窗 —— 这样才走得到成文轮（被测的那一轮）。
+  sandbox.directAIWrite = async () => '【蓝图】{"scene_goal":"取消测试","plot_points":"一","hook":"钩"}';
+  sandbox.showBlueprintConfirm = async (bp) => ({ ...bp, skip: false });
+  sandbox.api = async (p, o = {}) => {
+    if (p === '/novel/draft') { drafts.push(o && o.body); return { ok: true, chars: String((o && o.body && o.body.content) || '').length }; }
+    return savedApi(p, o);
+  };
+  sandbox.applyAIWritingArticle = async (...a) => { applyCalls += 1; return savedApply(...a); };
+  sandbox.AbortController = class { constructor() { this.signal = {}; this.aborted = false; } abort() { this.aborted = true; } };
+  sandbox.showAITaskProgress = (label) => {
+    const c = savedCardFn(label);
+    const orig = c.setCancel;
+    c.setCancel = (fn) => { if (fn) capturedCancel = fn; return orig.call(c, fn); };
+    return c;
+  };
+  // 卡住的 SSE：先吐一段正文，然后**一直不结束** —— 直到测试替作者点「停止」，或模拟断线。
+  const heldStream = (firstChunk, mode) => {
+    let release = null;
+    const gate = new Promise((r) => { release = r; });
+    let sent = false;
+    return {
+      release,
+      resp: {
+        ok: true, status: 200,
+        body: { getReader: () => ({ read: async () => {
+          if (!sent) { sent = true; return { done: false, value: Buffer.from('data: ' + JSON.stringify({ delta: firstChunk }) + '\n\n', 'utf8') }; }
+          await gate;
+          const err = new Error(mode === 'abort' ? 'aborted' : 'socket hang up');
+          err.name = mode === 'abort' ? 'AbortError' : 'TypeError';
+          throw err;
+        } }) },
+        json: async () => ({}), text: async () => ''
+      }
+    };
+  };
+  const runHeld = async (held, cancelIt) => {
+    containers['#modal-root'].innerHTML = '';
+    sandbox.fetch = async (url, opts) => (String(url).includes('/api/ai/write_stream') ? held.resp : savedFetch(url, opts));
+    capturedCancel = null;
+    lastToasts = [];
+    const p = P.performToolbarAIWrite('续写本章').catch(() => {});
+    // 等成文轮真的挂上取消回调（蓝图轮不注册取消，所以拿到的一定是成文轮那一个）
+    for (let i = 0; i < 400 && !capturedCancel; i += 1) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 40)); // 让第一段正文真的进到账本
+    if (cancelIt && capturedCancel) capturedCancel();
+    held.release();
+    await p;
+  };
+
+  const heldA = heldStream('甲'.repeat(260), 'abort');
+  await runHeld(heldA, true);
+  check('115a 点「停止」后已生成的正文不再被销毁（落成草稿，且只保存、不应用）',
+    drafts.length === 1 && Number(drafts[0].chapter_id) === 107 && String(drafts[0].content).length >= 260 && applyCalls === 0,
+    JSON.stringify({ n: drafts.length, ch: drafts[0] && drafts[0].chapter_id, len: drafts[0] && String(drafts[0].content).length, apply: applyCalls }));
+  check('115b 取消提示如实告诉作者去哪里取回（不再只有一句"已取消"）',
+    lastToasts.some((t) => t.includes('已取消 AI 写作') && t.includes('取回生成稿')),
+    JSON.stringify(lastToasts));
+  check('115c 取消仍然是"取消"语义：不弹错误框',
+    capturedCancel !== null && !String(containers['#modal-root'].innerHTML).includes('AI 写作未完成'),
+    JSON.stringify({ cancelHooked: capturedCancel !== null, modal: String(containers['#modal-root'].innerHTML).slice(0, 60) }));
+
+  const heldB = heldStream('乙'.repeat(20), 'abort');
+  drafts.length = 0;
+  await runHeld(heldB, true);
+  check('115d 误点「停止」产生的碎片不落草稿（否则会顶掉「取回生成稿」里的上一份好稿）',
+    drafts.length === 0 && lastToasts.some((t) => t === '已取消 AI 写作'),
+    JSON.stringify({ drafts: drafts.length, toast: lastToasts }));
+
+  const heldC = heldStream('丙'.repeat(260), 'broken');
+  drafts.length = 0;
+  await runHeld(heldC, false);
+  check('115e 断流/超时同样保住已写出的部分，且错误弹窗说明草稿去处',
+    drafts.length === 1 && String(containers['#modal-root'].innerHTML).includes('AI 写作未完成')
+      && String(containers['#modal-root'].innerHTML).includes('取回生成稿'),
+    JSON.stringify({ drafts: drafts.length, modal: String(containers['#modal-root'].innerHTML).replace(/<[^>]*>/g, ' ').slice(0, 120) }));
+
+  sandbox.fetch = savedFetch;
+  sandbox.TextDecoder = savedDecoder;
+  sandbox.reportClientLog = savedReport;
+  sandbox.toast = savedToast;
+  sandbox.api = savedApi;
+  sandbox.showBlueprintConfirm = savedConfirm;
+  sandbox.showAITaskProgress = savedCardFn;
+  sandbox.directAIWrite = savedDirect;
+  sandbox.applyAIWritingArticle = savedApply;
+  sandbox.AbortController = savedAbort;
+}
+
+// --- 16) 「模型正在思考」相位：把长时间思考从"像卡死"变成看得见的进展 ---
+// 背景：DeepSeek 的思考以 `delta.reasoning_content` 逐片下发，正文之前**可能持续十几秒**。
+// 此前这些帧被整个忽略，客户端在这段时间里一帧都收不到 —— 进度卡上一直写着"已 0 字"，
+// 作者看到的与一个卡死的界面完全一样。而作者一旦以为卡死，就会点「停止」或「重新生成」，
+// 口径 B（交付时间）直接变差 —— 所以这条不是"好看"，它保护的是作者不去白烧一轮。
+// 现在的口径：服务端只在**进入思考**时下一次 `{ phase: 'thinking' }`，不转发思考内容本身；
+// 客户端把进度卡换成"模型正在思考…"。纯展示，不改任何生成参数。
+{
+  const savedFetch = sandbox.fetch;
+  const savedDecoder = sandbox.TextDecoder;
+  const savedReport = sandbox.reportClientLog;
+  const savedCardFn = sandbox.showAITaskProgress;
+  const updates = [];
+  sandbox.TextDecoder = class { decode(b) { return b ? Buffer.from(b).toString('utf8') : ''; } };
+  sandbox.reportClientLog = () => {};
+  // 用记账替身而不是真进度卡：真卡片的 label 节点在 DOM 桩里取不到，断言会变成永久假绿/假红。
+  sandbox.showAITaskProgress = () => ({
+    update: (tail, label) => { updates.push(String(label || tail)); },
+    note: () => {}, close: () => {}, setCancel: () => {}
+  });
+  const sse = (frames) => {
+    const bytes = Buffer.from(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join(''), 'utf8');
+    let sent = false;
+    return {
+      ok: true, status: 200,
+      body: { getReader: () => ({ read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })) }) },
+      json: async () => ({}), text: async () => ''
+    };
+  };
+  const runFrames = async (frames) => {
+    sandbox.fetch = async (url) => (String(url).includes('/api/ai/write_stream')
+      ? sse(frames)
+      : { ok: true, status: 200, json: async () => ({}), text: async () => '{}' });
+    P.state.aiTaskRunning = false;
+    try { return { ok: true, value: await P.streamAIDirectWrite({ config_id: 1, messages: [{ role: 'user', content: 'x' }], max_tokens: 4096 }, '测试成文') }; }
+    catch (e) { return { ok: false, error: e }; }
+  };
+
+  updates.length = 0;
+  const withPhase = await runFrames([
+    { phase: 'thinking' },
+    { delta: '正文' },
+    { done: true, text: '正文' }
+  ]);
+  check('116a 进入思考时进度卡改说"模型正在思考"（十几秒的思考不再看起来像卡死）',
+    withPhase.ok && updates.some((u) => u.includes('思考')),
+    JSON.stringify(updates));
+  check('116b 思考相位不影响正文：交付的正文仍然只有模型写出的那部分',
+    withPhase.ok && withPhase.value.text === '正文',
+    JSON.stringify(withPhase.ok ? withPhase.value.text : String(withPhase.error)));
+
+  updates.length = 0;
+  const noPhase = await runFrames([{ delta: '正文' }, { done: true, text: '正文' }]);
+  check('116c 老服务端不发思考相位时一切照旧（兼容，且不误报"正在思考"）',
+    noPhase.ok && !updates.some((u) => u.includes('思考')),
+    JSON.stringify(updates));
+
+  // 跨文件契约：DOM 桩看不出服务端到底怎么处理思考帧，直接读 server.js。
+  const srvSrc = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
+  check('116d 服务端只上报相位、不转发思考内容（推理过程不外泄，也不多传数据）',
+    srvSrc.includes('delta?.reasoning_content') && srvSrc.includes("onThinking: () => send({ phase: 'thinking' })"),
+    JSON.stringify({ detects: srvSrc.includes('reasoning_content'), wires: srvSrc.includes("send({ phase: 'thinking' })") }));
+
+  sandbox.fetch = savedFetch;
+  sandbox.TextDecoder = savedDecoder;
+  sandbox.reportClientLog = savedReport;
+  sandbox.showAITaskProgress = savedCardFn;
+}
+
+// --- 17) 慢通道轮询：发现延迟的上限从 10s 收到 3s（P0-2 主体里"便宜的那一半"） ---
+// 依据（先算账再决定）：发现延迟 ≈ 下一个轮询时刻 − 任务真正完成的时刻，**上界就是轮询间隔上限**，
+// 与任务时长无关。按这段退避推算，中位 65s 的任务在 10s 上限下平均晚 4.5–5s 才被发现；
+// 3s 上限下平均晚约 1.5s。代价只有请求数 ×3（每次回包最多 600 字、服务端只读内存任务表）。
+// 而新增 SSE 推送端点相对这条只多回收约 1.5s/轮，却要引入断线重连与双路径兼容 —— 不值得，
+// 所以这里钉住的是"收紧常量"而不是"新增端点"。
+{
+  const realSetTimeout = sandbox.setTimeout;
+  const savedApi = sandbox.api;
+  const waits = [];
+  // 把 setTimeout 换成"记下间隔、立即执行"：轮询节奏可以被精确观察，测试也不必真的等十几秒。
+  sandbox.setTimeout = (fn, ms) => { waits.push(Number(ms) || 0); return realSetTimeout(fn, 0); };
+  let calls = 0;
+  sandbox.api = async () => {
+    calls += 1;
+    return calls < 13 ? { status: 'running', tail: '输出中…' } : { status: 'done', output: '正文成品', tail: '' };
+  };
+  let out = null;
+  let err = null;
+  try {
+    out = await P.pollHarnessJob(7, { setCancel() {}, note() {}, update() {} }, { timeoutMs: 600000 });
+  } catch (e) { err = e; }
+  sandbox.api = savedApi;
+  sandbox.setTimeout = realSetTimeout;
+  const intervals = waits.filter((w) => w > 0);
+  check('117a 轮询间隔上限是 3s（发现延迟从平均约 5s 降到约 1.5s，且不必新增推送端点）',
+    intervals.length >= 6 && Math.max(...intervals) === 3000 && intervals[0] === 1500,
+    JSON.stringify(intervals.slice(0, 8)));
+  check('117b 收窄上限后轮询照常收尾（任务完成立即返回产出，不改变语义）',
+    !!out && out.output === '正文成品' && !err && calls === 13,
+    JSON.stringify({ out: out && out.output, calls, err: err && err.message }));
 }
 
 // --- 8) 派生式护栏：浏览器脚本不得调用"只存在于服务端"的函数 ---// 它来自一个真实缺陷：v0.9.3 的提交里 public/app.js 有三处 `plainText(editor.innerHTML)`，

@@ -78,12 +78,30 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findStudioRoot();
 // zip 读取器在 novel-studio 仓库根（发布镜像仓库不含服务端文件），按定位到的仓库根动态加载。
 const { readZip } = await import(pathToFileURL(join(repoRoot, 'zip-reader.mjs')).href);
+// settings 预算的**唯一真源**在仓库的 ai/context/layers.mjs（与 server.js 用的是同一份）；
+// 断言从它派生——否则常量抬了、断言还是旧数字，会像 2026-09-13 那样静默过期。
+// 读不到时（指向外部实例、仓库里没有该模块）退回兜底值并出声：明说用的是兜底，不假装派生成功。
+let settingsBudget = 19000;
+try {
+  const mod = await import(pathToFileURL(join(repoRoot, 'ai', 'context', 'layers.mjs')).href);
+  if (Number(mod?.TOTAL_BUDGET?.settings) > 0) settingsBudget = Number(mod.TOTAL_BUDGET.settings);
+} catch (e) {
+  console.warn(`  ! 读不到 TOTAL_BUDGET.settings（${e.message}）：本次断言用兜底值 ${settingsBudget}`);
+}
 const PORT = 3900 + Math.floor(Math.random() * 800); // 加宽范围降低端口冲突概率
 // SMOKE_TARGET_BASE：指向已在外部启动的 novel-studio 服务时，本脚本不再自行 spawn
 // （适用于 CI 或受限沙箱环境，服务与数据目录由外部管理）。
 const EXTERNAL_BASE = process.env.SMOKE_TARGET_BASE || '';
 const BASE = EXTERNAL_BASE || `http://127.0.0.1:${PORT}`;
-const dataDir = mkdtempSync(join(tmpdir(), 'novel-smoke-'));
+// 外部实例模式（SMOKE_TARGET_BASE，例如 CI 里由 scripts/ci-isolated-run.mjs 起的实例）：
+// 日志/数据库属于**那个实例**，它的数据目录只能从 NOVELSTUDIO_DATA_DIR 读——
+// 自己再造一个空目录的话，「data/logs 下应存在滚动日志文件」这条断言读的是空气
+// （实测：ENOENT no such file or directory, scandir' …\novel-smoke-XXXX\logs'）。
+// 自建实例模式（本脚本自己 spawn）仍由本脚本造目录并负责清理。
+const EXTERNAL_DATA_DIR = EXTERNAL_BASE ? (process.env.NOVELSTUDIO_DATA_DIR || '') : '';
+const createdDataDir = EXTERNAL_DATA_DIR ? '' : mkdtempSync(join(tmpdir(), 'novel-smoke-'));
+const dataDir = EXTERNAL_DATA_DIR || createdDataDir;
+
 
 let passed = 0;
 function ok(label) { passed += 1; console.log(`  ✔ ${label}`); }
@@ -810,13 +828,14 @@ try {
     await jfetch(`/api/works/${bigWorkId}`, { method: 'PUT', body: { title: '大作品性能测试·改名' } });
     const after = await jfetch(`/api/novel/context?work_id=${bigWorkId}`);
     assert.ok(after.data.assembled.includes('大作品性能测试·改名'), '写操作后缓存必须失效，返回新数据');
-    // settings 模式回归：大作品下预算必须真实收敛（18,000 = 质量层全保底的可执行下限），
+    // settings 模式回归：大作品下预算必须真实收敛（现行可执行下限 18,173 + 余量；上界
+    // 由文件头的 settingsBudget 从仓库常量派生，不在这里手写数字——2026-09-22 复盘补的），
     // 且质量层（红线）与去章节层的行为与真实数据无关地成立。
     const bigSettings = await jfetch(`/api/novel/context?work_id=${bigWorkId}&mode=settings`);
     assert.equal(bigSettings.status, 200);
     assert.ok(bigSettings.data.assembled.includes('【写作风格红线】'), '大作品 settings 装配必须保留红线层');
     assert.ok(!bigSettings.data.assembled.includes('【前文衔接】'), '大作品 settings 装配不应包含前文衔接层');
-    assert.ok(bigSettings.data.assembled.length <= 18000, `大作品 settings 装配应在 18000 字预算内（实测 ${bigSettings.data.assembled.length} 字）`);
+    assert.ok(bigSettings.data.assembled.length <= settingsBudget, `大作品 settings 装配应在 ${settingsBudget} 字预算内（实测 ${bigSettings.data.assembled.length} 字）`);
     ok('大作品上下文性能基线（装配耗时 + 缓存失效正确性）');
   }
 
@@ -923,8 +942,12 @@ try {
   process.exitCode = 1;
 } finally {
   if (server) server.kill();
-  // 外部模式（server===null）下 dataDir 也需清理，避免临时目录泄漏。
-  setTimeout(() => {
-    try { rmSync(dataDir, { recursive: true, force: true }); } catch (_) { /* 忽略清理失败 */ }
-  }, 400);
+  // 只清理**本脚本自己造**的临时目录：外部实例模式下 dataDir 属于那个实例，
+  // 删掉它会把还在跑的实例的数据目录抽走（日志/数据库文件当场变成孤儿）。
+  if (createdDataDir) {
+    setTimeout(() => {
+      try { rmSync(createdDataDir, { recursive: true, force: true }); } catch (_) { /* 忽略清理失败 */ }
+    }, 400);
+  }
+
 }

@@ -1,0 +1,95 @@
+# CI —— 零计费、可离线复现的验收。
+#
+# 三条纪律（与仓库里的验收工具同源）：
+#   1. **绝不调用真实 LLM**：离线套件只读文件；活实例套件在隔离实例里跑，
+#      且用的是本机假端点/死端口（没有任何检查需要 API Key）。
+#   2. **只信退出码**：不看输出里的"看起来通过了"。
+#   3. **清单只有一个来源**：离线检查的命令列表写在 `scripts/ci-offline-checks.mjs`，
+#      这里只调用它——不在 YAML 里再抄一遍（抄一遍必然与那边各改各的）。
+#
+# 活实例那两条（API 套件 / 插件冒烟）必须对着一个**隔离实例**跑：
+# `scripts/ci-isolated-run.mjs` 负责起实例、导出隔离变量（数据目录/端口/停用 OpenViking）、
+# 跑完关掉。它们的教训来自 2026-09-15：测试打到有真实密钥的实例 = 未批准的真实花费。
+#
+# ⚠️ `ubuntu-latest` 那两格**没有在本机预演过**（本机没有 WSL / Docker / Linux 环境，2026-09-25 实测）。
+#    这不是"已知会红"，而是"没在本地证明过"——两者必须分清。已做的降险：
+#      · 静态审计了 CI 会跑到的全部入口（scripts/ + .p1-baseline/ + api-test-suite + smoke + frontend-test），
+#        没有任何 Windows 专属依赖：唯一会 exec 外部程序的是 `revert-matrix.mjs --self-test`（调 `git`）；
+#        平台分支只出现在**产品代码**里，且都显式判断（server.js 的 explorer.exe/open/xdg-open、
+#        harness.js 的 pnpm.cmd/taskkill 与 win32 判断）。
+#      · 每个 job 第一步打印"平台事实"，让平台差异在第一屏就能被看见，而不是埋在测试输出里。
+#    首次在 GitHub 上跑若真有平台缺口：**修脚本**，不要在 YAML 里把整格设成 continue-on-error
+#    （那会把真失败变成假绿，违反"只信退出码"）。确实需要临时放行时，只对**那一步**加
+#    `continue-on-error: true` 并在旁边写清原因与跟进项。
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: 离线验收（${{ matrix.os }} · node ${{ matrix.node }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        # ⚠️ 本机只有 Windows，`ubuntu-latest` 那一格**没有在本地预演过**
+        # （仓库里没有 Linux/macOS 环境），首次在 GitHub 上跑时请留意它。
+        os: [windows-latest, ubuntu-latest]
+        node: ['24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 本项目是零依赖的（package.json 没有 dependencies），所以没有 install 步骤。
+      - name: 平台事实（第一屏就能看出平台差异）
+        run: node -e "const os=require('node:os'),p=require('node:path');console.log('platform='+process.platform+' release='+os.release()+' arch='+process.arch);console.log('node='+process.version);console.log('tmpdir='+os.tmpdir());console.log('path.sep='+JSON.stringify(p.sep));console.log('cwd='+process.cwd())"
+      - name: 离线套件（31 条，零计费）
+        run: node scripts/ci-offline-checks.mjs
+
+  node-floor:
+    name: 依赖下限（node 22.15.0）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 为什么是 22.15 而不是 package.json 里的 engines 下限 22.13：
+          # 产品运行只要 22.13（`node:sqlite` 免 --experimental-sqlite 的门槛），
+          # 但**验收工具**里的"花钱总闸"要读 dsh 的多帧 zstd 转录，而
+          # `zlib.zstdDecompressSync` 到 22.15 才有（实测：22.13 → undefined，22.15 → function）。
+          # 缺能力时那个工具现在会响亮失败（见 .p1-baseline/audit-llm-calls.mjs 的
+          # assertZstdAvailable），所以下限这一格定在 22.15：它同时覆盖 sqlite 与 zstd 两件事。
+          node-version: '22.15.0'
+      - name: 平台事实（第一屏就能看出平台差异）
+        run: node -e "const os=require('node:os'),p=require('node:path');console.log('platform='+process.platform+' release='+os.release()+' arch='+process.arch);console.log('node='+process.version);console.log('tmpdir='+os.tmpdir());console.log('path.sep='+JSON.stringify(p.sep));console.log('cwd='+process.cwd())"
+      - name: 离线套件（证明不是"只在 24 上能跑"）
+        run: node scripts/ci-offline-checks.mjs
+
+  live:
+    name: 活实例验收（隔离实例 · ${{ matrix.os }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 平台事实（第一屏就能看出平台差异）
+        run: node -e "const os=require('node:os'),p=require('node:path');console.log('platform='+process.platform+' release='+os.release()+' arch='+process.arch);console.log('node='+process.version);console.log('tmpdir='+os.tmpdir());console.log('path.sep='+JSON.stringify(p.sep));console.log('cwd='+process.cwd())"
+      # 端口必须与 api-test-suite.mjs 里写死的 3738 一致（它按约定打这个端口）。
+      - name: API 套件（隔离实例 · 零计费）
+        run: node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
+      - name: 插件冒烟（同一个隔离配方）
+        run: node scripts/ci-isolated-run.mjs --port 3738 -- node harness-plugins/novel-writing/test/smoke.mjs

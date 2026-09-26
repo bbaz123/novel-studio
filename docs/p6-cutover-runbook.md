@@ -252,7 +252,9 @@ node .p1-baseline/gate-env.mjs --stop   # 收工（清 marker；Ctrl+C 亦可）
 | 检查 | 授权条件 |
 |---|---|
 | harness 并发闸门（会建真实任务） | `--gate-base` **且** `NOVELSTUDIO_GATE_CONFIRMED_ISOLATED=1` |
-| dsh spawn 路径（会真的 spawn dsh） | `NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1`（该检查自设死端口，本身零计费；要求授权是因为它依赖"环境变量被 honored"这一外部假设，且会真跑约 40s） |
+| dsh spawn 路径（**三条**：profile 参数 / 线路层 / 工具循环，都会真的 spawn dsh） | `NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1`（三条都自设**本地**端点——死端口或假端点——本身零计费，且总闸会要求假端点**自证归属**；要求授权是因为它们依赖"环境变量被 honored"这一外部假设，单条约 10–40s） |
 
 末尾新增**套件总闸**：本次窗口内检出任何真实 LLM 调用即判未通过——
-把「悄悄花钱」变成红灯。事故经过与硬约束详见 `.p1-baseline/README.md` §六。
+把「悄悄花钱」变成红灯。2026-09-25 起还要求**逐条归属**：零计费探针用本地假端点充当模型时，
+必须由端点自证（回环地址 / 实收请求数 ≥ 转录请求数 / 转录正文等于罐头正文 / 时段重叠），
+归属不了的文本会话仍然是红灯。事故经过与硬约束详见 `.p1-baseline/README.md` §六。

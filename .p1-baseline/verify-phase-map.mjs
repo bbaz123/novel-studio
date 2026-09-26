@@ -443,14 +443,286 @@ export const PHASES = [
       '.github/pull_request_template.md',
     ],
     evidence: ['CONTRIBUTING.md', '.github/ISSUE_TEMPLATE/bug_report.yml'],
-    // 'independent' 只描述这 5 个文件本身：它们不被任何生产代码 import，
-    // 删掉只影响 GitHub 上的展示与表单，不影响程序行为，也不会让任何验收工具失效。
-    rollback: 'independent',
+    // 声明改成 shared（2026-09-25）：CONTRIBUTING.md 随后被 Z2 改过（许可证段落 = MIT），
+    // 于是「撤掉 W 的这 5 个文件」会把 Z2 的改动一起卷走——文件级回滚不再干净。
+    // 原先写 independent 描述的是"它们不被任何生产代码 import"，那一点仍然成立；
+    // 但推导器按文件粒度判定，声明以推导为准（这是纪律，不是偏好）。
+    rollback: 'shared',
+    // 注意：剩下 4 个 issue/PR 模板仍可独立删（只影响 GitHub 展示面）；共享只发生在 CONTRIBUTING.md 这一个文件上。
     note: '仓库展示面优化：README 首页重写（第一屏改为「30 秒讲清价值 + 它不做什么」，'
       + '安装步骤紧随其后；原 30 行的「分支说明」块压到 2 行；新增环境变量配置表、Roadmap、'
       + '参与贡献、License 说明与目录），旧 README 里写法成熟的章节按行**原样**保留'
       + '（用重组脚本拼接，不手抄，避免中文正文抄写漂移）。README.md 已由更早阶段认领，故不重复列出；'
       + '仓库级 Description 与 Topics 通过 GitHub API 写入，属于仓库设置而非文件，不进 git。',
+  },
+  {
+    id: 'Y',
+    title: '2026-09-22 轮：按复核报告落地「确定性连续性预检」（审稿前先算掉机器能判的部分）',
+    files: [
+      // —— 本轮唯一首次获得归属的文件 ——
+      // 判据（纯函数、零依赖）与装配层（靠注入 `{all,get}`，不 import db）刻意分成两个模块：
+      // 前者能离线跑真值表与阴性对照，后者保证「服务端端点 / 验收脚本 / 将来的提示词路径」
+      // 三处共用同一套 SQL，不再各写一遍（字数口径漂移的教训）。
+      'ai/continuity-guard.mjs',
+      'ai/continuity-guard-source.mjs',
+      // 两条证据：离线单测（67 条断言，含"缺判据时不猜"的阴性对照）与**真实作品**上的
+      // 命中率验收（第 5/6 章命中 5、漏报 0、误报 0、豁免闭环成立）。
+      '.p1-baseline/test-continuity-guard.mjs',
+      '.p1-baseline/verify-continuity-guard-on-real-data.mjs',
+      // 判据口径、阈值默认值与覆盖入口（`continuity_thresholds:<workId>`）的说明书。
+      'docs/continuity-guard.md',
+      // 按《03 · DSH 待确认事项决策规范》对上一轮**全部待确认项**（含三盏红灯）的裁决记录：
+      // 逐项 QUALITY_IMPACT / USER_IMPACT_IF_UNCHANGED / ACTION / 所选方案 / 执行范围 + 验收证据。
+      'docs/confirmation-resolution-2026-09-22.md',
+    ],
+    evidence: [
+      'docs/continuity-guard.md',
+      '.p1-baseline/test-continuity-guard.mjs',
+      '.p1-baseline/verify-continuity-guard-on-real-data.mjs',
+    ],
+    note: '本轮的**行为改动**落在已被 P2–P5 认领的 `server.js`（两条端点 + `app_settings` 读写）、'
+      + '已被 S 认领的 `public/app.js`（预检块 + 内联进审稿提示词）与 `api-test-suite.mjs`（F11–F16）里，'
+      + '所以整轮**不能单独回滚**：撤掉 `ai/continuity-guard*.mjs` 会让 server.js 的 import 当场失败'
+      + '（启动即崩）。可单独撤的只有那份说明书本身。'
+      + ' 另外这轮**刻意不改任何作品数据**：`chapters.target_words`、角色卡状态、风格文本一律原样——'
+      + '判据里报出来的「口径冲突」正是要交回作者决定的事（报告 C6），工具只负责把冲突摆到台面上。',
+  },
+  {
+    id: 'Z0',
+    title: '2026-09-24 轮：OpenViking 本地向量模型随源码分发（vendor）',
+    files: [
+      // 本轮**唯一**首次获得归属的东西：一个 47.9MB 的 GGUF 模型 + 拉取/校验脚本 + 配置说明。
+      // 为什么把它放进源码：本机网络环境下 huggingface.co 不可达（握手超时），
+      // 而 OpenViking 的默认行为是「首次启动自己去下模型」——于是整条记忆链路上
+      // 唯一必须联网、且必然失败的环节就是它。随源码带一份，服务端就再也不需要联网下模型。
+      'vendor/',
+      'scripts/fetch-embedding-model.mjs',
+      'docs/openviking-embedding-setup.md',
+      // 这两处是它的配套：.gitattributes 给二进制资产关掉行尾/编码转换（转换会直接毁掉 GGUF），
+      // .gitignore 只忽略下载半成品（*.part），并**显式写明 vendor/ 不进忽略规则**。
+      '.gitattributes',
+      '.gitignore',
+      'docs/README.md',      // 文档索引里加一行指路
+      'README.md',           // 首页「记忆库」一节指向这份配置说明
+    ],
+    evidence: ['vendor/README.md', 'docs/openviking-embedding-setup.md', 'scripts/fetch-embedding-model.mjs'],
+    // 声明改成 shared（原先写 independent，推导器立刻报不一致——实测撞到）：
+    // 资产本身确实可以干净撤掉，但 README.md / docs/README.md 与 X/Z2 **同文件**（各加一行指路），
+    // 文件级回滚会把别人的改动一起卷走，所以这一列只能填 shared。判据以推导器为准，不以印象为准。
+    rollback: 'shared',
+    note: '回滚口径（诚实版，分两层）：① **资产层可独立撤**——这几个文件不被任何生产代码 import'
+      + '（只有文档引用路径），删掉 vendor/ 与拉取脚本后产品照常启动，代价只是'
+      + '「服务端不需要联网下模型」这条能力消失'
+      + '（OpenViking 会退回它自己的默认行为：首次启动去 HuggingFace 下载，本机必然失败）。'
+      + '② **文件层不可单独回滚**——README.md / docs/README.md 与 X/Z2 改在同一批文件里，'
+      + '而且撤掉资产后那两行指路会变成死链，必须同批处理。'
+      + ' 校验口径以 vendor/README.md 里那张表为准（SHA256）；镜像返回的 ETag 与真实内容**不一致**，'
+      + '别拿 ETag 当校验。**已定案（2026-09-25）：该二进制随仓库提交**（代价：每次 clone +47.9MB；'
+      + '本轮提交时一并 `git add`；不想要就删掉 `vendor/models/`，产品照常启动，只是「离线可用」这条能力随之消失）。',
+  },
+  {
+    id: 'Z1',
+    title: '2026-09-24 轮：DSH 0.1.7 迁移（默认模型改走补丁层 + 一次性导入的诊断）',
+    files: [
+      // 本轮的**行为改动**都落在已被别的阶段认领的共享文件里：
+      //   harness.js            —— materializeTaskSettings 从「重定向 settings 文档」改为「覆盖 agent-default-model 条目」；
+      //                           新增 resolveDefaultSelection / warnIfLegacyImportPending（一次性导入缺陷的告警）
+      //   ai/task-settings.mjs  —— 纯函数层：buildModelOverridePatch（provider 必填 + config 整体替换）、三级取值
+      'harness.js',
+      'ai/task-settings.mjs',
+      //   profile 补丁层的写法：0.1.7 删掉了 settings-file 插件，默认模型改由 profile 的补丁层决定
+      'harness-plugins/novel-writing/cordis.patch.yml',
+      'harness-plugins/novel-writing/ENGINE.md',
+      // 本轮新增/更新的证据（离线断言 + 并发端到端实验 + dsh 升级侦察脚本）
+      '.p1-baseline/test-task-settings.mjs',
+      '.p1-baseline/exp-concurrent-models.mjs',
+      '.p0-recon/capture-dsh-request.mjs',
+      // 文档留痕（口径以当前代码为准，不重写历史结论）
+      'docs/ai-core.md',
+      'ai/README.md',
+      'docs/context-memory-analysis-report.md',
+      'docs/phase-map.md',
+    ],
+    evidence: ['.p1-baseline/test-task-settings.mjs', '.p1-baseline/exp-concurrent-models.mjs', 'ai/task-settings.mjs'],
+    rollback: 'shared',
+    note: '**不能单独回滚**：harness.js 被 server.js 的 AI 路径 import，ai/task-settings.mjs 被 harness.js import，'
+      + '而这两个文件同时被 P0/D8 改过（同一批函数）。撤掉它 = 退回「改写全局 settings + 互斥」的旧路径——'
+      + '那会让服务端允许 2 并发而实际吞吐只有 1，而且任务崩在中间时用户的默认模型会停在被改写状态。'
+      + ' 0.1.7 的**两处硬语义**（写成想当然就会静默不生效）：① 补丁层对 config 是**整体替换**不是深合并；'
+      + '② provider 是 agent-default-model 的**必填**字段。另外上游有个实测复现的缺陷：启动时带着覆盖'
+      + ' agent-default-model 的补丁层，settings.yaml → profile 的一次性导入会**静默失败**（原值只剩在'
+      + ' .imported 里）——工坊只**告警**不擅自迁移（改用户的持久配置是 dsh 的职责）。'
+      + ' 完整回滚用改动前快照（取证与清单见 .dsh-upgrade-recon/00-SUMMARY.md）。',
+  },
+  {
+    id: 'Z2',
+    title: '2026-09-24/25 轮：主体 V2 —— 上下文身份/完整性/溯源 + 压缩输入修复 + CI',
+    files: [
+      // ── 本轮新增的生产模块（纯函数、可离线断言、零依赖）──
+      'ai/context/tokens.mjs',            // 规模估算（CJK 感知；**不参与**预算/裁剪决策）
+      'ai/context/integrity.mjs',         // 完整性判定 C1–C8 + 内容哈希（清单必须与文字自洽）
+      'ai/memory-compress-prompt.mjs',    // 压缩提示词模板（从 server.js 抽出，模板逐字未改）
+      'text-utils.js',                    // + plainText / plainTextHead / plainTextTail
+      // ── 本轮改到的共享文件（行为改动都在这几处）──
+      'ai/context/layers.mjs',            // + PROVENANCE（每层六件事）/ provenanceOf / trimPriorityOf（从 FLEX_ORDER 派生）
+      'ai/context/assembler.mjs',         // 产出 contextId / integrity / envelope；每层带 sourceIds / scores / recoveryPath
+      'server.js',                        // 每层给真实 sourceIds；未 PASS 时 error/warn 日志；两条端点下发身份与信封
+      'harness-plugins/novel-writing/test/smoke.mjs',
+                                          // 外部实例模式下改用该实例的数据目录（否则日志断言读空气：ENOENT）
+      '.p1-baseline/audit-llm-calls.mjs', // + assertZstdAvailable：缺 zstd 能力时**响亮失败**，不静默报 0
+      '.p1-baseline/fake-llm.mjs',        // + Messages 形状（dsh 0.1.7 改走它）+ 每条请求留痕 hits[]
+      '.p1-baseline/probe-cold-start.mjs',// 测不到冷启动时说清原因（走错端点 ≠ 没连上）
+      '.p1-baseline/probe-harness-tool-loop.mjs',
+                                          // 「模型 → 工具 → 模型」循环的零计费证据（此前只能靠推断）
+      '.p1-baseline/fake-llm.mjs',        // ↑ 同批：+ 可选的一轮 tool_use/tool_calls
+      '.p1-baseline/test-recall-gap.mjs', // 断言改为形态无关（钉意图，不钉调用形态的字节）
+      // ── 本轮新增/更新的验收与工程化 ──
+      '.p1-baseline/test-context-manifest.mjs',
+      '.p1-baseline/test-memory-compress-prompt.mjs',
+      '.p1-baseline/verify-memory-compress-input.mjs',
+      '.p1-baseline/bench-context-build.mjs',
+      '.p1-baseline/test-memory-compress-guard.mjs',
+      '.p1-baseline/verify-all.mjs',
+      'scripts/ci-isolated-run.mjs',      // 隔离实例包装器：被跑的命令也必须拿到同一套隔离变量
+      'scripts/ci-offline-checks.mjs',    // CI 离线检查清单（唯一来源，YAML 里不再抄一遍）
+      '.github/workflows/ci.yml',         // 首次接入 CI（离线 / 依赖下限 / 活实例三档）
+      // —— 仓库级决定（2026-09-25 定案，按"质量红线"选型）——
+      'LICENSE',                          // MIT（此前"未声明"=默认保留所有权利，与"能长期自己掌控"的目标相悖）
+      'CONTRIBUTING.md',                  // 许可证段落改为 MIT
+      'vendor/README.md',                 // 写清"这份资产随仓库提交"、代价、以及不想要时怎么删
+      'docs/context-contract.md',         // §八：身份 · 完整性 · 溯源 · 信封
+      'docs/ai-core.md',
+      'docs/main-v2-upgrade-2026-09-24.md',
+      'docs/main-v2-acceptance-2026-09-25.md', // 第二步验收报告（质量门/行为门/兼容门；结论 A PASS）
+      'docs/host-contract.md',            // 第三步：Host Contract 1.0.0（冻结接口/边界/不变条件）
+      'docs/host-contract.v1.json',       // 机读契约面（由真实代码导出；契约测试的比对基准）
+      '.p1-baseline/test-host-contract.mjs', // 契约测试（含负向对照）
+      'server.js',                        // + HOST_CONTRACT_VERSION + ping.host_contract（附加字段）
+      'ai/harness-pool.mjs',              // 头注释订正：热备池未接线、无环境变量开关（无行为变化）
+      'README.md',
+      'docs/README.md',
+    ],
+    evidence: [
+      'docs/context-contract.md', '.p1-baseline/test-context-manifest.mjs',
+      '.p1-baseline/test-memory-compress-prompt.mjs', '.github/workflows/ci.yml',
+      'scripts/ci-offline-checks.mjs', 'docs/main-v2-upgrade-2026-09-24.md',
+    ],
+    rollback: 'shared',
+    note: '**不能单独回滚**：integrity.mjs / tokens.mjs 被装配器与 server.js import，装配器与 server.js'
+      + ' 又被 P2–P5 改过（同一批函数）。撤掉会让启动路径当场失败。'
+      + ' 本轮的**意图**是「同样的上下文内容，但可被追问、可被核对」：① 每层有溯源与查回路径；'
+      + '② 清单与真正发出去的文字逐字节对齐（C1）+ 内容哈希（C6）；③ 身份（内容哈希 / 请求 id）随两条端点下发；'
+      + '④ 顺带修掉一个真实缺陷——压缩提示词引用了已被删除的 SQL 别名（content_head/content_tail），'
+      + '导致「最近章节正文」**恒为空**，无摘要章节只剩标题。'
+      + ' 质量红线：这轮**没有**改模型、prompt 语义、reasoning effort、token 预算，也没有减少任何上下文；'
+      + '逐字节基线 50/50 相同（对照副本是改动前的整树快照，核对完即删；'
+      + '可复现的那份是 .p1-baseline/baselines-before-v2/ 与 baselines-v2b/）。'
+      + '详见 docs/main-v2-upgrade-2026-09-24.md。',
+  },
+  {
+    id: 'Z3',
+    title: '2026-09-26 轮：确定性故事状态内核（门控层 + 10 张新表 + 18 条状态路由 + 8 工具）+ 第五步 Golden Novel 联合回归',
+    files: [
+      // 新增的生产模块（故事状态内核；門控能力，默认关闭）
+      'ai/story-state/',
+      // 本轮改到的共享文件（行为改动都在这几处）
+      'db.js',                            // +10 张表 / +16 个索引（全附加式）
+      'ai/context/layers.mjs',            // + 第 15 层 story_state（gated: true，排在 redlines 前）
+      'ai/context/assembler.mjs',         // excluded 过滤门控层（未开启时不属于这套层）
+      'server.js',                        // 门控构建故事状态层 + 17 条端点 + apply/rollback 失效缓存
+      'harness-plugins/novel-writing/novel-tools.mjs',
+      'harness-plugins/novel-writing/plugin.json',
+      'harness-plugins/novel-writing/package.json',
+      'harness-plugins/novel-writing/ENGINE.md',
+      // 本轮新增/更新的验收与契约
+      '.p1-baseline/test-story-state-api.mjs',
+      '.p1-baseline/test-host-contract.mjs',
+      '.p1-baseline/test-context-manifest.mjs',
+      '.p1-baseline/golden-novel.mjs',     // 第五步：Golden Novel 联合回归（19 类难 case，零计费）
+      '.p1-baseline/golden-out.json',      // 该回归最近一次的机器可读结果（关键指标同时进报告）
+      'docs/golden-novel-regression-2026-09-26.md',   // 第五步终验报告（Golden Novel 联合回归）
+      '.p1-baseline/verify-all.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/host-contract.md',
+      'docs/host-contract.v1.json',
+      'docs/host-contract-1.1-2026-09-26.md',
+      'docs/story-state-kernel-2026-09-26.md',
+      'docs/phase-map.md',
+    ],
+    evidence: [
+      'docs/story-state-kernel-2026-09-26.md',
+      'docs/host-contract-1.1-2026-09-26.md',
+      '.p1-baseline/test-story-state-api.mjs',
+      '.p1-baseline/golden-novel.mjs',
+      '.p1-baseline/golden-out.json',
+      'docs/golden-novel-regression-2026-09-26.md',
+      'docs/host-contract.v1.json',
+    ],
+    rollback: 'shared',
+    note: '**不能单独回滚**：内核被 server.js、层规格与插件工具面同时引用，而那三处又是 P1–P6 / Z2 改过的同一批函数。'
+      + ' 本轮的**设计前提**是「机制生效 ≠ 强制接入」：作品开关 story_state_config.enabled 默认 0，未开启时该层不进 manifest、不进 excluded、不计入可执行下限（floor(settings) 仍 = 18173）。'
+      + ' 质量红线：本轮**没有**改模型、prompt 语义、reasoning effort、token 预算、层顺序与默认 AI route；'
+      + '逐字节上下文基线 **50/50 相同**；活实例断言「开启后只多一层且其余各层 emitted 逐层相同」。'
+      + ' 详见 docs/story-state-kernel-2026-09-26.md。'
+      + ' 第五步 Golden Novel 联合回归（19 类难 case）另抓到并修掉两处真实缺陷：'
+      + '① character_knowledge 的 upsert 少了部分唯一索引的 WHERE 谓词 → 角色知识边界整条路不可用（S14 回归 + 变异对照）；'
+      + '② knowledgeOf 的 unknown/suspected/false_belief 可见窗口方向反了 → 最需要提醒的章节反而看不见（S15 回归 + 变异对照）。'
+      + ' 另补 GET /api/novel/state/facts（契约 1.1.0 → 1.2.0，附加式）。详见 docs/golden-novel-regression-2026-09-26.md。',
+  },
+  {
+    id: 'Z4',
+    title: '2026-09-25 轮：DSH 0.1.7-rc.1 → rc.2 兼容性审查（报告 + 只读探针）',
+    files: [
+      'docs/DSH_0.1.7_RC1_RC2_API_DIFF.md',
+      'docs/DSH_0.1.7_RC1_RC2_COMPATIBILITY_MATRIX.md',
+      'docs/DSH_0.1.7_RC1_RC2_NOVEL_COMPATIBILITY_REPORT.md',
+      'docs/DSH_0.1.7_RC1_RC2_NOVEL_PLUGIN_TEST_REPORT.md',
+      'docs/DSH_RC1_COMPATIBILITY_BASELINE.md',
+      'docs/RC1_vs_RC2_CAPABILITY_MATRIX.md',
+      '.p1-baseline/.realtest/probe-config.mjs',
+      '.p1-baseline/.realtest/probe-schema.mjs',
+    ],
+    evidence: [
+      'docs/DSH_0.1.7_RC1_RC2_NOVEL_COMPATIBILITY_REPORT.md',
+      '.p1-baseline/.realtest/probe-config.mjs',
+    ],
+    rollback: 'independent',
+    note: '纯文档 + 只读探针，**不碰产品代码**：整批删除后工坊行为逐字节不变，故可独立回滚。'
+      + ' 内容是把 dsh 0.1.7-rc.1 → rc.2 的能力差异、插件面、novel_* 工具面与工作坊兼容性实测逐条落到文档，供后续升级引用。'
+      + ' ⚠️ 其中一条结论的前提**不是 stock RC.2**：全局 RC.2 的 cordis.patch.yml 被本地追加了 npm 上 404 的私有包'
+      + ' （@deepseek-ai/dsh-operation-security），引用这批结论时必须单列这一条。'
+      + ' 同轮的产品侧修复（超长 prompt 走 stdin）另记在 docs/HARNESS_ARGV_LIMIT_FIX.md 与 Z5 相邻的条目里。',
+  },
+  {
+    id: 'Z5',
+    title: '2026-09-25 轮：成文耗时测量层（口径 A 机器时间 / 口径 B 交付时间 的埋点补真）',
+    files: [
+      'public/app.js',
+      'frontend-test.mjs',
+      'docs/ai-write-latency-plan.md',
+      'docs/HARNESS_ARGV_LIMIT_FIX.md',
+      'docs/README.md',
+    ],
+    evidence: [
+      'docs/ai-write-latency-plan.md',
+      'docs/HARNESS_ARGV_LIMIT_FIX.md',
+      'frontend-test.mjs',
+    ],
+    rollback: 'shared',
+    note: '**不能单独回滚**：public/app.js 是 P2–P5 / Z2 / Z3 反复改过的同一个文件。'
+      + ' 本轮两件事，都是附加式：'
+      + '① 成文耗时测量层——新增 newWriteTiming() 分轮耗时账本；streamAIDirectWrite 多返回 ms/ttftMs；'
+      + ' runHarnessJob 多返回客户端观测 ms；三处 showAIWritingResult 传入真实 channel/model/ms/timing'
+      + ' （此前从未传过，导致 ai_eval_events 的 ms 恒为 0、channel/model 恒为空串），'
+      + ' 并附加一条 app_logs kind=ai_write_timing（含分轮明细与 draft_key）；'
+      + '② 超长 prompt 走 argv 触发 spawn ENAMETOOLONG 的修复（仅 Windows、仅超长时改走 dsh --profile novel - + stdin）——'
+      + '短/中文本与非 Windows 路径逐字不变，回滚只需把 useStdinPrompt 置 false。'
+      + ' 质量红线：**没有**改模型、prompt 语义、上下文、reasoning effort、token 预算，也没有改任何生成分支的判断条件——'
+      + ' 测量值不参与决策，全部是附加字段。之所以走 app_logs 而不给 ai_eval_events 加列：避免 schema 迁移'
+      + ' 与已冻结的 Host Contract 表清单变更（零迁移、零契约变更、零回滚风险）。'
+      + ' 证据：frontend-test.mjs 新增 108h / 112a / 112b / 112c 四条断言（**既有期望值一字未改**）钉住'
+      + ' "埋点落库请求里就是真值"；任务设置离线 49/49、离线清单 32/32、API 186/190（0 失败）、插件冒烟 39/39 全绿。'
+      + ' 详见 docs/ai-write-latency-plan.md 与 docs/HARNESS_ARGV_LIMIT_FIX.md。',
   },
 ];
 

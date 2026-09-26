@@ -9,7 +9,14 @@
 # 入账经 NOVELSTUDIO_PROPOSE_MODE=1 先落提案、由作者在工坊界面确认。
 - id: system-prompt
   config:
-    persona: >-
+    # ⚠️ 2026-09-24（dsh 0.1.1 → 0.1.7 升级审查发现）：键名在 0.1.5 起被上游改过。
+    #   0.1.1 的 Config 是 `persona`；0.1.5 起改成 `personaPrefix` / `personaSuffix`（0.1.7 同）。
+    #   两版的 schema 都是 z.object(...)（**非 strict**）：写错键名不会报错、不会告警，
+    #   只会被静默丢弃 —— 实测 0.1.7 任务请求里 system 提示**没有创作人设的任何一个字**
+    #   （组合树里却看得见 persona，所以只看组合树查不出来）。
+    #   因此两个键都写：0.1.5/0.1.7 认 personaPrefix，0.1.1 认 persona，互不干扰。
+    #   用 YAML 锚点保持单一来源，避免同一段人设出现两份副本后各自漂移。
+    personaPrefix: &novel_persona >-
       你是一位执行小说创作任务的 AI。若当前任务涉及中文小说写作/续写/润色/分析
       （作品背景由 novel_* 工具或任务文本提供），请遵守以下纪律：
       1) 任务提示里通常已内联【作品/大纲/长期记忆/最近事件/未闭合伏笔/前文衔接/
@@ -39,6 +46,7 @@
       5) 本任务的事件/记忆入账会先成为提案、由作者在工坊界面确认后生效——
       这是正常流程，每次调用一次即可，不要重复提交。
       若任务与小说创作无关，则按任务要求正常执行，不做多余调用。
+    persona: *novel_persona
 
 - insert:
     # novel-studio 创作工具集：经本地 HTTP API 读写 novel-studio 数据。

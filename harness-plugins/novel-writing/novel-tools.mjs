@@ -30,7 +30,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.9.0'
+export const PLUGIN_VERSION = '0.10.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -650,5 +650,340 @@ export function apply(ctx, config) {
     const scan = data.scan || {}
     return `正文已写回章节 #${data.chapter_id}（旧稿存为历史版本 #${data.version_id}，可恢复）。` +
       `红线扫描：${scan.total ? `命中 ${scan.total} 处（${(scan.hits || []).slice(0, 5).map((h) => `${h.pattern}×${h.count}`).join('、')}）` : '未命中'}。`
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 确定性故事状态内核（PHASE 1–14 的插件侧工具）
+  //
+  // 设计纪律（与宿主契约一致）：
+  //   · 这些工具只是**宿主的 HTTP 客户端**——不解析状态、不做判定、不自己存东西；
+  //   · 状态写入一律走「提案 → 作者确认 → 单事务应用 + 快照」，本层不提供直接写入；
+  //   · 作品开关（/api/novel/story_state 的 enabled）**默认关**。未开启时这些工具会如实
+  //     告诉模型「本作品未开启」，而不是硬要它用——机制生效不是改变创作流程的理由。
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** 状态工具的统一前置：取 work_id 并确认开关；未开启时返回一句可读说明（不是异常）。 */
+  async function stateGate(args, { requireEnabled = true } = {}) {
+    const workId = envId(args, 'work_id')
+    if (workId === undefined) throw new Error('缺少 work_id（可用 novel_works 确认）')
+    const info = await jfetch(`/api/novel/story_state?work_id=${encodeURIComponent(workId)}`)
+    if (requireEnabled && info.enabled !== true) {
+      return { workId, enabled: false, info, message: `作品 #${workId} 尚未开启「确定性故事状态」（默认关闭）。开启方式：作者在工坊界面打开，或 PUT /api/novel/story_state {work_id, enabled:true}。` }
+    }
+    return { workId, enabled: info.enabled === true, info, message: '' }
+  }
+
+  register('novel_state', [
+    '读取作品**确定性故事状态**的一个切片（只读）。status=overview|facts|timeline|knowledge|entities|foreshadows|contract。',
+    '为什么要用它：上下文里的「故事状态」层受预算限制，被截断的部分要用本工具读回全文（凡裁剪必可查回）。',
+    'status=overview（默认）给总览：开关、条目数、状态哈希、待确认提案数。status=contract 需要 chapter_id。',
+    '未开启该机制的作品会如实返回提示——此时不要去猜测状态，按原有方式创作即可。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（status=contract 时必填）' },
+    status: { type: 'string', description: 'overview | facts | timeline | knowledge | entities | foreshadows | contract（默认 overview）' },
+    character_id: { type: 'string', description: '可选：status=knowledge 时只看某个角色' },
+  }, async (args) => {
+    const gate = await stateGate(args, { requireEnabled: false })
+    const { workId } = gate
+    const status = String(args.status || 'overview')
+    if (status === 'overview') {
+      const s0 = gate.info
+      return [
+        `作品 #${workId} 故事状态总览（机制${s0.enabled ? '已开启' : '未开启'}）`,
+        `  正典事实 ${s0.facts}｜时间线 ${s0.timeline}｜角色知识 ${s0.knowledge}｜实体 ${s0.entities}｜契约 ${s0.contracts}`,
+        `  提案：待确认 ${s0.proposals_pending}｜已陈旧 ${s0.proposals_stale}`,
+        `  快照 ${s0.snapshots}｜校验记录 ${s0.validations}｜状态哈希 ${s0.state_hash}`,
+        s0.enabled ? '' : '（未开启：上下文里不会出现故事状态层，novel_preflight/novel_validate 也不会运行）',
+      ].filter(Boolean).join('\n')
+    }
+    if (!gate.enabled) return gate.message
+    if (status === 'contract') {
+      const chapterId = envId(args, 'chapter_id')
+      if (chapterId === undefined) throw new Error('status=contract 需要 chapter_id')
+      const data = await jfetch(`/api/novel/state/contract?chapter_id=${encodeURIComponent(chapterId)}`)
+      if (!data.contract) return `章节 #${chapterId} 还没有契约。用 novel_contract 保存一份，之后预检/校验/上下文都会以它为准。`
+      return `章节 #${chapterId} 契约（v${data.contract.version}，哈希 ${data.contract.contract_hash}）：\n${renderContractText(data.contract)}`
+    }
+    if (status === 'entities') {
+      const data = await jfetch(`/api/novel/state/entities?work_id=${encodeURIComponent(workId)}`)
+      const lines = (data.entities || []).map((e) => `#${e.id} ${e.canonical_name}（${e.kind}，${e.status}）${e.aliases?.length ? ' 别名：' + e.aliases.map((a) => a.alias).join('、') : ''}`)
+      const conflicts = (data.conflicts || []).map((c) => `  ⚠ ${c.reason}`)
+      return [`实体（${(data.entities || []).length} 个）：`, ...lines, ...(conflicts.length ? ['冲突：', ...conflicts] : [])].join('\n')
+    }
+    if (status === 'knowledge') {
+      const q = args.character_id ? `&character_id=${encodeURIComponent(args.character_id)}` : ''
+      const chapterId = envId(args, 'chapter_id')
+      const q2 = chapterId !== undefined ? `&chapter_id=${encodeURIComponent(chapterId)}` : ''
+      const data = await jfetch(`/api/novel/state/knowledge?work_id=${encodeURIComponent(workId)}${q}${q2}`)
+      const rows = (data.knowledge || []).map((k) => `${k.character_name || '#' + k.character_id}｜${k.fact_key}｜${k.state}（第 ${k.learned_chapter_index} 章起）`)
+      return [`角色知识边界（游标=第 ${data.cursor?.chapter_index ?? 0} 章）：`, ...rows].join('\n')
+    }
+    if (status === 'timeline') {
+      const chapterId = envId(args, 'chapter_id')
+      const q = chapterId !== undefined ? `&chapter_id=${encodeURIComponent(chapterId)}` : ''
+      const data = await jfetch(`/api/novel/state/timeline?work_id=${encodeURIComponent(workId)}${q}`)
+      const lines = (data.entries || []).map((t) => `#${t.id} 第${t.chapter_index}章第${t.scene_index}场｜${t.story_time || t.relative_time || '—'}｜${t.label || t.kind}`)
+      const conflicts = (data.conflicts || []).map((c) => `  ⚠ ${c.reason}`)
+      return [`时间线（${(data.entries || []).length} 条）：`, ...lines, ...(conflicts.length ? ['顺序/泄漏问题：', ...conflicts] : [])].join('\n')
+    }
+    if (status === 'foreshadows') {
+      const chapterId = envId(args, 'chapter_id')
+      const q = chapterId !== undefined ? `&chapter_id=${encodeURIComponent(chapterId)}` : ''
+      const data = await jfetch(`/api/novel/state/foreshadows?work_id=${encodeURIComponent(workId)}${q}`)
+      const lines = (data.items || []).map((it) => `#${it.id}〔${it.state}〕${it.summary}——${it.reason}`)
+      return [`伏笔派生状态（${JSON.stringify(data.by_state)}）：`, ...lines].join('\n')
+    }
+    // facts
+    const data = await jfetch(`/api/novel/context?work_id=${encodeURIComponent(workId)}${envId(args, 'chapter_id') !== undefined ? '&chapter_id=' + encodeURIComponent(envId(args, 'chapter_id')) : ''}&mode=settings`)
+    const layer = (data.context_manifest || []).find((m) => m.id === 'story_state')
+    return layer
+      ? `故事状态层（${layer.emitted} 字${layer.truncated ? '，已截断' : ''}）：\n${(data.assembled || '').slice((data.assembled || '').indexOf('【故事状态'), (data.assembled || '').indexOf('【故事状态') + layer.emitted + 40)}`
+      : '故事状态层当前为空（没有已登记的正典/时间线/契约）。'
+  })
+
+  function renderContractText(c) {
+    const fmt = (arr, f) => (arr || []).map((x) => `    · ${f(x)}`).join('\n')
+    return [
+      `  本章目标：${c.chapter_goal || '—'}`,
+      (c.required_beats || []).length ? `  必须写到的情节点：\n${fmt(c.required_beats, (x) => x.text)}` : '',
+      (c.forbidden_beats || []).length ? `  禁止出现：\n${fmt(c.forbidden_beats, (x) => x.text)}` : '',
+      (c.required_entities || []).length ? `  必须出场：${c.required_entities.map((x) => x.text || x.name).join('、')}` : '',
+      (c.foreshadow_targets || []).length ? `  应照顾的伏笔：${c.foreshadow_targets.map((x) => `#${x.foreshadow_id ?? '?'} ${x.text}`).join('；')}` : '',
+      (c.acceptance_checks || []).length ? `  验收项：${c.acceptance_checks.map((x) => x.text).join('；')}` : '',
+    ].filter(Boolean).join('\n')
+  }
+
+  register('novel_contract', [
+    '保存本章的**章节契约**（chapter_goal / required_beats / forbidden_beats / required_entities / required_events /',
+    'allowed_state_changes / forbidden_state_changes / foreshadow_targets / style_constraints / continuity_constraints / acceptance_checks）。',
+    '为什么值得写：契约是唯一贯穿「预检 → 上下文 → 生成 → 校验 → 修复 → 提案 → 验收」的东西——',
+    '写下来之后 novel_validate 才能机械回答"这一章有没有达到要求"，而不是靠感觉。',
+    '契约可以反复保存，每次留一个版本（历史版本可查，回答"当时按什么写的"）。',
+    '只在作者同意或明确要求时保存；不要替作者改他自己写的契约目标。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（必填）' },
+    contract: { type: 'object', description: '契约对象（十一个字段组，缺省即不约束）' },
+    note: { type: 'string', description: '可选备注（如"初版"/"按作者第 3 次修改"）' },
+  }, async (args) => {
+    const chapterId = envId(args, 'chapter_id')
+    if (chapterId === undefined) throw new Error('缺少 chapter_id')
+    if (!args.contract || typeof args.contract !== 'object') throw new Error('缺少 contract 对象')
+    const workId = envId(args, 'work_id')
+    const data = await jfetch('/api/novel/state/contract', {
+      method: 'PUT',
+      body: { work_id: workId, chapter_id: chapterId, contract: args.contract, note: args.note || 'dsh 创作插件保存' },
+    })
+    const warn = (data.warnings || []).length ? `（提示：${data.warnings.join('；')}）` : ''
+    return `章节契约已保存：章节 #${chapterId} 版本 v${data.version}，哈希 ${data.contract_hash}${warn}。`
+  })
+
+  register('novel_preflight', [
+    '**写前预检**：在动笔之前，用确定性内核检查"按现在的状态，这一章有没有必然写崩的地方"，返回结构化风险清单 + 证据。',
+    '会检查：契约自相矛盾、未来数据泄漏、时间线顺序倒置、死人复活/物品状态矛盾、必出实体未登记、',
+    '必发事件没有安排（planned）、伏笔逾期或错误回收、角色知识越界风险。',
+    '预检**不阻断创作**——它只是把风险摆出来。没有风险项时正常开写；有 critical 项时先与作者确认。',
+    '每条风险都带 level（critical/high/medium/low/info）、auto_fixable 与 requires_author_decision；',
+    '正典冲突一律 requires_author_decision=true —— 这类判断不能由 AI 替作者做。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id' },
+  }, async (args) => {
+    const gate = await stateGate(args)
+    if (!gate.enabled) return gate.message
+    const chapterId = envId(args, 'chapter_id')
+    const data = await jfetch('/api/novel/state/preflight', {
+      method: 'POST',
+      body: { work_id: gate.workId, chapter_id: chapterId, persist: true },
+      timeout: 30000,
+    })
+    if (!data.risks || !data.risks.length) return `写前预检：未发现风险（共 ${data.summary?.total ?? 0} 项）。可按契约正常开写。`
+    const lines = data.risks.map((r) => `  [${r.level}]${r.requires_author_decision ? '〔需作者决定〕' : ''} ${r.reason}`)
+    return [
+      `写前预检：${data.summary.total} 项（critical ${data.summary.counts.critical}｜high ${data.summary.counts.high}｜medium ${data.summary.counts.medium}）`,
+      ...lines,
+      data.blocking
+        ? '⚠ 存在 critical 项：先与作者确认处理方式，不要自行推进。'
+        : '（预测而非事实：以上是风险提示，不是已经发生的事。）',
+    ].join('\n')
+  })
+
+  register('novel_validate', [
+    '**写后校验**：拿成文正文对照章节契约逐项核对，并对时间线/正典/别名做一次一致性检查。',
+    '结果分 pass / fail / unknown 三态：**unknown 表示内核判不出来**（例如某一项没写关键词），不是失败——',
+    '不要因为出现 unknown 就反复改写正文；只有 fail 才是"确实没做到"。',
+    '本工具**只给结论与证据，不改正文**。要修复请与作者确认后自己改，再用本工具复验。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id' },
+    draft: { type: 'string', description: '待校验的正文全文' },
+    state_changes: { type: 'array', description: '可选：本次拟入库的状态变化（[{text}]），用于契约的白/黑名单核对' },
+  }, async (args) => {
+    const gate = await stateGate(args)
+    if (!gate.enabled) return gate.message
+    const draft = String(args.draft || '')
+    if (!draft.trim()) throw new Error('缺少 draft')
+    const data = await jfetch('/api/novel/state/validate', {
+      method: 'POST',
+      body: {
+        work_id: gate.workId,
+        chapter_id: envId(args, 'chapter_id'),
+        draft,
+        state_changes: Array.isArray(args.state_changes) ? args.state_changes : [],
+        persist: true,
+      },
+      timeout: 30000,
+    })
+    const fails = (data.checks || []).filter((c) => c.status === 'fail')
+    const head = data.passed
+      ? `写后校验：通过（${data.summary.pass} 项通过 / ${data.summary.unknown} 项判不出来）`
+      : `写后校验：未通过（${data.summary.fail} 项未满足）`
+    const detail = fails.map((c) => `  ✗ ${c.id}：期望「${c.expected}」实际「${c.actual}」`)
+    const conflicts = (data.conflicts || []).map((c) => `  ⚠ ${c.reason}`)
+    return [head, ...detail, ...(conflicts.length ? ['一致性问题：', ...conflicts] : [])].join('\n')
+  })
+
+  register('novel_state_propose', [
+    '把「正文里确认发生的状态变化」登记成**提案**（不直接写入状态）。',
+    '为什么要走提案：模型的输出不等于故事正典。提案 → 作者确认 → 单事务应用 + 快照，',
+    '这样"AI 记错了"永远只是丢弃一条提案，而不是污染作品设定。',
+    'kind 取值与用途：',
+    '  canon_fact        正典事实 {facts:[{subject,predicate,value,scope,state,status,effective_from,effective_to,dedup_key}]}',
+    '  character_knowledge 角色知识 {knowledge:[{character_id,fact_key,state,learned_chapter_index}]}',
+    '  timeline_entry    时间线 {entries:[{chapter_index,scene_index,story_time,label,effective_from}]}',
+    '  foreshadow        伏笔状态 {foreshadow:{id,foreshadow_status,resolves_event_id}}',
+    '  entity_create     新实体 {canonical_name,kind,aliases:[{alias}]}｜entity_rename {entity,to_name,from_name}',
+    '  memory / event    长期记忆与事件（等价的既有机制仍可用 novel_memory_update / novel_event_add）',
+    'scope 必须是 AUTHOR_KNOWLEDGE / CANON_KNOWLEDGE / CHARACTER_KNOWLEDGE 之一；',
+    'status 必须是 established（已发生）/ planned（只是安排）/ retracted。**不要把 planned 当 established 写**。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（可选）' },
+    kind: { type: 'string', description: '提案种类（见工具说明）' },
+    payload: { type: 'object', description: '提案负载' },
+    note: { type: 'string', description: '可选备注（作者在确认界面看到的就是它）' },
+    dedup_key: { type: 'string', description: '可选幂等键' },
+  }, async (args) => {
+    const gate = await stateGate(args)
+    if (!gate.enabled) return gate.message
+    if (!args.kind) throw new Error('缺少 kind')
+    const data = await jfetch('/api/novel/state/proposals', {
+      method: 'POST',
+      body: {
+        work_id: gate.workId,
+        chapter_id: envId(args, 'chapter_id'),
+        kind: args.kind,
+        payload: args.payload || {},
+        note: args.note || 'dsh 创作插件提案',
+        dedup_key: args.dedup_key || '',
+      },
+      timeout: 30000,
+    })
+    return `状态提案已登记 #${data.id}（${args.kind}，基线 ${data.base_state_hash}）。` +
+      '它**还没有写入作品状态**——等作者在工坊确认，或作者明确同意后用 novel_state_commit 应用。'
+  })
+
+  register('novel_state_commit', [
+    '复核 / 应用 / 驳回状态提案（走作者确认闸门）。',
+    'action=review 只看结论（会不会陈旧、会改哪些行），不写任何东西；',
+    'action=apply 才真正写入——服务端会做陈旧检查（基线不一致就标 stale 并**拒绝覆盖**）、',
+    '落状态快照、再在**单事务**里执行，失败整体回滚；',
+    'action=reject 驳回并留备注。',
+    '⚠ 只有在作者明确同意之后才用 apply。陈旧（stale）不是错误，是"期间状态变了，请作者再看一眼"。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    action: { type: 'string', description: 'review | apply | reject（默认 review）' },
+    id: { type: 'string', description: '提案 id（与 all 二选一）' },
+    ids: { type: 'array', description: '多个提案 id' },
+    all: { type: 'boolean', description: '为 true 时处理该作品全部待确认提案' },
+    note: { type: 'string', description: '驳回时的备注' },
+  }, async (args) => {
+    const gate = await stateGate(args)
+    if (!gate.enabled) return gate.message
+    const action = String(args.action || 'review')
+    if (action === 'review') {
+      const id = Number(args.id) || (Array.isArray(args.ids) ? Number(args.ids[0]) : 0)
+      if (!id) throw new Error('review 需要 id')
+      const data = await jfetch('/api/novel/state/proposals/review', { method: 'POST', body: { id, work_id: gate.workId } })
+      if (data.decision === 'stale') return `提案 #${id} 已陈旧：${data.reason}\n（不会覆盖任何新状态，请作者重新确认。）`
+      if (data.decision === 'applicable') return `提案 #${id} 可应用：将执行 ${data.plan_ops} 步状态变更。用 action=apply 写入。`
+      return `提案 #${id} 当前不可应用：${data.reason}`
+    }
+    if (action === 'reject') {
+      const id = Number(args.id) || 0
+      if (!id) throw new Error('reject 需要 id')
+      await jfetch('/api/novel/state/proposals/reject', { method: 'POST', body: { id, note: args.note || '' } })
+      return `提案 #${id} 已驳回。${args.note ? '备注：' + args.note : ''}`
+    }
+    const body = { work_id: gate.workId, id: args.id, ids: args.ids, all: args.all === true }
+    const data = await jfetch('/api/novel/state/proposals/apply', { method: 'POST', body, timeout: 30000 })
+    const lines = (data.results || []).map((r) => (r.ok
+      ? `  ✓ #${r.proposal_id} 已应用（快照 #${r.snapshot_id}，状态哈希 ${r.state_hash_before} → ${r.state_hash_after}）`
+      : `  ✗ 未应用：${r.reason}`))
+    return [`状态提案应用结果：成功 ${data.applied}｜陈旧 ${data.stale}`, ...lines].join('\n')
+  })
+
+  register('novel_snapshot', [
+    '故事状态的**快照与回滚**。action=create 落一份当前状态快照；action=rollback 回到某份快照。',
+    '回滚语义（重要）：**不删除任何行**——快照之后新增的条目标记为 superseded、被改过的改回快照取值，',
+    '所以历史永远不丢，正文里的引用也不会悬空。回滚前会自动再落一份快照，回滚本身也可回滚。',
+    '在应用一批提案之前如果想要一个还原点，用 action=create 先落一份。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    action: { type: 'string', description: 'create | rollback（默认 create）' },
+    snapshot_id: { type: 'string', description: 'action=rollback 时的目标快照 id' },
+    label: { type: 'string', description: '可选标签（如"第12章之前"）' },
+    reason: { type: 'string', description: '可选原因说明' },
+  }, async (args) => {
+    const gate = await stateGate(args)
+    if (!gate.enabled) return gate.message
+    const action = String(args.action || 'create')
+    if (action === 'rollback') {
+      const id = Number(args.snapshot_id) || 0
+      if (!id) throw new Error('rollback 需要 snapshot_id')
+      const data = await jfetch('/api/novel/state/rollback', { method: 'POST', body: { snapshot_id: id }, timeout: 30000 })
+      return `已回滚到快照 #${data.snapshot_id}：执行 ${data.ops} 步（回滚前自动留了快照 #${data.safety_snapshot_id}）。${data.note || ''}`
+    }
+    const data = await jfetch('/api/novel/state/snapshot', {
+      method: 'POST',
+      body: { work_id: gate.workId, reason: args.reason || 'dsh 创作插件快照', label: args.label || '', chapter_id: envId(args, 'chapter_id') },
+    })
+    return `状态快照已落盘 #${data.id}（状态哈希 ${data.state_hash}）${args.label ? '｜标签：' + args.label : ''}。`
+  })
+
+  register('novel_write_pipeline', [
+    '**写作编排层**（推荐的主入口）：一次调用把这一章写作需要的确定性框架全部准备好，返回一份「写作简报」。',
+    '它依次做：① 读故事状态（未开启则跳过）② 跑写前预检 ③ 取唯一上下文（assembled）④ 汇总契约与验收项。',
+    '它**不生成正文**——正文由你（模型）按简报写。写完后用 novel_validate 对照契约复验，',
+    '再用 novel_state_propose 把本次确认发生的状态变化登记成提案，由作者确认。',
+    '为什么这样分工：确定性的事（状态、契约、校验）交给内核，创作交给模型——',
+    '模型输出不直接等于故事正典，中间必须隔一道作者确认。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id' },
+    mode: { type: 'string', description: '上下文模式：full | continuation | fragment（默认 full）' },
+  }, async (args) => {
+    const workId = envId(args, 'work_id')
+    if (workId === undefined) throw new Error('缺少 work_id（可用 novel_works 确认）')
+    const chapterId = envId(args, 'chapter_id')
+    const mode = args.mode || process.env.NOVELSTUDIO_MODE || 'full'
+    const info = await jfetch(`/api/novel/story_state?work_id=${encodeURIComponent(workId)}`)
+    const ctx = await jfetch(`/api/novel/context${identitySuffix(workId, chapterId, mode)}`, { timeout: 40000 })
+    const parts = [
+      `【写作简报】作品：${ctx.work?.title ?? ''}${ctx.chapter ? `｜第${(ctx.chapter?.position ?? -1) + 1}节 ${ctx.chapter?.title ?? ''}` : ''}（mode=${ctx.mode ?? mode}）`,
+      `确定性故事状态：${info.enabled ? '已开启' : '未开启（本次不注入状态层，也没有预检/校验）'}`,
+    ]
+    if (info.enabled) {
+      const pf = await jfetch('/api/novel/state/preflight', { method: 'POST', body: { work_id: workId, chapter_id: chapterId, persist: true }, timeout: 30000 })
+      const risks = (pf.risks || [])
+      parts.push(`写前预检：${risks.length} 项风险（critical ${pf.summary?.counts?.critical ?? 0}）`)
+      for (const r of risks.slice(0, 12)) parts.push(`  [${r.level}]${r.requires_author_decision ? '〔需作者决定〕' : ''} ${r.reason}`)
+      if (pf.blocking) parts.push('⚠ 有 critical 项：先与作者确认，不要自行推进。')
+      const c = ctx.story_state?.contract_version ? await jfetch(`/api/novel/state/contract?chapter_id=${encodeURIComponent(chapterId)}`) : null
+      if (c?.contract) parts.push(`本章契约（v${c.contract.version}）：\n${renderContractText(c.contract)}`)
+    }
+    parts.push('', '── 唯一上下文（服务端装配，勿自行拼接）──', ctx.assembled || '')
+    return parts.join('\n')
   })
 }

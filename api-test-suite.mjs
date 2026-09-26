@@ -66,6 +66,18 @@ async function main() {
     record('A5 未知 API 404 JSON', r3.status === 404 && r3.json?.error, `status=${r3.status}`);
     const r4 = await api('GET', '/api/works/12abc');
     record('A6 非法 id 段 404 而非全量列表', r4.status === 404, `status=${r4.status}`);
+    // A7/A8/A9：畸形 URL 与不支持的过滤参数都不得变成 500，也不得把 SQLite 报错原样回给客户端。
+    // （第五步 Golden Novel 联合回归实测：/api/works?work_id=5 曾回 `no such column: work_id`。）
+    const bad = await rawHttp('GET /api/x%ZZ HTTP/1.1\r\nHost: 127.0.0.1:3738\r\nConnection: close\r\n\r\n');
+    // ⚠ rawHttp 按 latin1 读，中文会变乱码——所以这里只断言 ASCII 可判定的部分：
+    //   状态行是 400（不是 500/断连），且回的是 JSON 错误体。
+    record('A7 畸形百分号编码 400（请求不抛穿）',
+      /^HTTP\/1\.1 400/.test(bad) && /"error"/.test(bad), bad.split('\r\n')[0] + ' ' + bad.split('\r\n').pop().slice(0, 40));
+    const r5 = await api('GET', '/api/works?work_id=5');
+    record('A8 过滤参数不属于该资源时 400 且不回传 SQL 报错',
+      r5.status === 400 && !/no such column|SELECT|sqlite/i.test(r5.text), `status=${r5.status} ${r5.text.slice(0, 70)}`);
+    const r6 = await api('GET', '/api/chapters?work_id=1');
+    record('A9 合法过滤参数仍然照常工作（没被上面那条改坏）', r6.status === 200 && Array.isArray(r6.json), `status=${r6.status}`);
   }
 
   console.log('\n== B. 跨源防护与请求体限制 ==');
@@ -180,6 +192,38 @@ async function main() {
     record('F9 审稿报告保存 201', r9.status === 201, `review_id=${r9.json?.review_id}`);
     const r10 = await api('GET', `/api/novel/review?chapter_id=${cid}`);
     record('F10 审稿报告读取 200', r10.status === 200 && r10.json?.review?.report?.summary, r10.json?.review?.report?.summary);
+    // 2026-09-22 报告 · 第 1 步：确定性连续性预检（零 token）+ 豁免闭环。
+    // 判据是"机器能算的"：角色卡时点 / 系统出场 / 篇幅口径 / 剧情线推进。
+    const g1 = await api('POST', '/api/novel/continuity_guard', { body: { work_id: wid, chapter_id: cid } });
+    record('F11 连续性预检 200（findings/summary/checked 三件套）',
+      g1.status === 200 && Array.isArray(g1.json?.findings) && !!g1.json?.summary && !!g1.json?.checked,
+      `findings=${g1.json?.findings?.length}｜${g1.json?.summary?.text}`);
+    const g2 = await api('POST', '/api/novel/continuity_guard', { body: { work_id: 99999 } });
+    record('F12 连续性预检 404 作品不存在', g2.status === 404);
+    // 草稿路径：正文还没落盘时按传入文本判（"系统"40 次必然撞上限）→ key 由服务端算好下发
+    const draftText = '系统'.repeat(40) + '他抬头。';
+    const sysKey = `system_frequency:chapter:${cid}`;
+    const g3 = await api('POST', '/api/novel/continuity_guard', { body: { work_id: wid, chapter_id: cid, text: draftText } });
+    const hit = (g3.json?.findings || []).find((f) => f.category === 'system_frequency');
+    record('F13 预检按草稿文本判、且 finding 带豁免键', !!hit && hit.key === sysKey, hit && hit.key);
+    const g4 = await api('POST', '/api/novel/continuity_exemption', { body: { work_id: wid, key: sysKey, action: 'exempt' } });
+    const g5 = await api('POST', '/api/novel/continuity_guard', { body: { work_id: wid, chapter_id: cid, text: draftText } });
+    record('F14 标为"这是故意的"后从 findings 消失、出现在 exempted',
+      g4.status === 200
+      && !(g5.json?.findings || []).some((f) => f.key === sysKey)
+      && (g5.json?.exempted || []).some((f) => f.key === sysKey));
+    const g6 = await api('POST', '/api/novel/continuity_exemption', { body: { work_id: wid, key: sysKey, action: 'restore' } });
+    const g7 = await api('POST', '/api/novel/continuity_guard', { body: { work_id: wid, chapter_id: cid, text: draftText } });
+    record('F15 恢复后重新出现（豁免是可逆的）',
+      g6.status === 200 && (g7.json?.findings || []).some((f) => f.key === sysKey));
+    const g8 = await api('POST', '/api/novel/continuity_exemption', { body: { work_id: wid } });
+    record('F16 豁免缺 key 400', g8.status === 400);
+    // 不给章号（前端"恢复"刷新预检块的那条路径）：只跑作品级检查，**不许**产出空章号键
+    // ——`system_frequency:chapter:` 这种键与列表里的键对不上，豁免会静默失效（2026-09-22 复盘实测）。
+    const g9 = await api('POST', '/api/novel/continuity_guard', { body: { work_id: wid, text: draftText } });
+    record('F17 不给章号时只跑作品级检查（不产出空章号键）',
+      g9.status === 200 && !(g9.json?.findings || []).some((f) => String(f.entity_id || '').endsWith(':')),
+      `findings=${(g9.json?.findings || []).map((f) => f.key).join(',') || '（无）'}`);
   }
 
   console.log('\n== G. 搜索 / 统计 / 导入导出 ==');
@@ -463,6 +507,58 @@ async function main() {
       await api('POST', '/api/debug/stop');
     } finally {
       fake.close();
+    }
+  }
+
+  console.log('\n== I5. 流式成文把用量随 done 下发（真实 SSE，无需真实 Key） ==');
+  {
+    // 依据（真实代码）：callAIStream 早就把流式最后一帧的 usage 收进 streamUsage，
+    // 却**从未向外传过** —— 于是「前缀缓存命不命中」与「思考烧掉多少输出预算」（空回复事故的根因）
+    // 这两件直接决定成文耗时的事一直只能靠猜。这里用本地假 SSE 端点把整条链路跑通。
+    const sseFake = http.createServer((req, res) => {
+      req.on('data', () => { /* 读掉请求体即可 */ });
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        const frame = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+        // 思考分片：DeepSeek 的思考以 delta.reasoning_content 逐片下发，正文之前可能持续十几秒。
+        // 此前这些帧被整个忽略，客户端在这段时间里一帧都收不到 —— 界面上看起来就是卡死。
+        frame({ choices: [{ index: 0, delta: { reasoning_content: '先想一下' }, finish_reason: null }] });
+        frame({ choices: [{ index: 0, delta: { reasoning_content: '再想一下' }, finish_reason: null }] });
+        frame({ choices: [{ index: 0, delta: { content: '流式正文' }, finish_reason: null }] });
+        // 官方端点最后一帧 choices 为空、只带 usage —— 这正是此前被整个丢弃、也从未转发的那一帧。
+        frame({ choices: [], usage: { prompt_tokens: 4321, completion_tokens: 210, total_tokens: 4531, prompt_cache_hit_tokens: 4000, completion_tokens_details: { reasoning_tokens: 90 } } });
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+    });
+    // 0 = 让系统挑空闲端口：固定端口会和并行跑的套件抢（I4 的 3999 就是这么写死的）。
+    await new Promise((r) => sseFake.listen(0, '127.0.0.1', r));
+    try {
+      const cfg = await api('POST', '/api/api_configs', { body: { name: '假AI（流式用量验证）', base_url: `http://127.0.0.1:${sseFake.address().port}`, api_key: 'sk-fake-for-test', model: 'deepseek-flash' } });
+      const cfgId = cfg.json?.id;
+      created.others.push(['api_configs', cfgId]);
+      const stream = await api('POST', '/api/ai/write_stream', { body: { config_id: cfgId, messages: [{ role: 'user', content: '写一句' }], max_tokens: 256 } });
+      const frames = String(stream.text || '').split('\n').filter((l) => l.startsWith('data:'))
+        .map((l) => { try { return JSON.parse(l.slice(5).trim()); } catch { return null; } }).filter(Boolean);
+      const doneFrame = frames.find((f) => f.done);
+      record('I5a 流式成文把正文逐字下发', frames.some((f) => f.delta === '流式正文'), JSON.stringify(frames.map((f) => Object.keys(f).join('+'))));
+      record('I5b done 帧带上供应商回来的用量（缓存命中 + 思考 token 都能核对）',
+        doneFrame?.usage?.prompt_cache_hit_tokens === 4000 && doneFrame?.usage?.prompt_tokens === 4321
+          && doneFrame?.usage?.completion_tokens_details?.reasoning_tokens === 90,
+        JSON.stringify(doneFrame && doneFrame.usage));
+      record('I5c 用量帧不会被当成正文（正文与用量严格分开）',
+        doneFrame?.text === '流式正文' && frames.filter((f) => typeof f.delta === 'string').length === 1,
+        JSON.stringify({ text: doneFrame && doneFrame.text, deltas: frames.filter((f) => typeof f.delta === 'string').length }));
+      const phaseIdx = frames.findIndex((f) => f.phase === 'thinking');
+      const deltaIdx = frames.findIndex((f) => typeof f.delta === 'string');
+      record('I5d 思考期间下发"正在思考"相位（排在正文之前，且只报一次、不刷屏）',
+        phaseIdx >= 0 && deltaIdx >= 0 && phaseIdx < deltaIdx && frames.filter((f) => f.phase === 'thinking').length === 1,
+        JSON.stringify(frames.map((f) => f.phase || (f.delta ? 'delta' : (f.done ? 'done' : 'other')))));
+      record('I5e 思考内容不混进正文（相位只是相位，推理过程不外泄）',
+        !String(stream.text || '').includes('先想一下') && !String(stream.text || '').includes('再想一下') && doneFrame?.text === '流式正文',
+        JSON.stringify({ text: doneFrame && doneFrame.text }));
+    } finally {
+      sseFake.close();
     }
   }
 

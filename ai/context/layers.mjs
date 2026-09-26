@@ -69,6 +69,11 @@ export const LAYERS = [
     source: 'world_entries（pinned/关键词命中 ≤30 × 每条 600 字）' },
   { id: 'terms', label: '相关设定词条（写作约束）', kind: 'cond', cap: 800,
     source: 'terms（标题/标签/正文关键词命中 ≤12 × 每条 300 字，按命中权重排序）' },
+  // ⚠ gated: true —— 这是一层**门控层**：只有当作品显式打开「确定性故事状态」开关时，
+  // 调用方才会把它推进层列表。未打开的作品里它**根本不存在**（不是 emitted:false），
+  // 因此 assembled、manifest、excluded 三者都与它出现之前逐字节一致。
+  { id: 'story_state', label: '故事状态（正典/时间线/契约/知识边界）', kind: 'cond', cap: 2400, gated: true,
+    source: 'story_facts + story_timeline_entries + chapter_contracts + character_knowledge + story_entities' },
   { id: 'redlines', label: '写作风格红线', kind: 'fixed', cap: 4000,
     source: 'writing_redlines + style_positive' },
 ];
@@ -108,6 +113,7 @@ export const RETRIEVAL = {
   // 2026-09-21：原 gap（“端点只回红线、不回 work.style_positive”）已补——
   // /api/novel/redlines 与 novel_style_contract 现在同时返回正向风格契约，查回路径与装配路径同源。
   redlines:    { tool: 'novel_style_contract', endpoint: '/api/novel/redlines', countable: 'writing_redlines' },
+  story_state: { tool: 'novel_state', endpoint: '/api/novel/story_state', note: '整块状态可用 GET /api/novel/story_state 读回；逐条事实/时间线/契约各有专用端点' },
 };
 
 /**
@@ -134,8 +140,23 @@ export function recallGapReason(recall) {
   return recall && recall.enabled === true ? (RECALL_GAP_CN[recall.status] || '') : '';
 }
 
-/** 总预算（正文+标题+提示语 的合计上界）。 */
-export const TOTAL_BUDGET = { settings: 18000, default: 26000 };
+/**
+ * 总预算（正文+标题+提示语 的合计上界）。
+ *
+ * ⚠️ 这不是「凭感觉」的数字：**先算可执行下限，再定值**。历史失误 1：settings 曾设 12,000，
+ * 而下限已 >13,000，收敛循环永远压不到，常量误导。下限由 `computeFloor(mode)` 自动核算。
+ *
+ * 2026-09-22 校正：新增 `terms` 层（相关设定词条，cap 800）后，settings 档下限从
+ * 17,356 涨到 **18,173**，**越过了当时的 18,000**——`test-assembler.mjs` 的「预算可达」
+ * 断言与文档对账同时报红。处置：抬预算到 **19,000**（= 现行下限 + 827 余量，与上一版
+ * 18,000 相对 17,356 的 644 余量同量级，取整到千位便于人记）。
+ * 为什么不反过来「压小某个质量层去迁就旧常量」：settings 档保留的都是**设定类生成必须看到**
+ * 的层（角色卡/长期记忆/事件/伏笔/词条/红线），为迁就一个过期常量去压缩它们，
+ * 是拿形式上的达标换真实的质量损失。
+ * 口径见 `docs/context-contract.md` §三；回归判据在 `.p1-baseline/test-assembler.mjs`
+ * 与 `harness-plugins/novel-writing/test/smoke.mjs` 的「大作品 settings 必须收敛」断言。
+ */
+export const TOTAL_BUDGET = { settings: 19000, default: 26000 };
 
 /**
  * 某层在给定模式下的**正文 cap**。
@@ -212,8 +233,10 @@ export function budgetCapOf(layer, mode = 'full') {
  * 可执行下限：所有不收缩层的正文上限 + 收缩层下限 + 标题开销 + 层间分隔 + 截断提示语开销。
  * 规则来自历史失误 1：凡设预算常量，先算「可执行下限」，再定值。
  */
-export function computeFloor(mode = 'full') {
-  const present = LAYERS.filter((l) => presentIn(l, mode));
+export function computeFloor(mode = 'full', { includeGated = false } = {}) {
+  // 门控层（gated）默认**不计入**可执行下限：未打开开关的作品里它根本不存在，
+  // 把它算进 fixedBody 会让所有既有作品的下限凭空变化（预算行为就不是等价的了）。
+  const present = LAYERS.filter((l) => presentIn(l, mode) && (includeGated || l.gated !== true));
   const headerTotal = present.reduce((n, l) => n + headerOf(l.label).length, 0);
   const separatorTotal = Math.max(0, present.length - 1) * 2;
   let fixedBody = 0;
@@ -241,4 +264,125 @@ export function renderedCapOf(layer, mode = 'full') {
   const cap = capOf(layer, mode);
   if (!Number.isFinite(cap)) return Infinity;
   return headerOf(layer.label).length + cap + noticeSampleLength();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Context Provenance（2026-09-24 · 主体 V2 的 P0）
+//
+// 「关键上下文必须可追溯来源」在没有这张表时是句愿望：清单里只有「第 9 层占了 1600 字」，
+// 没人能回答「这 1600 字是从哪张表的哪些行来的、为什么它在、要是没有它我该怎么取回来」。
+// 于是「上下文被裁了」与「上下文本来就没有」在事后完全无法区分。
+//
+// 这张表**刻意只放与数据无关的事实**（来源表 / 时间视角 / 选择方式 / 为什么需要它）；
+// 与**数据相关**的那一半（具体是哪几行、命中分数）由调用方按层传进来
+// （`assemble()` 的 `sourceIds` / `scores`），因为只有 server.js 知道这次取了哪些行。
+//
+// 字段口径：
+//   source            来源表/数据源（人类可读）
+//   temporal_scope    这一层讲的是**哪个时间**的事：past 已发生 / present 正在写 / future 尚未回收 / plan 作者的规划 / work 作品元信息 / any 不限
+//   knowledge_scope   知识来源：author 作者录入 / derived 由正文或工具派生 / mixed 两者都有
+//   selection         这一层是怎么选出内容的：direct 全量直取 / recent 取最近 N 条 /
+//                     keyword 关键词命中 / retrieval 语义召回 / pinned 作者置顶
+//   reason            为什么这一层值得占上下文（一句话说清它防的是哪种质量损失）
+//   known_gap         已知的覆盖缺口（诚实标注；没有就不写）
+// ══════════════════════════════════════════════════════════════════════════════
+
+export const PROVENANCE = {
+  work: {
+    source: 'works', temporal_scope: 'work', knowledge_scope: 'author', selection: 'direct',
+    reason: '作品身份与写作参数（目标字数/总章数/结构/视角）：没有它模型不知道自己在写什么',
+  },
+  outline: {
+    source: 'volumes + plotlines + chapters(title/summary)', temporal_scope: 'plan',
+    knowledge_scope: 'author', selection: 'direct',
+    reason: '作者已经排好的卷/线/章进度，防"写着写着忘了自己排到哪"',
+    known_gap: '超长作品（>70 章）只列前 30 + 最近 40，中间的章由 novel_lookup 查回',
+  },
+  memory: {
+    source: 'story_memories', temporal_scope: 'past', knowledge_scope: 'mixed', selection: 'direct',
+    reason: '已发生的故事摘要（版本化、可回滚）：长篇里唯一能覆盖"几十章前发生了什么"的层',
+  },
+  recall: {
+    source: 'OpenViking 作品子树', temporal_scope: 'any', knowledge_scope: 'derived',
+    selection: 'retrieval',
+    reason: '语义召回：补固定分层漏掉的旧章正文/词条/角色卡；不可用时插显式占位而不是静默消失',
+  },
+  events: {
+    source: 'story_events', temporal_scope: 'past', knowledge_scope: 'mixed', selection: 'recent',
+    reason: '事件账本近 30 条：防"上一章刚发生的事这一章当作没发生"',
+  },
+  foreshadows: {
+    source: 'story_events(kind=foreshadow, 未回收)', temporal_scope: 'future',
+    knowledge_scope: 'mixed', selection: 'direct',
+    reason: '未闭合伏笔：埋的线没人回收是长篇最常见的崩法之一',
+  },
+  scene: {
+    source: 'chapters(position/title/summary/author_note)', temporal_scope: 'present',
+    knowledge_scope: 'author', selection: 'direct',
+    reason: '当前这一章的作者意图与状态，写作的锚点',
+  },
+  blueprint: {
+    source: 'chapters.blueprint_json', temporal_scope: 'present', knowledge_scope: 'derived',
+    selection: 'direct',
+    reason: '本章蓝图（写作必须遵守）：防止成文跑偏到别的情节',
+  },
+  story_tail: {
+    source: 'chapters.content（上一章/本章已写部分）', temporal_scope: 'past+present',
+    knowledge_scope: 'author', selection: 'recent',
+    reason: '前文衔接：文风、人称、刚写完的那句话的直接延续；弹性层，预算不足时**第一个**被压',
+  },
+  characters: {
+    source: 'characters（评分制选出场角色）', temporal_scope: 'present',
+    knowledge_scope: 'author', selection: 'keyword',
+    reason: '出场角色卡（身份/性格/当前状态）：防"第 3 章死掉的配角又出场"这类状态错乱',
+  },
+  relations: {
+    source: 'character_relations（仅出场角色之间）', temporal_scope: 'present',
+    knowledge_scope: 'author', selection: 'direct',
+    reason: '人物关系：称呼与立场写错是最扎眼的设定漂移',
+  },
+  world: {
+    source: 'world_entries（pinned + 关键词命中）', temporal_scope: 'any',
+    knowledge_scope: 'author', selection: 'keyword',
+    reason: '激活的世界观设定：作者显式置顶的与本章相关的设定优先',
+  },
+  terms: {
+    source: 'terms（标题/标签/正文关键词命中）', temporal_scope: 'any',
+    knowledge_scope: 'author', selection: 'keyword',
+    reason: '相关设定词条：设定类生成本身就靠它，写作时也用来约束专名与口径',
+  },
+  story_state: {
+    source: 'story_facts + story_timeline_entries + chapter_contracts + character_knowledge + story_entities',
+    temporal_scope: 'present', knowledge_scope: 'mixed', selection: 'direct',
+    reason: '确定性故事状态：正典切片 / 时间线 / 本章契约 / 角色知识边界 / 伏笔状态——防「第 3 章死掉的人第 12 章又出场」这类跨章崩坏',
+    known_gap: '只放**当前章节点看得见**的条目（future 一律不进）；被截断时可用 novel_state / 各专用端点读回全文',
+  },
+  redlines: {
+    source: 'writing_redlines + works.style_positive', temporal_scope: 'any',
+    knowledge_scope: 'author', selection: 'direct',
+    reason: '写作风格红线与正向风格契约：写作与审稿两条通道同源',
+  },
+};
+
+/** 取某层的溯源声明（未知层返回 null，由调用方决定怎么处理——不编造）。 */
+export function provenanceOf(layerId) {
+  return PROVENANCE[layerId] || null;
+}
+
+/**
+ * 裁剪优先级：**从既有事实派生，不另设一套数字**。
+ *
+ *   never  零损失层（不参与收缩；被压就是契约违反）
+ *   1..n   弹性层按 `FLEX_ORDER` 的位置（1 = 最先被压）
+ *   null   条件层/实体层：不参与收缩循环，只在自身 cap 处截断
+ *
+ * 为什么派生而不是手写一张优先级表：手写的那张一旦与 `FLEX_ORDER` 不一致，
+ * 清单会开始描述一个不存在的世界（"这层优先级是 2"而实际最后才压它）。
+ */
+export function trimPriorityOf(layerId) {
+  const layer = layerById(layerId);
+  if (!layer) return null;
+  if (layer.kind === 'fixed') return 'never';
+  const idx = FLEX_ORDER.indexOf(layerId);
+  return idx >= 0 ? idx + 1 : null;
 }

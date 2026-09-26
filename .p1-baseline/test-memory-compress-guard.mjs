@@ -200,7 +200,12 @@ console.log('\n【9. 接线：两侧判据都接上了，且喂给模型的只�
   ok('按出场情况分侧', /partitionByAppearance\(\{ characters, worldEntries: worlds, chapterText \}\)/.test(body));
   ok('提示词里**只喂出场过的角色**（否则等于一边告知一边罚它写）',
     /characters\.filter\(\(c\) => appearedNames\.has\(c\.name\)\)/.test(body));
-  ok('提示词里明确写了"不要引入未在此列的角色"', /不要引入任何未在此列的角色/.test(body));
+  // 2026-09-24：提示词模板搬进 ai/memory-compress-prompt.mjs（纯函数，可离线断言"输入里到底有什么"）。
+  // **断言的字典要求一个字没变**（提示词必须写明"不要引入未在此列的角色"），只是取值位置跟着模板走；
+  // 顺带要求模板**只有一份**——两处各写一份正是这段提示词上一次出事的形态。
+  const promptMod = fs.readFileSync('ai/memory-compress-prompt.mjs', 'utf8');
+  ok('提示词里明确写了"不要引入未在此列的角色"', /不要引入任何未在此列的角色/.test(promptMod));
+  ok('模板只有一份：server.js 不再内联这段提示词', !/不要引入任何未在此列的角色/.test(src));
   ok('完整性只核对出场侧', /mustKeep: mustKeepEntities\(\{ characters: cast\.appearedChars, worldEntries: cast\.appearedWorlds \}\)/.test(body));
   ok('无中生有核对未出场侧', /mustNotMention: cast\.absentChars\.map\(\(c\) => c\.name\)/.test(body));
   ok('完整性不过时拒绝落库；"无中生有"按策略处置（默认放行）',

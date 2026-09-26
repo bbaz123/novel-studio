@@ -68,7 +68,7 @@ OpenViking 共享记忆库（RAG）：viking://user/default/resources/novel-stud
 - 通过 `node + corepack pnpm.js dsh --profile headless "<prompt>"` **无 shell** 启动 dsh 子进程（HA-06 修复：去 shell:true 防命令注入）；
 - 子进程挂载 `harness-plugins/novel-writing/novel-tools.mjs` 的 12 个 `novel_*` 工具（上下文/查证/伏笔/蓝图/一致性/自检/事件/记忆/审稿/写回）；
 - 注入身份环境变量：`NOVELSTUDIO_WORK_ID / NOVELSTUDIO_CHAPTER_ID / NOVELSTUDIO_MODE / NOVELSTUDIO_BASE_URL / NOVELSTUDIO_PROPOSE_MODE=1`，并把 `OPENVIKING_PEER_ID` 固定为工坊派生 peer（与 GUI 会话共享同一记忆库）；
-- 模型切换：CAS 方式临时改写 `~/.dsh/settings.yaml` 默认模型，**进程内互斥串行化 + CAS 还原**，避免并发竞态与崩溃残留（HA-04）；
+- 模型切换：改为**每任务一份补丁层**（直接覆盖 `agent-default-model`，`ai/task-settings.mjs`），不再改写 `~/.dsh/settings.yaml`；只有补丁层建立失败时才回退到旧的"CAS 临时改写全局默认模型 + 进程内互斥串行化 + CAS 还原"路径（HA-04）；
 - 超时默认 10 分钟，可取消（`killChildTree` 杀 pnpm→dsh 进程树）。
 
 ### 2.3 双通道职责划分与回退（public/app.js）

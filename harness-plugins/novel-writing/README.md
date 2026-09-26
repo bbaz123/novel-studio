@@ -143,9 +143,9 @@ pnpm dsh --profile novel "Reply with the single word: ok"
   自动把旧伏笔标记 resolved；作者确认废弃/恢复时用 `novel_foreshadow_update` 直接改状态；
   `novel_context` 里始终带【未闭合伏笔】层。
 - **分层上下文预算（P1–P2 重构后）**：层规格是**单点机读**的（`ai/context/layers.mjs` 的 `LAYERS`，
-  13 层分 `fixed`/`flex`/`cond`/`entity` 四类，`fixed` 为**零损失层、永不参与收敛**）；
-  总预算 full/continuation/fragment **26,000** / settings **18,000**，**可执行下限由 `computeFloor()`
-  自动核算**（当前 20,547 / 17,356）——不再手写常量。压到下限仍超预算时**显式报 `overflow`**，
+  14 层分 `fixed`/`flex`/`cond`/`entity` 四类，`fixed` 为**零损失层、永不参与收敛**）；
+  总预算 full/continuation/fragment **26,000** / settings **19,000**，**可执行下限由 `computeFloor()`
+  自动核算**（当前 21,364 / 18,173）——不再手写常量。压到下限仍超预算时**显式报 `overflow`**，
   不静默超限。契约的不变量 I1–I7 见 `docs/context-contract.md`。
 - **凡裁剪必可查回（I4）**：每个会被裁剪的层都在 `RETRIEVAL` 里声明**查回路径**（用哪个工具能取回原文），
   并由 `verify-retrieval` 实测；做不到查回的层**不允许裁剪**。模型侧入口：长期记忆 → `novel_memory_read`、
