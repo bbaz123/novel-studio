@@ -1,4 +1,4 @@
-> **注意：仓库已重构，你正在看的 `main` 是重构前的版本（v0.9.3）。**
+> **注意：仓库已重构，你正在看的 `main` 是重构前的版本（v0.9.3）。近乎弃用，AI功能严重依赖dsh，且会与你的全局npm部署的dsh产生严重的相对应的关联，请注意！！！（好处是工坊的每次调用你都可以在你的全局dsh里找到聊天记录）**
 >
 > 重构后的代码在 [`refactor/p0-p6`](https://github.com/bbaz123/novel-studio/tree/refactor/p0-p6) 分支，
 > 比这里领先 30 个提交，装法和项目结构都变了——看[它的 README](https://github.com/bbaz123/novel-studio/blob/refactor/p0-p6/README.md)，
