@@ -91,7 +91,7 @@
 
 配套（在 `scripts/`，**不在本目录**）：
 
-- `scripts/ci-offline-checks.mjs` —— CI 离线检查清单的**唯一来源**（31 条）；
+- `scripts/ci-offline-checks.mjs` —— CI 离线检查清单的**唯一来源**（32 条）；
   `node scripts/ci-offline-checks.mjs` 本地跑的就是 CI 跑的那一批，零计费；
 - `scripts/ci-isolated-run.mjs` —— 起隔离实例 → 跑命令 → 关掉（跨平台 Node 代码，不用各平台各写一份 shell）。
   ⚠️ 2026-09-25 修：它此前**只把隔离变量给服务端、没给被跑的命令**，于是 `api-test-suite.mjs` 的封卷三条

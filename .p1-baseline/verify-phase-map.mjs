@@ -456,6 +456,26 @@ export const PHASES = [
       + '仓库级 Description 与 Topics 通过 GitHub API 写入，属于仓库设置而非文件，不进 git。',
   },
   {
+    id: 'W2',
+    title: '2026-09-26 轮：开源展示面优化（Why 对比表 + 架构数据流 + 英文关键词 + License 检测修正）',
+    files: [
+      // 本轮改到的展示面文件。README.md 此前已由 X / Z0 / Z2 认领（各加过一段），
+      // 属于"改在同一批文件里"，故本轮同样只能整体回滚。
+      'README.md',
+      'LICENSE',
+      'THIRD-PARTY-NOTICES.md',
+      'vendor/README.md',
+    ],
+    evidence: ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
+    rollback: 'shared',
+    note: '展示面优化：README 新增「为什么是这套机制」对比表（通用对话式工具 vs 本项目）与「一次成文请求的数据流」架构图、'
+      + '第一屏加英文关键词行（GitHub 搜索与英文读者理解）、补上此前未被引用的 assets/preview.png 截图、'
+      + '把 CI 条数口径从 31 校正为实测 32；'
+      + '把第三方组件声明从 LICENSE 移出到 THIRD-PARTY-NOTICES.md——原因是附加中文声明会让 GitHub licensee '
+      + '把整个仓库判成 spdx=NOASSERTION（显示 "Other" 而不是 MIT），移出后 LICENSE 只含标准 MIT 全文。'
+      + '仓库级 Description 与 Topics 经 GitHub API 写入，属仓库设置而非文件，不进 git。',
+  },
+  {
     id: 'Y',
     title: '2026-09-22 轮：按复核报告落地「确定性连续性预检」（审稿前先算掉机器能判的部分）',
     files: [

@@ -10,6 +10,8 @@
 **本地运行的 AI 小说创作工坊。** 它把长篇写作必然会遇到的那几件事——**设定漂移、伏笔丢失、角色状态自相矛盾、AI 腔**——做成**可检查、可拦截的机制**，而不是靠提示词碰运气。
 
 > 📌 你正在读的是当前开发版分支 **`refactor/p0-p6`（v0.9.6）**。`main` 是重构前的旧版（v0.9.3），安装方式与项目结构以本页为准。
+>
+> 🔎 **English keywords**：local-first AI novel writing studio · Chinese web novel / long-form fiction · worldbuilding & character-state consistency · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted, your data never leaves your machine.
 
 ## 🎯 30 秒讲清它解决什么问题
 
@@ -50,6 +52,7 @@
 <summary><b>📑 目录</b>（点开）</summary>
 
 - [30 秒讲清它解决什么问题](#-30-秒讲清它解决什么问题)
+- [为什么是这套机制](#-为什么是这套机制)
 - [它不做什么 · 什么时候才需要它](#-它不做什么--什么时候才需要它)
 - [它长什么样](#-它长什么样)
 - [三步跑起来（约 3 分钟）](#-三步跑起来windows-新手版--约-3-分钟)
@@ -77,6 +80,8 @@
 ## 👀 它长什么样
 
 ![Novel Studio 正文写作界面：左侧是作品与章节树，中间是富文本编辑器，右侧是设定参考面板](assets/screenshot-writing.png)
+
+![Novel Studio 界面预览：深色护眼主题下的作品总览与设定管理](assets/preview.png)
 
 打开后是一屏三栏的写作台：
 
@@ -154,7 +159,7 @@ npm start
 | 你的情况 | 直接看 |
 | --- | --- |
 | **第一次用，只想尽快跑起来** | 本文「⚡ 三步跑起来」；卡住了看 **[docs/新手入门.md](docs/新手入门.md)**（逐步骤讲解 + 逐条排错） |
-| 想先知道有哪些功能 | 本文「✨ 功能亮点」 |
+| 想先知道有哪些功能 | 本文「✨ 为什么是这套机制」 |
 | 启动失败 / 报错看不懂 | 本文「🆘 新手常见问题」→ 详细版见 [docs/新手入门.md](docs/新手入门.md) |
 | 想接 AI 写作 | 本文「🤖 AI 功能配置」 |
 | 想知道每个版本改了什么 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
@@ -168,7 +173,20 @@ npm start
 
 ---
 
-## ✨ 功能亮点
+## ✨ 为什么是这套机制
+
+市面上「AI 写小说」的工具不少，差别不在功能清单有多长，而在**出问题的地方有没有机制兜住**。下表是选这套工具时最该先看的几件事。
+
+| 你的处境 | 通用对话式工具 | Novel Studio |
+| --- | --- | --- |
+| 写到第 20～80 章开始崩（设定漂移 / 伏笔失踪 / 角色状态错乱） | 靠更长的提示词、靠你记得提醒 | **确定性检查**：连续性预检 + 成文后一致性核对，冲突逐条报出 |
+| 每次都要手动把设定贴进对话框 | 贴少了它编，贴多了超上下文 | **14 层上下文自动装配**（含角色当前状态与未闭合伏笔），按预算裁剪，且裁剪后可查回 |
+| 不知道 AI 到底看到了什么 / 这笔钱花在哪 | 只能翻日志或猜 | **可追问**：`context_id` + 逐层溯源，点开参考面板就能核对 |
+| 数据与 API Key 放在别人服务器上 | 默认如此 | **只监听 `127.0.0.1`**，数据是本机一个 SQLite 文件 |
+
+<a id="-功能亮点"></a>
+
+> 下面的 **功能亮点** 是该机制对应的具体功能面。
 
 ### 作品管理
 
@@ -618,7 +636,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 ## 🧪 测试与验证
 
 ```bash
-# 离线清单（31 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
+# 离线清单（32 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
 node scripts/ci-offline-checks.mjs
 
 # 活实例回归：起一个隔离实例（临时数据目录 + 停用 OpenViking）再跑，跑完自动关掉
@@ -647,6 +665,30 @@ node frontend-test.mjs
 ---
 
 ## 📁 项目结构
+
+### 一次成文请求的数据流（架构）
+
+```text
+你的作品数据（SQLite）
+        │
+        ▼
+ai/context/layers.mjs    14 层规格（另 1 层故事状态为门控可选）：每层声明来源 / 时间视角 / 知识范围 / 选择方式 / 已知缺口
+        │                 （作品 · 大纲 · 长期记忆 · 语义召回 · 事件账本 · 未闭合伏笔 · 当前场景 ·
+        │                  本章蓝图 · 前文衔接 · 出场角色卡 · 人物关系 · 世界观 · 设定词条 · 写作红线）
+        ▼
+ai/context/assembler.mjs 唯一装配器：按预算裁剪；**凡裁剪必可查回**（每层给出 tool_hint）
+        ▼
+ai/context/integrity.mjs 身份与完整性：context_id（内容哈希）+ context_request_id（本次装配）
+        │                 清单与真正发给模型的文字必须逐字节对得上，不合格只响亮记录、不拦截
+        ▼
+harness.js → dsh 会话     模型档位与思考强度的唯一来源在 ai/policy.mjs（0 处绕过）
+        ▼
+成文 / 提案                事件与记忆先落「提案」，你勾选后才入账
+        ▼
+ai/continuity-guard.mjs   成文后确定性核对：未闭合伏笔 / 角色状态 / 事件账本 / 命名实体 / 本章边界
+```
+
+### 目录地图
 
 ```text
 novel-studio/
@@ -683,6 +725,8 @@ novel-studio/
 ├── .p1-baseline/       # 契约基线、压力数据与验证工具（verify-all.mjs 一键跑全部）
 ├── .p0-recon/          # dsh profile 侧的证据与工具（组合树对账、spawn 路径验证）
 ├── package.json
+├── LICENSE             # 本项目 MIT
+├── THIRD-PARTY-NOTICES.md  # 第三方组件与资产清单（不在 MIT 覆盖范围内）
 ├── start-novel-studio.cmd
 ├── create-desktop-shortcut.ps1
 └── data/               # 本地数据库（不会上传到 Git）
@@ -696,7 +740,7 @@ novel-studio/
 [docs/pending-decisions.md](docs/pending-decisions.md) 与最近的审查报告。
 
 - ~~声明开源许可证~~ → **已定案：MIT**（见 [LICENSE](LICENSE)）
-- ~~接入 CI~~ → **已落地**：`.github/workflows/ci.yml`（离线 31 条 × Windows/Linux + 依赖下限 22.15 + 活实例 2 条）。
+- ~~接入 CI~~ → **已落地**：`.github/workflows/ci.yml`（离线 32 条 × Windows/Linux + 依赖下限 22.15 + 活实例 2 条）。
   每个 job 先打**平台事实**（platform/release/arch/node/路径分隔符）；ubuntu 两格本机没有 Linux 可预演，
   首次真红要**修脚本**，不许整格 `continue-on-error`（确需临时放行只对该 step 并注明）
 - **跨平台一键启动**：目前 `start-novel-studio.cmd` 只服务 Windows；macOS / Linux 需要 `npm start`
@@ -721,7 +765,7 @@ novel-studio/
 与它协作的 DeepSeek Harness 本身也是 MIT，保持一致最省沟通成本。想改回更严格的许可，
 改 `LICENSE` 一个文件即可（历史提交不受影响）。
 
-**第三方资产**（不在 MIT 覆盖范围内，各自遵循上游条款）：
+**第三方资产**（不在 MIT 覆盖范围内，各自遵循上游条款，完整清单见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）：
 
 - `vendor/models/bge-small-zh-v1.5-f16.gguf` —— 上游模型 `BAAI/bge-small-zh-v1.5`
   （模型卡标注 MIT），GGUF 转换件来自 `CompendiumLabs/bge-small-zh-v1.5-gguf`；
@@ -749,7 +793,7 @@ novel-studio/
   实测（只读对照）：真实库《雾都缝匠》提示词里的章节正文 0 → **912 字**，压力作品 0 → 700/912/1429 字
 - **记忆压缩提示词组装箱**：整段组装搬进 `ai/memory-compress-prompt.mjs`（纯函数、可离线断言），
   模板逐字未改；「从头截断」改成**保前缀 + 取尾部**（不再把最新正文丢掉）
-- **首次接入 CI**（`.github/workflows/ci.yml`）：离线 31 条 + 活实例 2 条，Windows/Linux 双平台，**零计费**；
+- **首次接入 CI**（`.github/workflows/ci.yml`）：离线 32 条 + 活实例 2 条，Windows/Linux 双平台，**零计费**；
   每个 job 开头先打**平台事实**（platform/release/arch/node/路径分隔符），ubuntu 两格本机没有 Linux 可预演——
   首次真红要**修脚本**，不许整格 `continue-on-error`（确需临时放行只对该 step 并注明）；
   依赖下限定为 Node **22.15**（实测：22.13 有 `node:sqlite` 但没有 `zlib.zstdDecompressSync`，

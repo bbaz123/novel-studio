@@ -52,7 +52,7 @@ jobs:
       # 本项目是零依赖的（package.json 没有 dependencies），所以没有 install 步骤。
       - name: 平台事实（第一屏就能看出平台差异）
         run: node -e "const os=require('node:os'),p=require('node:path');console.log('platform='+process.platform+' release='+os.release()+' arch='+process.arch);console.log('node='+process.version);console.log('tmpdir='+os.tmpdir());console.log('path.sep='+JSON.stringify(p.sep));console.log('cwd='+process.cwd())"
-      - name: 离线套件（31 条，零计费）
+      - name: 离线套件（32 条，零计费）
         run: node scripts/ci-offline-checks.mjs
 
   node-floor:

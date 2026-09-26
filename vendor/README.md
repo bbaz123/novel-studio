@@ -29,7 +29,7 @@ novel-studio 本体是零依赖的纯 Node 程序，唯一的外部依赖是 Dee
 | 校验 | `node scripts/fetch-embedding-model.mjs --verify-only`（离线，按 SHA256 比对） |
 
 上游许可：`BAAI/bge-small-zh-v1.5`（模型卡标注 **MIT**）→ GGUF 转换件 `CompendiumLabs/bge-small-zh-v1.5-gguf`；
-本目录只做**原样**分发（见根目录 `LICENSE` 的「第三方组件与资产」）。
+本目录只做**原样**分发（第三方清单见根目录 `THIRD-PARTY-NOTICES.md`）。
 
 ## 怎么用 / 怎么维护
 

@@ -22,11 +22,5 @@ SOFTWARE.
 
 ---
 
-第三方组件与资产（不在本许可证覆盖范围内，各自遵循其上游条款）：
-
-- `vendor/models/bge-small-zh-v1.5-f16.gguf`
-  上游模型 `BAAI/bge-small-zh-v1.5`（模型卡标注 **MIT**），
-  GGUF 转换件来自 `CompendiumLabs/bge-small-zh-v1.5-gguf`。
-  本仓库只做**原样随源码分发**（不改字节），SHA256 与来源见 `vendor/README.md`。
-- DeepSeek Harness（`dsh`）与 OpenViking 是**独立项目**，不包含在本仓库内；
-  安装与使用时遵循它们各自的许可证。
+本仓库内第三方组件与资产（如随源码分发的向量模型）不在本许可证覆盖范围内，
+各自遵循其上游条款，清单见 THIRD-PARTY-NOTICES.md。
