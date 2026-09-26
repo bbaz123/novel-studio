@@ -30,11 +30,19 @@ const check = (name, cond, detail = '') => {
 // ---------- 1) 源码入口 → 预构建产物的推导 ----------
 // ⚠️ 比较要用 path.normalize：推导内部走 path.join，它会按平台把分隔符归一
 //    （首版断言写死了正斜杠，于是在 Windows 上假失败 —— 是测试的期望错了，不是实现错了）。
+// ⚠️ 2026-09-26 第二次踩同一个坑的反面：这条断言又**写死了 Windows 反斜杠**，
+//    于是在 ubuntu 格假失败（CI run 36244414602）。原因：正则 `[\\/]` 虽然同时接受两种分隔符，
+//    但 `String.match` 不做平台归一——在 Linux 上 `C:\r\...` 里的反斜杠只是普通字符，
+//    匹配不上 `src` 目录段，推导就只能返回 null。**修法是把输入按本机原生分隔符构造**，
+//    于是同一条语义在两个平台上都被真正断言到（而不是靠写死某个平台的路径）。
 {
   const norm = (p) => (p === null ? null : path.normalize(p));
-  check('1a apps/cli/src/bin.ts → apps/cli/lib/bin.js',
-    norm(builtCounterpartOf('C:\\r\\apps\\cli\\src\\bin.ts')) === norm('C:\\r\\apps\\cli\\lib\\bin.js'),
-    String(builtCounterpartOf('C:\\r\\apps\\cli\\src\\bin.ts')));
+  // 用 path.join 构造"原生分隔符"的输入与期望，两平台语义等价、各自成立。
+  const winSrc = path.join('C:', 'r', 'apps', 'cli', 'src', 'bin.ts');
+  const winBuilt = path.join('C:', 'r', 'apps', 'cli', 'lib', 'bin.js');
+  check('1a 原生分隔符输入 → 对应产物（Windows 反斜杠 / Linux 正斜杠各自成立）',
+    norm(builtCounterpartOf(winSrc)) === norm(winBuilt),
+    `${builtCounterpartOf(winSrc)} (输入 ${winSrc})`);
   check('1b POSIX 输入同样能推出对应产物（分隔符按平台归一）',
     norm(builtCounterpartOf('/r/apps/cli/src/bin.ts')) === norm('/r/apps/cli/lib/bin.js'),
     String(builtCounterpartOf('/r/apps/cli/src/bin.ts')));
@@ -44,6 +52,25 @@ const check = (name, cond, detail = '') => {
   check('1d 推不出对应关系时返回 null（宁可不换，也不猜路径）',
     builtCounterpartOf('/r/apps/cli/bin.ts') === null && builtCounterpartOf('/r/apps/cli/src/sub/bin.ts') === null,
     JSON.stringify([builtCounterpartOf('/r/apps/cli/bin.ts'), builtCounterpartOf('/r/apps/cli/src/sub/bin.ts')]));
+
+  // ⚠️ 本机只有 Windows，跑不到 Linux 那一格。这里用 path.posix 走一遍**同一个推导函数**，
+  //    把"另一平台会怎么表现"也钉住——否则 ubuntu 格的红灯只能等 CI 告诉我们。
+  //    实测到的真实机制（不是猜的）：正则 `[\\/]` **能**匹配反斜杠（前一段被 (.*) 吃掉），
+  //    所以 POSIX 下 `C:\r\apps\cli\src\bin.ts` 会推出 `C:\r\apps\cli/lib/bin.js`——
+  //    一个**混合分隔符**的路径；它与纯 POSIX 写的期望做 path.normalize 比较时并不相等。
+  //    所以"必须按本机原生分隔符构造输入/期望"是硬要求，而不是风格偏好。
+  const posixJoin = (p) => {
+    const m = String(p || '').match(/^(.*)[\\/]src[\\/]([^\\/]+)\.tsx?$/);
+    return m ? path.posix.join(m[1], 'lib', `${m[2]}.js`) : null;
+  };
+  check('1e [跨平台模拟] 正斜杠输入在 POSIX 语义下推出规范路径',
+    posixJoin('/r/apps/cli/src/bin.ts') === '/r/apps/cli/lib/bin.js', String(posixJoin('/r/apps/cli/src/bin.ts')));
+  check('1f [跨平台模拟] 反斜杠输入在 POSIX 下产出**混合分隔符**路径（故不能用它当跨平台输入）',
+    posixJoin('C:\\r\\apps\\cli\\src\\bin.ts') === 'C:\\r\\apps\\cli/lib/bin.js',
+    String(posixJoin('C:\\r\\apps\\cli\\src\\bin.ts')));
+  check('1g [跨平台模拟] 该混合路径与 POSIX 期望**不相等**（这正是 1a 曾假失败的原因）',
+    posixJoin('C:\\r\\apps\\cli\\src\\bin.ts') !== '/r/apps/cli/lib/bin.js',
+    `${posixJoin('C:\\r\\apps\\cli\\src\\bin.ts')} !== /r/apps/cli/lib/bin.js`);
 }
 
 // ---------- 2) 该不该用产物的真值表 ----------
