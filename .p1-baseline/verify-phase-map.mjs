@@ -466,6 +466,9 @@ export const PHASES = [
       'THIRD-PARTY-NOTICES.md',
       'vendor/README.md',
     ],
+    // 2026-09-26 追加：LICENSE 收敛为**纯 MIT 全文**——实测 GitHub 的 licensee 在
+    // 追加一段中文第三方说明后会把整个仓库判成 spdx=NOASSERTION（页面显示 Other），
+    // 即使 MIT 正文逐字正确。第三方说明改由 THIRD-PARTY-NOTICES.md 承载（README 已指路）。
     evidence: ['README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
     rollback: 'shared',
     note: '展示面优化：README 新增「为什么是这套机制」对比表（通用对话式工具 vs 本项目）与「一次成文请求的数据流」架构图、'
