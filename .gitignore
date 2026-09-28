@@ -10,6 +10,16 @@ data/
 # 隔离测试运行产生的数据目录（可再生的数据库副本与日志）
 .test-data-*/
 
+# 每轮验收的过程证据目录（探针 / 日志 / 隔离实例数据库副本 / 一次性修复脚本）。
+# 为什么要显式写这两条：`.verify-enh/`、`.verify-post/` 里既有实测证据，也有**隔离实例的
+# SQLite 三件套副本**，而 `*.log` 只挡得住日志，挡不住 .json / .db / .png。2026-09-28 逐哈希
+# 比对确认：`.verify-post/inst-stress2/novel.db` 的 api_configs 与 data/novel.db **同值同长**，
+# 即作者真实密钥的副本——一次 `git add -A` 就会把它推到公开仓库。
+# 这与 .p1-baseline/.gitignore 里记的 gate-data 事故同类（当时确实提交进去了才发现），
+# 但后果更重，所以补在根上，而不是等下一次事故再补。
+.verify-enh/
+.verify-post/
+
 # IDE / editor
 .vs/
 .idea/
