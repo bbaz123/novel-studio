@@ -16,6 +16,7 @@
 export * from './hash.mjs';
 export * from './timeline.mjs';
 export * from './knowledge.mjs';
+export * from './disclosure.mjs';
 export * from './entities.mjs';
 export * from './canon.mjs';
 export * from './foreshadow.mjs';

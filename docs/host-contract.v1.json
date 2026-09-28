@@ -1,7 +1,7 @@
 {
   "$comment": "Host Contract 的可机读契约面（由真实代码导出，不是手抄）。任何字段的变化都必须走主体变更流程：改代码 → 改本文件 → 改 docs/host-contract.md → 跑 .p1-baseline/test-host-contract.mjs。",
-  "host_contract": "1.2.0",
-  "frozen_at": "2026-09-26",
+  "host_contract": "1.11.0",
+  "frozen_at": "2026-09-28",
   "host": {
     "service": "novel-studio",
     "engine": "novel-core",
@@ -53,6 +53,15 @@
         "cap_continuation": null,
         "floor": null,
         "entity_cap": null
+      },
+      {
+        "id": "library",
+        "kind": "cond",
+        "cap": 1200,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null,
+        "gated": true
       },
       {
         "id": "events",
@@ -136,6 +145,24 @@
         "gated": true
       },
       {
+        "id": "edit_rules",
+        "kind": "cond",
+        "cap": 2400,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null,
+        "gated": true
+      },
+      {
+        "id": "author_intent",
+        "kind": "cond",
+        "cap": 2400,
+        "cap_continuation": null,
+        "floor": null,
+        "entity_cap": null,
+        "gated": true
+      },
+      {
         "id": "redlines",
         "kind": "fixed",
         "cap": 4000,
@@ -180,6 +207,10 @@
         "tool": "",
         "intrinsic": true
       },
+      "library": {
+        "tool": "novel_library",
+        "intrinsic": false
+      },
       "events": {
         "tool": "novel_events",
         "intrinsic": false
@@ -222,6 +253,14 @@
       },
       "story_state": {
         "tool": "novel_state",
+        "intrinsic": false
+      },
+      "edit_rules": {
+        "tool": "novel_context",
+        "intrinsic": false
+      },
+      "author_intent": {
+        "tool": "novel_context",
         "intrinsic": false
       }
     },
@@ -294,7 +333,13 @@
       ],
       "blocked_generation": false
     },
-    "cache_scope": "in-process; invalidated on 写操作（touchWork）与外部状态变化"
+    "cache_scope": "in-process; invalidated on 写操作（touchWork）与外部状态变化",
+    "layers_added_in_v1_6": [
+      "edit_rules"
+    ],
+    "layers_added_in_v1_7": [
+      "author_intent"
+    ]
   },
   "policy": {
     "models": {
@@ -479,11 +524,17 @@
   },
   "db": {
     "tables": [
+      "adoption_operations",
       "ai_error_logs",
       "ai_eval_events",
       "api_configs",
       "app_logs",
       "app_settings",
+      "author_approvals",
+      "author_intents",
+      "author_samples",
+      "branch_candidates",
+      "branch_sandboxes",
       "categories",
       "chapter_contracts",
       "chapter_reviews",
@@ -494,9 +545,14 @@
       "characters",
       "creation_tasks",
       "harness_jobs",
+      "import_rebuild_batches",
+      "import_rebuild_runs",
+      "library_docs",
       "memory_versions",
+      "ov_projection_audit",
       "plotline_characters",
       "plotlines",
+      "projection_outbox",
       "story_entities",
       "story_entity_aliases",
       "story_event_proposals",
@@ -509,6 +565,7 @@
       "story_state_proposals",
       "story_timeline_entries",
       "story_validations",
+      "style_profiles",
       "terms",
       "volumes",
       "works",
@@ -560,6 +617,32 @@
       "story_state_proposals",
       "story_timeline_entries",
       "story_validations"
+    ],
+    "tables_added_in_v1_3": [
+      "adoption_operations",
+      "author_approvals"
+    ],
+    "tables_added_in_v1_4": [
+      "projection_outbox"
+    ],
+    "tables_added_in_v1_5": [
+      "ov_projection_audit"
+    ],
+    "tables_added_in_v1_7": [
+      "author_intents",
+      "author_samples",
+      "style_profiles"
+    ],
+    "tables_added_in_v1_9": [
+      "branch_candidates",
+      "branch_sandboxes"
+    ],
+    "tables_added_in_v1_10": [
+      "import_rebuild_batches",
+      "import_rebuild_runs"
+    ],
+    "tables_added_in_v1_11": [
+      "library_docs"
     ]
   },
   "plugin_adapter": {
@@ -586,7 +669,10 @@
       "novel_state_propose",
       "novel_state_commit",
       "novel_snapshot",
-      "novel_write_pipeline"
+      "novel_approvals",
+      "novel_write_pipeline",
+      "novel_branch",
+      "novel_library"
     ],
     "endpoints": [
       "GET /api/novel/ping",
@@ -614,6 +700,13 @@
       "POST /api/story_memory/rollback",
       "POST /api/logs",
       "POST /api/import",
+      "GET /api/import/guard",
+      "POST /api/import/rebuild/plan",
+      "GET /api/import/rebuild/status?work_id=&run_id=",
+      "POST /api/import/rebuild/record",
+      "POST /api/import/rebuild/confirm",
+      "POST /api/import/rebuild/cancel",
+      "GET /api/novel/context/contributions?work_id=&chapter_id=",
       "GET /api/export/txt|md?work_id=|chapter_id=",
       "GET /api/novel/story_state?work_id=",
       "PUT /api/novel/story_state",
@@ -632,7 +725,31 @@
       "GET /api/novel/state/snapshots?work_id=",
       "POST /api/novel/state/snapshot",
       "POST /api/novel/state/rollback",
-      "GET /api/novel/state/facts?work_id=&chapter_id="
+      "GET/POST /api/novel/approvals",
+      "GET /api/novel/state/facts?work_id=&chapter_id=",
+      "GET /api/novel/state/disclosure?work_id=&chapter_id=&character_id=&scene=",
+      "GET /api/novel/editing",
+      "GET /api/novel/editing/rules?task=",
+      "POST /api/novel/editing/scan",
+      "GET/POST/PUT/DELETE /api/novel/style/samples?work_id=&id=",
+      "GET/POST /api/novel/style/profile?work_id=",
+      "GET/PUT/DELETE /api/novel/author_intent?work_id=&chapter_id=&tier=",
+      "GET /api/novel/branch/sandboxes?work_id=&chapter_id=",
+      "POST /api/novel/branch/sandboxes",
+      "GET /api/novel/branch/sandboxes/:id",
+      "POST /api/novel/branch/sandboxes/:id/cancel|reopen",
+      "GET /api/novel/branch/candidates?work_id=&chapter_id=&sandbox_id=&status=",
+      "POST /api/novel/branch/candidates",
+      "GET /api/novel/branch/candidates/:id",
+      "POST /api/novel/branch/candidates/:id/adopt|discard",
+      "POST /api/novel/branch/compare",
+      "GET /api/novel/library/status?work_id=",
+      "GET /api/novel/library/search?work_id=&q=&category=&limit=",
+      "GET /api/novel/library/doc?id=&offset=&limit=",
+      "PUT /api/novel/library/enabled",
+      "POST /api/novel/library/import",
+      "POST /api/novel/library/import/confirm",
+      "DELETE /api/novel/library/doc/:id"
     ],
     "log_layer": "plugin",
     "identity_env": [
@@ -717,6 +834,51 @@
       "version": "1.2.0",
       "frozen_at": "2026-09-26",
       "note": "附加式：新增只读端点 GET /api/novel/state/facts（事实清单 + 按章可见/计划/未来 id），补齐 supersede/merge/split 所需的 id 读回能力；同轮修正派生视图里的章序展示（0 基下标 → 人读序号）。默认生成路径与预算未变。"
+    },
+    {
+      "version": "1.3.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：作者审批（author_approvals 表 + GET/POST /api/novel/approvals + novel_approvals 工具）把模型侧写入变成需要作者一次性审批的执行边界；adoption_operations 表为整次采纳的幂等账本。旧端点/工具/字段语义不变，默认生成路径与预算未变。"
+    },
+    {
+      "version": "1.4.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：整次采纳原子边界（POST /api/novel/adopt —— 正文+选中的状态/事件/记忆提案+历史版本+投影 outbox 同一 SQLite 事务；adoption_operations 幂等键：同键同载荷重放返回原结果、同键不同载荷 409）；新增 projection_outbox 表与 GET /api/novel/projections、POST /api/novel/projections/retry，让提交后投影失败可见、可重试、重启可恢复；同轮修复旧提案采纳路径的嵌套事务报错与单 id 静默无操作。插件工具面不变（24 工具 / 45 端点）；adopt 为作者界面专用，模型侧 X-Novel-Agent 403。"
+    },
+    {
+      "version": "1.5.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：OpenViking 召回的来源 fail-closed 校验（跨书/未来章节/候选内容/布局不明一律不进 assembled，宿主装配器与召回生产方共用同一实现）；ov_projection_audit 表记录 delete/rebuild 的待删除集合与范围证明；新增作者侧 POST /api/novel/projections/replay|rebuild 与 GET /api/novel/projections/audit，rebuild 删除前逐条证明归属、默认 dry-run。插件工具/端点面不变；旧端点/字段/预算/层序/默认 route 未变。"
+    },
+    {
+      "version": "1.6.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：R07 编辑规则（三档编辑 / 编辑保护规则 / 七项能力 / 题材档）。新增门控上下文层 edit_rules（默认关闭：关闭时该层不存在，assembled/manifest 与接入前逐字节一致；打开后规则块进入请求并在 R05 贡献记录里留下版本与内容 hash）。新增作者侧 GET/PUT /api/novel/editing、GET /api/novel/editing/rules、只读 POST /api/novel/editing/scan（确定性检查：规则/位置/摘录/严重性/建议，不调用模型）。模型侧不可开关规则（PUT 拒绝 X-Novel-Agent）。插件工具面不变；旧端点/字段/预算/层序/默认 route 未变。"
+    },
+    {
+      "version": "1.7.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：R09 作者样文 / 文风档案 / 三级作者意图。新增门控上下文层 author_intent（默认关闭：作品没有任何作者意图与启用样文时该层不存在，assembled/manifest 与接入前逐字节一致）；新增 3 张作者侧表（author_samples / style_profiles / author_intents）与作者侧端点 GET/POST/PUT/DELETE /api/novel/style/samples、GET/POST /api/novel/style/profile（分析为确定性计数，不调用模型）、GET/PUT/DELETE /api/novel/author_intent；模型侧（X-Novel-Agent）只能读，写一律 403。样文只作风格证据，不进入 story_facts/事件/角色知识。插件工具面不变；旧端点/字段/预算/层序/默认 route 未变。"
+    },
+    {
+      "version": "1.8.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：R10 披露派生视图（只读）。新增只读端点 GET /api/novel/state/disclosure（按 chapter_id 时点重算作者真相 / 作者计划 / 撤回 / 角色信念 / 窗口关闭 / 未来 / 尚未披露 / 角色私有 / 读者已披露九档，并给出每个角色在时点上的已知 / 未知 / 疑似 / 错误信念 / 未定与可执行 fact id）；无新表、无缓存（每次重算）、无上下文层变化，默认生成路径不变；模型侧只读。"
+    },
+    {
+      "version": "1.9.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：R11 剧情分支沙盘。新增 2 张表 `branch_sandboxes` / `branch_candidates`（候选及其依赖基线 hash、来源与状态；采纳记录写在 `adopted_json`）与 9 条端点（列表/开沙盘/单沙盘视图/取消|重开；候选列表/提交/单条视图/采纳|丢弃；九维比较）。候选**不是**本书事实：未采纳的候选不进正文/正典事实/事件/角色知识/上下文层；采纳是作者动作（模型侧 403），只写章节蓝图与可选契约建议；依赖基线（状态/正文/契约/作者意图/披露指纹）变化即标 stale，重新采纳必须先复核。新增模型工具 `novel_branch`（只提候选与读回；采纳/丢弃/取消不在工具面内）。"
+    },
+    {
+      "version": "1.10.0",
+      "frozen_at": "2026-09-27",
+      "note": "附加式：R12 导入安全边界与导入后重建。新增 2 张表 `import_rebuild_runs` / `import_rebuild_batches`（运行与批次：章节源 hash / 抽取器与 schema 版本 / 模型路由与思考档位 / 基线 hash / 结果 hash / 尝试次数 / 候选草稿与提案 id / 状态）与 7 条端点（`GET /api/import/guard`、`GET /api/novel/context/contributions`（R05 运行时贡献记录，只读），以及 `POST /api/import/rebuild/plan|record|confirm|cancel`、`GET /api/import/rebuild/status`）。导入文件按**不可信输入**处理：单文件 ≤24MB、文本 ≤8M 字符、单章 ≤2M 字符、章节数 ≤2000、归档条目 ≤2000、单条目解压 ≤128MB、整包解压 ≤256MB、压缩比 ≤200、条目名必须相对且深度 ≤16、symlink / 绝对路径 / `..` 穿越一律拒绝、严格 UTF-8（不猜编码）、零临时目录、解析后单事务写入（失败不留半导入状态）；同时把请求体上限提到 36MB（否则 24MiB 文件 base64 后永远到不了服务端），超限时先排空请求体再回 413（不再只回连接重置）。TXT / Markdown / EPUB 三种既有格式全部保留（EPUB 是原有能力）。重建流程：分批规划（每批 ≤6 章且 ≤12000 字符，整本书不得作为一次请求）、逐批记录基线（章节源指纹 / 抽取器与 schema 版本 / 路由与思考档位 / 结果 hash）、恢复只复用基线一致的完成批次（否则标 stale，不重跑已完成章节）、证据（quote）必须能在该章原文定位（任一项不过整批拒绝，≤3 次有限重试）、抽取结果先落候选草稿、作者确认后按批短事务**原子应用**（拒绝/失败不留半套正式状态）。宿主不做任何模型调用，全链路可离线验证。"
+    },
+    {
+      "version": "1.11.0",
+      "frozen_at": "2026-09-28",
+      "note": "附加式：共享资料库（跨作品写作参考资料，独立门控层 library，默认关闭）。新增 1 张登记表 library_docs 与 7 条端点（GET /api/novel/library/status|search|doc；PUT /api/novel/library/enabled；POST /api/novel/library/import|import/confirm；DELETE /api/novel/library/doc/:id），新增模型工具 novel_library（检索 + 按 id 读回原文窗口）。资料不是本书事实：条目只证明「在共享资料根注册表内」、canon 记 reference 永不 canon，层标题与条目标注一律写明「参考资料」；普通召回层与资料层互不混层。导入链是新的本地读取面：只读显式传入的目录、白名单 .md/.txt、单文件上限、单批篇数上限、不跟随符号链接、严格 UTF-8、默认 dry-run；导入/删除/开关为作者动作（模型侧 403）。library_enabled=0 的作品 assembled/manifest 与接入前逐字节一致。"
     }
   ]
 }

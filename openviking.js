@@ -386,6 +386,33 @@ class OpenVikingClient {
     return { ok: true, text: String(text) };
   }
 
+  // 目录列举（2026-09-27，R04）：rebuild 的**范围证明**必须基于真实列出的条目，
+  // 而不是"前缀看起来像"。端点与 OV memory bundle 的 profile-inject 同源
+  // （GET /api/v1/fs/ls?output=agent&recursive=true）。
+  async list(uri, options = {}) {
+    const base = String(uri || '').replace(/\/+$/, '');
+    const params = [`uri=${encodeURIComponent(base)}`, 'output=agent'];
+    if (options.recursive === true) params.push('recursive=true');
+    params.push(`abs_limit=${Number(options.absLimit) || 2000}`);
+    params.push(`node_limit=${Number(options.nodeLimit) || 2000}`);
+    const response = await this.fetchJSON(`/api/v1/fs/ls?${params.join('&')}`, {}, { timeoutMs: options.timeoutMs ?? 15000 });
+    if (!response.ok || !Array.isArray(response.result)) {
+      return {
+        ok: false,
+        entries: [],
+        error: (response.error && (response.error.message || response.error)) || `HTTP ${response.status || 0}`
+      };
+    }
+    const entries = [];
+    for (const e of response.result) {
+      const rel = typeof e?.rel_path === 'string' && e.rel_path ? e.rel_path : (typeof e?.name === 'string' ? e.name : '');
+      const full = typeof e?.uri === 'string' && e.uri ? e.uri : (rel ? `${base}/${rel}` : '');
+      if (!full) continue;
+      entries.push({ uri: full, isDir: e?.isDir === true });
+    }
+    return { ok: true, entries, error: '' };
+  }
+
 }
 
 // ⚠️ 客户端必须**可重建**：作者在 AI 设置页改完地址/Key 后，若这里仍是启动时创建的

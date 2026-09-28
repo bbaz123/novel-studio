@@ -21,6 +21,9 @@ import { log, timedAsync } from './logger.js';
 import { traceFn } from './debug-trace.js';
 import { htmlToPlain } from './text-utils.js';
 import { createSyncGate } from './ai/sync-gate.mjs';
+import { filterRecallItems, validateRecallItem, planRebuild } from './ai/openviking/recall-meta.mjs';
+import { SHARED_LIBRARY_ROOT } from './ai/library/library-roots.mjs';
+import { LIBRARY_RECALL, libraryHitOf, libraryRecallTextOf } from './ai/library/library-recall.mjs';
 
 // 协议前缀运行时拼接（避免源码中出现的字面 URI 触发 dsh 的 URI 防护误判）。
 const OV_PROTO = 'viking:' + '//';
@@ -426,11 +429,153 @@ export async function removeWorkFromMemory(workId) {
         context: { work_id: workId, uri: dir }
       });
     }
-    return removed;
+    return auditWorkRemoval(workId, { removed });
   } finally {
     // 旗子必须撤：作品 id 可能被复用（删掉再建），旧旗子会误伤新作品的第一轮同步。
     gate.release(workId);
   }
+}
+
+// ---------- R04：投影审计 / retry·replay·rebuild ----------
+
+/** 章节 id → 章序位次（position ASC, id ASC 的排名；按 position 排序可兼容 position 全为 0 的旧数据）。
+ *  来源校验用：仅凭文件名判断不了"未来章节"。 */
+function chapterPositionMap(workId) {
+  try {
+    const rows = prepare('SELECT id FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
+    return new Map(rows.map((r, i) => [String(r.id), i]));
+  } catch {
+    return new Map();
+  }
+}
+
+/** 本作品同步器**会生成**的完整文件集合（rebuild 范围证明的 expected 集）。 */
+export function expectedWorkUris(workId) {
+  const collected = collectWorkOperations(workId);
+  return (collected?.ops || []).map((o) => o.uri);
+}
+
+/** 当前章的章序位次（与 chapterPositionMap 同一口径；取不到时返回 null，等价"无法证明未来性"）。 */
+function chapterOrderOf(workId, chapterId) {
+  if (!chapterId) return null;
+  const v = chapterPositionMap(workId).get(String(chapterId));
+  return v === undefined ? null : v;
+}
+
+/** 记一条破坏性操作审计（待删除集合 / 范围证明结果；只记摘要，不记记忆正文）。 */
+export function recordProjectionAudit({ workId, op, scopeUri = '', plan = null, status = '', detail = '', actor = 'author' } = {}) {
+  try {
+    prepare(`
+      INSERT INTO ov_projection_audit
+        (work_id, op, scope_uri, status, expected_count, actual_count, deletable_json, foreign_json, unexpected_json, detail, actor)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      Number(workId) || 0, String(op || ''), String(scopeUri || ''), String(status || ''),
+      Number(plan?.expected_count) || 0, Number(plan?.actual_count) || 0,
+      JSON.stringify((plan?.deletable || []).slice(0, 500)),
+      JSON.stringify((plan?.foreign || []).slice(0, 200)),
+      JSON.stringify((plan?.unexpected || []).slice(0, 200)),
+      String(detail || '').slice(0, 2000), String(actor || 'author')
+    );
+  } catch (e) {
+    log({ level: 'warn', layer: 'sync', kind: 'ov_audit_write_failed', message: `投影审计写入失败：${e.message}` });
+  }
+}
+
+export function listProjectionAudit(workId, limit = 50) {
+  return prepare('SELECT * FROM ov_projection_audit WHERE work_id = ? ORDER BY id DESC LIMIT ?')
+    .all(Number(workId) || 0, Math.min(200, Math.max(1, Number(limit) || 50)));
+}
+
+/**
+ * 重建本作品的派生投影（重建索引）：范围证明 → 删除 → 全量同步。
+ *   · dry_run=true 只做证明与计划（默认；返回可审计的待删除集合）；
+ *   · 服务不可用 / 范围证明失败 → **不执行任何删除**，如实返回原因；
+ *   · 删除逐个文件进行，失败即停并记审计（不做"先删再重建"式赌博）。
+ */
+export async function rebuildWorkMemory(workId, { dryRun = true, actor = 'author' } = {}) {
+  if (OV_DISABLED) return { ok: false, code: 'disabled', reason: 'OpenViking 集成已禁用（NOVELSTUDIO_OV_DISABLED=1）' };
+  const collected = collectWorkOperations(workId);
+  if (!collected) return { ok: false, code: 'not_found', reason: '作品不存在' };
+  const scope = workDir(workId);
+  const expected = expectedWorkUris(workId);
+  const listed = await ovClient.list(scope, { recursive: true });
+  if (!listed.ok) {
+    recordProjectionAudit({ workId, op: 'rebuild', scopeUri: scope, status: 'blocked', detail: `记忆服务不可用：${listed.error}`, actor });
+    return { ok: false, code: 'unavailable', reason: `记忆库不可用（${listed.error || '未返回条目'}），未执行任何删除`, scope_uri: scope };
+  }
+  const plan = planRebuild({
+    workUri: scope, expectedUris: expected,
+    actualUris: listed.entries.filter((e) => !e.isDir).map((e) => e.uri),
+    actualDirs: listed.entries.filter((e) => e.isDir).map((e) => e.uri),
+  });
+  const planFull = { ...plan, expected_count: expected.length, actual_count: listed.entries.length };
+  recordProjectionAudit({
+    workId, op: dryRun ? 'rebuild_plan' : 'rebuild', scopeUri: scope, plan: planFull,
+    status: plan.ok ? (dryRun ? 'planned' : 'approved') : 'refused', detail: plan.reason, actor,
+  });
+  if (!plan.ok) return { ok: false, ...planFull, scope_uri: scope };
+  if (dryRun) {
+    return { ok: true, code: 'ok', dry_run: true, scope_uri: scope, deletable: plan.deletable, expected_count: expected.length, actual_count: listed.entries.length };
+  }
+  // 举旗阻止在途同步继续写，等在途任务收手后再删（与 removeWorkFromMemory 同一闸门）。
+  const { drained } = await gate.cancelAndDrain(workId);
+  setAppSetting(`ov_indexed_at:${workId}`, '');
+  const removed = [];
+  let failedUri = '';
+  try {
+    for (const uri of plan.deletable) {
+      const okRemove = await safeRemove(uri, false);
+      if (okRemove) removed.push(uri);
+      else { failedUri = uri; break; }
+    }
+  } finally {
+    gate.release(workId);
+  }
+  if (failedUri) {
+    recordProjectionAudit({
+      workId, op: 'rebuild', scopeUri: scope,
+      plan: { ...planFull, deletable: plan.deletable }, status: 'partial_failed',
+      detail: `删除失败于 ${failedUri}（已删 ${removed.length}/${plan.deletable.length}），未继续重建；失败项已进重试队列`, actor,
+    });
+    return { ok: false, code: 'delete_failed', reason: `删除失败于 ${failedUri}（已删 ${removed.length}/${plan.deletable.length}）`, scope_uri: scope, drained, removed };
+  }
+  const sync = await syncWorkFull(workId);
+  recordProjectionAudit({
+    workId, op: 'rebuild', scopeUri: scope, plan: planFull,
+    status: sync.ok ? 'done' : 'sync_failed',
+    detail: `已删 ${removed.length} 个条目；同步 ${sync.ok ? '成功' : '失败'}` + (sync.ok ? '' : `：${sync.reason || ''}`), actor,
+  });
+  return { ok: Boolean(sync.ok), code: sync.ok ? 'ok' : 'sync_failed', scope_uri: scope, drained, removed: removed.length, sync };
+}
+
+/**
+ * 重放（replay）：依据**当前正式版本**重新投递本作品的投影任务（不删除任何既有记忆。
+ * 与 retry 的分工：retry 只复活 failed 行；replay 是"记录可能已丢/来自旧版本"时重新生成投影）。
+ * 走既有 outbox —— 服务不可用时任务留在 pending，由 startup drain / retry 恢复。
+ */
+export function replayWorkProjection(workId, { reason = 'manual_replay', actor = 'author' } = {}) {
+  const collected = collectWorkOperations(workId);
+  if (!collected) return { ok: false, code: 'not_found', reason: '作品不存在' };
+  const opId = `replay:${workId}:${Date.now().toString(36)}`;
+  const info = prepare(`
+    INSERT OR IGNORE INTO projection_outbox (work_id, chapter_id, kind, dedup_key, payload_json)
+    VALUES (?, NULL, 'ov_work_sync', ?, ?)
+  `).run(Number(workId) || 0, opId, JSON.stringify({ reason, actor, at: new Date().toISOString() }));
+  const id = Number(info.lastInsertRowid) || Number(prepare('SELECT id FROM projection_outbox WHERE dedup_key = ?').get(opId)?.id) || 0;
+  return { ok: true, code: 'ok', projection_id: id, dedup_key: opId, files: collected.ops.length };
+}
+
+/** 删除作品记忆前的审计（remove 同样属于破坏性操作：记录 namespace 与目标）。 */
+export function auditWorkRemoval(workId, { removed, actor = 'author' } = {}) {
+  const scope = workDir(workId);
+  recordProjectionAudit({
+    workId, op: 'remove', scopeUri: scope,
+    plan: { deletable: [scope], expected_count: 0, actual_count: 0 },
+    status: removed ? 'done' : 'failed',
+    detail: removed ? '作品命名空间整体移除' : '作品命名空间移除失败（已进重试队列）', actor,
+  });
+  return removed;
 }
 
 // ---------- 启动时自动建索引（只补缺/过期，全量同步本身幂等） ----------
@@ -581,15 +726,36 @@ export async function getSemanticRecall(workId, chapter) {
     });
   });
 
-  const payload = items.length
+  // R04：来源 fail-closed 校验——跨书 / 未来章节 / 候选内容 / 未知布局一律不进上下文。
+  // 宿主装配器还会用同一实现**再校验一次**（不信任本层的过滤结果）。
+  const { kept, dropped } = filterRecallItems(items, {
+    workUri: workDir(workId),
+    currentChapterOrder: chapterOrderOf(workId, chapter?.id),
+    chapterOrderById: chapterPositionMap(workId),
+  });
+  if (dropped.length) {
+    log({
+      level: 'warn', layer: 'sync', kind: 'recall_source_blocked',
+      message: `语义召回有 ${dropped.length} 条被来源校验拦下（未进入上下文）`,
+      context: { work_id: workId, dropped: dropped.slice(0, 10) }
+    });
+  }
+  const payload = kept.length
     ? {
         enabled: true,
         status: 'ok',
         query,
-        hits: items,
-        text: items.map((i) => `【${i.label}】（相关度 ${i.score}%）\n${i.text}`).join('\n\n')
+        hits: kept,
+        omitted: dropped,
+        meta_validated: true,
+        text: kept.map((i) => `【${i.label}】（相关度 ${i.score}%）\n${i.text}`).join('\n\n')
       }
-    : { enabled: true, status: 'no-hits', query, hits: [] };
+    : {
+        enabled: true,
+        // 全部被拦下 → 'filtered'（显式缺口：有召回，但来源不可信），不能记成 no-hits。
+        status: dropped.length ? 'filtered' : 'no-hits',
+        query, hits: [], omitted: dropped, meta_validated: true
+      };
   // ⚠️ 必须走 recallCacheSet：直接 recallCache.set 会绕过容量回收，
   // 于是 RECALL_CACHE_MAX=256 只约束了"没有命中"的空结果，最占内存的成功条目反而无上限
   // （8 段命中 × 300 字，长作品多章节时会一直涨）。2026-09-18 审计发现并修正。
@@ -634,3 +800,108 @@ export async function semanticSearchMerge(q, workId) {
 // 必须能单独看到它耗时多少、命中多少——否则「上下文装配慢」无法归因到记忆库还是本地 SQL。
 getSemanticRecall = traceFn('getSemanticRecall（语义召回）', getSemanticRecall, { kind: 'http', slowMs: 500 });
 semanticSearchMerge = traceFn('semanticSearchMerge（检索合并）', semanticSearchMerge, { kind: 'http', slowMs: 500 });
+
+// ---------- 共享资料库召回（library 层；参数与条目形状见 ai/library/library-recall.mjs） ----------
+// 与语义召回同构但**互不混层**：独立的 find（targetUri=共享资料根）、独立的微缓存、
+// 独立的来源校验分支（资料条目 canon 记 'reference'，永不 canon；普通召回层拒绝资料条目）。
+// 门控：library_enabled:<workId> 默认关闭（与 story_state/edit_rules 同口径，未开启即不存在）。
+const libraryCache = new Map();
+function libraryCacheSet(key, payload) {
+  libraryCache.set(key, { at: Date.now(), payload });
+  while (libraryCache.size > LIBRARY_RECALL.cacheMax) {
+    libraryCache.delete(libraryCache.keys().next().value); // LRU：超出上限淘汰最旧
+  }
+}
+
+/** 作品是否打开资料库层（app_settings；缺省 = 关闭）。 */
+export function libraryEnabled(workId) {
+  return getAppSetting(`library_enabled:${workId}`, '0') === '1';
+}
+
+/**
+ * 资料库召回：以当前写作场景为查询，从共享资料根检索资料文件，读回前 30 行（P0 实测
+ * offset/limit 按行计）并压到每条 300 字。离线静默降级（不阻塞写作），失败/被拦留审计。
+ * 期望有却没拿到时**不插占位层**（与 recall 有意不同：资料是辅助材料，缺了不误导判断；
+ * 状态与原因在响应字段与日志里可见）——别按 recall 口径"修"回占位层。
+ */
+export async function getLibraryRecall(workId, chapter) {
+  if (OV_DISABLED || !semanticEnabled() || !libraryEnabled(workId)) {
+    return { enabled: false, status: 'disabled', query: '', hits: [] };
+  }
+  const key = `${workId}:${chapter?.id || 0}`;
+  const hit = libraryCache.get(key);
+  if (hit && Date.now() - hit.at < LIBRARY_RECALL.ttlMs) return hit.payload;
+
+  const query = buildRecallQuery(workId, chapter);
+  if (!query.trim()) return { enabled: true, status: 'empty', query: '', hits: [] };
+
+  let hits = [];
+  try {
+    hits = await ovClient.find(query, {
+      targetUri: SHARED_LIBRARY_ROOT,
+      limit: LIBRARY_RECALL.maxHits + LIBRARY_RECALL.overscan,
+      scoreThreshold: LIBRARY_RECALL.scoreThreshold,
+      timeoutMs: 6000
+    });
+  } catch {
+    hits = [];
+  }
+  if (!hits.length) {
+    const payload = { enabled: true, status: ovClient.connected ? 'no-hits' : 'unavailable', query, hits: [] };
+    libraryCacheSet(key, payload);
+    return payload;
+  }
+
+  // P1 真机实测（2026-09-28）：OV 会给目录生成 `.abstract.md` / `.overview.md` 伴随文件，
+  // 且摘要分数常高于正文文档。若先按分数截断再过滤，伴随文件会把真资料挤出 top-4——
+  // 所以先用同一套形状闸门做候选过滤（先过滤、后截断），被拦者仍带 code 进 omitted 可归因。
+  const preDropped = [];
+  const candidates = [];
+  for (const h of hits) {
+    const verdict = validateRecallItem(h, { allowLibrary: true, libraryWorkId: String(workId) });
+    if (verdict.ok) candidates.push(h);
+    else preDropped.push({ uri: h.uri, code: verdict.code, reason: verdict.reason });
+  }
+  const top = candidates.slice(0, LIBRARY_RECALL.maxHits);
+  const reads = await Promise.all(top.map((h) => ovClient.readContent(h.uri, {
+    offset: 0, limit: LIBRARY_RECALL.readLines, timeoutMs: 5000
+  }).catch(() => ({ ok: false, text: '' }))));
+  const items = [];
+  top.forEach((h, i) => {
+    const read = reads[i];
+    const text = read.ok ? read.text : h.abstract || '';
+    if (!text.trim()) return;
+    items.push(libraryHitOf(h, { text, score: h.score }));
+  });
+
+  // 来源校验（与 recall 共用同一实现，单点规则；候选过滤之后的第二道）：allowLibrary=true 时
+  // **只**放行资料条目，形状不合（任意层级 _/. 前缀 / 非两层 / 非 .md）的一样拦下。
+  const { kept, dropped } = filterRecallItems(items, { allowLibrary: true, libraryWorkId: String(workId) });
+  const omittedAll = [...preDropped, ...dropped];
+  if (omittedAll.length) {
+    log({
+      level: 'warn', layer: 'sync', kind: 'library_source_blocked',
+      message: `资料库召回有 ${omittedAll.length} 条被来源校验拦下（未进入上下文）`,
+      context: { work_id: workId, dropped: omittedAll.slice(0, 10) }
+    });
+  }
+  const payload = kept.length
+    ? {
+        enabled: true,
+        status: 'ok',
+        query,
+        hits: kept,
+        omitted: omittedAll,
+        meta_validated: true,
+        text: libraryRecallTextOf(kept)
+      }
+    : {
+        enabled: true,
+        status: omittedAll.length ? 'filtered' : 'no-hits',
+        query, hits: [], omitted: omittedAll, meta_validated: true
+      };
+  libraryCacheSet(key, payload);
+  return payload;
+}
+
+getLibraryRecall = traceFn('getLibraryRecall（资料库召回）', getLibraryRecall, { kind: 'http', slowMs: 500 });

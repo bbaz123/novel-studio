@@ -10,6 +10,7 @@
  *  - novel_works          列出作品（确认 work_id）
  *  - novel_context        写作前取“ST 式分层上下文”（大纲/记忆/事件/伏笔/场景/角色卡/世界观/红线）
  *  - novel_lookup         按关键词检索角色/词条/章节/剧情线
+ *  - novel_library        按关键词/分类检索共享资料库（跨作品参考资料）并读回原文窗口
  *  - novel_foreshadows    列出未闭合（或全部）伏笔
  *  - novel_foreshadow_update 标记伏笔状态（resolved/dropped/open，可回链回收事件）
  *  - novel_consistency    生成后核对：未闭合伏笔/出场角色状态/最近事件 vs 本章正文
@@ -30,7 +31,7 @@
 
 export const name = 'novel-tools'
 export const inject = ['tools']
-export const PLUGIN_VERSION = '0.10.0'
+export const PLUGIN_VERSION = '0.15.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
@@ -60,7 +61,9 @@ export function apply(ctx, config) {
       try {
         res = await fetch(base + path, {
           method: options.method || 'GET',
-          headers: { 'content-type': 'application/json' },
+          // X-Novel-Agent：声明"这是模型侧通道"。宿主据此要求写入类操作引用作者审批
+          // （R02.2）。作者界面（浏览器同源）不带该标记，语义不变。
+          headers: { 'content-type': 'application/json', 'X-Novel-Agent': '1' },
           body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
           signal: AbortSignal.timeout(options.timeout || 25000),
         })
@@ -621,7 +624,9 @@ export function apply(ctx, config) {
   })
 
   register('novel_chapter_save', [
-    '把成文后的正文写回 novel-studio 的章节。调用前应已获作者同意（例如作者说“保存/写进去”）。',
+    '把成文后的正文写回 novel-studio 的章节。**必须引用作者的一次性审批**（approval_id）——',
+    '作者在工坊界面确认"允许本次写回"后会生成审批（可用 novel_approvals 查看）；模型不能自行创建审批，',
+    '也不要把"作者说同意"当成审批（没有审批 id 的写入会被服务端 403 拒绝）。',
     '服务端会先把旧稿存为历史版本（可在工坊界面恢复），再覆盖正文，并返回红线扫描结果。',
     'title/summary 不传则保持原样。写回成功后建议照常用 novel_event_add / novel_memory_update 收尾。',
   ].join('\n'), {
@@ -630,12 +635,16 @@ export function apply(ctx, config) {
     content: { type: 'string', description: '成文后的正文全文' },
     title: { type: 'string', description: '可选：新章节标题' },
     summary: { type: 'string', description: '可选：新章节摘要' },
+    approval_id: { type: 'string', description: '作者创建的 chapter_save 审批 id（必填；见 novel_approvals）' },
   }, async (args) => {
     const workId = envId(args, 'work_id')
     const chapterId = envId(args, 'chapter_id')
     if (chapterId === undefined) throw new Error('缺少 chapter_id：请先用 novel_context/novel_works 确认要写回的章节')
     const content = String(args.content || '')
     if (!content.trim()) throw new Error('缺少 content')
+    if (!String(args.approval_id || '').trim()) {
+      throw new Error('缺少 approval_id：写回正文需要作者在工坊界面确认（会生成一次性审批）。请先请作者确认，再用 novel_approvals 取审批 id。')
+    }
     const data = await jfetch('/api/novel/chapter_save', {
       method: 'POST',
       body: {
@@ -643,7 +652,8 @@ export function apply(ctx, config) {
         chapter_id: chapterId,
         content,
         title: args.title,
-        summary: args.summary
+        summary: args.summary,
+        approval_id: String(args.approval_id || ''),
       },
       timeout: 30000
     })
@@ -673,10 +683,48 @@ export function apply(ctx, config) {
     return { workId, enabled: info.enabled === true, info, message: '' }
   }
 
+  // ── 枚举动作的白名单 dispatch（2026-09-27 边界修复）──────────────────────────
+  // 缺陷形状：旧实现把「review」「reject」写成两个 `if`，其余一切值（含拼写错误
+  // `aply`、空串、恶意构造的 `apply\n` 之类）都会**静默落入 apply 写入分支**。
+  // 纪律：枚举动作一律先过白名单；不在白名单里就立刻抛错、**不发出任何写请求**。
+  function dispatchEnum(rawValue, allowed, { dflt, tool, field = 'action' } = {}) {
+    const raw = rawValue === undefined || rawValue === null ? '' : String(rawValue)
+    const value = raw.trim().toLowerCase()
+    const effective = value || String(dflt || '').trim().toLowerCase()
+    if (!allowed.includes(effective)) {
+      const shown = raw.trim() ? `"${raw.trim().slice(0, 40)}"` : '(空)'
+      throw new Error(`${tool}: 非法 ${field}=${shown}——只允许 ${allowed.join(' / ')}。已校验失败，未发出任何写入请求。`)
+    }
+    return effective
+  }
+
+  /** 未知字段一律拒绝：避免模型把 `action` 写成别名（如 `op`/`method`）后被静默忽略。 */
+  function assertKnownArgs(args, allowed, tool) {
+    const unknown = Object.keys(args || {}).filter((k) => !allowed.includes(k))
+    if (unknown.length) {
+      throw new Error(`${tool}: 未知参数 ${unknown.map((k) => '"' + k + '"').join('、')}——允许的参数：${allowed.join('、')}。已校验失败，未发出任何请求。`)
+    }
+  }
+
+  /** id / ids / all 三选一的互斥校验（apply 类操作）。返回规范化后的 id 列表或 { all:true }。 */
+  function pickTargets(args, tool) {
+    const id = Number(args.id)
+    const hasId = Number.isInteger(id) && id > 0
+    const idList = Array.isArray(args.ids) ? args.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : []
+    const hasIds = idList.length > 0
+    const hasAll = args.all === true
+    const used = [hasId, hasIds, hasAll].filter(Boolean).length
+    if (used === 0) throw new Error(`${tool}: 需要 id / ids / all 之一（不能为空）`)
+    if (used > 1) throw new Error(`${tool}: id / ids / all 只能给一个，不能组合使用（收到：${[hasId && 'id', hasIds && 'ids', hasAll && 'all'].filter(Boolean).join('+')}）`)
+    if (hasAll) return { all: true, ids: [] }
+    return { all: false, ids: hasId ? [id] : idList }
+  }
+
   register('novel_state', [
-    '读取作品**确定性故事状态**的一个切片（只读）。status=overview|facts|timeline|knowledge|entities|foreshadows|contract。',
+    '读取作品**确定性故事状态**的一个切片（只读）。status=overview|facts|timeline|knowledge|disclosure|entities|foreshadows|contract。',
     '为什么要用它：上下文里的「故事状态」层受预算限制，被截断的部分要用本工具读回全文（凡裁剪必可查回）。',
     'status=overview（默认）给总览：开关、条目数、状态哈希、待确认提案数。status=contract 需要 chapter_id。',
+    'status=disclosure（需要 chapter_id）：按"当前章"派生三档视图——作者真相 / 读者已披露 / 各角色掌握（含未定义条目）。写角色行动理由只能用「角色掌握」；作者真相与读者披露都不等于角色知道。',
     '未开启该机制的作品会如实返回提示——此时不要去猜测状态，按原有方式创作即可。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
@@ -718,6 +766,26 @@ export function apply(ctx, config) {
       const data = await jfetch(`/api/novel/state/knowledge?work_id=${encodeURIComponent(workId)}${q}${q2}`)
       const rows = (data.knowledge || []).map((k) => `${k.character_name || '#' + k.character_id}｜${k.fact_key}｜${k.state}（第 ${k.learned_chapter_index} 章起）`)
       return [`角色知识边界（游标=第 ${data.cursor?.chapter_index ?? 0} 章）：`, ...rows].join('\n')
+    }
+    if (status === 'disclosure') {
+      const chapterId = envId(args, 'chapter_id')
+      if (chapterId === undefined) throw new Error('status=disclosure 需要 chapter_id（披露判断必须以具体章节为时点）')
+      const q = args.character_id ? `&character_id=${encodeURIComponent(args.character_id)}` : ''
+      const data = await jfetch(`/api/novel/state/disclosure?work_id=${encodeURIComponent(workId)}&chapter_id=${encodeURIComponent(chapterId)}${q}`)
+      const line = (x) => `  #${x.id} ${x.label}〔${x.scope}/${x.state}〕${x.tier}`
+      const lines = [
+        `时点：第 ${(data.cursor?.chapter_index ?? 0) + 1} 章${data.chapter_title ? `（${data.chapter_title}）` : ''}｜指纹 ${data.fingerprint}`,
+        `作者真相（读者未披露）${data.author.truth.length} 条：`,
+        ...data.author.truth.slice(0, 12).map(line),
+        `读者已披露 ${data.reader.disclosed.length} 条：`,
+        ...data.reader.disclosed.slice(0, 12).map(line),
+        `尚未披露（未到时点/未写到）${data.reader.not_yet.length + data.reader.future.length} 条；撤回/计划 ${data.author.retracted.length}/${data.author.plan.length} 条`,
+      ]
+      for (const c of data.characters || []) {
+        lines.push(`角色「${c.name}」可行动 ${c.actionable_ids.length} 条（已知 ${c.known.length}｜显式不知道 ${c.unknown.length}｜怀疑 ${c.suspected.length}｜误信 ${c.false_beliefs.length}｜未定义 ${c.undetermined.count}）`)
+      }
+      lines.push('⚠ 写角色行动理由只能用「角色掌握」；作者真相/读者披露都不等于角色知道；未定义条目不得当成知道。')
+      return lines.join('\n')
     }
     if (status === 'timeline') {
       const chapterId = envId(args, 'chapter_id')
@@ -898,10 +966,12 @@ export function apply(ctx, config) {
     ids: { type: 'array', description: '多个提案 id' },
     all: { type: 'boolean', description: '为 true 时处理该作品全部待确认提案' },
     note: { type: 'string', description: '驳回时的备注' },
+    approval_id: { type: 'string', description: 'action=apply 时必填：作者创建的一次性审批 id（见 novel_approvals）' },
   }, async (args) => {
     const gate = await stateGate(args)
     if (!gate.enabled) return gate.message
-    const action = String(args.action || 'review')
+    assertKnownArgs(args, ['work_id', 'action', 'id', 'ids', 'all', 'note', 'approval_id'], 'novel_state_commit')
+    const action = dispatchEnum(args.action, ['review', 'apply', 'reject'], { dflt: 'review', tool: 'novel_state_commit' })
     if (action === 'review') {
       const id = Number(args.id) || (Array.isArray(args.ids) ? Number(args.ids[0]) : 0)
       if (!id) throw new Error('review 需要 id')
@@ -913,15 +983,48 @@ export function apply(ctx, config) {
     if (action === 'reject') {
       const id = Number(args.id) || 0
       if (!id) throw new Error('reject 需要 id')
+      if (Array.isArray(args.ids) && args.ids.length) throw new Error('novel_state_commit: action=reject 不接受 ids（一次只驳回一条，用 id）')
+      if (args.all === true) throw new Error('novel_state_commit: action=reject 不接受 all（批量驳回需要作者逐条确认）')
       await jfetch('/api/novel/state/proposals/reject', { method: 'POST', body: { id, note: args.note || '' } })
       return `提案 #${id} 已驳回。${args.note ? '备注：' + args.note : ''}`
     }
-    const body = { work_id: gate.workId, id: args.id, ids: args.ids, all: args.all === true }
+    // apply：id / ids / all 三选一（组合或全空都校验失败，不发出写请求）。
+    const targets = pickTargets(args, 'novel_state_commit')
+    if (!String(args.approval_id || '').trim()) {
+      throw new Error('缺少 approval_id：应用状态提案需要作者在工坊界面确认（会生成一次性审批，可用 novel_approvals 查看）。模型不能自行创建审批。')
+    }
+    const body = targets.all
+      ? { work_id: gate.workId, all: true, approval_id: String(args.approval_id || '') }
+      : { work_id: gate.workId, ids: targets.ids, approval_id: String(args.approval_id || '') }
     const data = await jfetch('/api/novel/state/proposals/apply', { method: 'POST', body, timeout: 30000 })
     const lines = (data.results || []).map((r) => (r.ok
       ? `  ✓ #${r.proposal_id} 已应用（快照 #${r.snapshot_id}，状态哈希 ${r.state_hash_before} → ${r.state_hash_after}）`
       : `  ✗ 未应用：${r.reason}`))
     return [`状态提案应用结果：成功 ${data.applied}｜陈旧 ${data.stale}`, ...lines].join('\n')
+  })
+
+  register('novel_approvals', [
+    '列出作者为当前作品创建的**一次性审批**（只读）。',
+    '用途：模型侧写入（novel_chapter_save / novel_state_commit apply / novel_snapshot rollback）必须先由作者',
+    '在工坊界面确认，服务端会生成审批；这里读出 approval id 后，把它作为 approval_id 传给对应工具。',
+    '审批默认单次消费、有有效期；过期/已消费/已撤销的不会出现在默认列表里。',
+    '⚠ 审批是作者意图的记录：不要代替作者创建，也不要把 id 写进正文或长期记忆。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    op: { type: 'string', description: '可选：只看某一类（chapter_save / state_proposal_apply / proposal_apply / state_rollback）' },
+  }, async (args) => {
+    const workId = envId(args, 'work_id')
+    if (workId === undefined) throw new Error('缺少 work_id（可用 novel_works 确认）')
+    const data = await jfetch(`/api/novel/approvals?work_id=${encodeURIComponent(workId)}&status=active`)
+    const op = String(args.op || '').trim()
+    const rows = (data.approvals || []).filter((r) => !op || r.op === op)
+    if (!rows.length) {
+      return `作品 #${workId} 当前没有可用的作者审批${op ? `（op=${op}）` : ''}。请作者在工坊界面确认后重试；模型不能自行创建审批。`
+    }
+    return [`作品 #${workId} 可用的作者审批（${rows.length} 条）：`, ...rows.map((r) => {
+      const bind = r.binding_json && r.binding_json !== '{}' ? `｜绑定 ${String(r.binding_json).slice(0, 120)}` : ''
+      return `  · ${r.id}｜${r.op}${r.chapter_id ? `｜章节 #${r.chapter_id}` : ''}｜有效至 ${r.expires_at}${bind}`
+    })].join('\n')
   })
 
   register('novel_snapshot', [
@@ -935,14 +1038,19 @@ export function apply(ctx, config) {
     snapshot_id: { type: 'string', description: 'action=rollback 时的目标快照 id' },
     label: { type: 'string', description: '可选标签（如"第12章之前"）' },
     reason: { type: 'string', description: '可选原因说明' },
+    approval_id: { type: 'string', description: 'action=rollback 时必填：作者创建的一次性审批 id（见 novel_approvals）' },
   }, async (args) => {
     const gate = await stateGate(args)
     if (!gate.enabled) return gate.message
-    const action = String(args.action || 'create')
+    assertKnownArgs(args, ['work_id', 'action', 'snapshot_id', 'label', 'reason', 'approval_id'], 'novel_snapshot')
+    const action = dispatchEnum(args.action, ['create', 'rollback'], { dflt: 'create', tool: 'novel_snapshot' })
     if (action === 'rollback') {
       const id = Number(args.snapshot_id) || 0
       if (!id) throw new Error('rollback 需要 snapshot_id')
-      const data = await jfetch('/api/novel/state/rollback', { method: 'POST', body: { snapshot_id: id }, timeout: 30000 })
+      if (!String(args.approval_id || '').trim()) {
+        throw new Error('缺少 approval_id：回滚是破坏性操作，需要作者在工坊界面为这个快照创建一次性审批（可用 novel_approvals 查看）。')
+      }
+      const data = await jfetch('/api/novel/state/rollback', { method: 'POST', body: { snapshot_id: id, approval_id: String(args.approval_id || '') }, timeout: 30000 })
       return `已回滚到快照 #${data.snapshot_id}：执行 ${data.ops} 步（回滚前自动留了快照 #${data.safety_snapshot_id}）。${data.note || ''}`
     }
     const data = await jfetch('/api/novel/state/snapshot', {
@@ -985,5 +1093,181 @@ export function apply(ctx, config) {
     }
     parts.push('', '── 唯一上下文（服务端装配，勿自行拼接）──', ctx.assembled || '')
     return parts.join('\n')
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // R11 剧情分支沙盘（1.9.0 新增）
+  //
+  // 纪律：候选是**提案**——宿主保存候选及其依赖基线 hash（状态/正文/契约/作者意图/
+  // 披露指纹）与来源；采纳/丢弃/取消是作者动作（模型侧一律 403），本工具面里**没有**
+  // 这些动作，也不要试图绕道新增写入端点或直写章节蓝图。
+  // ══════════════════════════════════════════════════════════════════════════
+  register('novel_branch', [
+    '剧情分支沙盘：为某一章开出 2—5 个**实质不同**的方向，或读回已保存的候选。',
+    'action=open 开沙盘（需要 chapter_id；requested 2—5，默认 3）：先固定依赖基线（故事状态 / 正文 / 契约 / 作者意图 / 披露指纹），之后基线一变候选即标「过期」。',
+    'action=submit 提交候选（需要 chapter_id 与 candidates）：一次 2—5 个；沙盘里已有候选时允许只补最后 1 个。每个候选至少给出 core_action（核心行动）、conflict（冲突选择）、character_choices（人物选择）、consequences（可能后果）。',
+    '  人物选择里，既有角色的行动理由必须引用该角色**当前可行动**的事实 id（basis_ids，先用 novel_state 的 status=disclosure 查）、已知键 basis_keys、或明确说明 basis_note；新角色要显式 new_character:true。不能因为你（模型）看过作者真相就让角色提前知道秘密。',
+    '  consequences 的 certainty=established 表示已发生，不得引用作者计划/未披露/已撤回/未定的条目（未来计划不能冒充已发生）；planned/possible/uncertain 才是计划与推测。',
+    '  仅改写措辞、交换同义表达不算多个候选：宿主按核心行动规范化相似度判重，重复会整批拒绝（一个都不写）。',
+    'action=list 列出沙盘与候选（可带 chapter_id / sandbox_id / status）。',
+    'action=view 看单条候选全文、采纳计划与是否已过期（需要 id）。',
+    'action=compare 并列比较（需要 ids，逗号分隔、≥2 个）：只列差异，不替作者打分或排序。',
+    '⚠ 候选只是提案：不进正文、不进正典事实/事件/角色知识/上下文层，也不触发记忆同步。采纳/丢弃/取消/重开都是作者动作（作者在工坊界面的「剧情分支沙盘」卡片里执行）。',
+  ].join('\n'), {
+    action: { type: 'string', description: 'open | submit | list | view | compare（默认 list）' },
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（open/submit 必填，也是沙盘时点）' },
+    sandbox_id: { type: 'string', description: '可选：指定沙盘（submit 续补 / list 过滤）' },
+    id: { type: 'string', description: 'action=view 时的候选 id' },
+    ids: { type: 'string', description: 'action=compare 时的候选 id，逗号分隔（至少 2 个）' },
+    candidates: { type: 'string', description: 'action=submit 时的候选数组（JSON 字符串）' },
+    requested: { type: 'number', description: 'action=open 时想要的候选数（2—5，默认 3）' },
+    title: { type: 'string', description: 'action=open 时给沙盘起个短标题（可选）' },
+    note: { type: 'string', description: '可选备注（作者在界面看到）' },
+    status: { type: 'string', description: '可选：list 过滤 candidate | adopted | discarded' },
+  }, async (args) => {
+    assertKnownArgs(args, ['action', 'work_id', 'chapter_id', 'sandbox_id', 'id', 'ids', 'candidates', 'requested', 'title', 'note', 'status'], 'novel_branch')
+    const workId = envId(args, 'work_id')
+    if (workId === undefined) throw new Error('缺少 work_id（可用 novel_works 确认）')
+    const action = dispatchEnum(args.action, ['open', 'submit', 'list', 'view', 'compare'], { dflt: 'list', tool: 'novel_branch' })
+    const chapterId = envId(args, 'chapter_id')
+    const flag = (c) => `${c.status || ''}${c.stale_now || c.stale ? '〔已过期：依赖基线变了，采纳前必须复核〕' : ''}${c.created_by === 'agent' ? '（模型提交）' : ''}${c.deps_hash ? `｜基线 ${String(c.deps_hash).slice(0, 22)}` : ''}`
+    const row = (c) => `  #${c.id} ${c.title || '(无标题)'}｜核心行动：${c.core_action}｜冲突：${c.conflict}｜${flag(c)}`
+    if (action === 'open') {
+      if (chapterId === undefined) throw new Error('action=open 需要 chapter_id（沙盘必须以具体章节为时间点）')
+      const data = await jfetch('/api/novel/branch/sandboxes', {
+        method: 'POST',
+        body: { work_id: workId, chapter_id: chapterId, requested: Number(args.requested) || 3, title: args.title || '', note: args.note || 'dsh 创作插件沙盘' },
+        timeout: 30000,
+      })
+      const sb = data.sandbox || {}
+      const dep = sb.deps || {}
+      return [
+        `沙盘 #${sb.id} 已开（章节 #${sb.chapter_id}｜目标 ${sb.requested} 个候选｜${sb.status}）`,
+        `依赖基线 hash=${String(dep.hash || '')}（状态 ${String(dep.state_hash || '').slice(0, 8)}｜正文 ${String(dep.content_hash || '').slice(0, 8)}｜契约 ${String(dep.contract_hash || '').slice(0, 8)}｜意图 ${String(dep.intent_hash || '').slice(0, 8)}｜披露 ${String(dep.disclosure_fingerprint || '').slice(0, 12)}）`,
+        '下一步：action=submit 提交 2—5 个实质不同的候选（核心行动/冲突/人物选择/后果/节拍/风险/必要铺垫/与作者意图关系）。',
+        '⚠ 采纳/丢弃由作者在界面执行；候选进入本会话历史不等于成为本书事实。',
+      ].join('\n')
+    }
+    if (action === 'submit') {
+      if (chapterId === undefined) throw new Error('action=submit 需要 chapter_id')
+      if (args.candidates === undefined || args.candidates === null || args.candidates === '') throw new Error('缺少 candidates（JSON 数组；每个候选至少要有 core_action/conflict/character_choices/consequences）')
+      let candidates = args.candidates
+      if (typeof candidates === 'string') {
+        try { candidates = JSON.parse(candidates) } catch (e) { throw new Error('candidates 必须是合法 JSON 数组：' + e.message) }
+      }
+      if (!Array.isArray(candidates) || !candidates.length) throw new Error('candidates 必须是非空数组（一次 2—5 个不同方向）')
+      const data = await jfetch('/api/novel/branch/candidates', {
+        method: 'POST',
+        body: { work_id: workId, chapter_id: chapterId, sandbox_id: args.sandbox_id, candidates, note: args.note || 'dsh 创作插件候选' },
+        timeout: 60000,
+      })
+      const prog = data.progress || {}
+      const warn = (data.knowledge || []).filter((k) => k.status !== 'checked')
+      return [
+        `已提交 ${(data.candidates || []).length} 个候选到沙盘 #${(data.sandbox || {}).id}（${prog.done ?? 0}/${prog.requested ?? '?'}${prog.complete ? '，已满' : `，还差 ${prog.missing ?? '?'} 个`}）。`,
+        ...(data.candidates || []).map(row),
+        ...(warn.length ? ['知识约束提示：', ...warn.map((k) => `  候选 ${k.index + 1}：${k.status}${(k.warnings || []).length ? '（' + k.warnings.join('；') + '）' : ''}`)] : []),
+        '候选只是提案：未采纳前不进正文/正典事实/角色知识/上下文层。要不要采用由作者决定（作者在工坊界面「剧情分支沙盘」卡片里查看与采纳）。',
+      ].join('\n')
+    }
+    if (action === 'list') {
+      const sbs = await jfetch(`/api/novel/branch/sandboxes?work_id=${encodeURIComponent(workId)}${chapterId !== undefined ? `&chapter_id=${encodeURIComponent(chapterId)}` : ''}`)
+      const q = [`work_id=${encodeURIComponent(workId)}`]
+      if (chapterId !== undefined) q.push(`chapter_id=${encodeURIComponent(chapterId)}`)
+      if (args.sandbox_id) q.push(`sandbox_id=${encodeURIComponent(args.sandbox_id)}`)
+      if (args.status) q.push(`status=${encodeURIComponent(args.status)}`)
+      const data = await jfetch(`/api/novel/branch/candidates?${q.join('&')}`)
+      const lines = [`作品 #${workId} 的沙盘（${(sbs.sandboxes || []).length} 个）：`]
+      for (const sb of sbs.sandboxes || []) {
+        lines.push(`  沙盘 #${sb.id}｜章节 #${sb.chapter_id}｜${sb.status}｜候选 ${(sb.progress || {}).done ?? 0}/${sb.requested ?? '?'}｜基线 ${String((sb.deps || {}).hash || '').slice(0, 22)}`)
+      }
+      lines.push(`候选（${(data.candidates || []).length} 条）：`)
+      lines.push(...(data.candidates || []).map(row))
+      lines.push('提示：' + (data.note || '未采纳的候选不是本书事实。'))
+      return lines.join('\n')
+    }
+    if (action === 'view') {
+      const id = Number(args.id)
+      if (!Number.isInteger(id) || id <= 0) throw new Error('action=view 需要 id（候选 id）')
+      const data = await jfetch(`/api/novel/branch/candidates/${id}`)
+      const c = data.candidate || {}
+      const plan = data.adoption_plan || {}
+      const bp = plan.blueprint || {}
+      return [
+        `候选 #${c.id} ${c.title || ''}（章节 #${c.chapter_id}｜沙盘 #${c.sandbox_id}｜${flag(c)}）`,
+        `核心行动：${c.core_action}`,
+        `冲突：${c.conflict}`,
+        `人物选择：`,
+        ...(c.character_choices || []).map((x) => `  - ${x.name || '#' + x.character_id}：${x.choice}（依据 ${(x.basis_ids || []).join('、') || (x.basis_keys || []).join('、') || x.basis_note || '—'}）`),
+        `节拍：${(c.beats || []).map((b) => b.text).join(' → ')}`,
+        `可能后果：${(c.consequences || []).map((x) => `${x.text}〔${x.certainty}〕`).join('；')}`,
+        `关系/伏笔：${(c.relations_foreshadows || []).map((x) => `[${x.kind}] ${x.text}`).join('；')}`,
+        `风险：${(c.risks || []).map((x) => x.text).join('；')}｜必要铺垫：${(c.required_setup || []).map((x) => x.text).join('；')}`,
+        `与作者意图：${(c.intent_relation || {}).stance || 'neutral'}｜${(c.intent_relation || {}).text || ''}`,
+        c.stale_now ? `⚠ 已过期（变化的基线：${(c.stale_changed || []).join('、')}）：旧候选仍可阅读；重新采纳必须先复核或重新生成。` : '依赖基线仍一致。',
+        `采纳计划（只形成章节蓝图 + 契约建议；正文/事实/角色状态一律不动）：场景目标=${bp.scene_goal || ''}${(plan.contract_suggestion || {}).note ? `｜${plan.contract_suggestion.note}` : ''}`,
+      ].join('\n')
+    }
+    if (action === 'compare') {
+      const raw = Array.isArray(args.ids) ? args.ids.join(',') : String(args.ids || '')
+      const ids = raw.split(',').map((x) => Number(String(x).trim())).filter((n) => Number.isInteger(n) && n > 0)
+      if (ids.length < 2) throw new Error('action=compare 至少需要 2 个候选 id（逗号分隔）')
+      const data = await jfetch('/api/novel/branch/compare', { method: 'POST', body: { work_id: workId, ids }, timeout: 30000 })
+      const lines = ['候选比较（只列差异，不替作者打分或排序）：']
+      for (const cmp of data.comparisons || []) {
+        lines.push(`候选 #${cmp.a.id} vs #${cmp.b.id}（差异 ${cmp.differences.length}/9 维：${cmp.differences.join('、') || '无'}）`)
+        for (const d of (cmp.dimensions || []).filter((x) => !x.same)) lines.push(`  ${d.label}：#${cmp.a.id} ${d.a} ↔ #${cmp.b.id} ${d.b}`)
+      }
+      lines.push('未采纳的候选不是本书事实；采纳是作者动作。')
+      return lines.join('\n')
+    }
+    throw new Error('novel_branch: 未处理的动作 ' + action)
+  })
+
+  register('novel_library', [
+    '查证参考资料时调用：检索「共享资料库」——跨作品共享的写作参考资料（方法/素材/范例）。',
+    '资料不是本书事实：引用时明确标注「参考资料」，不得当作本书设定或已发生的情节。',
+    '上下文的「参考资料（非本书事实）」层有预算（每条 300 字）；被截断的条目用本工具查回原文。',
+  ].join('\n'), {
+    action: { type: 'string', description: 'search（默认）按关键词/分类检索；read 按 id 读取资料原文窗口' },
+    query: { type: 'string', description: 'search：关键词（主题词/方法名/素材类型）' },
+    category: { type: 'string', description: 'search：可选，按分类过滤' },
+    id: { type: 'string', description: 'read：资料 id（search 结果里的编号）' },
+    offset: { type: 'number', description: 'read：起始行（缺省 0）' },
+    limit: { type: 'number', description: 'read：取回行数（缺省 30，最大 200）' },
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+  }, async (args) => {
+    const action = String(args.action || 'search')
+    const workId = envId(args, 'work_id')
+    if (action === 'read') {
+      const id = String(args.id || '').trim()
+      if (!id) throw new Error('action=read 需要 id（先用 action=search 拿到编号）')
+      const offset = Math.max(Number(args.offset) || 0, 0)
+      const limit = Math.min(Math.max(Number(args.limit) || 30, 1), 200)
+      const data = await jfetch(`/api/novel/library/doc?id=${encodeURIComponent(id)}&offset=${offset}&limit=${limit}`)
+      const d = data.doc || {}
+      if (!d.id) throw new Error(`资料 #${id} 不存在或已被移除`)
+      return [
+        `【参考资料｜${d.title || d.slug}】（分类：${d.category || '未分类'}｜全长 ${d.total_chars} 字｜本次取 offset=${offset} limit=${limit}）`,
+        String(data.text || '（本窗口无内容）'),
+        '提示：资料只作参考，不是本书事实。',
+      ].join('\n')
+    }
+    if (action !== 'search') throw new Error('novel_library: 未处理的动作 ' + action)
+    const query = String(args.query || '').trim()
+    const parts = []
+    if (workId !== undefined) parts.push(`work_id=${encodeURIComponent(workId)}`)
+    if (query) parts.push(`q=${encodeURIComponent(query)}`)
+    if (args.category) parts.push(`category=${encodeURIComponent(args.category)}`)
+    const data = await jfetch(`/api/novel/library/search${parts.length ? '?' + parts.join('&') : ''}`)
+    const hits = Array.isArray(data.hits) ? data.hits : []
+    if (!hits.length) return '资料库没有命中（未导入相关资料，或关键词太窄；可换更宽的主题词再试）。'
+    const lines = ['参考资料（非本书事实，引用须标注）：']
+    for (const h of hits.slice(0, 10)) {
+      lines.push(`- #${h.id}｜${h.category || '未分类'}｜${h.title || h.slug}${h.score !== undefined ? `（相关度 ${h.score}%）` : ''}${h.abstract ? `\n  ${String(h.abstract).slice(0, 200)}` : ''}`)
+    }
+    lines.push('用 novel_library action=read id=<编号> 读原文（可带 offset/limit 翻页）。')
+    return lines.join('\n')
   })
 }

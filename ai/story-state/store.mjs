@@ -10,7 +10,7 @@
  * 事务纪律：`applyProposal` 全程单事务——快照、状态变更、提案状态三者要么一起成功、
  * 要么一起回滚。半途失败留下"提案已应用但状态没改"的库，比重试更危险。
  */
-import { db } from '../../db.js';
+import { db, withTransaction, inTransaction } from '../../db.js';
 import { normalizeFact } from './canon.mjs';
 import { normalizeTimelineEntry } from './timeline.mjs';
 import { normalizeKnowledge } from './knowledge.mjs';
@@ -28,17 +28,9 @@ function prepare(sql) {
 const now = () => new Date().toISOString();
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-export function transaction(fn) {
-  db.exec('BEGIN');
-  try {
-    const r = fn();
-    db.exec('COMMIT');
-    return r;
-  } catch (e) {
-    try { db.exec('ROLLBACK'); } catch (_) { /* 已经回滚 */ }
-    throw e;
-  }
-}
+// 事务原语与宿主共用（db.js 的深度感知版本）：R03 的原子采纳要求「正文 + 状态提案 + 审批消费」
+// 在同一个事务里；内核的 applyProposal 会嵌在宿主事务内，深度感知用 SAVEPOINT 处理嵌套。
+export const transaction = withTransaction;
 
 // ── 开关（作品级；默认关 → 未开启的作品与 1.0.0 行为逐字节一致）──────────────
 export function isEnabled(workId) {
@@ -193,7 +185,7 @@ export function readContract(chapterId) {
   return {
     ...parsed,
     id: Number(row.id), version: num(row.version), contract_hash: String(row.contract_hash || ''),
-    status: String(row.status || 'active'), created_at: row.created_at,
+    status: String(row.status || 'active'), note: String(row.note || ''), created_at: row.created_at,
   };
 }
 
@@ -314,7 +306,7 @@ export function review(proposalId, { chapterId = null } = {}) {
  * 应用提案：**单事务** = 陈旧检查 → 落快照 → 执行 ops → 标记 applied。
  * 陈旧时把提案标成 `stale` 并**返回而不是抛**——过期是业务事件，不是异常。
  */
-export function applyProposal(proposalId) {
+export function applyProposal(proposalId, { onBeforeCommit = null } = {}) {
   const row = prepare('SELECT * FROM story_state_proposals WHERE id = ?').get(Number(proposalId));
   if (!row) return { ok: false, decision: 'not_found', reason: `提案 #${proposalId} 不存在` };
   const p = publicProposal(row);
@@ -335,6 +327,9 @@ export function applyProposal(proposalId) {
       const executed = executeOps(verdict.plan.ops, { workId, chapterId: p.chapter_id, chapterIndex: chapterIndexOf(p.chapter_id) });
       prepare('UPDATE story_state_proposals SET state = ?, applied_at = ? WHERE id = ?').run('applied', now(), p.id);
       const after = readState(workId, { chapterId: p.chapter_id });
+      // 宿主钩子（R02.2/R03）：在**同一事务内**做最后一道校验（如消费作者审批）。
+      // 抛错 = 整个事务回滚——审批已消费但状态没写、或状态写了审批没消费，都不允许出现。
+      if (typeof onBeforeCommit === 'function') onBeforeCommit({ workId, chapterId: p.chapter_id, proposalId: p.id, decision: 'applied' });
       return {
         ok: true, decision: 'applied', proposal_id: p.id, work_id: workId, snapshot_id: snapId,
         ops: executed.length, state_hash_before: verdict.stale.base, state_hash_after: stateHashOf(after),
@@ -345,6 +340,68 @@ export function applyProposal(proposalId) {
   }
   if (result.ok !== true && result.decision === 'stale') {
     prepare('UPDATE story_state_proposals SET state = ? WHERE id = ? AND state = ?').run('stale', p.id, 'pending');
+  }
+  return result;
+}
+
+/** 批量应用返回 stale 时，把整批标 stale（与单条应用保持同一可见口径）。 */
+export function markProposalsStale(ids = []) {
+  let n = 0;
+  for (const id of (Array.isArray(ids) ? ids : []).map(Number).filter((x) => x > 0)) {
+    n += prepare('UPDATE story_state_proposals SET state = ? WHERE id = ? AND state = ?').run('stale', id, 'pending').changes;
+  }
+  return n;
+}
+
+/**
+ * 批量原子应用（R12：以「确认单元」为原子边界）。
+ *
+ * 为什么不能简单地对每条调 applyProposal：逐条应用时，第一条改了状态，后面每一条的
+ * 陈旧检查都会失败（判成 stale）——但同一批候选本来就来自**同一个基线快照**，
+ * 它们应当**一起**生效。这里在一个事务里：只做一次基线核对（全批共享同一当前状态）、
+ * 落一个快照、顺序执行全批 ops、一次性标记 applied；任一失败整体回滚，不留半套正式状态。
+ *
+ * 基线不一致（不是同一次确认单元）的批量请求直接拒绝，而不是猜哪条该用哪份基线。
+ */
+export function applyProposalsBatch(proposalIds, { onBeforeCommit = null } = {}) {
+  const ids = (Array.isArray(proposalIds) ? proposalIds : []).map(Number).filter((n) => n > 0);
+  if (!ids.length) return { ok: false, decision: 'not_found', reason: '没有可应用的提案' };
+  const rows = ids.map((id) => prepare('SELECT * FROM story_state_proposals WHERE id = ?').get(id)).filter(Boolean).map(publicProposal);
+  if (rows.length !== ids.length) return { ok: false, decision: 'not_found', reason: '部分提案不存在（批量应用要求全部存在）' };
+  const workId = rows[0].work_id;
+  if (!rows.every((p) => p.work_id === workId)) return { ok: false, decision: 'mixed_work', reason: '批量应用的提案必须属于同一作品' };
+  const notPending = rows.filter((p) => p.state !== 'pending');
+  if (notPending.length) return { ok: false, decision: notPending[0].state, work_id: workId, reason: `提案 #${notPending[0].id} 已经是 ${notPending[0].state} 状态，不能重复应用` };
+  const hashes = new Set(rows.map((p) => String(p.base_state_hash || '')));
+  if (hashes.size !== 1 || !String(rows[0].base_state_hash || '')) {
+    return { ok: false, decision: 'mixed_baseline', work_id: workId, reason: '这批提案的基线不一致（不是同一次确认单元）：请分批确认后再应用' };
+  }
+  let result;
+  try {
+    result = transaction(() => {
+      const chapterId = rows[0].chapter_id ?? null;
+      const state = readState(workId, { chapterId });
+      const base = String(rows[0].base_state_hash || '');
+      if (base !== stateHashOf(state)) {
+        return { ok: false, decision: 'stale', work_id: workId, reason: '当前状态与这批提案的基线不一致：期间有其它变更写入，应用会覆盖它们' };
+      }
+      const plans = [];
+      for (const p of rows) {
+        const verdict = planApply({ ...p, payload_json: JSON.stringify(p.payload) }, { now: now(), chapterIndex: chapterIndexOf(p.chapter_id || chapterId) });
+        if (!verdict.ok) return { ok: false, decision: 'invalid', work_id: workId, reason: `提案 #${p.id} 无法执行：${verdict.reason}` };
+        plans.push({ p, ops: verdict.ops });
+      }
+      const kinds = [...new Set(rows.map((p) => p.kind))].join('/');
+      const snapId = createSnapshot(workId, { reason: `批量应用 ${rows.length} 条提案（${kinds}）`, label: '', chapterId }).id;
+      let executed = 0;
+      for (const item of plans) executed += executeOps(item.ops, { workId, chapterId, chapterIndex: chapterIndexOf(chapterId) }).length;
+      for (const p of rows) prepare('UPDATE story_state_proposals SET state = ?, applied_at = ? WHERE id = ?').run('applied', now(), p.id);
+      if (typeof onBeforeCommit === 'function') onBeforeCommit({ workId, chapterId, proposalIds: rows.map((p) => p.id), decision: 'applied' });
+      const after = readState(workId, { chapterId });
+      return { ok: true, decision: 'applied', work_id: workId, snapshot_id: snapId, proposal_ids: rows.map((p) => p.id), ops: executed, state_hash_before: base, state_hash_after: stateHashOf(after) };
+    });
+  } catch (e) {
+    return { ok: false, decision: 'error', work_id: workId, reason: `批量应用失败（已回滚）：${e.message}` };
   }
   return result;
 }
@@ -362,7 +419,7 @@ export function rejectProposal(proposalId, note = '') {
  * 语义见 proposal.mjs 的 `planRollback`：**不删除任何行**——
  * 快照之后新增的标记 superseded，被改过的改回快照取值。
  */
-export function rollbackToSnapshot(snapshotId) {
+export function rollbackToSnapshot(snapshotId, { onBeforeCommit = null } = {}) {
   const snap = getSnapshot(snapshotId);
   if (!snap) return { ok: false, reason: `快照 #${snapshotId} 不存在` };
   const before = parseSnapshot(snap);
@@ -374,6 +431,7 @@ export function rollbackToSnapshot(snapshotId) {
       const safety = createSnapshot(workId, { reason: `回滚前自动快照（目标 #${snap.id}）`, label: 'pre-rollback', chapterId: snap.chapter_id });
       const plan = planRollback(before, current);
       const executed = executeOps(plan.ops, { workId, chapterId: snap.chapter_id, chapterIndex: chapterIndexOf(snap.chapter_id) });
+      if (typeof onBeforeCommit === 'function') onBeforeCommit({ workId, snapshotId: Number(snap.id), ops: executed.length });
       return { ok: true, work_id: workId, snapshot_id: Number(snap.id), safety_snapshot_id: safety.id, ops: executed.length, note: plan.note };
     });
     return out;

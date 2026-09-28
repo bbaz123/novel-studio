@@ -1,7 +1,7 @@
 {
   "name": "novel-writing",
-  "version": "0.10.0",
-  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核。0.10.0 起在 0.9.0 的 P0–P6 内核之上新增「确定性故事状态内核」——正典事实 / 时间线 / 角色知识边界 / 章节契约 / 写前预检 / 写后校验 / 提案事务（陈旧检查 + 快照 + 回滚）/ 实体与伏笔派生 / 语义上下文元数据；全部为**门控**能力，作品开关默认关，未开启的作品生成路径与之前逐字节一致。0.9.0 起按 P0–P6 重构后的内核对齐——标准 dsh bundle（junction 引用工坊仓库，无副本）、专用 profile `novel` + 专用 DSH_HOME，并把内核的硬规则接进模型侧：**模型自压缩也走同一零损失护栏**（出场角色一个都不许丢，拒绝时返回缺失名单与 delta 逃生口）、语义召回缺口显式占位、上下文预算与查回路径（I1–I7）写进人设。（内核能力：上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化。）",
+  "version": "0.15.0",
+  "description": "Novel Studio 内置创作插件：dsh 侧 novel_* 工具集 + 服务端创作内核。0.10.0 起在 0.9.0 的 P0–P6 内核之上新增「确定性故事状态内核」——正典事实 / 时间线 / 角色知识边界 / 章节契约 / 写前预检 / 写后校验 / 提案事务（陈旧检查 + 快照 + 回滚）/ 实体与伏笔派生 / 语义上下文元数据；全部为**门控**能力，作品开关默认关，未开启的作品生成路径与之前逐字节一致。0.9.0 起按 P0–P6 重构后的内核对齐——标准 dsh bundle（junction 引用工坊仓库，无副本）、专用 profile `novel` + 专用 DSH_HOME，并把内核的硬规则接进模型侧：**模型自压缩也走同一零损失护栏**（出场角色一个都不许丢，拒绝时返回缺失名单与 delta 逃生口）、语义召回缺口显式占位、上下文预算与查回路径（I1–I7）写进人设。（内核能力：上下文装配/章节蓝图/目标字数/审稿修稿闭环/伏笔账本/反 AI 腔红线（豁免词）/正向风格契约/事件账本/长期记忆版本化/提案确认/批量生成/导入导出/评分制出场角色与别名命中/上下文预览与强制带入/角色状态闭环/上下文缓存与性能优化。0.11.0 起新增作者样文 / 文风档案 / 三级作者意图（门控上下文层 `author_intent`，默认关闭）；0.12.0 起新增披露派生视图（只读端点：按章时点重算作者真相 / 角色信念分层，无新表）；0.13.0 起新增剧情分支沙盘（2—5 个候选 + 依赖基线 hash + stale 复核；`novel_branch` 只提候选与读回，采纳/丢弃/丢弃属作者动作，模型侧 403）；0.14.0 起新增导入安全边界（TXT / Markdown / EPUB 三种既有导入格式全部保留：文件大小 / 严格编码 / 绝对路径与 `..` 穿越 / symlink / 压缩比 / 条目数与深度单点校验，畸形与超限安全失败、不留半导入状态）与可选的「分析并重建创作状态」流程（分批规划 + 逐批基线 + 只恢复基线一致的完成批次 + 证据必须能在原文定位 + 抽取先落候选 + 作者确认后按批短事务原子应用；宿主不做模型调用，模型可以规划与记录抽取但不能确认）。0.15.0 起新增共享资料库（跨作品写作参考资料）：门控上下文层 library（默认关闭，作品开关控制）、导入链（dry-run 先看再导）与模型侧 novel_library 查回；资料永不 canon——层标题与条目标注一律「参考资料（非本书事实）」，共享资料根与作品子树物理隔离并被 rebuild 范围证明显式排除。）",
   "integration": "builtin",
   "host": "novel-studio",
   "dshPlugin": {
@@ -111,8 +111,20 @@
       "description": "故事状态快照与回滚（回滚不删除任何行，只改回取值并把新增标记为 superseded）。"
     },
     {
+      "name": "novel_approvals",
+      "description": "列出作者为当前作品创建的一次性审批（只读）：模型侧写入必须先由作者在界面确认生成审批，再把 approval id 传给对应工具。"
+    },
+    {
       "name": "novel_write_pipeline",
       "description": "写作编排层（推荐主入口）：一次调用完成状态读取 → 写前预检 → 唯一上下文 → 写作简报；正文仍由模型创作。"
+    },
+    {
+      "name": "novel_branch",
+      "description": "剧情分支沙盘：开出 2—5 个**不同**候选方向（核心行动/冲突/人物选择/剧情节拍/后果/关系伏笔/风险/必要铺垫/与作者意图关系）并读回列表、单条视图与九维比较；候选只是提案（带依赖基线 hash 与来源），不写正典。采纳/丢弃/取消是作者动作，模型侧一律 403（本工具不提供这些动作）。"
+    },
+    {
+      "name": "novel_library",
+      "description": "检索共享资料库（跨作品写作参考资料）并按 id 读回原文窗口；资料不是本书事实，引用须标注「参考资料」。被上下文参考资料层预算截断时用本工具查回。"
     }
   ],
   "engineEndpoints": [
@@ -141,6 +153,13 @@
     "POST /api/story_memory/rollback",
     "POST /api/logs",
     "POST /api/import",
+    "GET /api/import/guard",
+    "POST /api/import/rebuild/plan",
+    "GET /api/import/rebuild/status?work_id=&run_id=",
+    "POST /api/import/rebuild/record",
+    "POST /api/import/rebuild/confirm",
+    "POST /api/import/rebuild/cancel",
+    "GET /api/novel/context/contributions?work_id=&chapter_id=",
     "GET /api/export/txt|md?work_id=|chapter_id=",
     "GET /api/novel/story_state?work_id=",
     "PUT /api/novel/story_state",
@@ -159,6 +178,30 @@
     "GET /api/novel/state/snapshots?work_id=",
     "POST /api/novel/state/snapshot",
     "POST /api/novel/state/rollback",
-    "GET /api/novel/state/facts?work_id=&chapter_id="
+    "GET/POST /api/novel/approvals",
+    "GET /api/novel/state/facts?work_id=&chapter_id=",
+    "GET /api/novel/state/disclosure?work_id=&chapter_id=&character_id=&scene=",
+    "GET /api/novel/editing",
+    "GET /api/novel/editing/rules?task=",
+    "POST /api/novel/editing/scan",
+    "GET/POST/PUT/DELETE /api/novel/style/samples?work_id=&id=",
+    "GET/POST /api/novel/style/profile?work_id=",
+    "GET/PUT/DELETE /api/novel/author_intent?work_id=&chapter_id=&tier=",
+    "GET /api/novel/branch/sandboxes?work_id=&chapter_id=",
+    "POST /api/novel/branch/sandboxes",
+    "GET /api/novel/branch/sandboxes/:id",
+    "POST /api/novel/branch/sandboxes/:id/cancel|reopen",
+    "GET /api/novel/branch/candidates?work_id=&chapter_id=&sandbox_id=&status=",
+    "POST /api/novel/branch/candidates",
+    "GET /api/novel/branch/candidates/:id",
+    "POST /api/novel/branch/candidates/:id/adopt|discard",
+    "POST /api/novel/branch/compare",
+    "GET /api/novel/library/status?work_id=",
+    "GET /api/novel/library/search?work_id=&q=&category=&limit=",
+    "GET /api/novel/library/doc?id=&offset=&limit=",
+    "PUT /api/novel/library/enabled",
+    "POST /api/novel/library/import",
+    "POST /api/novel/library/import/confirm",
+    "DELETE /api/novel/library/doc/:id"
   ]
 }

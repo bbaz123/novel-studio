@@ -108,6 +108,8 @@ const state = {
   pendingAIInstruction: null,
   pendingAIQuestion: null,
   pendingAIFinal: null,
+  // R03：结果弹窗里勾选的提案必须在**关弹窗前**固化（旧实现关窗后才读 DOM → 永远读到空集合）
+  pendingProposalSelection: null,
   pendingGenResult: null,
   genSelected: [],
   genSubmit: null,
@@ -115,6 +117,23 @@ const state = {
   pipelineStopped: false,
   pipelineResume: null,
   aiContext: null,
+  editRules: null, // R07：编辑规则目录与作者选择（GET /novel/editing）
+  authorStyle: null, // R09：作者样文 / 文风档案 / 三级意图（GET /novel/style/* + /novel/author_intent）
+  storyState: null, // R10：故事状态开关/总览 + 按当前章的披露派生视图
+  branch: null, // R11：剧情分支沙盘（沙盘列表 + 本章候选；stale 由服务端现算）
+  rebuild: null, // R12：导入后重建（run + 批次状态；由服务端现算 stale）
+  rebuildLoaded: false,
+  rebuildRunner: null, // 离线测试/探针注入点：生产环境不设置（设置后不会真实调用模型）
+  // P4：共享资料库（跨作品写作参考资料）——列表 / 检索 / 导入计划 / 读原文 / 开关
+  library: null,
+  libraryLoaded: false,
+  libraryKey: null, // 资料状态缓存对应的 work_id（开关按作品：换作品 / 退回作品列表即失效）
+  libraryDir: '',
+  libraryCategory: '',
+  librarySearch: null, // { q, mode, hits, total }；q 为空表示列表模式
+  libraryDoc: null, // { doc, text, offset, limit }
+  libraryPlan: null, // dry-run 计划；改目录或确认导入后作废
+  libraryImportResult: null,
   termsCache: new Map(),
   charsCache: new Map(),
   // 生成稿草稿 / 上次审稿 / 未收尾长任务：按章节缓存，供编辑器顶部「取回」条使用。
@@ -138,7 +157,7 @@ function goView(view) {
     state.view = 'settings';
   } else if (AI_VIEWS.includes(view)) {
     if (!state.workId) {
-      // 初始页：仅 AI 创作 / AI 设置 两个顶层视图可用（SillyTavern 依赖作品数据）
+      // 初始页：仅 AI 创作 / AI 设置 两个顶层视图可用（创作上下文页依赖作品数据，必须在作品内使用）
       state.view = HOME_AI_VIEWS.includes(view) ? view : 'ai-create';
     } else if (view === 'ai-create') {
       // 作品内的 AI创造板块已不再包含 AI 创作，回退到 AI 设置
@@ -402,13 +421,17 @@ function toast(message, type = '') {
 // 为什么集中成一张表：同一段解释往往要在"标题旁的小字""悬停气泡""设置卡说明"三处出现，
 // 抄三份必然分叉（P0–P6 复盘里 F8：常量被抄三份，改一处漏两处，且不会报错）。
 // 用法：
-//   helpDot('sillytavern') → 标题旁的小问号，鼠标悬停/键盘聚焦显示解释
+//   helpDot('creation_context') → 标题旁的小问号，鼠标悬停/键盘聚焦显示解释
 //   fieldHelp('chapter_note') → 字段下方的一行小字（不悬停也能看到）
 //   HELP_TEXT[key].body → 需要更完整解释的地方直接取用
 const HELP_TEXT = {
+  // R06：用户面命名统一为「创作上下文」。键名 `sillytavern` 是历史名，保留为兼容别名
+  // （旧会话、旧帮助锚点、旧文档里的 helpDot('sillytavern') 不失效），语义见 `creation_context`。
   sillytavern: {
-    title: 'SillyTavern 设置',
-    body: 'SillyTavern 是另一个开源 AI 聊天/角色扮演前端，本项目借用了它的一套做法：把角色的"人设、说话口吻示例、系统提示"和"世界观条目"当成可复用的素材喂给模型。这里的设置只影响 AI 写作时喂给模型的角色与世界观素材，不影响你的正文和作品数据。'
+    title: '创作上下文',
+    body: '这里管理喂给 AI 的角色卡、世界观词条与作者注（角色人设、说话口吻示例、系统提示、世界观条目）。'
+      + '这套"把角色与世界观素材组织成可复用上下文"的做法，设计上借鉴了开源项目 SillyTavern——那是历史叫法，本页与 SillyTavern 本体无关，也不需要安装它（来源与许可见首页「借鉴与致谢」）。'
+      + '设置只影响 AI 写作时喂给模型的素材，不影响你的正文和作品数据。'
   },
   chapter_note: {
     title: '章节作者注',
@@ -417,6 +440,46 @@ const HELP_TEXT = {
   work_note: {
     title: '作品作者注',
     body: '整本书通用的写作指示（例如"全程第一人称、不用网络流行语"）。每一章的 AI 写作都会带上它。'
+  },
+  author_style: {
+    title: '作者样文与文风档案',
+    body: '样文是你自己的（或你有权使用的）文字片段，用来让 AI 贴着你的笔法走：句长与变化、对白与旁白、标点、段落、修辞、情绪表现、开场与段尾习惯都会做确定性计数，并写明计算口径（不是模型猜的）。'
+      + '样文与「三级作者意图」都是独立数据来源：不会变成本书的人物、地点、事件或正典事实，也不会改变 AI 能做什么；它们只在写作为你所用时按预算进入请求。'
+      + '改过样文后档案会标"已过期"，重新分析即可；本章意图可以覆盖较泛偏好，但与你设为长期硬约束的要求冲突时会在这里提示你裁决，不会自动取舍。'
+  },
+  disclosure: {
+    title: '故事状态与读者披露',
+    body: '按"当前章"把作品里的信息分三档看：作者真相（只有你知道，读者还没读到）、读者已披露（已经写在正文里、且生效时点已到）、各角色掌握（谁在什么时候知道了什么）。'
+      + '判断依据是确定性的：事实挂在哪一章、那一章有没有写、effective_from/effective_to 的窗口是否包含当前章、角色知识的"学到于第几章"。'
+      + '作者知道不等于角色知道：写某个角色的行动理由时只能用他"已知"的条目；没有任何记录的条目是"未定义"，既不算知道也不算不知道。'
+      + '视图每次按当前数据重算（不缓存）：章节重排、回滚、改设定或删事实后，再看就是新的结论。',
+  },
+  import_rebuild: {
+    title: '导入后重建创作状态',
+    body: '把已导入的作品**分批**重新读一遍，抽出人物/别名/关系/地点设定/时间线/事件/伏笔/角色状态/披露知识，形成候选提案。'
+      + '每个批次都记录基线指纹（章节正文 hash、抽取器与 schema 版本、模型路由与思考档位、结果 hash）：正文或配置一变，对应批次立刻标「已过期」，旧结果只能读、不能复用——恢复时也不会重跑已完成且基线一致的批次。'
+      + '整本书绝不塞进一次请求：批次有章数与字符上限，逐批抽取、逐批记录。'
+      + '抽取项必须带原文证据：quote 要能在该章正文里原样找到，定位不到就整批拒绝（防止编造），修正后有限重试。'
+      + '候选默认**不写**任何正式状态；作者点「确认应用」才在一个短事务里整批原子生效（失败整体回滚），未确认前不进正文、不进事实/事件/角色知识。'
+      + '模型侧不能确认（带 X-Novel-Agent 的请求返回 403）。',
+  },
+  branch_sandbox: {
+    title: '剧情分支沙盘',
+    body: '写不下去时，先要"几条不同的路"，而不是让模型替你决定走哪条。沙盘固定以具体章节为时点，给出 2—5 个候选方向：核心行动、冲突选择、人物选择、剧情节拍、可能后果、关系/伏笔影响、风险、必要铺垫、与作者意图的关系。'
+      + '候选之间必须有实质差异：只改措辞、换同义表达不算多个候选（宿主会按核心行动判重并整批拒绝）。'
+      + '角色边界按"当前章该角色能知道什么"判定：人物选择的理由要用该角色可行动的事实 id 或已知键，新角色要显式声明；作者真相与读者披露都不等于角色知道——不能因为模型看见了秘密就让角色提前知道。'
+      + '后果分 certainty：established 才是已发生，planned/possible/uncertain 是计划与推测，未来计划不得冒充已发生。'
+      + '候选只是提案：未采纳前不进正文、不进正典事实/事件/角色知识/上下文层，也不触发记忆同步；进入会话历史不等于获准成为本书事实。'
+      + '沙盘会记住形成候选时的依赖基线（状态/正文/契约/作者意图/披露指纹）：任一变化即标"已过期"，旧候选仍可阅读，但重新采纳必须先复核或重新生成。'
+      + '采纳（作者动作）只写章节蓝图与契约建议——正文、正典事实、角色状态一律不动；也可以丢弃候选、取消沙盘或重启恢复到未完成槽位。',
+  },
+  library: {
+    title: '共享资料库（跨作品参考资料）',
+    body: '跨作品共用的写作参考资料（方法 / 素材 / 范例）：不止一本书能用，写任何作品时都可被检索到。'
+      + '导入分两步：先「扫描预览」列出要新增 / 更新 / 跳过什么（这一步绝不写入），你确认后才写进共享资料根，由记忆库本地向量化（写入后约 30 秒内可被召回）。'
+      + '只读你显式指定的目录：白名单 .md / .txt、单文件上限、单批上限、不跟随符号链接、严格 UTF-8（不猜编码）。'
+      + '资料不是本书事实：它只以「参考资料（非本书事实）」层进入写作上下文（top-4、单条 300 字、独立预算），永不进入事实 / 事件 / 角色知识，也不会自动改写正文。'
+      + '资料层按作品开关（默认关闭）；删除默认只「标记缺失」，你确认后才同时删记忆库文件与登记行。开关 / 导入 / 删除都是作者动作，模型侧一律 403。'
   },
   plotline: {
     title: '剧情线',
@@ -485,6 +548,9 @@ const HELP_TEXT = {
 };
 
 // 标题旁的小问号：悬停或键盘聚焦（Tab 到）都能看到解释。
+// R06 兼容别名：内部键 `sillytavern` 是历史名，语义上它就是「创作上下文」。
+HELP_TEXT.creation_context = HELP_TEXT.sillytavern;
+
 function helpDot(key) {
   const item = HELP_TEXT[key];
   if (!item) return '';
@@ -755,6 +821,7 @@ async function loadWorkData(force = false) {
     characters, relations, plotlineCharacters, worldEntries, apiConfigs,
     loadedWorkId: workId
   });
+  state.libraryLoaded = false; // P4：资料层的「按作品开关」随作品切换失效，下次进资料库页时重新取
   chapterWordCountCache.clear(); // F-29：章节全量重建，字数缓存失效
   state.terms.forEach((t) => state.termsCache.set(t.id, t));
   state.characters.forEach((c) => state.charsCache.set(c.id, c));
@@ -765,11 +832,11 @@ async function loadWorkData(force = false) {
 function updateNavVisibility() {
   $$('#sidebar-nav button[data-view]').forEach((b) => {
     const v = b.dataset.view;
-    if (v === 'works' || v === 'ai-create') {
-      // 「我的作品」与「✨ AI 创作」只在未进入作品时显示
+    if (v === 'works' || v === 'ai-create' || v === 'thanks') {
+      // 「我的作品」「✨ AI 创作」「🙏 借鉴与致谢」只在未进入作品时显示
       b.classList.toggle('hidden', !!state.workId);
-    } else if (v === 'logs' || v === 'trace') {
-      // 日志页与运行追踪页在作品内外都可访问（调试工具不属于某个作品）
+    } else if (v === 'logs' || v === 'trace' || v === 'library') {
+      // 日志页 / 运行追踪页 / 资料库在作品内外都可访问：调试工具与跨作品资料都不属于某个作品
       b.classList.remove('hidden');
     } else {
       b.classList.toggle('hidden', !state.workId);
@@ -815,6 +882,20 @@ async function renderView() {
       setTopbarTitle('🐞 运行追踪');
       return renderTrace(content);
     }
+    // R06：借鉴与致谢是首页独占视图（进入作品后入口隐藏，见 updateNavVisibility）
+    if (state.view === 'thanks') {
+      setActiveNav();
+      updateSidebarTitle();
+      setTopbarTitle('🙏 借鉴与致谢');
+      return renderThanks(content);
+    }
+    // P4：资料库是跨作品视图（作品内外都可用；每个作品的开关在页内单独操作）
+    if (state.view === 'library') {
+      setActiveNav();
+      updateSidebarTitle();
+      setTopbarTitle('📎 资料库');
+      return renderLibrary(content);
+    }
     // 初始页：我的作品（works）与首页 AI 视图（ai-create / ai）可切换
     if (HOME_AI_VIEWS.includes(state.view)) {
       setActiveNav();
@@ -851,6 +932,7 @@ async function renderView() {
         return renderAIBoard(content, state.aiTab);
       case 'writing': return renderWriting(content);
       case 'overview': return renderOverview(content);
+      case 'library': return renderLibrary(content);
       case 'works': return renderWorks();
       case 'logs': return renderLogs(content);
       case 'trace': return renderTrace(content);
@@ -885,6 +967,10 @@ function persistSession() {
       currentCharacterId: state.currentCharacterId
     }));
   } catch (_) { /* 存储不可用时静默 */ }
+  // R06：未进入作品时也记住首页视图（我的作品 / AI 创作 / 借鉴与致谢），刷新后回到原处。
+  if (!state.workId) {
+    try { sessionStorage.setItem('ns_home_view', state.view || 'works'); } catch (_) { /* 存储不可用时静默 */ }
+  }
 }
 
 function restoreSession() {
@@ -898,7 +984,7 @@ function restoreSession() {
     const savedView = saved.view || 'overview';
     const tabSettings = SETTINGS_VIEWS.includes(saved.settingsTab) ? saved.settingsTab : 'terms';
     const tabAi = ['ai', 'st'].includes(saved.aiTab) ? saved.aiTab : 'ai';
-    if (HOME_AI_VIEWS.includes(savedView) || savedView === 'works') {
+    if (HOME_AI_VIEWS.includes(savedView) || savedView === 'works' || savedView === 'thanks') {
       state.view = 'overview';
       state.settingsTab = tabSettings;
       state.aiTab = tabAi;
@@ -2093,7 +2179,154 @@ async function renderWorks() {
             <button class="btn small danger" data-action="demo-remove">删除示例数据</button>`
           : `<button class="btn" data-action="demo-install">✨ 一键导入示例小说《雾都缝匠》</button>`}
       </div>
+    </div>
+    <div class="card mt-12">
+      <div class="card-head">
+        <span class="card-title">🙏 借鉴与致谢</span>
+        <span class="muted" style="font-size:12px">实际运行组件与设计参考的来源、作用、许可核验记录</span>
+      </div>
+      <div class="muted">本工坊实际运行的开源组件（DeepSeek Harness / OpenViking / 本地向量模型）、设计 / 方法参考来源，以及确实随仓库分发的资产。只写真实关系，不显示会过期的人气计数，也不暗示官方合作或背书。</div>
+      <div style="margin-top:10px"><button class="btn small secondary" data-action="go-view" data-view="thanks">查看详情</button></div>
     </div>`;
+}
+
+// ---------- 首页：借鉴与致谢（R06） ----------
+// 事实与许可核验记录同步维护在 `THIRD-PARTY-NOTICES.md` 与本数组（核验日期 2026-09-27，上游 commit 见卡片）。
+// 写卡纪律（任务书 §9/§16）：设计参考就写“设计参考”，没引入代码就不暗示“已集成”，也不声称“完全不含某项目源码”
+// （只写本轮实际做过的来源检索范围）；不显示随时过期的 stars；不暗示官方合作/背书；外链一律 noopener noreferrer。
+const ATTRIBUTIONS = [
+  {
+    group: '实际运行组件（工坊真的在用）',
+    note: '这些组件不随本仓库分发，安装与使用遵循它们各自的许可证；版本以你本机实际安装/连接为准。',
+    cards: [
+      {
+        name: 'DeepSeek Harness（dsh）',
+        role: '创作内核宿主：需要 Agent / 工具循环的任务由它执行',
+        here: '「AI 设置 → 创作内核」中，需要 Agent / Tool Loop 的任务通过 DSH 执行；原有轻量直连路径继续由工坊现有 AI Client 执行，具体路由由现有 AI 策略决定。小说 bundle 通过 DSH/Cordis 原生插件机制注册人设、规则与工具',
+        status: '实际运行；本机核验版本 0.1.7-rc.1（上游 master 当前 0.1.7-rc.2，实际以本机安装为准）',
+        license: 'MIT · deepseek-ai/deepseek-harness · 本机版本 0.1.7-rc.1；第三方依赖另见其上游 THIRD_PARTY_NOTICES',
+        url: 'https://github.com/deepseek-ai/deepseek-harness',
+      },
+      {
+        name: 'OpenViking',
+        role: '语义记忆与检索后端：作品派生资源、语义召回与 DSH 会话记忆',
+        here: '宿主将已确认作品资料通过现有同步链投影为 OpenViking 资源，并把限定范围的语义召回结果送入上下文；DSH 侧另通过实际启用的 OpenViking memory bundle 管理会话记忆。正式正文、作者维护的长期记忆与 Canon Story State 仍以工坊宿主数据为准',
+        status: '实际运行组件；可用性与作品/会话隔离以工坊自检和运行证据为准',
+        license: '以本机实际安装版本为准；当前上游主项目为 AGPL-3.0（volcengine/OpenViking，默认分支 main，核验 2026-09-27），部分子组件许可证不同',
+        url: 'https://github.com/volcengine/OpenViking',
+      },
+      {
+        name: '本地向量模型 bge-small-zh-v1.5（GGUF）',
+        role: '中文向量化（512 维），供记忆库检索使用',
+        here: '随仓库分发在 vendor/ 目录，由记忆库侧的 llama.cpp 加载',
+        status: '随本仓库原样分发（字节数与 SHA256 见 THIRD-PARTY-NOTICES.md §1）',
+        license: 'MIT（BAAI/bge-small-zh-v1.5 模型卡）；实际随仓库分发的是 CompendiumLabs 的 GGUF 转换件——原模型与转换件两处来源均在 THIRD-PARTY-NOTICES.md §1 记录',
+      },
+    ],
+  },
+  {
+    group: '设计 / 方法参考（借用思路；本轮来源审计未发现直接引入其源码）',
+    note: '以下项目是本轮功能需求与设计的方法来源。工坊内的对应实现为本项目自行编写；这些项目多为 GPL/AGPL，按任务书约定不复制其实现或大段文本。',
+    cards: [
+      {
+        name: 'SillyTavern',
+        role: '角色卡 / 世界书 / 作者注的组织方式',
+        here: '「创作上下文」页：角色卡（人设、对话示例、系统提示）、世界观词条、作品与章节作者注',
+        status: '设计参考（本轮来源审计未发现直接引入其源码；该页与 SillyTavern 本体无关，无需安装它）',
+        license: 'AGPL-3.0 · 核验 2026-09-27 · SillyTavern/SillyTavern @ 06bde939fb1e（默认分支 release）· LICENSE',
+        url: 'https://github.com/SillyTavern/SillyTavern',
+      },
+      {
+        name: 'Humanizer',
+        role: '表达问题识别、保留原意、作者样文、修改后复查',
+        here: 'R07 三档编辑（轻度润色 / 去 AI 腔 / 深度修稿）的编辑保护规则与「七项能力」规则包',
+        status: '设计参考（规则文本为本项目自行撰写，非上游摘抄）',
+        license: 'MIT · 核验 2026-09-27 · blader/humanizer @ 9862685f575c（默认分支 main）· LICENSE',
+        url: 'https://github.com/blader/humanizer',
+      },
+      {
+        name: 'InkOS',
+        role: '语义审稿、三级意图、未来候选、协同提交',
+        here: 'R07 结构化审稿建议、R09 三级作者意图、R11 分支沙盘与「采用只形成候选」纪律',
+        status: '设计参考（本轮来源审计未发现直接引入其源码）',
+        license: 'AGPL-3.0-only · 核验 2026-09-27 · Narcooo/inkos @ 8fc2ae57080b（默认分支 master；该仓库 package 声明 AGPL-3.0-only）· LICENSE',
+        url: 'https://github.com/Narcooo/inkos',
+      },
+      {
+        name: 'webnovel-writer v8',
+        role: '候选 / 正式内容边界、流程纪律、可恢复投影',
+        here: 'R03 整次采纳原子事务与投影 outbox、R04 replay/rebuild、R08 分片候选与覆盖清单',
+        status: '设计参考（本轮来源审计未发现直接引入其源码）',
+        license: 'GPL-3.0 · 核验 2026-09-27 · lingfengQAQ/webnovel-writer v8 @ b226c87b36743492f1ba2ec38bef66568259a903 · LICENSE',
+        url: 'https://github.com/lingfengQAQ/webnovel-writer',
+      },
+      {
+        name: 'Oh Story',
+        role: '按时点的知识披露、有限上下文、小说导入分析、题材方法',
+        here: 'R10 读者已披露派生视图、R12 导入后的分批分析与确认后原子应用、R07 题材档',
+        status: '设计参考（本轮来源审计未发现直接引入其源码）',
+        license: 'MIT · 核验 2026-09-27 · zenstory-ai/oh-story-claudecode @ 4a50d5583590（默认分支 main）· LICENSE',
+        url: 'https://github.com/zenstory-ai/oh-story-claudecode',
+      },
+    ],
+  },
+  {
+    group: '实际引入的代码 / 规则 / 资产（真的在本仓库里）',
+    note: '这一组只列确实随本仓库分发或由本项目编写的内容；没有引入的东西不会写在这里。',
+    cards: [
+      {
+        name: '编辑规则与能力规则文本（R07）',
+        role: '规则 / 提示词资产',
+        here: '编辑保护规则、三档编辑、七项能力与题材档（本项目自行撰写；由宿主设置与 DSH bundle 一起消费）',
+        status: '按本轮来源审计，未发现直接复制上述参考项目源码或大段规则文本；R07 规则由本项目结合自身架构编写',
+        license: '本项目 MIT',
+      },
+      {
+        name: '向量模型文件 vendor/models/bge-…-f16.gguf',
+        role: '检索用向量模型（唯一随仓库分发的第三方二进制资产）',
+        here: '记忆库检索；校验命令 node scripts/fetch-embedding-model.mjs --verify-only',
+        status: '原样分发，字节与 SHA256 记录在 THIRD-PARTY-NOTICES.md §1',
+        license: 'MIT（模型卡）；转换件来源 CompendiumLabs/bge-small-zh-v1.5-gguf',
+      },
+      {
+        name: '上游源码检索结论',
+        role: '来源核验记录（不是资产）',
+        here: '本轮以仓库全文检索（SillyTavern / humanizer / inkos / webnovel / oh-story 等关键词）未发现上述参考项目的源码文件或大段文本；关键词检索是辅助证据，不能绝对排除改名 / 去项目名 / 翻译 / 拆分文件后的复制',
+        status: '结论仅覆盖本轮检索范围与检索日期；如需更强结论需做逐文件来源比对；后续若引入上游规则文本，必须在此更新许可',
+        license: '—',
+      },
+    ],
+  },
+];
+
+function renderThanks(content) {
+  const card = (c) => `
+    <div class="card">
+      <div class="card-title">${esc(c.name)}</div>
+      <div class="desc">${esc(c.role)}</div>
+      <div class="muted" style="font-size:12px;margin-top:8px">工坊中的对应实现：${esc(c.here)}</div>
+      <div class="muted" style="font-size:12px;margin-top:6px">状态：${esc(c.status)}</div>
+      <div class="muted" style="font-size:12px;margin-top:6px">许可：${esc(c.license)}</div>
+      ${c.url ? `<div style="margin-top:10px"><a class="btn small secondary" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">打开上游仓库 ↗</a></div>` : ''}
+    </div>`;
+  content.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">🙏 借鉴与致谢</h1>
+        <div class="page-sub">本工坊实际用到的开源组件、设计参考与方法来源（许可核验日期 2026-09-27）</div>
+      </div>
+      <div class="page-actions"><button class="btn secondary" data-action="go-view" data-view="works">← 返回我的作品</button></div>
+    </div>
+    <div class="muted" style="margin:6px 0 12px">
+      这里区分三类关系：<b>实际运行组件</b>（工坊真的在调用）、<b>设计 / 方法参考</b>（借用思路，未搬运代码）、
+      <b>实际引入的代码 / 规则 / 资产</b>（真的在本仓库里）。不显示随时会过期的人气计数，也不表示与任何项目存在官方合作或背书。
+    </div>
+    ${ATTRIBUTIONS.map((g) => `
+      <div class="card mt-12">
+        <div class="card-head"><span class="card-title">${esc(g.group)}</span></div>
+        <div class="muted" style="font-size:12px">${esc(g.note)}</div>
+        <div class="grid cols-3" style="margin-top:10px">${g.cards.map(card).join('')}</div>
+      </div>`).join('')}`;
 }
 
 // ---------- 合并板块：小说设定 ----------
@@ -2130,10 +2363,10 @@ async function renderSettingsBoard(content, tab) {
 }
 
 // ---------- 合并板块：AI创造板块（进入作品后） ----------
-// AI 创作已迁移到初始页（见 renderAICreateHome / renderAIHome），这里只保留 AI 设置与 SillyTavern 设置。
+// AI 创作已迁移到初始页（见 renderAICreateHome / renderAIHome），这里只保留 AI 设置与创作上下文。
 const AI_TABS = [
   ['ai', '⚙️ AI 设置'],
-  ['st', '🧩 SillyTavern 设置']
+  ['st', '🧩 创作上下文']
 ];
 
 async function renderAIBoard(content, tab) {
@@ -2144,7 +2377,7 @@ async function renderAIBoard(content, tab) {
     <div class="page-head">
       <div>
         <h1 class="page-title">🤖 AI创造板块</h1>
-        <div class="page-sub">API 设置与 SillyTavern 角色/世界观设置已合并到这里</div>
+        <div class="page-sub">API 设置与创作上下文（角色卡 / 世界观 / 作者注）已合并到这里</div>
       </div>
     </div>
     <div class="board-tabs">
@@ -3224,6 +3457,14 @@ async function finalizeHarnessOutput(r) {
     let revised = '';
     let notes = [];
     if (patched && patched.ok) {
+      // 空补丁 = 合法"无修改"：不展示差异预览（没有差异），如实告知并收尾。
+      if (patched.noop) {
+        toast('这份修稿任务没有产生任何改动（补丁为空，正文保持原样）', 'success');
+        markJobApplied(r.job_id);
+        await refreshChapterRecovery(chapterId);
+        await render();
+        return;
+      }
       revised = patched.text;
       notes = patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40));
     } else {
@@ -3406,7 +3647,639 @@ async function renderCharacters(content) {
     </div>`;
 }
 
-// ---------- SillyTavern 设置 ----------
+// ---------- 创作上下文（历史名 SillyTavern 设置；R06 只改用户面命名，内部 st/renderST 保持不变） ----------
+// R07：编辑规则卡（三档编辑 / 七项能力 / 题材档）。这一块只负责**作者意图**的读写与预览：
+// 规则块本身由宿主装配器产出（/novel/editing 返回目录与选择），打开后真的进入 assembled。
+async function loadEditRules(force = false) {
+  if (state.editRules && !force) return state.editRules;
+  try {
+    const data = await api('/novel/editing');
+    state.editRules = { catalog: data.catalog, selection: data.selection };
+  } catch (_) {
+    state.editRules = null; // 旧服务端没有该接口：如实显示"不可用"，不假装有开关
+  }
+  return state.editRules;
+}
+
+function renderEditRulesCard() {
+  const er = state.editRules;
+  if (!er) {
+    return `<div class="card mb-12"><div class="card-head"><span class="card-title">编辑规则（三档编辑 / 创作能力 / 题材）</span></div>
+      <div class="muted">当前服务端不提供该接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  const sel = er.selection || {};
+  const abilities = (er.catalog && er.catalog.abilities) || [];
+  const tiers = (er.catalog && er.catalog.tiers) || [];
+  const genres = (er.catalog && er.catalog.genres) || [];
+  const picked = new Set(sel.abilities || []);
+  return `
+    <div class="card mb-12">
+      <div class="card-head">
+        <span class="card-title">编辑规则（三档编辑 / 创作能力 / 题材）</span>
+        <button class="btn small secondary" data-action="scan-edit-rules" title="按已启用能力对当前章节做确定性检查（不调用模型、不花额度）">🔍 扫描本章</button>
+        <button class="btn small" data-action="save-edit-rules">保存编辑规则</button>
+      </div>
+      <div class="muted" style="font-size:12px">默认关闭；关闭时这些规则**不进入**发给模型的提示词（旧作品行为不变）。打开后规则块进入上下文，并在「运行追踪 / 上下文贡献记录」里留下版本与内容 hash。</div>
+      <label class="row mt-8"><input type="checkbox" id="edit-rules-enabled" ${sel.enabled ? 'checked' : ''}> 启用编辑规则块（会进入写作请求）</label>
+      <div class="row mt-8" style="flex-wrap:wrap;gap:18px;align-items:flex-start">
+        <div>
+          <b style="font-size:13px">编辑档位</b>
+          ${tiers.map((t) => `<label class="row" style="font-weight:400"><input type="radio" name="edit-tier" value="${esc(t.id)}" ${sel.tier === t.id ? 'checked' : ''}> ${esc(t.name)}<span class="muted" style="font-size:12px">（${esc(t.summary)}）</span></label>`).join('')}
+        </div>
+        <div>
+          <b style="font-size:13px">题材档</b>
+          <div><select id="edit-genre">${genres.map((g) => `<option value="${esc(g.id)}" ${sel.genre === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
+        </div>
+      </div>
+      <div class="mt-8">
+        <b style="font-size:13px">创作能力（默认关闭；只加载任务/题材适用的）</b>
+        <div class="st-character-list">
+          ${abilities.map((a) => `
+            <div class="st-character-item">
+              <label class="row" style="font-weight:400">
+                <input type="checkbox" class="edit-ability" value="${esc(a.id)}" ${picked.has(a.id) ? 'checked' : ''}>
+                <b>${esc(a.name)}</b>
+                <span class="muted" style="font-size:12px">${esc(a.summary)}｜适用：${esc((a.tasks || []).join(' / '))}${a.genre_affinity && a.genre_affinity.length ? `｜题材：${esc(a.genre_affinity.join(' / '))}` : '｜不限题材'}</span>
+              </label>
+            </div>`).join('')}
+        </div>
+      </div>
+      <div class="muted mt-8" style="font-size:12px">规则版本 v${esc((er.catalog && er.catalog.version) || '')}｜当前档位 ${esc(sel.tier || '')}｜题材 ${esc(sel.genre || '')}｜已启用能力 ${(sel.abilities || []).length} 项</div>
+      <div id="edit-rules-scan" class="mt-8">${renderEditScanHtml(state.editScan)}</div>
+    </div>`;
+}
+
+function collectEditSelection() {
+  const enabledEl = $('#edit-rules-enabled');
+  const tierEl = $$('input[name="edit-tier"]').find((el) => el.checked);
+  const genreEl = $('#edit-genre');
+  const abilities = $$('.edit-ability').filter((el) => el.checked).map((el) => el.value);
+  return {
+    enabled: !!(enabledEl && enabledEl.checked),
+    tier: tierEl ? tierEl.value : 'light',
+    genre: genreEl ? genreEl.value : 'general',
+    abilities,
+  };
+}
+
+async function saveEditRules() {
+  const selection = collectEditSelection();
+  const data = await api('/novel/editing', { method: 'PUT', body: selection });
+  state.editRules = { catalog: state.editRules ? state.editRules.catalog : null, selection: data.selection };
+  state.aiContext = null; // 规则块变了：下次写作重新装配（不能用旧上下文）
+  toast(`已保存编辑规则（${selection.enabled ? '已启用' : '已关闭'}）`, 'success');
+  await render();
+}
+
+function renderEditScanHtml(data) {
+  if (!data) return '';
+  const findings = data.findings || [];
+  if (!findings.length) return '<div class="muted">确定性检查没有发现问题。</div>';
+  return `<div class="muted" style="font-size:12px">确定性检查命中 ${findings.length} 条（规则/位置/摘录/建议；语义问题仍走「审稿」的模型链，不在这里下结论）</div>
+    <div class="st-character-list">
+      ${findings.map((f) => `
+        <div class="st-character-item">
+          <div class="row"><span class="chip">${esc(f.severity)}</span><b>${esc(f.message)}</b><span class="muted grow" style="font-size:12px">${f.paragraph === null || f.paragraph === undefined ? '' : `第 ${f.paragraph + 1} 段`}</span></div>
+          <div class="muted" style="font-size:12px">规则 ${esc(f.rule_id)}：${esc(f.excerpt)}</div>
+          <div class="muted" style="font-size:12px">建议：${esc(f.suggestion)}</div>
+        </div>`).join('')}
+    </div>`;
+}
+
+async function scanEditRules() {
+  const box = $('#edit-rules-scan');
+  if (!state.currentChapterId) { if (box) box.innerHTML = '<div class="muted">先在「正文写作」里选一个章节。</div>'; return; }
+  if (box) box.innerHTML = '<div class="muted">扫描中…（确定性检查，不调用模型）</div>';
+  try {
+    const data = await api('/novel/editing/scan', { method: 'POST', body: { work_id: state.workId, chapter_id: state.currentChapterId } });
+    state.editScan = data;
+    if (box) box.innerHTML = renderEditScanHtml(data);
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="muted">扫描失败：${esc(e.message)}</div>`;
+  }
+}
+
+// ---------- R09：作者样文 / 文风档案 / 三级作者意图 ----------
+// 边界：样文与意图是**风格证据与作者偏好**，不是本书事实；本卡只读写作者侧这 3 组端点。
+async function loadAuthorStyle(force = false) {
+  if (state.authorStyle && !force) return state.authorStyle;
+  try {
+    const samples = await api(`/novel/style/samples?work_id=${state.workId}`);
+    const profile = await api(`/novel/style/profile?work_id=${state.workId}`);
+    const intents = await api(`/novel/author_intent?work_id=${state.workId}&chapter_id=${state.currentChapterId || 0}`);
+    state.authorStyle = { samples, profile, intents };
+  } catch (_) {
+    state.authorStyle = null; // 旧服务端没有这些接口：如实显示"不可用"，不假装有
+  }
+  return state.authorStyle;
+}
+
+function authorIntentRow(tier) {
+  const a = state.authorStyle;
+  const intents = (a && a.intents && a.intents.intents) || [];
+  const chapterId = state.currentChapterId || 0;
+  return intents.find((x) => x.tier === tier && (tier === 'chapter' ? x.chapter_id === chapterId : x.chapter_id === 0)) || null;
+}
+
+function renderAuthorStyleCard() {
+  const a = state.authorStyle;
+  if (!a) {
+    return `<div class="card mb-12"><div class="card-head"><span class="card-title">作者样文与文风档案</span></div>
+      <div class="muted">当前服务端不提供该接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  const samples = (a.samples && a.samples.samples) || [];
+  const counts = (a.samples && a.samples.counts) || {};
+  const limits = (a.samples && a.samples.limits) || {};
+  const prof = (a.profile && a.profile.profile) || null;
+  const stale = !!(a.profile && a.profile.stale);
+  const m = prof && prof.metrics ? prof.metrics : null;
+  const merged = (a.intents && a.intents.merged) || { conflicts: [] };
+  const conflicts = merged.conflicts || [];
+  const tierDefs = [['long_term', '长期方向（整本书）'], ['stage', '当前阶段重点（整本书）'], ['chapter', '本章意图（当前章）']];
+  return `
+    <div class="card mb-12">
+      <div class="card-head">
+        <span class="card-title">作者样文与文风档案${helpDot('author_style')}</span>
+        <button class="btn small secondary" data-action="new-author-sample">＋ 添加样文</button>
+        <button class="btn small secondary" data-action="analyze-author-profile" title="确定性计数：不调用模型、不花额度">📊 分析样文</button>
+      </div>
+      <div class="muted" style="font-size:12px">样文是**独立数据来源**：只用于文风分析与风格证据（按预算选择后进入请求），<b>不会</b>变成本书的人物/地点/事件/正典事实，也不会改变工具授权。单篇 ≤ ${esc(String(limits.per_sample_chars || 20000))} 字、整书 ≤ ${esc(String(limits.total_chars || 200000))} 字 / ${esc(String(limits.max_samples || 20))} 篇。</div>
+      <div class="st-character-list mt-8">
+        ${samples.length ? samples.map((s) => `
+          <div class="st-character-item">
+            <div class="row">
+              <label class="row" style="font-weight:400"><input type="checkbox" data-action="toggle-author-sample" data-id="${s.id}" ${s.enabled ? 'checked' : ''}> <b>${esc(s.title || '未命名样文')}</b></label>
+              <span class="muted grow" style="font-size:12px">${esc(String(s.chars))} 字｜hash ${esc(String(s.content_hash || '').slice(0, 10))}${s.enabled ? '' : '｜已停用（不参与分析与证据）'}</span>
+              <button class="btn small secondary" data-action="edit-author-sample" data-id="${s.id}">编辑</button>
+              <button class="btn small secondary" data-action="delete-author-sample" data-id="${s.id}">删除</button>
+            </div>
+          </div>`).join('') : '<div class="muted">还没有样文。添加作者自己的、或有权使用的片段（可以是旧作，也可以是别人的——须有权使用）。</div>'}
+        <div class="muted" style="font-size:12px">合计 ${esc(String(counts.total || 0))} 篇（启用 ${esc(String(counts.enabled || 0))}）｜${esc(String(counts.chars || 0))} 字</div>
+      </div>
+      <div class="mt-8">
+        <b style="font-size:13px">文风档案</b>
+        ${prof ? `
+          <span class="chip">${stale ? '已过期（样文有改动，请重新分析）' : '有效'}</span>
+          <span class="muted" style="font-size:12px">hash ${esc(String((a.profile && a.profile.profile_hash) || '').slice(0, 12))}｜分析版本 ${esc(String((a.profile && a.profile.analysis_version) || ''))}｜语义状态 ${esc(String((a.profile && a.profile.semantic_status) || 'not_run'))}（当前只做确定性计数，未跑模型）</span>
+          ${m ? `<div class="muted" style="font-size:12px">平均句长 ${esc(String(m.sentence_length.value.mean))} 字（p50 ${esc(String(m.sentence_length.value.p50))}／p90 ${esc(String(m.sentence_length.value.p90))}）｜对白段占比 ${esc(String(m.dialogue_rate.value.ratio))}｜段均 ${esc(String(m.paragraph_length.value.mean))} 字（长段占比 ${esc(String(m.paragraph_length.value.long_ratio))}）｜每千字比喻 ${esc(String(m.rhetoric_per_1000.value.metaphor))}／排比段 ${esc(String(m.rhetoric_per_1000.value.parallel_paragraphs))}｜每千字情绪词 ${esc(String(m.emotion_per_1000.value))}｜章尾悬疑标记 ${m.suspense_tail.value.ends_with_ellipsis || m.suspense_tail.value.ends_with_question || m.suspense_tail.value.unterminated ? '有' : '无'}</div>
+            <div class="muted" style="font-size:12px">口径：${esc(m.sentence_length.how)}；${esc(m.dialogue_rate.how)}；${esc(m.rhetoric_per_1000.how)}</div>` : ''}
+          <div class="muted" style="font-size:12px">习惯片段：开头 ${esc((prof.habits.openings || []).join(' / ') || '（样本不足）')}｜结尾 ${esc((prof.habits.closings || []).join(' / ') || '（样本不足）')}｜保留 ${esc((prof.habits.keep || []).join('、') || '（未填）')}｜避免 ${esc((prof.habits.avoid || []).join('、') || '（未填）')}</div>
+        ` : '<div class="muted" style="font-size:12px">还没有分析过。点「分析样文」做确定性计数（句长/对白/标点/段落/修辞/情绪/章尾习惯 + 计算口径），不调用模型。</div>'}
+      </div>
+      <div class="mt-8">
+        <b style="font-size:13px">三级作者意图</b>
+        <div class="muted" style="font-size:12px">优先级：已确认故事约束与编辑保真 &gt; 当前有效章节契约 &gt; 作者具体风格与意图 &gt; 通用编辑规则。本章意图可覆盖较泛偏好，但**不会**静默取消你设为长期硬约束的要求——冲突会在这里请你裁决。</div>
+        ${tierDefs.map(([tier, label]) => {
+          const row = authorIntentRow(tier);
+          const id = `author-intent-${tier}`;
+          return `
+          <div class="mt-8">
+            <label class="row" style="font-weight:400" for="${id}"><b>${esc(label)}</b>${row && row.hard ? '<span class="chip">硬约束</span>' : ''}${tier === 'chapter' && !state.currentChapterId ? '<span class="muted" style="font-size:12px">（先在「正文写作」里选章节）</span>' : ''}</label>
+            <textarea id="${id}" rows="2" placeholder="${tier === 'long_term' ? '整本书都要遵守的方向（例如：叙述克制，不直白抒情）' : tier === 'stage' ? '当前阶段的重点（例如：第二卷写主角与旧友的决裂）' : '本章的特殊要求（可覆盖较泛偏好）'}">${esc(row ? row.text : '')}</textarea>
+            <label class="row" style="font-weight:400"><input type="checkbox" id="${id}-hard" ${row && row.hard ? 'checked' : ''}> 设为硬约束（更具体的档位不得静默取消它，冲突必须提请裁决）</label>
+          </div>`;
+        }).join('')}
+        <div class="row mt-8">
+          <div class="grow muted" style="font-size:12px">${conflicts.length
+            ? `⚠ 需要你裁决：${conflicts.map((c) => `${esc(c.other_tier)}「${esc(c.other_text)}」可能抵消长期方向`).join('；')}`
+            : '没有检测到跨档冲突。'}</div>
+          <button class="btn small" data-action="save-author-intents">保存三级意图</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function openAuthorSampleModal(sample = null) {
+  openModal({
+    title: sample ? `编辑样文 · ${sample.title || ''}` : '添加作者样文',
+    body: `
+      <div class="form-grid">
+        <div class="field"><label>标题</label><input id="author-sample-title" value="${esc(sample?.title || '')}" placeholder="例如：我的旧作片段"></div>
+        <div class="field"><label>样文正文</label><textarea id="author-sample-text" rows="10" placeholder="粘贴作者自己的、或有权使用的文字（只用于文风分析与风格证据，不会被当作本书设定）">${esc(sample?.text || '')}</textarea></div>
+      </div>
+      <div class="muted" style="font-size:12px">样文绝不进入正典事实 / 事件账本 / 角色知识；超限（太短/太长/篇数或总量超限）会在保存时报出明确原因。</div>`,
+    footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="save-author-sample" data-id="${sample?.id || ''}">保存样文</button>`,
+  });
+}
+
+async function saveAuthorSample(id) {
+  const title = $('#author-sample-title')?.value || '';
+  const text = $('#author-sample-text')?.value || '';
+  try {
+    if (id) await api('/novel/style/samples', { method: 'PUT', body: { work_id: state.workId, id: Number(id), title, text } });
+    else await api('/novel/style/samples', { method: 'POST', body: { work_id: state.workId, title, text } });
+    closeModal();
+    state.authorStyle = null; // 样文变了：档案可能过期，下次渲染必须重新读服务端
+    state.aiContext = null;
+    toast('样文已保存（档案需重新分析才会更新；上下文已作废重装）', 'success');
+    await render();
+  } catch (e) {
+    toast(`样文保存失败：${e.message}`, 'error');
+  }
+}
+
+async function toggleAuthorSample(id, enabled) {
+  try {
+    await api('/novel/style/samples', { method: 'PUT', body: { work_id: state.workId, id: Number(id), enabled } });
+    state.authorStyle = null; state.aiContext = null;
+    await render();
+  } catch (e) { toast(`切换失败：${e.message}`, 'error'); }
+}
+
+async function deleteAuthorSample(id) {
+  if (!confirm('删除这篇样文？（只删样文，不影响正文与作品数据）')) return;
+  try {
+    await api(`/novel/style/samples?work_id=${state.workId}&id=${Number(id)}`, { method: 'DELETE' });
+    state.authorStyle = null; state.aiContext = null;
+    toast('样文已删除', 'success');
+    await render();
+  } catch (e) { toast(`删除失败：${e.message}`, 'error'); }
+}
+
+async function analyzeAuthorProfile() {
+  try {
+    const data = await api('/novel/style/profile', { method: 'POST', body: { work_id: state.workId } });
+    state.authorStyle = null; state.aiContext = null;
+    toast(`文风分析完成（确定性计数，未调用模型）：档案 hash ${String(data.profile_hash || '').slice(0, 12)}`, 'success');
+    await render();
+  } catch (e) { toast(`分析失败：${e.message}`, 'error'); }
+}
+
+async function saveAuthorIntents() {
+  const tiers = [['long_term', 0], ['stage', 0], ['chapter', state.currentChapterId || 0]];
+  try {
+    for (const [tier, chapterId] of tiers) {
+      const text = ($(`#author-intent-${tier}`)?.value || '').trim();
+      const hard = !!($(`#author-intent-${tier}-hard`)?.checked);
+      if (!text) {
+        await api(`/novel/author_intent?work_id=${state.workId}&chapter_id=${chapterId}&tier=${tier}`, { method: 'DELETE' }).catch(() => null);
+        continue;
+      }
+      await api('/novel/author_intent', { method: 'PUT', body: { work_id: state.workId, chapter_id: chapterId, tier, text, hard } });
+    }
+    state.authorStyle = null; state.aiContext = null;
+    toast('已保存三级作者意图（下一次写作请求生效）', 'success');
+    await render();
+  } catch (e) { toast(`保存意图失败：${e.message}`, 'error'); }
+}
+
+// ---------- R10：故事状态与披露视图（作者真相 / 读者已披露 / 各角色掌握） ----------
+// 只读派生：不新增状态体系、不做前端缓存；每次按当前章重算，指纹可直接核对"是否已失效"。
+async function loadStoryState(force = false) {
+  if (state.storyState && !force) return state.storyState;
+  try {
+    const overview = await api(`/novel/story_state?work_id=${state.workId}`);
+    let disclosure = null;
+    if (state.currentChapterId) {
+      disclosure = await api(`/novel/state/disclosure?work_id=${state.workId}&chapter_id=${state.currentChapterId}`);
+    }
+    state.storyState = { overview, disclosure };
+  } catch (_) {
+    state.storyState = null; // 旧服务端没有这些接口：如实显示"不可用"
+  }
+  return state.storyState;
+}
+
+function disclosureListHtml(title, items, note) {
+  return `<div style="min-width:260px;flex:1">
+    <b style="font-size:13px">${esc(title)}</b><span class="muted" style="font-size:12px">（${items.length}）</span>
+    <div class="muted" style="font-size:12px">${esc(note || '')}</div>
+    <div class="st-character-list">
+      ${items.length ? items.slice(0, 12).map((x) => `<div class="st-character-item">
+        <span class="chip">${esc(x.scope)}</span>${esc(x.label)}
+        <span class="muted" style="font-size:12px">｜${esc(x.tier)}${x.evidence && x.evidence.chapter_index !== null && x.evidence.chapter_index !== undefined ? `｜第 ${x.evidence.chapter_index + 1} 章${x.evidence.written ? '（已写）' : '（未写）'}` : ''}</span>
+      </div>`).join('') : '<div class="muted">（无）</div>'}
+    </div>
+  </div>`;
+}
+
+function renderStoryStateCard() {
+  const s = state.storyState;
+  if (!s) {
+    return `<div class="card mb-12"><div class="card-head"><span class="card-title">故事状态与读者披露</span></div>
+      <div class="muted">当前服务端不提供该接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  const o = s.overview || {};
+  const d = s.disclosure;
+  const chars = (d && d.characters) || [];
+  return `
+    <div class="card mb-12">
+      <div class="card-head">
+        <span class="card-title">故事状态与读者披露${helpDot('disclosure')}</span>
+        <button class="btn small secondary" data-action="refresh-disclosure" title="按当前章重算（只读，不改任何状态）">🔄 按当前章重算</button>
+        <button class="btn small ${o.enabled ? 'secondary' : ''}" data-action="toggle-story-state">${o.enabled ? '关闭故事状态' : '开启故事状态'}</button>
+      </div>
+      <div class="muted" style="font-size:12px">机制${o.enabled ? '已开启' : '未开启'}｜正典事实 ${esc(String(o.facts ?? 0))}｜时间线 ${esc(String(o.timeline ?? 0))}｜角色知识 ${esc(String(o.knowledge ?? 0))}｜待确认提案 ${esc(String(o.proposals_pending ?? 0))}｜状态哈希 ${esc(String(o.state_hash || '').slice(0, 12))}</div>
+      ${d ? `
+        <div class="muted mt-8" style="font-size:12px">时点：第 ${(d.cursor?.chapter_index ?? 0) + 1} 章｜视图指纹 ${esc(String(d.fingerprint || ''))}｜每次请求重算（不缓存，重排/回滚/改写后必然变）</div>
+        <div class="muted" style="font-size:12px">口径：${esc(d.rules.effective_window)}${esc(d.rules.undetermined)}</div>
+        <div class="row mt-8" style="align-items:flex-start;gap:16px;flex-wrap:wrap">
+          ${disclosureListHtml('作者真相（读者未披露）', d.author.truth, '作者知道 ≠ 读者知道：只用于审稿与伏笔一致性。')}
+          ${disclosureListHtml('读者已披露', d.reader.disclosed, '以已写章节 + 生效时点（effective_from/to）为证据。')}
+          ${disclosureListHtml('尚未披露 / 未到时点 / 角色私有', [...d.reader.not_yet, ...d.reader.future, ...d.reader.private_not_disclosed], '这些都不算读者已知。')}
+        </div>
+        <div class="mt-8">
+          <b style="font-size:13px">各角色掌握</b>
+          <div class="muted" style="font-size:12px">写某个角色的行动理由时只能用「已知」里的条目；「未定义」既不算知道也不算不知道。POV 护栏：作者真相与读者披露都不构成角色可行动知识。</div>
+          ${chars.map((c) => `
+            <div class="st-character-item">
+              <div class="row"><b>${esc(c.name)}</b><span class="muted" style="font-size:12px">可行动 ${c.actionable_ids.length} 条｜已知 ${c.known.length}｜显式不知道 ${c.unknown.length}｜怀疑 ${c.suspected.length}｜误信 ${c.false_beliefs.length}｜未定义 ${c.undetermined.count}</span></div>
+              ${c.known.length ? `<div class="muted" style="font-size:12px">已知：${c.known.slice(0, 6).map((k) => esc(k.label || k.fact_key)).join('；')}</div>` : ''}
+              ${c.undetermined.count ? `<div class="muted" style="font-size:12px">未定义（不得当成已知）：${c.undetermined.sample.slice(0, 4).map((x) => esc(x)).join('；')}</div>` : ''}
+            </div>`).join('') || '<div class="muted">该作品还没有角色。</div>'}
+        </div>
+      ` : '<div class="muted mt-8">先在「正文写作」里选一个章节，才能按"当前章"判断读者已披露与角色掌握。</div>'}
+    </div>`;
+}
+
+async function toggleStoryState() {
+  const enabled = !(state.storyState && state.storyState.overview && state.storyState.overview.enabled);
+  try {
+    await api('/novel/story_state', { method: 'PUT', body: { work_id: state.workId, enabled } });
+    state.storyState = null; state.aiContext = null;
+    toast(`故事状态内核已${enabled ? '开启' : '关闭'}（上下文装配随之变化）`, 'success');
+    await render();
+  } catch (e) { toast(`切换失败：${e.message}`, 'error'); }
+}
+
+async function refreshDisclosure() {
+  state.storyState = null; // 服务端本来就每次重算；这里只是强制重读
+  state.aiContext = null;
+  await render();
+}
+
+// ---------- R11：剧情分支沙盘（候选是提案；采纳/丢弃/取消/重开是作者动作） ----------
+// 服务端每次现算依赖基线与 stale；前端不做缓存、不替作者排序（比较只列差异）。
+async function loadBranch(force = false) {
+  if (state.branch && !force) return state.branch;
+  try {
+    const chapterId = state.currentChapterId || 0;
+    const sandboxes = await api(`/novel/branch/sandboxes?work_id=${state.workId}${chapterId ? `&chapter_id=${chapterId}` : ''}`);
+    let candidates = null;
+    if (chapterId) candidates = await api(`/novel/branch/candidates?work_id=${state.workId}&chapter_id=${chapterId}`);
+    state.branch = { sandboxes, candidates };
+  } catch (_) {
+    state.branch = null; // 旧服务端没有这些接口：如实显示"不可用"，不假装有沙盘
+  }
+  return state.branch;
+}
+
+/** 给 dsh 会话用的沙盘提示词（只复制到剪贴板，不自动发起任何模型调用）。 */
+function branchPromptText() {
+  const ch = state.chapters.find((c) => c.id === state.currentChapterId);
+  return [
+    `请用 novel_branch 工具为《${state.work?.title || ''}》「${ch ? ch.title : '当前章'}」开一个剧情分支沙盘（action=open），`,
+    '然后提出 3 个**实质不同**的候选方向（action=submit）：每个候选给出 core_action / conflict / character_choices / beats / consequences / relations_foreshadows / risks / required_setup / intent_relation。',
+    '人物选择必须引用该角色当前可行动的事实（先用 novel_state 的 status=disclosure 查 basis_ids）：不能因为你看得见作者真相就让角色提前知道秘密；后果里 certainty=established 只能用于已发生的事，未来计划不得冒充已发生。',
+    '候选只是提案：不要采纳、不要改正文或故事状态（采纳/丢弃由作者在界面上决定）。',
+  ].join('');
+}
+
+function branchCandidateHtml(c) {
+  const counts = c.counts || {};
+  const stale = c.stale_now || c.stale;
+  return `<div class="st-character-item">
+    <div class="row"><b>#${esc(String(c.id))} ${esc(c.title || '(无标题)')}</b>
+      <span class="chip">${esc(String(c.status || ''))}</span>
+      <span class="muted" style="font-size:12px">第 ${esc(String(c.ordinal ?? ''))} 个｜来源 ${c.created_by === 'agent' ? '模型提交' : '作者/界面'}${c.deps_hash ? `｜基线 ${esc(String(c.deps_hash).slice(0, 12))}` : ''}</span>
+    </div>
+    <div style="font-size:13px">核心行动：${esc(c.core_action || '')}</div>
+    <div class="muted" style="font-size:12px">冲突：${esc(c.conflict || '')}｜人物选择 ${esc(String(counts.choices ?? 0))}｜节拍 ${esc(String(counts.beats ?? 0))}｜后果 ${esc(String(counts.consequences ?? 0))}｜风险 ${esc(String(counts.risks ?? 0))}｜必要铺垫 ${esc(String(counts.required_setup ?? 0))}｜关系/伏笔 ${esc(String(counts.relations_foreshadows ?? 0))}｜与意图 ${esc(c.intent_stance || 'neutral')}</div>
+    ${stale ? `<div style="font-size:12px;color:#b45309">⚠ 已过期（${esc((c.stale_changed || []).join('、') || '依赖基线已变化')}）：旧候选仍可阅读；重新采纳必须先复核。</div>` : ''}
+    <div class="row mt-8" style="gap:6px">
+      <button class="btn small secondary" data-action="branch-view" data-id="${esc(String(c.id))}">查看</button>
+      ${c.status === 'candidate' ? `
+        <button class="btn small" data-action="branch-adopt" data-id="${esc(String(c.id))}" title="只写章节蓝图与契约建议；正文/事实/角色状态一律不动">采用</button>
+        <button class="btn small secondary" data-action="branch-discard" data-id="${esc(String(c.id))}">丢弃</button>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderBranchCard() {
+  const b = state.branch;
+  if (!b) {
+    return `<div class="card mb-12"><div class="card-head"><span class="card-title">剧情分支沙盘</span></div>
+      <div class="muted">当前服务端不提供该接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  const sandboxes = (b.sandboxes && b.sandboxes.sandboxes) || [];
+  const candidates = (b.candidates && b.candidates.candidates) || [];
+  const active = candidates.filter((c) => c.status !== 'discarded');
+  return `
+    <div class="card mb-12">
+      <div class="card-head">
+        <span class="card-title">剧情分支沙盘${helpDot('branch_sandbox')}</span>
+        <button class="btn small secondary" data-action="branch-submit" ${state.currentChapterId ? '' : 'disabled'} title="提交候选（JSON）：宿主会做形状/知识边界/差异/查重四道校验">提交候选</button>
+        <button class="btn small secondary" data-action="branch-open-sandbox" ${state.currentChapterId ? '' : 'disabled'}>开沙盘</button>
+        <button class="btn small secondary" data-action="branch-compare" ${active.length >= 2 ? '' : 'disabled'} title="并列比较只列差异，不替作者打分">比较全部候选</button>
+        <button class="btn small secondary" data-action="copy-text" data-copy="${esc(branchPromptText())}" title="复制给 dsh 会话用（复制本身不调用模型）">复制沙盘提示词</button>
+      </div>
+      <div class="muted" style="font-size:12px">候选是<b>提案</b>：未采纳前不进正文、不进正典事实/事件/角色知识/上下文层，也不触发记忆同步。采纳只写章节蓝图与契约建议——正文与角色状态一律不动。采纳/丢弃/取消/重开是作者动作（模型侧调用返回 403）。</div>
+      ${state.currentChapterId ? '' : '<div class="muted mt-8">先在「正文写作」里选一个章节：沙盘必须以具体章节为时点（角色知识边界按当前章判定）。</div>'}
+      ${sandboxes.length ? `
+        <div class="mt-8">
+          <b style="font-size:13px">沙盘</b>
+          ${sandboxes.map((sb) => `
+            <div class="st-character-item">
+              <div class="row"><b>沙盘 #${esc(String(sb.id))}</b>
+                <span class="chip">${esc(String(sb.status || ''))}</span>
+                <span class="muted" style="font-size:12px">章节 #${esc(String(sb.chapter_id ?? ''))}｜候选 ${esc(String((sb.progress || {}).done ?? 0))}/${esc(String(sb.requested ?? '?'))}${(sb.progress || {}).complete ? '（已满）' : `（还差 ${esc(String((sb.progress || {}).missing ?? '?'))} 个）`}｜基线 ${esc(String((sb.deps || {}).hash || '').slice(0, 12))}</span>
+              </div>
+              <div class="row mt-8" style="gap:6px">
+                <button class="btn small secondary" data-action="branch-cancel" data-id="${esc(String(sb.id))}">取消（保留已产出候选）</button>
+                <button class="btn small secondary" data-action="branch-reopen" data-id="${esc(String(sb.id))}">重启恢复（只补未完成槽位）</button>
+              </div>
+            </div>`).join('')}
+        </div>` : ''}
+      <div class="mt-8">
+        <b style="font-size:13px">候选（${candidates.length}）</b>
+        <div class="muted" style="font-size:12px">${esc((b.candidates && b.candidates.note) || '')}</div>
+        ${candidates.length ? candidates.map(branchCandidateHtml).join('') : '<div class="muted">这一章还没有候选：点「开沙盘」定基线，再用「提交候选」提交 2—5 个方向；也可以把「复制沙盘提示词」发给 dsh 会话，让它用 novel_branch 提交。</div>'}
+      </div>
+    </div>`;
+}
+
+function openBranchSandboxModal() {
+  if (!state.currentChapterId) { toast('先在「正文写作」里选一个章节（沙盘以章节为时点）', 'error'); return; }
+  openModal({
+    title: '开一个剧情分支沙盘',
+    body: `<div class="field"><label>想要几个候选方向（2—5）</label><input id="branch-requested" type="number" min="2" max="5" value="3"></div>
+      <div class="muted">沙盘会先固定依赖基线（故事状态 / 正文 / 契约 / 作者意图 / 披露指纹）：之后任何一项变化，旧候选都会标「已过期」，重新采纳前必须先复核。</div>`,
+    footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="branch-do-open">开沙盘</button>`
+  });
+}
+
+async function branchCreateSandbox() {
+  try {
+    const el = $('#branch-requested');
+    const requested = Number(el && el.value) || 3;
+    await api('/novel/branch/sandboxes', { method: 'POST', body: { work_id: state.workId, chapter_id: state.currentChapterId, requested } });
+    closeModal();
+    state.branch = null;
+    toast('沙盘已开：接下来提交 2—5 个实质不同的候选方向', 'success');
+    await render();
+  } catch (e) { toast(`开沙盘失败：${e.message}`, 'error'); }
+}
+
+function branchTemplate() {
+  const ch = state.chapters.find((c) => c.id === state.currentChapterId);
+  const char = (state.characters || [])[0];
+  const name = char ? char.name : '主角';
+  return JSON.stringify([
+    {
+      title: '方向一（示例：请替换成真实方向）',
+      core_action: `${name}在${ch ? ch.title : '本章'}做出第一个关键选择`,
+      conflict: '这个选择与当前处境的核心矛盾正面相撞',
+      character_choices: [{ character_id: char ? char.id : null, name, choice: '选择 A 而不是 B（写清理由）', basis_ids: [], basis_keys: [], basis_note: '该角色此刻能知道的信息（没有事实 id 时必须写清依据）' }],
+      beats: ['节拍一', '节拍二', '节拍三'],
+      consequences: [{ text: '可能发生的后果（计划/推测）', certainty: 'possible' }],
+      relations_foreshadows: [{ kind: 'foreshadow', text: '推进或埋下哪条伏笔' }],
+      risks: ['这样写的风险'],
+      required_setup: ['要让读者信服，需要提前铺垫什么'],
+      intent_relation: { text: '与作者意图的关系（沿用/扩展/冲突）', stance: 'neutral' }
+    }
+  ], null, 2);
+}
+
+function openBranchSubmitModal() {
+  if (!state.currentChapterId) { toast('先在「正文写作」里选一个章节', 'error'); return; }
+  const sb = ((state.branch && state.branch.sandboxes && state.branch.sandboxes.sandboxes) || []).find((x) => x.status === 'open');
+  openModal({
+    title: '提交候选（宿主四道校验）',
+    large: true,
+    body: `<div class="muted" style="font-size:12px">每个候选至少要有 core_action / conflict / character_choices / consequences。既有角色的行动理由必须引用该角色当前可行动的事实 id（basis_ids）或已知键（basis_keys），或写清 basis_note；新角色要写 new_character:true。宿主会校验形状、角色知识边界、候选差异与查重：不合法或与已有候选实质重复会<b>整批拒绝</b>（一个都不写）。</div>
+      <textarea id="branch-candidates-json" rows="14" placeholder='[{"title":"...","core_action":"...","conflict":"...","character_choices":[{"character_id":1,"choice":"...","basis_ids":[1]}],"consequences":[{"text":"...","certainty":"possible"}]}]'></textarea>
+      <div class="row mt-8"><button class="btn small secondary" data-action="branch-fill-template">填入模板</button>
+      <span class="muted" style="font-size:12px">沙盘：${sb ? `#${esc(String(sb.id))}（${esc(String((sb.progress || {}).done ?? 0))}/${esc(String(sb.requested))}${(sb.progress || {}).complete ? '，已满' : ''}）` : '还没有打开的沙盘——提交时会按本章基线自动开一个'}</span></div>`,
+    footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="branch-do-submit" data-sandbox-id="${sb ? esc(String(sb.id)) : ''}">提交</button>`
+  });
+}
+
+async function branchSubmitCandidates(sandboxId) {
+  const ta = $('#branch-candidates-json');
+  const raw = ta ? String(ta.value || '').trim() : '';
+  if (!raw) { toast('请先粘贴候选 JSON（可点「填入模板」）', 'error'); return; }
+  let candidates;
+  try { candidates = JSON.parse(raw); } catch (e) { toast(`候选 JSON 不合法：${e.message}`, 'error'); return; }
+  if (!Array.isArray(candidates) || !candidates.length) { toast('候选必须是非空数组（一次 2—5 个不同方向）', 'error'); return; }
+  try {
+    const out = await api('/novel/branch/candidates', {
+      method: 'POST',
+      body: { work_id: state.workId, chapter_id: state.currentChapterId, sandbox_id: sandboxId || undefined, candidates }
+    });
+    closeModal();
+    state.branch = null;
+    const warn = (out.knowledge || []).filter((k) => k.status !== 'checked');
+    toast(`已提交 ${(out.candidates || []).length} 个候选（沙盘 #${(out.sandbox || {}).id}：${(out.progress || {}).done ?? 0}/${(out.progress || {}).requested ?? '?'}）${warn.length ? `；${warn.length} 条知识约束提示见下` : ''}`, 'success');
+    await render();
+  } catch (e) { toast(`提交被拒（整批未写入）：${e.message}`, 'error'); }
+}
+
+async function branchView(id) {
+  try {
+    const data = await api(`/novel/branch/candidates/${id}`);
+    const c = data.candidate || {};
+    const plan = data.adoption_plan || {};
+    const bp = plan.blueprint || {};
+    const li = (x) => `<li>${esc(x)}</li>`;
+    openModal({
+      title: `候选 #${c.id} ${c.title || ''}`,
+      large: true,
+      body: `
+        <div class="muted" style="font-size:12px">章节 #${esc(String(c.chapter_id))}｜沙盘 #${esc(String(c.sandbox_id))}｜状态 ${esc(String(c.status))}｜来源 ${c.created_by === 'agent' ? '模型提交' : '作者/界面'}｜基线 ${esc(String(c.deps_hash || '').slice(0, 16))}</div>
+        ${c.stale_now ? `<div style="color:#b45309">⚠ 已过期（${esc((c.stale_changed || []).join('、'))}）：旧候选仍可阅读；重新采纳必须先复核。${c.status === 'candidate' ? '（可用下方「复核并采用」）' : ''}</div>` : '<div class="muted">依赖基线仍一致。</div>'}
+        <div class="mt-8"><b>核心行动</b>：${esc(c.core_action || '')}</div>
+        <div><b>冲突</b>：${esc(c.conflict || '')}</div>
+        <div class="mt-8"><b>人物选择</b><ul>${(c.character_choices || []).map((x) => li(`${x.name || '#' + x.character_id}：${x.choice}（依据 ${(x.basis_ids || []).join('、') || (x.basis_keys || []).join('、') || x.basis_note || '—'}）`)).join('') || '<li>（无）</li>'}</ul></div>
+        <div><b>剧情节拍</b><ul>${(c.beats || []).map((b) => li(b.text)).join('') || '<li>（无）</li>'}</ul></div>
+        <div><b>可能后果</b><ul>${(c.consequences || []).map((x) => li(`${x.text}〔${x.certainty}〕`)).join('') || '<li>（无）</li>'}</ul></div>
+        <div><b>关系/伏笔</b><ul>${(c.relations_foreshadows || []).map((x) => li(`[${x.kind}] ${x.text}`)).join('') || '<li>（无）</li>'}</ul></div>
+        <div><b>风险</b><ul>${(c.risks || []).map((x) => li(x.text)).join('') || '<li>（无）</li>'}</ul></div>
+        <div><b>必要铺垫</b><ul>${(c.required_setup || []).map((x) => li(x.text)).join('') || '<li>（无）</li>'}</ul></div>
+        <div><b>与作者意图</b>：${esc((c.intent_relation || {}).stance || 'neutral')}｜${esc((c.intent_relation || {}).text || '')}</div>
+        <div class="mt-8 muted" style="font-size:12px">采纳计划（只写章节蓝图 + 可选契约建议；正文/事实/角色状态一律不动）：场景目标 = ${esc(bp.scene_goal || '')}${(plan.contract_suggestion || {}).note ? `；${esc(plan.contract_suggestion.note)}` : ''}</div>
+        <div class="muted" style="font-size:12px">只读边界：${esc((plan.never_touched || []).join('、'))}</div>`,
+      footer: `${c.status === 'candidate' ? `<button class="btn secondary" data-action="branch-discard" data-id="${esc(String(c.id))}">丢弃</button>
+        <button class="btn secondary" data-action="branch-adopt-force" data-id="${esc(String(c.id))}" title="基线已变时先复核再采纳">复核并采用</button>
+        <button class="btn" data-action="branch-adopt" data-id="${esc(String(c.id))}">采用</button>` : '<span class="muted">已采纳/已丢弃：不再提供操作</span>'}
+        <button class="btn secondary" data-close-modal>关闭</button>`
+    });
+  } catch (e) { toast(`读取候选失败：${e.message}`, 'error'); }
+}
+
+async function branchCompareAll() {
+  try {
+    const list = ((state.branch && state.branch.candidates && state.branch.candidates.candidates) || []).filter((c) => c.status !== 'discarded');
+    if (list.length < 2) { toast('至少要有 2 个候选才能比较', 'error'); return; }
+    const out = await api('/novel/branch/compare', { method: 'POST', body: { work_id: state.workId, ids: list.map((c) => c.id).slice(0, 5) } });
+    const blocks = (out.comparisons || []).map((cmp) => `
+      <div class="mt-8"><b>候选 #${cmp.a.id} ${esc(cmp.a.title || '')} ↔ #${cmp.b.id} ${esc(cmp.b.title || '')}</b>
+        <div class="muted" style="font-size:12px">差异 ${cmp.differences.length}/9 维：${esc(cmp.differences.join('、') || '（无差异）')}</div>
+        <ul>${(cmp.dimensions || []).filter((d) => !d.same).map((d) => `<li>${esc(d.label)}：#${cmp.a.id} ${esc(String(d.a))} ↔ #${cmp.b.id} ${esc(String(d.b))}</li>`).join('')}</ul>
+      </div>`).join('');
+    openModal({
+      title: '并列比较（只列差异，不替作者打分或排序）',
+      large: true,
+      body: `<div class="muted" style="font-size:12px">${esc(out.note || '')}</div>${blocks || '<div class="muted">没有可比较的差异。</div>'}`,
+      footer: '<button class="btn secondary" data-close-modal>关闭</button>'
+    });
+  } catch (e) { toast(`比较失败：${e.message}`, 'error'); }
+}
+
+async function branchAdopt(id, recheck = false) {
+  try {
+    const out = await api(`/novel/branch/candidates/${id}/adopt`, { method: 'POST', body: { work_id: state.workId, recheck: !!recheck } });
+    closeModal();
+    state.branch = null;
+    state.aiContext = null;
+    if (out.already_adopted) toast(`候选 #${id} 之前已经采纳过（没有重复写）`, 'success');
+    else toast(`已采纳候选 #${id}：只写章节蓝图${out.contract_saved ? '与契约建议' : ''}；正文/事实/角色状态未动`, 'success');
+    await render();
+  } catch (e) {
+    if (/过期/.test(String(e.message)) && !recheck) {
+      toast(`候选已过期（${e.message}）：旧候选仍可读；点「复核并采用」先复核再写蓝图`, 'error');
+    } else {
+      toast(`采纳失败：${e.message}`, 'error');
+    }
+  }
+}
+
+function openBranchConfirm(kind, id) {
+  const isDiscard = kind === 'discard';
+  openModal({
+    title: isDiscard ? `丢弃候选 #${id}` : `取消沙盘 #${id}`,
+    body: `<div>${isDiscard ? '丢弃后该候选不能再采纳（行保留、状态改为 discarded，可复盘）。' : '取消后已产出的候选仍可阅读；恢复只继续未完成槽位，不重跑已完成候选。'}</div>`,
+    footer: `<button class="btn secondary" data-close-modal>再想想</button>
+      <button class="btn" data-action="${isDiscard ? 'branch-do-discard' : 'branch-do-cancel'}" data-id="${esc(String(id))}">${isDiscard ? '丢弃' : '取消沙盘'}</button>`
+  });
+}
+
+async function branchDiscard(id) {
+  try {
+    await api(`/novel/branch/candidates/${id}/discard`, { method: 'POST', body: { work_id: state.workId } });
+    closeModal(); state.branch = null;
+    toast(`候选 #${id} 已丢弃（未采纳的候选本来就不是本书事实）`, 'success');
+    await render();
+  } catch (e) { toast(`丢弃失败：${e.message}`, 'error'); }
+}
+
+async function branchCancel(id) {
+  try {
+    await api(`/novel/branch/sandboxes/${id}/cancel`, { method: 'POST', body: { work_id: state.workId } });
+    closeModal(); state.branch = null;
+    toast(`沙盘 #${id} 已取消：已产出的候选保留可读`, 'success');
+    await render();
+  } catch (e) { toast(`取消失败：${e.message}`, 'error'); }
+}
+
+async function branchReopen(id) {
+  try {
+    const out = await api(`/novel/branch/sandboxes/${id}/reopen`, { method: 'POST', body: { work_id: state.workId } });
+    state.branch = null;
+    const p = out.sandbox && out.sandbox.progress;
+    toast(`沙盘 #${id} 已恢复（${p ? `${p.done}/${p.requested}` : ''}）：只补未完成槽位，不重跑已有候选`, 'success');
+    await render();
+  } catch (e) { toast(`恢复失败：${e.message}`, 'error'); }
+}
 function openSTCharacterModal(character = null) {
   openModal({
     title: character ? `编辑角色卡 · ${character.name}` : '新建角色卡',
@@ -3445,12 +4318,179 @@ function openWorldEntryModal(entry = null) {
   });
 }
 
+// ---------- R12：导入后分析重建（分批抽取 / 基线 / 恢复；作者确认 = 逐批原子应用） ----------
+// 分工：抽取由本前端**按批**请求模型（离线测试注入 state.rebuildRunner），宿主只做校验、记账与确认；
+// 候选未确认前不进任何正式状态；确认在一个短事务里批量原子应用（服务端 applyProposalsBatch）。
+const REBUILD_STATE_LABEL = { reuse: '可复用', stale: '已过期', pending: '待抽取' };
+
+async function loadRebuild(force = false) {
+  if (state.rebuildLoaded && !force) return state.rebuild;
+  try {
+    const data = await api(`/import/rebuild/status?work_id=${state.workId}`);
+    state.rebuild = data && data.ok ? data : null;
+  } catch (_) {
+    state.rebuild = null; // 旧服务端没有该接口：如实显示不可用，不假装有重建流程
+  }
+  state.rebuildLoaded = true;
+  return state.rebuild;
+}
+
+function rebuildBatchById(index) {
+  const r = state.rebuild;
+  if (!r || !Array.isArray(r.batches)) return null;
+  return r.batches.find((x) => Number(x.batch_index) === Number(index)) || null;
+}
+
+/** 一批的抽取提示词：只带本批章节（整本书绝不进一次请求）。 */
+function rebuildPromptForBatch(batch) {
+  const byId = new Map(state.chapters.map((c) => [Number(c.id), c]));
+  const parts = [
+    '你是小说资料抽取器。只输出 JSON（不要解释、不要在代码块之外写说明）。',
+    'JSON 形状：{"items":[{"category":"...","chapter_id":123,"chapter_index":0,"evidence":{"quote":"原文中的一段话","location":"出现位置"},"data":{...}}]}',
+    'category 只能取：entity / alias / relation / location / timeline / event / foreshadow / character_state / disclosure。',
+    '规则：',
+    '1) 每个 item 必须带 evidence.quote，且 quote 必须能在该章正文里**原样找到**（不许改写、不许编造、不许跨章引用）。',
+    '2) 不得替作者发明尚未揭示的秘密：正文没写的不要推断成事实。',
+    '3) 互相矛盾的候选都要保留（加 "conflict": true），不要自行裁决。',
+    '4) data 给最小字段：entity/alias/location → {name|canonical_name, kind, aliases}；relation → {subject, relation, value}；timeline → {story_time, relative_time, label, seq}；event → {summary}；foreshadow → {summary}；character_state → {character, state}；disclosure → {character, fact}。',
+    '',
+    `本批共 ${(batch.chapter_ids || []).length} 章，逐章抽取：`,
+  ];
+  for (const cid of (batch.chapter_ids || [])) {
+    const ch = byId.get(Number(cid));
+    if (!ch) continue;
+    const text = String(ch.content || '').replace(/<[^>]*>/g, '').slice(0, 6000);
+    parts.push(`【章节 #${cid}｜${ch.title || ''}】`, text, '');
+  }
+  return parts.join('\n');
+}
+
+function renderRebuildCard() {
+  const r = state.rebuild;
+  if (r === null) {
+    return `<div class="card mb-12"><div class="card-head"><span class="card-title">导入后重建创作状态</span></div>
+      <div class="muted">当前服务端不提供该接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  const run = r.run;
+  const batches = Array.isArray(r.batches) ? r.batches : [];
+  const counts = r.counts || {};
+  const progress = r.progress || {};
+  const label = (x) => REBUILD_STATE_LABEL[x] || String(x || '');
+  const titlesOf = (ids) => (ids || []).map((id) => { const c = state.chapters.find((x) => Number(x.id) === Number(id)); return c ? c.title : ('#' + id); }).join('、');
+  return `
+    <div class="card mb-12">
+      <div class="card-head">
+        <span class="card-title">导入后重建创作状态${helpDot('import_rebuild')}</span>
+        <button class="btn small" data-action="rebuild-plan">${run ? '按当前正文重新规划' : '规划分析批次'}</button>
+        <button class="btn small secondary" data-action="rebuild-refresh">刷新进度</button>
+        ${run && run.status === 'cancelled' ? '<button class="btn small secondary" data-action="rebuild-resume">恢复（复用未过期批次）</button>' : ''}
+      </div>
+      <div class="muted" style="font-size:12px">可选的「分析并重建创作状态」：分批抽取 → 作者确认 → 逐批<b>原子</b>写入既有提案设施（确认即应用，失败整批回滚）。候选未确认前不进正文、不进事实/事件/角色知识；正文或抽取配置变化会让旧结果标「已过期」，必须重跑；恢复不会重跑已完成且基线一致的批次。</div>
+      ${run ? `
+        <div class="mt-8" style="font-size:12px">
+          <span class="chip">运行 #${esc(String(run.id))}</span>
+          <span class="chip">${esc(String(run.status))}</span>
+          <span class="muted">批次 ${esc(String(batches.length))}｜可复用 ${esc(String(counts.reuse || 0))}｜过期 ${esc(String(counts.stale || 0))}｜待抽取 ${esc(String(counts.pending || 0))}｜已抽取待确认 ${esc(String(progress.extracted || 0))}｜已确认 ${esc(String(progress.confirmed || 0))}｜失败 ${esc(String(progress.failed || 0))}｜候选 ${esc(String(progress.proposals || 0))}</span>
+        </div>
+        ${batches.map((b) => `
+          <div class="st-character-item">
+            <div class="row"><b>批次 ${esc(String(Number(b.batch_index) + 1))}/${esc(String(batches.length))}</b>
+              <span class="chip">${esc(label(b.state))}</span>
+              <span class="muted" style="font-size:12px">${esc(titlesOf(b.chapter_ids))}｜${esc(String(b.chars))} 字｜基线 ${esc(String(b.baseline_hash || '').slice(0, 12))}${b.result_hash ? `｜结果 ${esc(String(b.result_hash).slice(0, 12))}` : ''}${b.attempts ? `｜尝试 ${esc(String(b.attempts))}` : ''}</span>
+            </div>
+            ${b.reason ? `<div class="muted" style="font-size:12px">${esc(b.reason)}</div>` : ''}
+            <div class="row mt-8" style="gap:6px">
+              ${b.state !== 'reuse' && b.db_status !== 'confirmed' ? `<button class="btn small secondary" data-action="rebuild-extract" data-index="${esc(String(b.batch_index))}">抽取本批</button>` : ''}
+              ${b.db_status === 'extracted' ? `<button class="btn small" data-action="rebuild-confirm" data-index="${esc(String(b.batch_index))}">确认应用本批（${esc(String(b.proposals))} 条候选）</button>` : ''}
+            </div>
+          </div>`).join('')}
+        <div class="row mt-8" style="gap:6px">
+          <button class="btn small secondary" data-action="rebuild-confirm-all" ${batches.some((b) => b.db_status === 'extracted') ? '' : 'disabled'}>确认全部已抽取批次</button>
+          <button class="btn small secondary" data-action="rebuild-cancel" ${run.status === 'cancelled' ? 'disabled' : ''}>取消（保留已记录结果）</button>
+          <button class="btn small secondary" data-action="copy-text" data-copy="${esc(rebuildPromptForBatch(batches[0] || { chapter_ids: [] }))}" title="复制给 dsh 会话用（复制本身不调用模型）">复制抽取提示词（首批）</button>
+        </div>
+        <div class="muted mt-8" style="font-size:12px">「抽取本批」会用当前模型配置按批请求一次（<b>会产生费用</b>）；也可以复制提示词交给 dsh 会话，再把返回的 JSON 记回（record 接口）。</div>
+      ` : '<div class="muted mt-8">还没有重建运行：点「规划分析批次」把作品切成有上限的批次（整本书绝不会塞进一次请求）。</div>'}
+    </div>`;
+}
+
+/** 渲染失败不得掩盖"动作已成功"的结论：单独兜底并如实记录客户端日志。 */
+async function rebuildRenderSafely() {
+  try { await render(); }
+  catch (e) { reportClientLog({ level: 'warn', kind: 'rebuild_render_failed', message: `[导入重建] 渲染失败（动作已生效）：${e.message}` }); }
+}
+
+async function rebuildPlan() {
+  try {
+    const r = state.rebuild;
+    const body = { work_id: state.workId };
+    if (r && r.run && r.run.status !== 'confirmed') body.run_id = r.run.id;
+    const out = await api('/import/rebuild/plan', { method: 'POST', body });
+    state.rebuild = null; state.rebuildLoaded = false;
+    await loadRebuild(true);
+    const c = out.counts || {};
+    toast(`已规划 ${(out.batches || []).length} 个批次（可复用 ${c.reuse || 0} / 过期 ${c.stale || 0} / 待抽取 ${c.pending || 0}）`, 'success');
+    await rebuildRenderSafely();
+  } catch (e) { toast(`规划失败：${e.message}`, 'error'); }
+}
+
+async function rebuildExtractBatch(index) {
+  const b = rebuildBatchById(index);
+  if (!b) { toast('批次不存在', 'error'); return; }
+  if (!state.rebuild || !state.rebuild.run) { toast('还没有重建运行：先规划批次', 'error'); return; }
+  try {
+    const prompt = rebuildPromptForBatch(b);
+    const runner = typeof state.rebuildRunner === 'function'
+      ? state.rebuildRunner
+      : (({ prompt: p, label }) => runPipelineStage(p, { stageLabel: label }));
+    const raw = await runner({ index: b.batch_index, label: `导入重建·批次 ${Number(b.batch_index) + 1}`, prompt });
+    let payload = String(raw || '').trim();
+    const fence = payload.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) payload = fence[1].trim();
+    const start = payload.indexOf('{'); const end = payload.lastIndexOf('}');
+    const result = JSON.parse(payload.slice(start, end + 1)); // 解析失败交给 record 的校验口径报错
+    const out = await api('/import/rebuild/record', { method: 'POST', body: { run_id: state.rebuild.run.id, batch_index: b.batch_index, result } });
+    state.rebuild = null; state.rebuildLoaded = false;
+    await loadRebuild(true);
+    toast(`批次 ${Number(b.batch_index) + 1} 已记录：${out.proposals} 条候选待确认`, 'success');
+    await rebuildRenderSafely();
+  } catch (e) { toast(`本批抽取失败：${e.message}`, 'error'); }
+}
+
+async function rebuildConfirm(indexes) {
+  if (!state.rebuild || !state.rebuild.run) { toast('还没有重建运行', 'error'); return; }
+  try {
+    const body = { run_id: state.rebuild.run.id };
+    if (Array.isArray(indexes) && indexes.length) body.batch_indexes = indexes;
+    const out = await api('/import/rebuild/confirm', { method: 'POST', body });
+    state.rebuild = null; state.rebuildLoaded = false;
+    await loadRebuild(true);
+    toast(`已确认 ${out.applied} 批：登记并原子应用 ${out.proposals_created} 条提案${out.stale ? `；${out.stale} 批已过期需重跑` : ''}`, out.stale ? 'warn' : 'success');
+    await rebuildRenderSafely();
+  } catch (e) { toast(`确认失败：${e.message}`, 'error'); }
+}
+
+async function rebuildCancel() {
+  if (!state.rebuild || !state.rebuild.run) { toast('还没有重建运行', 'error'); return; }
+  try {
+    await api('/import/rebuild/cancel', { method: 'POST', body: { run_id: state.rebuild.run.id } });
+    state.rebuild = null; state.rebuildLoaded = false;
+    await loadRebuild(true);
+    toast('已取消：已记录的批次结果保留，恢复时只补未完成/过期的批次', 'success');
+    await rebuildRenderSafely();
+  } catch (e) { toast(`取消失败：${e.message}`, 'error'); }
+}
 async function renderST(content) {
   const currentChapter = state.chapters.find((c) => c.id === state.currentChapterId) || null;
+  await loadEditRules();
+  await loadAuthorStyle();
+  await loadStoryState();
+  await loadBranch();
+  await loadRebuild();
   content.innerHTML = `
     <div class="page-head">
       <div>
-        <h1 class="page-title">🧩 SillyTavern 设置 ${helpDot('sillytavern')}</h1>
+        <h1 class="page-title">🧩 创作上下文 ${helpDot('creation_context')}</h1>
         <div class="page-sub">管理角色卡、世界观词条和作者注；长期记忆已移到“小说设定 → 长期记忆”</div>
       </div>
     </div>
@@ -3458,6 +4498,11 @@ async function renderST(content) {
       <div class="card-head"><span class="card-title">作品作者注 ${helpDot('work_note')}</span><button class="btn small secondary" data-action="ai-gen-work-note" title="AI 起草作品作者注">✨ AI 起草</button><button class="btn small" data-action="save-st-work-note">保存作品作者注</button></div>
       <textarea id="st-work-author-note" rows="3" placeholder="整部作品通用的 AI 提示，支持 {title} {work} {characters} {summary}">${esc(state.work?.author_note || '')}</textarea>
     </div>
+    ${renderEditRulesCard()}
+    ${renderAuthorStyleCard()}
+    ${renderStoryStateCard()}
+    ${renderBranchCard()}
+    ${renderRebuildCard()}
     <div class="card mb-12">
       <div class="card-head"><span class="card-title">章节作者注 ${helpDot('chapter_note')}</span></div>
       ${state.chapters.length ? `
@@ -3475,6 +4520,7 @@ async function renderST(content) {
     </div>
     <div class="card mb-12">
       <div class="card-head"><span class="card-title">角色卡</span><button class="btn small" data-action="new-st-character">＋ 新建角色卡</button></div>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">角色卡 / 世界观词条 / 作者注都是喂给 AI 的素材（不影响正文与作品数据）</div>
       <div class="st-character-list">
         ${state.characters.length ? state.characters.map((c) => `
           <div class="st-character-item">
@@ -4882,7 +5928,11 @@ async function saveInterruptedDraft(text, chapterId) {
   }
 }
 // 只标记硬伤，轻微瑕疵放行；通道不可用时不阻塞交付。
-async function verifyAIDraft(blueprint, article, targetWords) {
+// 质检提示词（从 verifyAIDraft 里抽出来，便于分段路径与测试直接核对）。
+// 目标正文**不截断**：超过单请求安全上限时 verifyAIDraft 会显式跳过质检并说明原因，
+// 而不是把半章正文当整章核对（半章质检比不质检更危险：它会把"没看到的部分"判成没问题）。
+function buildAIWriteQualityPrompt(article, blueprint, opts = {}) {
+  const segment = opts.segment || null;
   const bpText = blueprint
     ? [
         blueprint.scene_goal && `场景目标：${blueprint.scene_goal}`,
@@ -4904,11 +5954,26 @@ async function verifyAIDraft(blueprint, article, targetWords) {
     '【当前小说上下文】',
     aiContextBlock() || '无',
     '',
+    ...(segment ? ['【本片上文/下文（context-only，仅供参考，不要核它们的文字）】', longTextContextBlock(segment), ''] : []),
     '【待核正文】',
-    String(article || '').slice(0, 12000),
+    String(article || ''),
     '',
     '只输出 JSON。'
   ].join('\n');
+  return prompt;
+}
+
+async function verifyAIDraft(blueprint, article, targetWords) {
+  const text = String(article || '');
+  // 质检是只读判断：超过单请求安全上限时显式跳过（带原因），不把半章当整章核对。
+  const plan = longTextPlanFor('quality_gate', text, { blueprint });
+  if (plan.mode === 'unavailable') {
+    return { pass: true, skipped: true, reason: 'long_text_engine_unavailable' };
+  }
+  if (plan.mode === 'segmented') {
+    return { pass: true, skipped: true, reason: 'over_single_request_limit', plan };
+  }
+  const prompt = buildAIWriteQualityPrompt(text, blueprint);
   const reply = await directAIWrite([{ role: 'user', content: prompt }], {
     model: policyModel('fast'),
     // 质检要读 1.2 万字正文再出结论，1500 的总额度连思考都不够 —— 思考吃光就返回空，
@@ -4930,7 +5995,8 @@ async function verifyAIDraft(blueprint, article, targetWords) {
 
 // 质检不过时走 harness 精写内核修复：保留大部分正文、只修硬伤；
 // 内核同时做一致性/红线自检与事件/记忆入账提案（提案稍后在界面确认）。
-function buildAIWriteRepairPrompt(article, issues, blueprint, targetWords) {
+function buildAIWriteRepairPrompt(article, issues, blueprint, targetWords, opts = {}) {
+  const segment = opts.segment || null;
   const bpText = blueprint
     ? [
         blueprint.scene_goal && `场景目标：${blueprint.scene_goal}`,
@@ -4954,8 +6020,10 @@ function buildAIWriteRepairPrompt(article, issues, blueprint, targetWords) {
     '【当前小说上下文】',
     aiContextBlock() || '无',
     '',
+    ...(segment ? ['【本片上文/下文（context-only，禁止修改、禁止出现在输出里）】', longTextContextBlock(segment), ''] : []),
     '【待修复正文】',
-    String(article || '').slice(0, 12000)
+    String(article || ''),
+    ...(segment ? ['', `只输出本片（target ${segment.segment_id}）修复后的完整正文；不要输出 context-only 内容。`] : [])
   ].join('\n');
 }
 
@@ -4970,6 +6038,8 @@ async function scheduleLedgerProposalJob(article) {
     '再用 novel_memory_update 把本章进展并入长期记忆。当前为提案模式，各调用一次即可，不要重复提交；不要输出正文。',
     '',
     '【本章正文】',
+    // 合法保留的裁剪（R08 例外清单）：这是**内部入账摘要**任务的输入上限，
+    // 不是"目标正文编辑"路径；入账走提案，作者逐条确认，截断不影响正文事实。
     String(article).slice(0, 12000)
   ].join('\n');
   try {
@@ -5741,13 +6811,36 @@ function replaceEditorContent(editor, html, range) {
   }
 }
 
-// 显示 AI 结果预览，确认后执行 onApply。
-function showAIApplyPreview(title, reply, onApply) {
+// 显示 AI 结果预览，确认后执行 onApply。metaHtml 用于长正文分段的覆盖证据（R08）。
+function showAIApplyPreview(title, reply, onApply, metaHtml = '') {
   state.pendingAIApply = { onApply };
   openModal({
     title,
-    body: `<div class="ai-apply-preview">${esc(reply).replace(/\n/g, '<br>')}</div>`,
+    body: `${metaHtml || ''}<div class="ai-apply-preview">${esc(reply).replace(/\n/g, '<br>')}</div>`,
     footer: `<button class="btn secondary" data-close-modal>取消</button><button class="btn" data-action="confirm-ai-apply">确认应用</button>`,
+    large: true
+  });
+}
+
+// 用编辑器当前文本做"源版本是否被作者改过"的判据（与入口处取文本用的是同一条路径，避免假阳性）。
+function longTextLiveEditorText(fallback) {
+  const editor = $('#editor-content');
+  if (!editor) return String(fallback == null ? '' : fallback);
+  try {
+    const sel = getEditorSelection(editor);
+    const text = String((sel && sel.text) || editor.innerText || '').trim();
+    return text || String(fallback == null ? '' : fallback);
+  } catch (e) { return String(fallback == null ? '' : fallback); }
+}
+
+// 长正文分段未通过覆盖清单：**不提供"部分采纳"**——正文一个字都不动，只提供补跑入口。
+function showLongTextIncomplete(label, run, retry, alt) {
+  state.pendingLongTextRetry = retry || null;
+  state.pendingLongTextAltRetry = (alt && alt.handler) || null;
+  openModal({
+    title: `${label}未完成（正文未被改动）`,
+    body: `${run.statusHtml || ''}<div class="muted">已完成的候选片按源版本保留：再次处理只会补跑未完成的片，成功且源版本一致的片不会重复计费。</div>`,
+    footer: `<button class="btn secondary" data-close-modal>知道了</button>${alt && alt.handler ? `<button class="btn secondary" data-action="long-text-retry-alt">${esc(alt.label)}</button>` : ''}${retry ? '<button class="btn" data-action="long-text-retry">补跑未完成的片</button>' : ''}`,
     large: true
   });
 }
@@ -5760,19 +6853,342 @@ async function applyAIReply(editor, reply, range) {
   toast('已应用 AI 结果', 'success');
 }
 
-function buildAIPolishMessages(text, instruction = '') {
+// ══════════════════════════════════════════════════════════════════════════════
+// R08 长正文处理：目标正文不再被 slice(0, 6000 / 12000)
+//
+// 旧链路自称"整章润色/扩写/审稿/修稿"，实现却把**目标正文**截到前 6000 / 12000 字，
+// 于是"处理整章"实际只处理了前半章，而且没有任何地方能看出这件事（无片号、无覆盖清单、无版本）。
+// 现在：先按**最终序列化请求**的量估算（含 system/上下文/输出预留/协议开销），
+// 能单请求就整篇进；超限则按段落切成稳定片（片号由内容 hash 得出，不随前文编辑漂移），
+// 逐片落候选 → 覆盖清单通过且源版本仍匹配 → 才给作者差异预览/采纳。
+// 合法保留的裁剪不在本模块内：预览摘要、日志脱敏、安全上限、上下文层自身的预算裁剪。
+// ══════════════════════════════════════════════════════════════════════════════
+const LONG_TEXT_STORE_KEY = 'ns_long_text_run';
+
+function longTextEngine() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelLongText) || null;
+}
+
+// 分段阈值（字符，按最终序列化请求计）。默认值刻意保守：按中文 ≈1 字/token 的常见口径，
+// 48000 字整包 + 12000 输出预留 + 1500 协议预留仍明显低于模型上下文窗口。
+// 这是"何时分段"的工程阈值，**不是**宿主上下文预算；TOTAL_BUDGET / 各层 cap 不因它改变。
+function longTextLimits() {
+  const s = state.longTextSettings || {};
+  const num = (v, d) => (Number(v) > 0 ? Number(v) : d);
+  return {
+    request_chars: num(s.request_chars, 48000),
+    output_reserve_chars: num(s.output_reserve_chars, 12000),
+    protocol_chars: num(s.protocol_chars, 1500),
+    max_segment_chars: num(s.max_segment_chars, 8000),
+    min_segment_chars: num(s.min_segment_chars, 400),
+    neighbor_chars: num(s.neighbor_chars, 800),
+    sentinel_chars: 60
+  };
+}
+
+// context-only 邻接文本的显式围栏：模型读得懂"这段不许改"，覆盖阶段也能机械验证。
+function longTextContextBlock(segment) {
+  if (!segment) return '';
+  const lines = [];
+  if (segment.context_before) lines.push('上文结尾（context-only，禁止修改）：\n' + segment.context_before);
+  if (segment.context_after) lines.push('下文开头（context-only，禁止修改）：\n' + segment.context_after);
+  return lines.join('\n\n');
+}
+
+function longTextPlanFor(kind, text, opts = {}) {
+  const K = longTextEngine();
+  const limits = longTextLimits();
+  const source = String(text == null ? '' : text);
+  if (!K) return { mode: 'unavailable', kind, source_version: '', source_chars: source.length, segments: [], budget: {}, limits };
+  const meta = longTextKindMeta(kind, opts);
+  const probe = meta.probe ? meta.probe(source, null) : [{ role: 'user', content: source }];
+  return K.planTask({ text: source, kind, limits, probeMessages: probe });
+}
+
+function longTextSaveRun(kind, chapterId, plan, results) {
+  try {
+    const payload = { v: 1, kind, chapter_id: chapterId || null, at: Date.now(), source_version: plan.source_version, source_chars: plan.source_chars, results };
+    const encoded = JSON.stringify(payload);
+    // 候选要能跨刷新续跑；超大数据不硬塞 localStorage（宁可不持久化，也不让浏览器抛配额异常）。
+    if (encoded.length > 400000) {
+      reportClientLog({ level: 'warn', kind: 'long_text_store_skipped', message: `[长正文] 候选体积 ${encoded.length} 字，超过本地持久化上限，本次不落本地（刷新后需重跑）` });
+      return;
+    }
+    localStorage.setItem(LONG_TEXT_STORE_KEY, encoded);
+  } catch (e) { /* 持久化失败不阻塞本次处理 */ }
+}
+
+function longTextLoadRun(kind, chapterId, sourceVersion) {
+  try {
+    const payload = JSON.parse(localStorage.getItem(LONG_TEXT_STORE_KEY) || 'null');
+    if (!payload || payload.kind !== kind) return null;
+    if (String(payload.chapter_id || '') !== String(chapterId || '')) return null;
+    if (payload.source_version !== sourceVersion) return null;
+    return payload;
+  } catch (e) { return null; }
+}
+
+function longTextClearRun() {
+  try { localStorage.removeItem(LONG_TEXT_STORE_KEY); } catch (e) {}
+}
+
+function longTextCancelRun() {
+  if (state.longTextCancel) state.longTextCancel.cancelled = true;
+}
+
+// UI 摘要：原文版本 / 目标范围 / 片数 / 完成·失败·过期 / 覆盖结论 / 未解决项。
+function longTextStatusHtml(run) {
+  const K = longTextEngine();
+  if (!K || !run || !run.plan) return '';
+  const lines = K.summaryText({ plan: run.plan, results: run.results, manifest: run.manifest });
+  const resume = run.resume && run.resume.rerun && run.resume.rerun.length
+    ? '<div class="muted">再次点击同一操作会自动续跑未完成的片（已完成且源版本一致的片不重跑）</div>' : '';
+  return `<div class="long-text-status"><div class="ref-group-title">分段处理</div><ul class="long-text-lines">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>${resume}</div>`;
+}
+
+// 每种任务的差异都在这一张表里：探测消息（量最终请求）、单片消息/提示词、输出解析、验证策略。
+function longTextKindMeta(kind, opts) {
+  const o = opts || {};
+  const instruction = String(o.instruction || '');
+  switch (kind) {
+    case 'polish':
+      return {
+        label: '润色', tier: 'fast',
+        probe: (text) => buildAIPolishMessages(text, instruction),
+        messages: (text) => buildAIPolishMessages(text, instruction),
+        segmentMessages: (seg) => buildAIPolishMessages(seg.target.text, instruction, { segment: seg, context: aiContextBlock() })
+      };
+    case 'expand':
+      return {
+        label: '扩写', tier: 'fast',
+        probe: (text) => buildAIExpandMessages(text, instruction),
+        messages: (text) => buildAIExpandMessages(text, instruction),
+        segmentMessages: (seg) => buildAIExpandMessages(seg.target.text, instruction, { segment: seg, context: aiContextBlock() })
+      };
+    case 'review':
+      return {
+        label: '审稿', tier: 'quality', job: true, reports: true,
+        probe: (text) => [{ role: 'user', content: buildAIReviewPrompt(text, o.redlineScanText || '', o.continuityGuardText || '', o.targetWords || 0) }],
+        prompt: (text, seg) => buildAIReviewPrompt(text, o.redlineScanText || '', o.continuityGuardText || '', o.targetWords || 0, seg ? { segment: seg } : {}),
+        parse: (seg, raw) => {
+          const parsed = parseReviewText(raw);
+          if (!parsed.report) throw new Error('审稿 JSON 解析失败（该片将标为失败并可续跑）');
+          return { output: raw, report: parsed.report };
+        },
+        // 审稿是只读任务：它可以引用/复述正文，因此不做"回显邻接段"判定；只要求非空。
+        verify: (seg, raw) => (String(raw == null ? '' : raw).trim() ? { ok: true, cleaned: String(raw), reasons: [] } : { ok: false, cleaned: '', reasons: ['empty-output'] })
+      };
+    case 'revision_patch':
+      return {
+        label: '修稿（按段）', tier: 'quality', job: true,
+        probe: (text) => [{ role: 'user', content: buildAIRevisionPatchPrompt(text, o.issues || []) }],
+        prompt: (text, seg) => buildAIRevisionPatchPrompt(text, o.issues || [], seg ? { segment: seg } : {}),
+        parse: (seg, raw) => {
+          // 单请求路径（未分段）没有 segment：底稿是整篇正文（o.text 为调用方传入的待修文本）。
+          const base = seg ? seg.target.text : String(o.text == null ? '' : o.text);
+          const patched = tryApplyRevisionOutput(raw, base);
+          if (!patched || !patched.ok) throw new Error('补丁未能定位到本片段落（该片将标为失败并可续跑）');
+          return { output: patched.text, extra: { applied: patched.applied.length, unresolved: patched.unresolved.length, noop: !!patched.noop } };
+        }
+      };
+    case 'revision_full':
+      return {
+        label: '修稿（整片重写）', tier: 'quality', job: true,
+        probe: (text) => [{ role: 'user', content: buildAIRevisionPrompt(text, o.issues || []) }],
+        prompt: (text, seg) => buildAIRevisionPrompt(text, o.issues || [], seg ? { segment: seg } : {}),
+        parse: (seg, raw) => {
+          const finalText = parseAIWritingOutput(raw).finalText || '';
+          if (!finalText.trim()) throw new Error('修稿结果为空（该片将标为失败并可续跑）');
+          return { output: finalText };
+        }
+      };
+    case 'repair_full':
+      return {
+        label: '修复硬伤', tier: 'quality', job: true,
+        probe: (text) => [{ role: 'user', content: buildAIWriteRepairPrompt(text, o.issues || [], o.blueprint, o.targetWords || 0) }],
+        prompt: (text, seg) => buildAIWriteRepairPrompt(text, o.issues || [], o.blueprint, o.targetWords || 0, seg ? { segment: seg } : {}),
+        parse: (seg, raw) => {
+          const finalText = parseAIWritingOutput(raw).finalText || '';
+          if (!finalText.trim()) throw new Error('修复结果为空（该片将标为失败并可续跑）');
+          return { output: finalText };
+        }
+      };
+    case 'quality_gate':
+      return {
+        label: '质检', tier: 'fast',
+        probe: (text) => [{ role: 'user', content: buildAIWriteQualityPrompt(text, o.blueprint) }],
+        prompt: (text, seg) => buildAIWriteQualityPrompt(text, o.blueprint, seg ? { segment: seg } : {}),
+        messages: (text) => [{ role: 'user', content: buildAIWriteQualityPrompt(text, o.blueprint) }],
+        parse: () => ({ output: '' }),
+        verify: (seg, raw) => ({ ok: true, cleaned: String(raw || ''), reasons: [] })
+      };
+    case 'personality':
+      return {
+        label: '角色一致性', tier: 'fast',
+        probe: (text) => buildAIPersonalityMessages(o.characterId, text) || [{ role: 'user', content: text }],
+        messages: (text) => buildAIPersonalityMessages(o.characterId, text) || [{ role: 'user', content: text }],
+        segmentMessages: (seg) => buildAIPersonalityMessages(o.characterId, seg.target.text, { segment: seg }) || [{ role: 'user', content: seg.target.text }]
+      };
+    default:
+      throw new Error('未知的长正文任务类型：' + kind);
+  }
+}
+
+async function longTextCallModel(kind, meta, ctx) {
+  // 离线测试/探针注入点：生产环境不设置 state.longTextRunner（见 docs/enhancement-acceptance.md）。
+  if (typeof state.longTextRunner === 'function') {
+    return state.longTextRunner({ kind, label: meta.label, segment: ctx.segment || null, messages: ctx.messages || null, prompt: ctx.prompt || null });
+  }
+  if (meta.job) {
+    const stageLabel = meta.label + (ctx.segment ? ` · ${ctx.segment.segment_id}（第 ${ctx.segment.ordinal} 片）` : '');
+    const data = await runHarnessJob({
+      timeout: longAiTimeout(),
+      model: policyModel(meta.tier),
+      reasoning_effort: policyEffortForTier(meta.tier) || undefined,
+      action: 'write',
+      work_id: state.workId || state.work?.id || undefined,
+      chapter_id: ctx.chapterId || undefined,
+      mode: 'full',
+      prompt: ctx.prompt,
+      kind: ctx.segment ? 'long_text_segment' : kind,
+      stage: stageLabel
+    }, stageLabel + ' · 正在处理…');
+    if (data && data.job_id) state.longTextJobIds = (state.longTextJobIds || []).concat([data.job_id]);
+    return String((data && data.output) || '');
+  }
+  return runHarnessFromMessages(ctx.messages, {
+    model: policyModel(meta.tier),
+    action: kind === 'polish' || kind === 'expand' ? kind : 'write',
+    chapter_id: ctx.chapterId || undefined
+  });
+}
+
+/**
+ * 长正文统一入口：单请求能装下就整篇处理；装不下就分段跑 + 覆盖清单 + 合并。
+ * 返回值：{ mode, plan, results, manifest, merged, report, reasons, resume, statusHtml }。
+ * merged === null 表示"不得采纳"（缺片/重复/越界/源版本变化/取消），正文一个字都不会被动。
+ */
+async function longTextRunTask(kind, opts) {
+  const K = longTextEngine();
+  const options = opts || {};
+  const text = String(options.text == null ? '' : options.text);
+  if (!K) throw new Error('长正文分段模块未加载（public/long-text.js）——拒绝用截断方式处理整章');
+  const meta = longTextKindMeta(kind, options);
+  const plan = longTextPlanFor(kind, text, options);
+  const chapterId = Number(options.chapterId || state.currentChapterId) || null;
+  state.longTextJobIds = [];
+  if (plan.mode !== 'segmented') {
+    // 单请求路径的两种归属：
+    //   · 默认（润色/扩写/整片重写）——模块内直接调用模型并把结果返回给调用方；
+    //   · singleRunByCaller —— 调用方有一条更完整的单请求老路径（审稿要保留"解析失败仍存原文"的容错、
+    //     修稿要带回退整章重写、精修要接写作流水线）：模块只回计划，不预跑模型。
+    //     否则同一次任务会真实调用模型两遍——同一份钱花两次，还白等一倍时间。
+    if (options.singleRunByCaller) {
+      return {
+        kind, plan, mode: 'single', results: [], manifest: null, cancelled: false,
+        merged: null, report: null, extra: null, reasons: [],
+        resume: { reuse: [], rerun: [], rows: [] },
+        statusHtml: longTextStatusHtml({ plan })
+      };
+    }
+    const raw = await longTextCallModel(kind, meta, {
+      segment: null, chapterId,
+      messages: meta.messages ? meta.messages(text) : null,
+      prompt: meta.prompt ? meta.prompt(text, null) : null
+    });
+    const parsed = meta.parse ? meta.parse(null, raw) : { output: raw };
+    for (const id of state.longTextJobIds) markJobApplied(id);
+    state.longTextJobIds = [];
+    return {
+      kind, plan, mode: 'single', results: [], manifest: null, cancelled: false,
+      merged: parsed.output, report: parsed.report || null, extra: parsed.extra || null,
+      reasons: [], resume: { reuse: [], rerun: [], rows: [] },
+      statusHtml: longTextStatusHtml({ plan })
+    };
+  }
+  // 断点续跑：同章、同源版本的已完成候选可以被复用（失败/缺片只补跑那几片）。
+  const prior = longTextLoadRun(kind, chapterId, plan.source_version);
+  const results = prior && Array.isArray(prior.results) ? prior.results.slice() : [];
+  const signal = { cancelled: false };
+  state.longTextCancel = signal;
+  if (typeof options.onStart === 'function') options.onStart(plan, results);
+  const parsedBySegment = new Map();
+  const run = await K.runSegmentedTask({
+    plan, results, signal,
+    verify: meta.verify || undefined,
+    messagesFor: (seg) => (meta.segmentMessages
+      ? meta.segmentMessages(seg)
+      : K.segmentMessages({ system: '你是资深中文小说编辑。', context: aiContextBlock() || '无', instruction: options.instruction, segment: seg, kind: meta.label })),
+    runner: async (seg, messages) => {
+      const raw = await longTextCallModel(kind, meta, {
+        segment: seg, chapterId, messages, prompt: meta.prompt ? meta.prompt(seg.target.text, seg) : null
+      });
+      const parsed = meta.parse ? meta.parse(seg, raw) : { output: raw };
+      parsedBySegment.set(seg.segment_id, parsed);
+      return parsed.output;
+    },
+    onProgress: (p) => {
+      longTextSaveRun(kind, chapterId, plan, p.results);
+      if (typeof options.onProgress === 'function') options.onProgress(plan, p.results);
+    }
+  });
+  for (const rec of run.results) {
+    const parsed = parsedBySegment.get(rec.segment_id);
+    if (parsed && rec.status === 'done') { rec.report = parsed.report || null; rec.extra = parsed.extra || null; }
+  }
+  for (const id of state.longTextJobIds) markJobApplied(id);
+  state.longTextJobIds = [];
+  longTextSaveRun(kind, chapterId, plan, run.results);
+  const current = typeof options.currentText === 'function' ? String(options.currentText() == null ? '' : options.currentText()) : text;
+  const currentVersion = K.hashText(current, 16);
+  const manifest = K.buildCoverageManifest({ source: text, plan, results: run.results, current_version: currentVersion });
+  const merged = K.mergeResults({ source: text, plan, results: run.results, current_version: currentVersion });
+  const resume = K.resumeSegments(plan, run.results, currentVersion);
+  const statusHtml = longTextStatusHtml({ plan, results: run.results, manifest, resume });
+  if (!manifest.ok) {
+    reportClientLog({ level: 'warn', kind: 'long_text_incomplete', message: `[${meta.label}] 分段未通过覆盖清单：${manifest.unresolved.join('；')}` });
+  }
+  return {
+    kind, plan, mode: 'segmented', results: run.results, manifest,
+    cancelled: run.cancelled, reasons: merged.ok ? [] : merged.reasons,
+    merged: merged.ok && !run.cancelled ? merged.merged : null,
+    report: meta.reports ? K.mergeReviewReports({ plan, results: run.results }) : null,
+    resume, statusHtml
+  };
+}
+
+function buildAIPolishMessages(text, instruction = '', opts = {}) {
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
   const system = '你是资深中文网络小说润色编辑。请在不改变原意和剧情的前提下，优化语句通顺度、节奏感和表现力。只输出润色后的正文，不要输出解释。';
-  const user = `
-当前作品：${state.work?.title || ''}
+  const head = `当前作品：${state.work?.title || ''}
 当前章节：${chapter.title || ''}
-${instruction ? `润色要求：${instruction}` : ''}
+${instruction ? `润色要求：${instruction}` : ''}`;
+  // 分段路径：只把本片 target 交给模型，邻接段明确标成 context-only（不许改、不许回吐）。
+  if (opts.segment) {
+    const contextOnly = opts.context !== undefined ? opts.context : aiContextBlock();
+    const user = `${head}
+
+AI 上下文（角色卡 / 世界观 / 作者注）：
+${contextOnly || '无'}
+
+${longTextContextBlock(opts.segment)}
+
+需要润色的内容（target ${opts.segment.segment_id}，第 ${opts.segment.ordinal} 片 · 全文，未截断）：
+${text}
+
+请直接输出这一片润色后的完整内容；不要输出上文/下文（context-only）的任何文字，不要输出解释或标题。`;
+    return [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ];
+  }
+  const user = `${head}
 
 AI 上下文（角色卡 / 世界观 / 作者注）：
 ${aiContextBlock() || '无'}
 
-需要润色的内容：
-${text.slice(0, 6000)}
+需要润色的内容（全文，未截断）：
+${text}
 
 请直接输出润色后的完整内容。`;
   return [
@@ -5781,19 +7197,37 @@ ${text.slice(0, 6000)}
   ];
 }
 
-function buildAIExpandMessages(text, instruction = '') {
+function buildAIExpandMessages(text, instruction = '', opts = {}) {
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
   const system = '你是资深中文网络小说扩写助手。请在保留原有内容的基础上，合理扩充细节、动作、心理、环境描写，让情节更丰满。只输出扩写后的完整正文，不要输出解释。扩写后整体正文建议不少于 2000 字（若原文已超过则保持自然增长即可）。';
-  const user = `
-当前作品：${state.work?.title || ''}
+  const head = `当前作品：${state.work?.title || ''}
 当前章节：${chapter.title || ''}
-${instruction ? `扩写要求：${instruction}` : ''}
+${instruction ? `扩写要求：${instruction}` : ''}`;
+  if (opts.segment) {
+    const contextOnly = opts.context !== undefined ? opts.context : aiContextBlock();
+    const user = `${head}
+
+AI 上下文（角色卡 / 世界观 / 作者注）：
+${contextOnly || '无'}
+
+${longTextContextBlock(opts.segment)}
+
+需要扩写的内容（target ${opts.segment.segment_id}，第 ${opts.segment.ordinal} 片 · 全文，未截断）：
+${text}
+
+请直接输出这一片扩写后的完整内容；不要输出上文/下文（context-only）的任何文字，不要输出解释或标题。`;
+    return [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ];
+  }
+  const user = `${head}
 
 AI 上下文（角色卡 / 世界观 / 作者注）：
 ${aiContextBlock() || '无'}
 
-需要扩写的内容：
-${text.slice(0, 6000)}
+需要扩写的内容（全文，未截断）：
+${text}
 
 请直接输出扩写后的完整内容。`;
   return [
@@ -6378,6 +7812,8 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
     state.pendingAIProposals = Array.isArray(proposals) && proposals.length
       ? { workId: state.workId || state.work?.id || null, proposals }
       : null;
+    // 新一轮结果 = 新一次勾选：清掉上一轮可能的暂存，避免"上一轮勾的提案"被本轮采纳。
+    state.pendingProposalSelection = null;
     openModal({
       title: 'AI 写作结果',
       body: `
@@ -6408,6 +7844,16 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
 }
 
 // 把当前结果弹窗里勾选的提案提交为“采纳”；未勾选的保留待处理。
+// R03：读取勾选集合必须发生在**弹窗还开着**的时候；结果弹窗关闭前会用
+// captureProposalSelection() 把它固化到 state.pendingProposalSelection（供整次采纳使用）。
+function captureProposalSelection() {
+  const info = state.pendingAIProposals;
+  if (!info || !info.workId) return null;
+  const ids = [...document.querySelectorAll('.proposal-box [data-proposal-id]:checked')]
+    .map((el) => Number(el.dataset.proposalId)).filter((n) => n > 0);
+  return { workId: Number(info.workId) || 0, ids };
+}
+
 async function applySelectedProposals() {
   const info = state.pendingAIProposals;
   if (!info || !info.workId) return;
@@ -6459,11 +7905,14 @@ function buildRedlineScanText(scan) {
     .join('、');
 }
 
-function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText = '', targetWords = 0) {
+function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText = '', targetWords = 0, opts = {}) {
+  const segment = opts.segment || null;
   return [
     '你是严格的中文网络小说审稿编辑。请审读下面这篇章节正文，并对照小说上下文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"summary":"总评（两三句）","issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"strengths":[{"text":"写得好的地方"}]}',
     'issues 覆盖：剧情逻辑/与既有设定冲突/人物言行一致/AI 腔与模板句/节奏与钩子/篇幅；strengths 1-3 条。',
+    ...(segment ? [`本片范围：这是整章分段审稿的第 ${segment.ordinal} 片（target ${segment.segment_id}），只审这一片；` +
+      '问题描述里的位置要写"本片第几段/哪一句"，不要报本片之外的判断。'] : []),
     // 2026-09-22：把篇幅的**权威口径**写进提示词（在此之前模型只能自己挑一把尺子，于是
     // work#18 第 5、6 章被反复报「篇幅不足」——AI 写作按本章目标 3000 字补足，审稿却按
     // 作品默认 4000 / 风格区间判）。这里给的是**与写作路径同源**的取值：章节覆盖 > 作品默认。
@@ -6485,8 +7934,10 @@ function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText 
     '【当前小说上下文】',
     aiContextBlock() || '无',
     '',
+    ...(segment ? ['【本片上文/下文（context-only，仅供参考，不要审它们、也不要在 issues 里引用它们的文字）】',
+      longTextContextBlock(segment), ''] : []),
     '【待审正文】',
-    String(article || '').slice(0, 12000),
+    String(article || ''),
     '',
     '只输出 JSON。'
   ].join('\n');
@@ -6495,7 +7946,8 @@ function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText 
 // ⚠️ 下面是**整章重写**的提示词：输出≈整章长度，是修稿慢的主因（2026-09-18 实测 8 分 25 秒仍在生成）。
 // 现在默认走 buildAIRevisionPatchPrompt（只输出要改的段落）；这个函数保留为**兜底路径**：
 // 补丁解析失败或一条都没命中时回退到它，保证"改不动"和"改坏"之间还有一条熟路。
-function buildAIRevisionPrompt(article, issues) {
+function buildAIRevisionPrompt(article, issues, opts = {}) {
+  const segment = opts.segment || null;
   const list = (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）';
   return [
     '你是资深中文网络小说修稿编辑。请按下面的“作者确认的问题清单”逐条修改正文；清单之外的内容尽量保持原样，不要擅自大改。',
@@ -6506,10 +7958,14 @@ function buildAIRevisionPrompt(article, issues) {
     '【当前小说上下文】',
     aiContextBlock() || '无',
     '',
+    ...(segment ? ['【本片上文/下文（context-only，禁止修改、禁止出现在输出里）】',
+      longTextContextBlock(segment), ''] : []),
     '【待修正文】',
-    String(article || '').slice(0, 12000),
+    String(article || ''),
     '',
-    '请直接输出修改后的完整正文（不要解释、不要输出前缀）。'
+    segment
+      ? `请直接输出本片（target ${segment.segment_id}）修改后的完整正文（不要解释、不要输出前缀、不要输出 context-only 内容）。`
+      : '请直接输出修改后的完整正文（不要解释、不要输出前缀）。'
   ].join('\n');
 }
 
@@ -6531,6 +7987,13 @@ async function runArticleReview(info) {
   if (!String(info && info.article || '').trim()) {
     toast('没有拿到这一章的正文，未发起审稿：请切到该章确认正文已保存后重试', 'error');
     return;
+  }
+  // R08 草稿链（AI 写作结果 →「先审稿再应用」）：差异里的"原文"是草稿，不是章节正文。
+  // 合并闸门保护的对象始终是章节正文 —— 所以在这里先固化一份正文指纹，
+  // 合并时核对"正文在整个审稿/修稿期间没被动过"；拿草稿去和正文比指纹永远不相等。
+  let baseChapterFingerprint = null;
+  if (info && info.fromDraft && reviewChapterId) {
+    try { baseChapterFingerprint = textFingerprint(await revisionBaseArticle(reviewChapterId)); } catch (_) { baseChapterFingerprint = null; }
   }
   const jobBase = {
     timeout: longAiTimeout(),
@@ -6566,6 +8029,41 @@ async function runArticleReview(info) {
     const continuityGuardText = buildContinuityGuardText(guard);
     // 篇幅的权威口径随章一起定下来（章号在入口已定死，这里按同一个章号解析目标字数）。
     const reviewTargetWords = resolveTargetWords(reviewChapterId);
+    // R08：整章审稿不再截断到 12000 字。超限按片审、合并报告（每条问题带片号），
+    // 覆盖清单不通过就不出报告（缺片/解析失败可见、可续跑）。
+    const reviewRun = await longTextRunTask('review', {
+      text: info.article, chapterId: reviewChapterId, targetWords: reviewTargetWords,
+      redlineScanText, continuityGuardText, singleRunByCaller: true,
+      currentText: () => (Number(state.currentChapterId) === Number(reviewChapterId)
+        ? longTextLiveEditorText(info.article)
+        : info.article),
+      onProgress: (plan, results) => {
+        const el = $('#ai-task-progress');
+        if (el) { el.hidden = false; el.textContent = `长正文分段审稿：${results.filter((r) => r.status === 'done').length} / ${plan.segments.length} 片完成…`; }
+      }
+    });
+    if (reviewRun.mode === 'segmented') {
+      const el = $('#ai-task-progress');
+      if (el) el.hidden = true;
+      if (!reviewRun.merged || !reviewRun.report) {
+        showLongTextIncomplete('审稿', reviewRun, () => runArticleReview(info));
+        return;
+      }
+      const mergedReport = reviewRun.report;
+      if (reviewChapterId) {
+        try {
+          const saved = await api('/novel/review', {
+            method: 'PUT',
+            body: { chapter_id: reviewChapterId, report: mergedReport, raw_text: '', status: 'parsed' }
+          });
+          mergedReport.review_id = saved.review_id;
+        } catch (_) { /* 保存失败不阻塞审稿流程 */ }
+      }
+      state.pendingReview = { info: { ...info, chapterId: reviewChapterId, baseChapterFingerprint }, review: mergedReport };
+      showReviewReport(mergedReport);
+      toast(`整章分 ${reviewRun.plan.segments.length} 片审完：覆盖清单通过（首段/尾段/章尾哨兵齐全，问题均带片号）`, 'success');
+      return;
+    }
     const reviewData = await runHarnessJob(
       { ...jobBase, prompt: buildAIReviewPrompt(info.article, redlineScanText, continuityGuardText, reviewTargetWords), kind: 'review', stage: 'AI 审稿' },
       'AI 审稿 · 正在通读全文并生成审稿报告…'
@@ -6604,7 +8102,7 @@ async function runArticleReview(info) {
     // 抢救出来的报告要主动说明，避免用户以为 AI 真的漏报了几条。
     if (stage === 'salvaged') toast('审稿报告格式有瑕疵，已尽力抢救出可读部分（可能少一两条）', 'error');
     markJobApplied(reviewData && reviewData.job_id);
-    state.pendingReview = { info: { ...info, chapterId: reviewChapterId }, review: report };
+    state.pendingReview = { info: { ...info, chapterId: reviewChapterId, baseChapterFingerprint }, review: report };
     showReviewReport(report);
   } catch (e) {
     if (!e.cancelled) toast('审稿失败：' + e.message, 'error');
@@ -6669,6 +8167,50 @@ async function refineByChecklist() {
     mode: 'full'
   };
   try {
+    // R08：整章修稿不再截断到 12000 字；超限按片改（补丁锚点只能取自本片），
+    // 覆盖清单通过且源版本匹配才进入差异预览。任一必需片失败 → 不出部分结果。
+    const revisionRun = await longTextRunTask('revision_patch', {
+      text: info.article, chapterId: revisionChapterId, issues: confirmed, singleRunByCaller: true,
+      currentText: () => (Number(state.currentChapterId) === Number(revisionChapterId)
+        ? longTextLiveEditorText(info.article)
+        : info.article),
+      onProgress: (plan, results) => {
+        const el = $('#ai-task-progress');
+        if (el) { el.hidden = false; el.textContent = `长正文分段修稿：${results.filter((r) => r.status === 'done').length} / ${plan.segments.length} 片完成…`; }
+      }
+    });
+    if (revisionRun.mode === 'segmented') {
+      const el = $('#ai-task-progress');
+      if (el) el.hidden = true;
+      const retryPatch = () => { state.pendingReview = { info, review }; refineByChecklist(); };
+      if (!revisionRun.merged) {
+        showLongTextIncomplete('修稿（按段）', revisionRun, retryPatch, {
+          label: '改用整片重写（更慢、更贵）',
+          handler: () => refineLongTextFull(info, review)
+        });
+        return;
+      }
+      const unresolvedNotes = (revisionRun.results || [])
+        .filter((r) => r.extra && r.extra.unresolved)
+        .map((r) => `${r.segment_id}：${r.extra.unresolved} 处未能定位`);
+      const appliedCount = (revisionRun.results || []).reduce((n, r) => n + ((r.extra && r.extra.applied) || 0), 0);
+      if (appliedCount === 0 && !unresolvedNotes.length) {
+        toast('模型判断这份清单没有需要改动的段落（本次未改动正文，也未回退整章重写）', 'success');
+        longTextClearRun();
+        return;
+      }
+      showReviewDiff(info.article, revisionRun.merged, {
+        baseFingerprint: info.baseChapterFingerprint || null,
+        checklist: confirmed.length,
+        applied: appliedCount,
+        notes: unresolvedNotes,
+        chapterId: revisionChapterId
+      });
+      toast(`整章分 ${revisionRun.plan.segments.length} 片改稿：共改 ${appliedCount} 处${unresolvedNotes.length ? `；${unresolvedNotes.length} 片有未能定位的问题` : ''}`,
+        unresolvedNotes.length ? 'error' : 'success');
+      longTextClearRun();
+      return;
+    }
     const refinedData = await runHarnessJob(
       { ...jobBase, prompt: buildAIRevisionPatchPrompt(info.article, confirmed), kind: 'revision', stage: 'AI 修稿' },
       'AI 修稿 · 正在按确认清单逐段修改…'
@@ -6677,7 +8219,14 @@ async function refineByChecklist() {
     // 首选补丁式（只改相关段落，快）；解析不到/一条都没命中 → 回退整章重写（慢但熟路）。
     const patched = tryApplyRevisionOutput(raw, info.article);
     if (patched && patched.ok) {
+      // 空补丁 = 合法的"无修改"：不弹差异预览、**不回退整章重写**（不再多花一次钱）。
+      if (patched.noop) {
+        toast('模型判断这份清单没有需要改动的段落（本次未改动正文，也未回退整章重写）', 'success');
+        markJobApplied(refinedData && refinedData.job_id);
+        return;
+      }
       showReviewDiff(info.article, patched.text, {
+        baseFingerprint: info.baseChapterFingerprint || null,
         checklist: confirmed.length,
         applied: patched.applied.length,
         notes: patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40)),
@@ -6695,7 +8244,7 @@ async function refineByChecklist() {
     );
     const revised = parseAIWritingOutput(fullData.output || '').finalText || '';
     if (!revised.trim()) throw new Error('修稿结果为空');
-    showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId });
+    showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null });
     markJobApplied(fullData && fullData.job_id);
   } catch (e) {
     if (!e.cancelled) toast('修稿失败：' + e.message, 'error');
@@ -6707,7 +8256,8 @@ async function refineByChecklist() {
 // 时间与费用都花在"抄写没问题的段落"上。补丁式只输出需要改的段落（通常几百字）。
 // 代价是引入"定位"这一步——所以设计上强制：**定位不到必须可见**（进 unresolved 清单），
 // 且解析失败时回退整章重写（见 refineByChecklist）。
-function buildAIRevisionPatchPrompt(article, issues) {
+function buildAIRevisionPatchPrompt(article, issues, opts = {}) {
+  const segment = opts.segment || null;
   const list = (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）';
   return [
     '你是资深中文网络小说修稿编辑。**只修改下面「作者确认的问题清单」涉及的段落**，其它段落一个字都不要动、也不要输出。',
@@ -6718,8 +8268,10 @@ function buildAIRevisionPatchPrompt(article, issues) {
     '【当前小说上下文】',
     aiContextBlock() || '无',
     '',
+    ...(segment ? ['【本片上文/下文（context-only，禁止修改、禁止出现在输出里）】',
+      longTextContextBlock(segment), ''] : []),
     '【待修正文】',
-    String(article || '').slice(0, 12000),
+    String(article || ''),
     '',
     '只输出一个 JSON 对象，不要 Markdown 代码块、不要解释、不要任何前后缀：',
     '{"patches":[{"issue":1,"anchor":"原文段落（逐字照抄，含标点，不要改动一个字）","revised":"改好后的段落"}]}',
@@ -6727,7 +8279,8 @@ function buildAIRevisionPatchPrompt(article, issues) {
     '1. 一处改动一条 patch；同一段落有多条问题时合并为一条。',
     '2. anchor 必须能在【待修正文】里**原样找到**（逐字复制整段），否则这条修改会作废。',
     '3. revised 只写改后的段落本身，不要编号、不要解释、不要引号包裹。',
-    '4. 某条问题不需要改动就不必为它输出 patch；没有要改的就输出 {"patches":[]}。'
+    '4. 某条问题不需要改动就不必为它输出 patch；没有要改的就输出 {"patches":[]}。',
+    ...(segment ? ['5. patch 的 anchor 只能在【待修正文】（target ' + segment.segment_id + '）里取；不要把上文/下文（context-only）的段落当成 anchor。'] : [])
   ].join('\n');
 }
 
@@ -6766,35 +8319,74 @@ function parseRevisionPatches(raw) {
 /**
  * 把补丁应用到正文。逐段匹配（先精确、再"包含"退让），**命中才改**。
  * 返回 { text, applied, unresolved }：unresolved 必须展示给作者，绝不静默丢弃。
+ *
+ * 2026-09-27 边界加固（R02.3）：
+ *   · **唯一性**：同一 anchor 在正文里逐字相等出现多段时，拒绝改动（旧实现静默命中第一处，
+ *     可能把补丁打到错误的段落上）；包含式退让同样要求唯一命中。
+ *   · **重叠**：两条补丁指向同一段时显式进 unresolved（旧实现被 `used` 静默跳过，
+ *     作者只看到"改好了 1 处"，不知道另一条被吞掉）。
  */
 function applyRevisionPatches(article, patches) {
+  // ⚠️ 定位一律在**原始段落**上做：补丁的 anchor 是对着生成时那一版正文写的，
+  // 若在"已被前一条补丁改过的中间态"上继续找，第二条重叠补丁就会得到
+  // "找不到原文"这种误导性结论（应为"与前面的补丁指向同一段"）。
   const paras = String(article || '').split(/\n{2,}/);
+  const original = paras.slice();
   const used = new Set();
   const applied = [];
   const unresolved = [];
+  const norm = (s) => String(s || '').trim();
   for (const p of patches || []) {
-    const anchor = String(p.anchor || '').trim();
-    const revised = String(p.revised || '').trim();
+    const anchor = norm(p.anchor);
+    const revised = norm(p.revised);
     if (!anchor || !revised) {
       unresolved.push({ issue: p.issue, anchor, reason: !anchor ? '缺 anchor（无法定位）' : '缺 revised（改后内容为空）' });
       continue;
     }
-    let idx = -1;
-    for (let i = 0; i < paras.length; i++) {
-      if (used.has(i)) continue;
-      if (paras[i].trim() === anchor) { idx = i; break; }
+    // ① 精确匹配：收集**全部**逐字相等的段落 —— 唯一才允许改。
+    const exact = [];
+    for (let i = 0; i < original.length; i++) {
+      if (norm(original[i]) === anchor) exact.push(i);
     }
-    if (idx < 0) {
-      // 退让一步：模型可能多抄/少抄了首尾标点。只在 anchor 足够长时才允许模糊命中，避免误改。
-      for (let i = 0; i < paras.length; i++) {
-        if (used.has(i)) continue;
-        if (anchor.length >= 8 && paras[i].includes(anchor)) { idx = i; break; }
+    let idx = -1;
+    if (exact.length === 1) {
+      idx = exact[0];
+    } else if (exact.length > 1) {
+      unresolved.push({
+        issue: p.issue, anchor,
+        reason: `重复 anchor：正文里有 ${exact.length} 段完全相同，无法唯一确定要改哪一段（已保持原样，请手工处理）`,
+        duplicateCount: exact.length,
+      });
+      continue;
+    } else if (anchor.length >= 8) {
+      // ② 退让一步：模型可能多抄/少抄了首尾标点。只在 anchor 足够长时才允许，且**必须唯一命中**。
+      const candidates = [];
+      for (let i = 0; i < original.length; i++) {
+        if (norm(original[i]).includes(anchor)) candidates.push(i);
+      }
+      if (candidates.length === 1) idx = candidates[0];
+      else if (candidates.length > 1) {
+        unresolved.push({
+          issue: p.issue, anchor,
+          reason: `包含型 anchor 命中 ${candidates.length} 段（非唯一），拒绝猜测要改哪一段`,
+          ambiguousCount: candidates.length,
+        });
+        continue;
       }
     }
     if (idx < 0) { unresolved.push({ issue: p.issue, anchor, reason: '在正文里找不到这段原文' }); continue; }
+    // ③ 重叠：同一段被两条补丁认领 → 显式报告，不做二次覆盖。
+    if (used.has(idx)) {
+      unresolved.push({
+        issue: p.issue, anchor,
+        reason: `与前面的补丁指向同一段（第 ${idx + 1} 段）——重叠补丁已拒绝，未做二次覆盖`,
+        overlap: true,
+      });
+      continue;
+    }
     used.add(idx);
     paras[idx] = revised;
-    applied.push({ issue: p.issue, anchor, revised });
+    applied.push({ issue: p.issue, anchor, revised, paraIndex: idx });
   }
   return { text: paras.join('\n\n'), applied, unresolved };
 }
@@ -6802,13 +8394,17 @@ function applyRevisionPatches(article, patches) {
 /**
  * 修稿产出的统一入口：先按补丁解析，成功就返回改好的正文；否则返回 null（调用方回退整章重写）。
  * 抽出来是因为这条路径有**两个**调用点：正常流程 refineByChecklist 与刷新后的"接回进度"。
+ *
+ * 2026-09-27（R02.3）：`{"patches":[]}` 是**合法的"无修改"**，必须返回 ok+noop，
+ * 而不是 null —— 旧实现把它当解析失败，触发一次整章重写（多花一次钱，还可能改坏原文）。
  */
 function tryApplyRevisionOutput(output, baseArticle) {
   const patches = parseRevisionPatches(output);
-  if (!patches || !patches.length) return null;
+  if (!patches) return null;
+  if (!patches.length) return { ok: true, noop: true, text: String(baseArticle || ''), applied: [], unresolved: [] };
   const result = applyRevisionPatches(baseArticle, patches);
   if (!result.applied.length) return { ...result, ok: false };
-  return { ...result, ok: true };
+  return { ...result, ok: true, noop: false };
 }
 
 // ⚠️ 第 3 个参数是**带标签的对象**，不是一个裸数字：
@@ -6816,11 +8412,38 @@ function tryApplyRevisionOutput(output, baseArticle) {
 //    两条路径给出的数不同（正常流程知道清单条数；"接回进度"只知道改好几处），
 //    用一个参数位表达两种量，必然出现「标题说按 0 条清单修改、正文说 2 条没定位」这种自相矛盾
 //    （2026-09-18 第四轮重审抓到）。
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null } = {}) {
+// 轻量内容指纹（FNV-1a 32 位 + 长度）：只用于「预览期间原文是否被动过」的本地比对，
+// 不是安全哈希、不上传、不落库；同一浏览器会话内比对足够。
+function textFingerprint(text) {
+  const s = String(text || '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return `fnv1a:${h.toString(16)}:${s.length}`;
+}
+
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null, proposalIds = null, baseFingerprint = null } = {}) {
   // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
   // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
-  state.pendingReviewDiff = { newText, chapterId: targetChapterId };
+  // R02.3：同时绑定**生成这份差异时的原文指纹**。预览期间原文被改（作者手改 / 另一任务写回 /
+  // 章节被删）时，合并必须拒绝，而不是拿旧差异稿覆盖更新的正文。
+  state.pendingReviewDiff = {
+    newText, chapterId: targetChapterId,
+    // 默认按差异"原文"取指纹；草稿链由调用方传入"章节正文在审稿启动时"的指纹（见 runArticleReview）。
+    baseFingerprint: baseFingerprint || textFingerprint(oldText),
+    baseExcerpt: String(oldText || '').trim().slice(0, 60),
+    // R03：整次采纳要用到的两样东西，都在**弹窗打开时**固化：
+    //   · proposalIds —— 结果弹窗里勾选的入账提案（弹窗关掉后 DOM 就没了）
+    //   · operationKey —— 幂等键：重复点击「合并到正文」不会重复写库/重复计费
+    proposalIds: Array.isArray(proposalIds) ? proposalIds.map(Number).filter((n) => n > 0)
+      : ((state.pendingProposalSelection && state.pendingProposalSelection.ids) || []),
+    operationKey: `merge-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  };
+  // 勾选集合已转存进 pendingReviewDiff（本次差异预览的一部分）；清掉暂存，避免串到下一次操作。
+  state.pendingProposalSelection = null;
   const viewingOther = Boolean(targetChapterId) && Number(state.currentChapterId) !== targetChapterId;
   const ops = diffParagraphs(oldText, newText);
   const body = ops.map((op) => {
@@ -6846,23 +8469,45 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
 }
 
 async function mergeReviewDiff() {
-  const { newText, chapterId } = state.pendingReviewDiff || {};
+  const { newText, chapterId, baseFingerprint, proposalIds, operationKey } = state.pendingReviewDiff || {};
   // 合并目标 = 差异预览绑定的那一章（不再是"当前打开的章"）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   state.pendingReviewDiff = null;
   if (!newText || !targetChapterId) return;
   const elsewhere = Number(state.currentChapterId) !== targetChapterId;
   try {
-    // F-16：审稿合并走 POST /novel/chapter_save（后端自动备份旧稿历史版本），与编辑器 PUT 通道区分。
-    await api('/novel/chapter_save', {
+    // R02.3：原文保真闸门 —— 差异预览绑定的是**生成时那一版原文**。合并前重新取当前正文，
+    // 指纹不一致（作者手改、另一任务写回、章节被清空/删除）就拒绝写入，让作者重新审稿，
+    // 而不是拿旧差异稿覆盖更新的正文。取不到当前正文时同样不冒险写。
+    if (baseFingerprint) {
+      let current = null;
+      try { current = await revisionBaseArticle(targetChapterId); }
+      catch (e) { current = null; }
+      if (current === null || !String(current).trim() || textFingerprint(current) !== baseFingerprint) {
+        toast('这一章的正文在差异预览之后被修改过（或已读不到），为避免覆盖新内容，已拒绝合并。请重新审稿/修稿后再试。', 'error');
+        return;
+      }
+    }
+    // R03：正文 + 本次勾选的入账提案走**一次**原子采纳（/novel/adopt）：
+    // 同一 SQLite 事务里写历史版本、写正文、入账提案、落投影 outbox；任一步失败整次回滚。
+    // 旧实现是 chapter_save 之后再发一次 proposals/apply —— 两次请求之间没有原子性，
+    // 中途失败会留下"正文已换、提案没入账"的半套状态。
+    const res = await api('/novel/adopt', {
       method: 'POST',
-      body: { chapter_id: targetChapterId, content: textToParagraphsHtml(newText) }
+      body: {
+        work_id: state.workId || state.work?.id || null,
+        chapter_id: targetChapterId,
+        content: textToParagraphsHtml(newText),
+        legacy_proposal_ids: Array.isArray(proposalIds) ? proposalIds : [],
+        operation_key: operationKey || `merge-${targetChapterId}-${Date.now().toString(36)}`,
+        adopt_kind: 'review_merge',
+      }
     });
-    applySelectedProposals();
+    const adoptedCount = ((res && res.adopt && res.adopt.legacy && (res.adopt.legacy.events || 0) + (res.adopt.legacy.memories || 0)) || 0);
     closeModal();
     toast(elsewhere
-      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本）`
-      : '审稿修稿已合并到正文（旧稿已存历史版本）', 'success');
+      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}）`
+      : `审稿修稿已合并到正文（旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}）`, 'success');
     await loadWorkData(true);
     await render();
   } catch (e) {
@@ -6889,6 +8534,347 @@ async function downloadExport(path, fallbackName) {
   } catch (e) {
     toast('导出失败：' + e.message, 'error');
   }
+}
+
+// ---------- P4：共享资料库（跨作品写作参考资料） ----------
+// 界面只做作者动作的入口，服务端口径原样呈现：
+//   · 导入先 dry-run 预览（该端点从不写入）→ 作者确认才写共享资料根；
+//   · 删除先「标记缺失」→「确认删除」才删记忆库文件与登记行；
+//   · 开关按作品（library_enabled:<workId>），默认关闭；资料永不 canon、只作参考。
+const LIBRARY_ACTION_LABEL = { add: '新增', update: '更新', skip: '未变' };
+const LIBRARY_SKIP_LABEL = {
+  ext_not_allowed: '扩展名不在白名单（只收 .md / .txt）',
+  hidden: '隐藏项（. 或 _ 开头）',
+  ignored_dir: '忽略目录（依赖 / 系统目录不深入）',
+  too_large: '超过单文件上限（2MB）',
+  bad_encoding: '不是合法 UTF-8（安全失败，不猜编码）',
+  symlink: '符号链接（不跟随）',
+  limit: '超过单批篇数上限',
+  duplicate_target: '与另一篇映射到同一入库路径',
+  bad_target: '入库路径形状不合'
+};
+const librarySkipLabel = (code) => LIBRARY_SKIP_LABEL[code] || String(code || '');
+const libraryTimeLabel = (t) => (t ? String(t).replace('T', ' ').slice(0, 16) : '—');
+const libraryLines = (text) => String(text || '').split('\n').length;
+// 服务端 plan.dir 是 path.resolve 归一化后的路径（Windows 反斜杠、去尾斜杠）：比对前同口径归一，
+// 避免「其实没改目录、只是写法不同」被误判为「目录已改」。大小写仍严格：宁可多拒一次，不可少拒。
+const normalizeLibraryDir = (s) => String(s || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+// P4：资料库异步请求序号（快速翻页 / 连续检索时只认最后一次响应，过期响应一律丢弃）
+let libraryDocSeq = 0;
+let librarySearchSeq = 0;
+
+async function loadLibrary(force = false) {
+  const key = state.workId || null; // 缓存以作品为键，避免把上一个作品的「按作品开关」串到下一个作品
+  if (!force && state.libraryLoaded && state.libraryKey === key) return state.library;
+  try {
+    const data = await api(`/novel/library/status${state.workId ? `?work_id=${state.workId}` : ''}`);
+    if ((state.workId || null) !== key) return state.library; // 等待期间作品已切换：丢弃过期结果（F-02 同口径）
+    state.library = data && data.ok ? data : null;
+  } catch (_) {
+    if ((state.workId || null) !== key) return state.library;
+    state.library = null; // 旧服务端没有该接口：如实显示不可用，不假装有资料库
+  }
+  state.libraryKey = key;
+  state.libraryLoaded = true;
+  return state.library;
+}
+
+function libraryStatusChip(d) {
+  return d.status === 'active' ? '<span class="chip">有效</span>' : '<span class="chip">标记缺失</span>';
+}
+
+function libraryDocRow(d) {
+  const buttons = d.status === 'active'
+    ? `<button class="btn small secondary" data-action="library-view" data-id="${esc(String(d.id))}">读原文</button>
+       <button class="btn small secondary" data-action="library-mark" data-id="${esc(String(d.id))}">标记缺失</button>
+       <button class="btn small secondary" data-action="library-delete" data-id="${esc(String(d.id))}">确认删除…</button>`
+    : `<button class="btn small secondary" data-action="library-delete" data-id="${esc(String(d.id))}">确认删除…</button>`;
+  return `<div class="st-character-item">
+      <div class="row"><b>${esc(d.title || d.slug || '')}</b>
+        <span class="chip">${esc(d.category || '未分类')}</span>${libraryStatusChip(d)}
+        <span class="muted" style="font-size:12px">${esc(String(d.chars || 0))} 字｜预计 ${esc(String(d.est_chunks || 0))} 块｜索引 ${esc(libraryTimeLabel(d.indexed_at))}</span>
+      </div>
+      <div class="row mt-8" style="gap:6px">${buttons}</div>
+    </div>`;
+}
+
+function libraryHitRow(h) {
+  const score = typeof h.score === 'number' ? `<span class="chip">相关度 ${esc(String(h.score))}%</span>` : '';
+  return `<div class="st-character-item">
+      <div class="row"><b>${esc(h.title || h.slug || '')}</b>
+        <span class="chip">${esc(h.category || '未分类')}</span>${score}
+        <span class="muted" style="font-size:12px">${esc(h.category || '未分类')} / ${esc(h.slug || '')}</span>
+      </div>
+      ${h.abstract ? `<div class="muted" style="font-size:12px">${esc(String(h.abstract).slice(0, 200))}</div>` : ''}
+      <div class="row mt-8" style="gap:6px"><button class="btn small secondary" data-action="library-view" data-id="${esc(String(h.id))}">读原文</button></div>
+    </div>`;
+}
+
+function libraryPlanHtml() {
+  const plan = state.libraryPlan;
+  if (!plan) return '';
+  const s = plan.summary || {};
+  const items = (plan.items || []).filter((i) => i.action !== 'skip');
+  const skipped = plan.skipped || [];
+  return `
+    <div class="mt-8">
+      <div style="font-size:12px">
+        <span class="chip">新增 ${esc(String(s.add || 0))}</span>
+        <span class="chip">更新 ${esc(String(s.update || 0))}</span>
+        <span class="chip">未变 ${esc(String(s.skip_unchanged || 0))}</span>
+        <span class="chip">跳过 ${esc(String(s.skipped_files || 0))}</span>
+        <span class="muted">目录：${esc(plan.dir || state.libraryDir)}｜预计写入 ${esc(String(s.will_write || 0))} 篇 / ${esc(String(s.chars || 0))} 字</span>
+      </div>
+      ${items.length ? `<div class="mt-8">${items.map((i) => `
+        <div class="st-character-item">
+          <div class="row"><b>${esc(i.title || i.slug || '')}</b>
+            <span class="chip">${esc(LIBRARY_ACTION_LABEL[i.action] || i.action)}</span>
+            <span class="muted" style="font-size:12px">${esc(i.rel || '')}｜${esc(String(i.chars || 0))} 字｜${esc(String(i.bytes || 0))} 字节｜预计 ${esc(String(i.est_chunks || 0))} 块</span>
+          </div>
+          ${(i.warnings || []).map((w) => `<div class="muted" style="font-size:12px">提示：${esc(w.message)}</div>`).join('')}
+        </div>`).join('')}</div>` : '<div class="muted mt-8" style="font-size:12px">没有需要写入的新增 / 更新（全部未变或跳过）。</div>'}
+      ${skipped.length ? `<details class="mt-8"><summary class="muted" style="font-size:12px;cursor:pointer">跳过清单（${esc(String(skipped.length))} 条，不写入）</summary>
+        ${skipped.slice(0, 50).map((k) => `<div class="muted" style="font-size:12px">· ${esc(k.path || '')} —— ${esc(k.reason || librarySkipLabel(k.code))}</div>`).join('')}
+        ${skipped.length > 50 ? `<div class="muted" style="font-size:12px">……其余 ${esc(String(skipped.length - 50))} 条略</div>` : ''}
+      </details>` : ''}
+      ${Number(s.will_write || 0) > 0 ? `<div class="row mt-8" style="gap:6px"><button class="btn small" data-action="library-import-confirm">确认导入 ${esc(String(s.will_write))} 篇</button><span class="muted" style="font-size:12px">写入的是共享资料根（所有作品可检索）；这一步才会真正写记忆库。</span></div>` : ''}
+    </div>`;
+}
+
+function libraryImportResultHtml() {
+  const r = state.libraryImportResult;
+  if (!r) return '';
+  const s = r.summary || {};
+  const failed = r.failed || [];
+  return `<div class="mt-8" style="font-size:12px">
+      <span class="chip">已写入 ${esc(String(s.written || 0))}</span>
+      <span class="chip">失败 ${esc(String(s.failed || 0))}</span>
+      <span class="chip">未变 ${esc(String(s.skip_unchanged || 0))}</span>
+      <span class="muted">${esc((r.index && r.index.note) || '异步索引：写后约 30 秒内可被召回')}</span>
+      ${failed.map((f) => `<div class="muted" style="font-size:12px">写入失败：${esc(f.rel || '')} —— ${esc(f.error || '')}</div>`).join('')}
+    </div>`;
+}
+
+function renderLibraryDocCard() {
+  const view = state.libraryDoc;
+  if (!view) return '';
+  const d = view.doc || {};
+  const text = String(view.text || '');
+  const limit = Number(view.limit || 30);
+  const lines = libraryLines(text);
+  return `
+    <div class="card mb-12">
+      <div class="card-head"><span class="card-title">读原文：${esc(d.title || d.slug || '')}</span>
+        <span class="muted" style="font-size:12px">${esc(d.rel || '')}｜共 ${esc(String(d.total_chars || 0))} 字</span>
+        <button class="btn small secondary" data-action="library-doc-close">关闭</button></div>
+      ${text ? `<pre style="white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;font-size:13px;line-height:1.6;margin:8px 0 0">${esc(text)}</pre>`
+        : '<div class="muted mt-8">没读到这一段正文：可能已读到最后一行，或记忆库暂不可用（离线 / 总闸关闭）——登记信息仍在，不会丢。</div>'}
+      <div class="row mt-8" style="gap:6px">
+        <button class="btn small secondary" data-action="library-doc-page" data-offset="${Math.max(0, view.offset - limit)}" ${view.offset > 0 ? '' : 'disabled'}>上一段</button>
+        <button class="btn small secondary" data-action="library-doc-page" data-offset="${view.offset + limit}" ${lines >= limit ? '' : 'disabled'}>下一段（30 行）</button>
+        <span class="muted" style="font-size:12px">当前从第 ${esc(String(view.offset + 1))} 行起，本段 ${esc(String(lines))} 行（窗口按行计）</span>
+      </div>
+    </div>`;
+}
+
+async function renderLibrary(content) {
+  await loadLibrary();
+  if (state.view !== 'library') return; // 等待服务端期间视图已切走：过期渲染不得覆盖新页面
+  const lib = state.library;
+  const summary = (lib && lib.summary) || {};
+  const docs = (lib && lib.docs) || [];
+  const categories = Array.isArray(summary.categories) ? summary.categories : [];
+  const filtered = docs.filter((d) => !state.libraryCategory || d.category === state.libraryCategory);
+  const search = state.librarySearch;
+  const enabled = Boolean(lib && lib.enabled);
+  const ovDisabled = Boolean(lib && lib.ov && lib.ov.disabled);
+  const rows = search && search.q
+    ? ((search.hits || []).length ? search.hits.map(libraryHitRow).join('') : '<div class="empty">没有命中（语义与关键词都没找到）。</div>')
+    : (filtered.length ? filtered.map(libraryDocRow).join('') : '<div class="empty">还没有资料：在下面的「导入资料」里先扫描预览、再确认写入。</div>');
+  content.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">📎 资料库</h1>
+        <div class="page-sub">跨作品共享的写作参考资料（方法 / 素材 / 范例）：先预览再导入；资料只作参考，不是本书事实</div>
+        ${helpDot('library')}
+      </div>
+      <div class="page-actions"><button class="btn secondary" data-action="library-refresh">刷新</button></div>
+    </div>
+    ${lib === null ? '<div class="card mb-12"><div class="card-head"><span class="card-title">资料库</span></div><div class="muted">当前服务端不提供该接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>' : ''}
+    ${lib ? `
+    <div class="card mb-12">
+      <div class="card-head"><span class="card-title">资料层开关（本作品）${helpDot('library')}</span>
+        <span class="chip">${enabled ? '已开启' : '未开启'}</span></div>
+      ${state.workId ? `
+        <div class="muted" style="font-size:12px">开启后，写《${esc(state.work ? state.work.title : '当前作品')}》时上下文才会多出「参考资料（非本书事实）」层（top-4、阈值 0.40、单条 300 字、独立预算 1200 字）。未开启的作品与接入前逐字节一致；资料永不进入事实 / 事件 / 角色知识。</div>
+        <div class="row mt-8" style="gap:6px">
+          <button class="btn small" data-action="library-toggle" data-enabled="1" ${enabled ? 'disabled' : ''}>开启本作品资料层</button>
+          <button class="btn small secondary" data-action="library-toggle" data-enabled="0" ${enabled ? '' : 'disabled'}>关闭</button>
+          <span class="muted" style="font-size:12px">开关 / 导入 / 删除都是作者动作，模型侧一律 403。</span>
+        </div>`
+      : '<div class="muted mt-8">还没进入作品：开关按作品生效，进入某个作品后再开 / 关。</div>'}
+      ${ovDisabled ? '<div class="muted mt-8" style="font-size:12px">记忆库总闸已关闭（NOVELSTUDIO_OV_DISABLED=1）：可以本地扫描预览与检索兜底，但确认导入与删除会被拒绝（不写任何东西）。</div>' : ''}
+    </div>` : ''}
+    ${lib ? `
+    <div class="card mb-12">
+      <div class="card-head"><span class="card-title">资料列表${search && search.q ? '（检索结果）' : ''}</span>
+        <span class="muted" style="font-size:12px">共 ${esc(String(summary.total || 0))} 篇（有效 ${esc(String(summary.active || 0))}${summary.marked_missing ? `、标记缺失 ${esc(String(summary.marked_missing))}` : ''}）｜最近索引 ${esc(libraryTimeLabel(summary.last_indexed_at))}</span></div>
+      <div class="row mt-8" style="gap:6px;flex-wrap:wrap">
+        <input id="library-q" value="${esc(search && search.q ? search.q : '')}" placeholder="按关键词检索资料（回车或点「检索」）" style="flex:1;min-width:220px" />
+        <button class="btn small" data-action="library-search">检索</button>
+        <button class="btn small secondary" data-action="library-search-clear">清空</button>
+      </div>
+      <div class="row mt-8" style="gap:6px;flex-wrap:wrap">
+        <button class="btn small ${state.libraryCategory ? 'secondary' : ''}" data-action="library-category" data-category="">全部分类</button>
+        ${categories.map((c) => `<button class="btn small ${state.libraryCategory === c.category ? '' : 'secondary'}" data-action="library-category" data-category="${esc(c.category)}">${esc(c.category)}（${esc(String(c.n))}）</button>`).join('')}
+      </div>
+      ${search && search.q ? `<div class="muted mt-8" style="font-size:12px">检索方式：${search.mode === 'semantic' ? '语义（记忆库命中，已按相关度排序）' : '关键词兜底（语义不可用或没有命中）'}${search.total ? `｜资料总数 ${esc(String(search.total))}` : ''}</div>` : ''}
+      <div class="mt-8">${rows}</div>
+    </div>` : ''}
+    ${renderLibraryDocCard()}
+    <div class="card mb-12">
+      <div class="card-head"><span class="card-title">导入资料${helpDot('library')}</span></div>
+      <div class="muted" style="font-size:12px">只读你在这里显式指定的目录：白名单 <b>.md / .txt</b>、单文件 ≤2MB、单批 ≤500 篇、隐藏与依赖目录不深入、<b>不跟随符号链接</b>、严格 UTF-8（不猜编码）。<b>先「扫描预览」，再「确认导入」</b>；写入的是跨作品共享资料根，由记忆库本地向量化（写入后约 30 秒内可被召回）。</div>
+      <div class="row mt-8" style="gap:6px">
+        <input id="library-dir-input" value="${esc(state.libraryDir)}" placeholder="资料目录的路径，例如 D:\\写作资料" style="flex:1;min-width:260px" />
+        <button class="btn small" data-action="library-import-preview">扫描预览（不写入）</button>
+      </div>
+      ${libraryPlanHtml()}
+      ${libraryImportResultHtml()}
+    </div>`;
+}
+
+async function libraryRenderSafely() {
+  try { await render(); }
+  catch (e) { reportClientLog({ level: 'warn', kind: 'library_render_failed', message: `[资料库] 渲染失败（动作已生效）：${e.message}` }); }
+}
+
+async function libraryRefresh() {
+  await loadLibrary(true);
+  await libraryRenderSafely();
+}
+
+async function librarySearchRun() {
+  const input = $('#library-q');
+  const q = String((input && input.value) || (state.librarySearch && state.librarySearch.q) || '').trim();
+  const seq = ++librarySearchSeq; // 每次调用（含清空）都作废更早的在途检索
+  if (!q) { state.librarySearch = null; await libraryRenderSafely(); return; }
+  try {
+    const cat = state.libraryCategory ? `&category=${encodeURIComponent(state.libraryCategory)}` : '';
+    const data = await api(`/novel/library/search?q=${encodeURIComponent(q)}&limit=20${cat}`);
+    if (seq !== librarySearchSeq) return; // 已有更新的检索：丢弃过期响应
+    state.librarySearch = { q, mode: data.mode || 'keyword', hits: data.hits || [], total: data.total || 0 };
+  } catch (e) {
+    if (seq !== librarySearchSeq) return;
+    toast('检索失败：' + e.message, 'error');
+    return;
+  }
+  await libraryRenderSafely();
+}
+
+async function librarySetCategory(category) {
+  state.libraryCategory = category || '';
+  if (state.librarySearch && state.librarySearch.q) { await librarySearchRun(); return; }
+  await libraryRenderSafely();
+}
+
+async function libraryViewDoc(id, offset = 0) {
+  if (!id) return;
+  const seq = ++libraryDocSeq; // 快速翻页 / 连读两篇：只认最后一次
+  try {
+    const limit = 30;
+    const data = await api(`/novel/library/doc?id=${encodeURIComponent(id)}&offset=${offset}&limit=${limit}`);
+    if (seq !== libraryDocSeq) return; // 已有更新的读原文请求：丢弃过期响应
+    state.libraryDoc = { doc: data.doc || {}, text: data.text || '', offset, limit };
+  } catch (e) {
+    if (seq !== libraryDocSeq) return;
+    toast('读取失败：' + e.message, 'error');
+    return;
+  }
+  await libraryRenderSafely();
+}
+
+async function libraryToggleEnabled(enabled) {
+  if (!state.workId) { toast('先进入一个作品再开 / 关资料层', 'error'); return; }
+  try {
+    await api('/novel/library/enabled', { method: 'PUT', body: { work_id: state.workId, enabled } });
+    toast(enabled ? '已开启本作品的资料层' : '已关闭本作品的资料层', 'success');
+  } catch (e) {
+    toast('开关失败：' + e.message, 'error');
+    return;
+  }
+  await loadLibrary(true);
+  await libraryRenderSafely();
+}
+
+async function libraryPreviewImport() {
+  const input = $('#library-dir-input');
+  const dir = String((input && input.value) || '').trim();
+  if (!dir) { toast('先填资料目录（本机路径）', 'error'); return; }
+  try {
+    const plan = await api('/novel/library/import', { method: 'POST', body: { dir } });
+    state.libraryDir = dir;
+    state.libraryPlan = plan;
+    state.libraryImportResult = null;
+  } catch (e) {
+    toast('扫描失败：' + e.message, 'error');
+    return;
+  }
+  await libraryRenderSafely();
+}
+
+async function libraryConfirmImport() {
+  const plan = state.libraryPlan;
+  if (!plan) { toast('先「扫描预览」再确认导入', 'error'); return; }
+  const input = $('#library-dir-input');
+  const dir = String((input && input.value) || '').trim();
+  // 归一化后比对：覆盖 Windows 反斜杠 / 尾斜杠 / 相对路径写法；真的改了目录才拒绝。
+  const dirNorm = normalizeLibraryDir(dir);
+  if (dirNorm !== normalizeLibraryDir(plan.dir) && dirNorm !== normalizeLibraryDir(state.libraryDir)) {
+    toast('目录已改：请对新目录重新「扫描预览」', 'error'); return;
+  }
+  if (!confirm(`确认把 ${Number((plan.summary || {}).will_write || 0)} 篇资料写入共享资料根？写入后所有作品都可检索到它们。`)) return;
+  try {
+    const out = await api('/novel/library/import/confirm', { method: 'POST', body: { dir } });
+    state.libraryImportResult = out;
+    state.libraryPlan = null;
+    const failed = (out.failed || []).length;
+    toast(`导入完成：写入 ${Number((out.summary || {}).written || 0)} 篇${failed ? `，失败 ${failed} 篇` : ''}`, failed ? 'error' : 'success');
+  } catch (e) {
+    toast('导入失败：' + e.message, 'error');
+    return;
+  }
+  await loadLibrary(true);
+  await libraryRenderSafely();
+}
+
+async function libraryMarkMissing(id) {
+  try {
+    await api(`/novel/library/doc/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    toast('已标记缺失（未删文件与登记行；确认删除后才会真正移除）', 'success');
+  } catch (e) {
+    toast('标记失败：' + e.message, 'error');
+    return;
+  }
+  await loadLibrary(true);
+  await libraryRenderSafely();
+}
+
+async function libraryDeleteDoc(id) {
+  if (!confirm('确认删除这篇资料？会同时从记忆库删除该文件并删掉登记行（删除后无法从这里恢复）。')) return;
+  try {
+    const out = await api(`/novel/library/doc/${encodeURIComponent(id)}?confirm=1`, { method: 'DELETE' });
+    toast(out.removed ? '已删除：' + out.removed : '已删除', 'success');
+  } catch (e) {
+    toast('删除失败：' + e.message, 'error');
+    return;
+  }
+  if (state.libraryDoc && Number(state.libraryDoc.doc && state.libraryDoc.doc.id) === Number(id)) {
+    state.libraryDoc = null;
+    libraryDocSeq += 1; // 在途的「读原文」响应不得把已删资料再贴回来
+  }
+  await loadLibrary(true);
+  await libraryRenderSafely();
 }
 
 // ---------- 导入（TXT/Markdown/EPUB → 新建作品自动拆章） ----------
@@ -6952,18 +8938,65 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
     toast('当前不在正文写作页，未直接写入；结果已存为本章草稿——回到「正文写作」页顶部的取回条即可应用', 'error');
     return;
   }
+  // R03：正文与应用到正文的提案是**一次操作**。旧实现是"编辑器改动 → 800ms 自动保存（PUT）"，
+  // 提案由弹窗另发一次请求——两处写库没有原子性。现在改成：先把最终 HTML 算出来，
+  // 用 /novel/adopt 一次提交（正文 + 本次勾选提案 + 历史版本 + 投影 outbox），成功后才取消定时保存。
+  const selection = state.pendingProposalSelection;
+  state.pendingProposalSelection = null;
+  const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
+  const beforeHtml = editor.innerHTML;
+  const adoptEditorContent = async () => {
+    const html = editor.innerHTML;
+    const opKey = `aw-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const res = await api('/novel/adopt', {
+      method: 'POST',
+      body: {
+        work_id: state.workId || state.work?.id || null,
+        chapter_id: targetChapterId,
+        content: html,
+        legacy_proposal_ids: (selection && Array.isArray(selection.ids)) ? selection.ids : [],
+        operation_key: opKey,
+        adopt_kind: 'ai_result',
+      }
+    });
+    // 服务端已落库：取消 800ms 自动保存，避免再写一版（否则每次采纳都多一条历史版本）。
+    clearTimeout(state.editorSaveTimer);
+    state.editorSaveTimer = null;
+    state.editorSaveSnapshot = null;
+    const chapter = state.chapters.find((c) => Number(c.id) === Number(targetChapterId));
+    if (chapter) { chapter.content = html; chapter.updated_at = new Date().toISOString(); }
+    const adopted = (res && res.adopt && res.adopt.legacy) ? (Number(res.adopt.legacy.events || 0) + Number(res.adopt.legacy.memories || 0)) : 0;
+    return adopted;
+  };
   if (mode === 'insert') {
     insertHtmlAtCursor(editor, textToParagraphsHtml(article));
-    scheduleSave();
-    toast('已插入 AI 写作内容', 'success');
+    try {
+      const adopted = await adoptEditorContent();
+      toast(adopted ? `已插入 AI 写作内容，并采纳 ${adopted} 条提案` : '已插入 AI 写作内容', 'success');
+    } catch (e) {
+      editor.innerHTML = beforeHtml;
+      toast('写入失败（已还原编辑器内容，库中未改动）：' + e.message, 'error');
+    }
   } else if (mode === 'replace') {
     const sel = getEditorSelection(editor);
     await applyAIReply(editor, article, sel?.range || null);
+    try {
+      const adopted = await adoptEditorContent();
+      if (adopted) toast(`已采纳 ${adopted} 条提案`, 'success');
+    } catch (e) {
+      editor.innerHTML = beforeHtml;
+      toast('写入失败（已还原编辑器内容，库中未改动）：' + e.message, 'error');
+    }
   } else if (mode === 'append') {
     editor.focus();
     editor.insertAdjacentHTML('beforeend', textToParagraphsHtml(article));
-    scheduleSave();
-    toast('已追加 AI 写作内容', 'success');
+    try {
+      const adopted = await adoptEditorContent();
+      toast(adopted ? `已追加 AI 写作内容，并采纳 ${adopted} 条提案` : '已追加 AI 写作内容', 'success');
+    } catch (e) {
+      editor.innerHTML = beforeHtml;
+      toast('写入失败（已还原编辑器内容，库中未改动）：' + e.message, 'error');
+    }
   }
 }
 
@@ -7202,15 +9235,37 @@ async function performToolbarAIWrite(requirement) {
         if (proseData.via === 'direct') {
           // flash 轻量质检轮：核对蓝图达成与一致性硬伤（秒级，替代部分 novel_consistency 职责）
           const verdict = await verifyAIDraft(blueprintForProse, article, target);
+          if (verdict.skipped && verdict.reason) {
+            // 显式说出"这次没质检"，并说明是体积原因——不冒充"已核对"。
+            const why = verdict.reason === 'over_single_request_limit'
+              ? '本章正文超过单请求质检上限（未分段质检）'
+              : '长正文分段模块不可用';
+            toast(`质检修略：${why}，本次未做质检核对（可在审稿页按清单人工/分段审）`, 'error');
+            reportClientLog({ level: 'warn', kind: 'quality_gate_skipped', message: `[写作] ${why}（正文 ${String(article || '').length} 字）` });
+          }
           if (!verdict.pass && (verdict.issues || []).length) {
             blockedDraft = verdict.blocked;
             toast('质检发现硬伤，自动改用精写内核修复…', 'info');
-            // ⏱ 质检不合格 → 精写内核返工：这是「一次成文没写对」的真实代价，必须单独记一笔
+            // 修复同样不截断：超过单请求上限时按片修复（覆盖清单通过才采用）。
             const repairStartedAt = Date.now();
+            const repairRun = await longTextRunTask('repair_full', {
+              text: article, chapterId: writeChapterId, issues: verdict.issues,
+              blueprint: blueprintForProse, targetWords: target, singleRunByCaller: true,
+              currentText: () => longTextLiveEditorText(article)
+            });
+            if (repairRun.mode === 'segmented') {
+              if (repairRun.merged) { proseData = { output: repairRun.merged, via: 'harness' }; }
+              else {
+                reportClientLog({ level: 'warn', kind: 'repair_segmented_incomplete', message: `[写作] 分段修复未通过覆盖清单：${(repairRun.reasons || []).join('；')}` });
+                toast('分段修复未通过覆盖清单，已保留原稿（未写入半套结果）', 'error');
+              }
+            } else {
+            // ⏱ 质检不合格 → 精写内核返工：这是「一次成文没写对」的真实代价，必须单独记一笔
             proseData = await runHarnessJob(
               { ...jobBase, prompt: buildAIWriteRepairPrompt(article, verdict.issues, blueprintForProse, target) },
               'AI 写作（2/3 成文）· 精写内核修复硬伤中…'
             );
+            }
             const repaired = parseAIWritingOutput(proseData.output || '').finalText || '';
             timing.round('repair', Date.now() - repairStartedAt, { via: 'harness', issues: (verdict.issues || []).length, accepted: !!repaired.trim() });
             if (repaired.trim()) {
@@ -7559,15 +9614,67 @@ async function runToolbarAIPolish() {
   const btn = $('[data-action="toolbar-ai-polish"]');
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(buildAIPolishMessages(source, instruction.trim()), { model: policyModel('fast'), action: 'polish' });
-    if (!reply) throw new Error('AI 没有返回内容');
     const range = sel?.range || null;
-    showAIApplyPreview('润色结果', reply, () => applyAIReply(editor, reply, range));
+    // R08：整章（或整段选区）一律整篇处理；超限自动分段，覆盖清单不通过就不给采纳。
+    const run = await longTextRunTask('polish', {
+      text: source, instruction: instruction.trim(), chapterId: state.currentChapterId,
+      currentText: () => ((getEditorSelection(editor)?.text || editor.innerText || '').trim()),
+      onProgress: (plan, results) => {
+        const el = $('#ai-task-progress');
+        if (el) { el.hidden = false; el.textContent = `长正文分段润色：${results.filter((r) => r.status === 'done').length} / ${plan.segments.length} 片完成…`; }
+      }
+    });
+    if (!run.merged) {
+      if (run.mode === 'single') throw new Error('AI 没有返回内容');
+      showLongTextIncomplete('润色', run, () => runToolbarAIPolish());
+      return;
+    }
+    const title = run.mode === 'segmented' ? `润色结果 · 分段处理（${run.plan.segments.length} 片）` : '润色结果';
+    showAIApplyPreview(title, run.merged, () => applyAIReply(editor, run.merged, range), run.statusHtml);
   } catch (e) {
     if (e.cancelled) toast('已取消 AI 润色', 'success');
     else toast('AI 润色失败：' + e.message, 'error');
   } finally {
     if (btn) btn.disabled = false;
+    const el = $('#ai-task-progress');
+    if (el) el.hidden = true;
+  }
+}
+
+// 分段修稿的备选路径：整片重写。只在作者显式选择时走——**不自动回退**，
+// 避免"按段改已经花过钱、又整章重写再花一次"的隐性双倍消费。
+async function refineLongTextFull(info, review, confirmedIssues) {
+  const confirmed = (confirmedIssues || review?.issues || []).slice();
+  if (!confirmed.length) { toast('没有可用的确认清单', 'error'); return; }
+  const revisionChapterId = Number(info && info.chapterId) || Number(state.currentChapterId) || null;
+  try {
+    const run = await longTextRunTask('revision_full', {
+      text: info.article, chapterId: revisionChapterId, issues: confirmed,
+      currentText: () => (Number(state.currentChapterId) === Number(revisionChapterId)
+        ? longTextLiveEditorText(info.article)
+        : info.article),
+      onProgress: (plan, results) => {
+        const el = $('#ai-task-progress');
+        if (el) { el.hidden = false; el.textContent = `长正文分段修稿（整片重写）：${results.filter((r) => r.status === 'done').length} / ${plan.segments.length} 片完成…`; }
+      }
+    });
+    const el = $('#ai-task-progress');
+    if (el) el.hidden = true;
+    if (run.mode === 'single') {
+      const revised = String(run.merged || '');
+      if (!revised.trim()) throw new Error('修稿结果为空');
+      showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null });
+      return;
+    }
+    if (!run.merged) {
+      showLongTextIncomplete('修稿（整片重写）', run, () => refineLongTextFull(info, review, confirmed));
+      return;
+    }
+    showReviewDiff(info.article, run.merged, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null });
+    toast(`整章分 ${run.plan.segments.length} 片重写完成（覆盖清单通过）`, 'success');
+    longTextClearRun();
+  } catch (e) {
+    toast('修稿失败：' + e.message, 'error');
   }
 }
 
@@ -7586,22 +9693,36 @@ async function runToolbarAIExpand() {
   const btn = $('[data-action="toolbar-ai-expand"]');
   if (btn) btn.disabled = true;
   try {
-    const reply = await runHarnessFromMessages(buildAIExpandMessages(source, instruction.trim()), { model: policyModel('fast'), action: 'expand' });
-    if (!reply) throw new Error('AI 没有返回内容');
     const range = sel?.range || null;
-    showAIApplyPreview('扩写结果', reply, () => applyAIReply(editor, reply, range));
+    const run = await longTextRunTask('expand', {
+      text: source, instruction: instruction.trim(), chapterId: state.currentChapterId,
+      currentText: () => ((getEditorSelection(editor)?.text || editor.innerText || '').trim()),
+      onProgress: (plan, results) => {
+        const el = $('#ai-task-progress');
+        if (el) { el.hidden = false; el.textContent = `长正文分段扩写：${results.filter((r) => r.status === 'done').length} / ${plan.segments.length} 片完成…`; }
+      }
+    });
+    if (!run.merged) {
+      if (run.mode === 'single') throw new Error('AI 没有返回内容');
+      showLongTextIncomplete('扩写', run, () => runToolbarAIExpand());
+      return;
+    }
+    const title = run.mode === 'segmented' ? `扩写结果 · 分段处理（${run.plan.segments.length} 片）` : '扩写结果';
+    showAIApplyPreview(title, run.merged, () => applyAIReply(editor, run.merged, range), run.statusHtml);
   } catch (e) {
     if (e.cancelled) toast('已取消 AI 扩写', 'success');
     else toast('AI 扩写失败：' + e.message, 'error');
   } finally {
     if (btn) btn.disabled = false;
+    const el = $('#ai-task-progress');
+    if (el) el.hidden = true;
   }
 }
 
-function buildAIPersonalityMessages(characterId) {
+function buildAIPersonalityMessages(characterId, contentOverride, opts = {}) {
   const editor = $('#editor-content');
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
-  const content = stripHtml(editor?.innerHTML || chapter.content || '');
+  const content = String(contentOverride != null ? contentOverride : stripHtml(editor?.innerHTML || chapter.content || ''));
   const character = state.characters.find((c) => c.id === characterId) || state.characters[0];
   if (!character) return null;
   const plotlineStates = state.plotlineCharacters.filter((p) => p.character_id === character.id);
@@ -7617,8 +9738,9 @@ function buildAIPersonalityMessages(characterId) {
 AI 上下文（角色卡 / 世界观 / 作者注）：
 ${aiContextBlock() || '无'}
 
+${opts.segment ? `${longTextContextBlock(opts.segment)}\n\n本片为分段处理的第 ${opts.segment.ordinal} 片（target ${opts.segment.segment_id}），只判断本片正文。\n` : ''}
 当前正文：
-${content.slice(0, 6000)}
+${content}
 
 请输出：
 1. 符合人设的方面
@@ -9102,6 +11224,24 @@ async function handleAction(action, actionEl, e) {
         break;
       }
 
+      case 'long-text-retry': {
+        const retry = state.pendingLongTextRetry;
+        state.pendingLongTextRetry = null;
+        state.pendingLongTextAltRetry = null;
+        closeModal();
+        if (retry) await retry();
+        break;
+      }
+
+      case 'long-text-retry-alt': {
+        const alt = state.pendingLongTextAltRetry;
+        state.pendingLongTextRetry = null;
+        state.pendingLongTextAltRetry = null;
+        closeModal();
+        if (alt) await alt();
+        break;
+      }
+
       case 'ai-writing-answer': {
         const resolve = state.pendingAIQuestion;
         const answer = $('#ai-writing-answer')?.value?.trim() || '';
@@ -9122,8 +11262,9 @@ async function handleAction(action, actionEl, e) {
       case 'ai-writing-insert': {
         const resolve = state.pendingAIFinal;
         state.pendingAIFinal = null;
+        // R03：勾选集合必须在 closeModal() 之前固化（关窗后 DOM 已被清空）
+        state.pendingProposalSelection = captureProposalSelection();
         closeModal();
-        applySelectedProposals();
         if (resolve) resolve('insert');
         break;
       }
@@ -9131,8 +11272,8 @@ async function handleAction(action, actionEl, e) {
       case 'ai-writing-replace': {
         const resolve = state.pendingAIFinal;
         state.pendingAIFinal = null;
+        state.pendingProposalSelection = captureProposalSelection();
         closeModal();
-        applySelectedProposals();
         if (resolve) resolve('replace');
         break;
       }
@@ -9140,8 +11281,8 @@ async function handleAction(action, actionEl, e) {
       case 'ai-writing-append': {
         const resolve = state.pendingAIFinal;
         state.pendingAIFinal = null;
+        state.pendingProposalSelection = captureProposalSelection();
         closeModal();
-        applySelectedProposals();
         if (resolve) resolve('append');
         break;
       }
@@ -9155,9 +11296,12 @@ async function handleAction(action, actionEl, e) {
       }
 
       case 'ai-writing-review': {
-        const info = state.pendingAIArticle;
+        // 草稿链标记：这份审稿/修稿的"原文"是 AI 写作草稿，不是章节正文（合并闸门要以正文为基准）。
+        const info = state.pendingAIArticle ? { ...state.pendingAIArticle, fromDraft: true } : null;
         state.pendingAIFinal = null;
         state.pendingAIArticle = null;
+        // 先审稿再应用：勾选集合要活着穿过 审稿 → 清单 → 修稿 → 差异合并，最后随合并在同一事务里采纳
+        state.pendingProposalSelection = captureProposalSelection();
         closeModal();
         if (info) runArticleReview(info);
         break;
@@ -9838,6 +11982,199 @@ async function handleAction(action, actionEl, e) {
         await saveSTChapterNote();
         break;
 
+      case 'save-edit-rules':
+        await saveEditRules();
+        break;
+
+      case 'scan-edit-rules':
+        await scanEditRules();
+        break;
+
+      // R09：作者样文 / 文风档案 / 三级意图
+      case 'new-author-sample':
+        openAuthorSampleModal();
+        break;
+
+      case 'edit-author-sample': {
+        const sample = ((state.authorStyle && state.authorStyle.samples && state.authorStyle.samples.samples) || [])
+          .find((s) => s.id === Number(actionEl.dataset.id));
+        openAuthorSampleModal(sample || null);
+        break;
+      }
+
+      case 'save-author-sample':
+        await saveAuthorSample(actionEl.dataset.id || null);
+        break;
+
+      case 'toggle-author-sample':
+        await toggleAuthorSample(actionEl.dataset.id, !!actionEl.checked);
+        break;
+
+      case 'delete-author-sample':
+        await deleteAuthorSample(actionEl.dataset.id);
+        break;
+
+      case 'analyze-author-profile':
+        await analyzeAuthorProfile();
+        break;
+
+      case 'save-author-intents':
+        await saveAuthorIntents();
+        break;
+
+      // R10：故事状态与披露视图
+      case 'toggle-story-state':
+        await toggleStoryState();
+        break;
+
+      case 'refresh-disclosure':
+        await refreshDisclosure();
+        break;
+
+      // R12：导入后分析重建（分批抽取；确认即逐批原子应用）
+      case 'rebuild-plan':
+      case 'rebuild-resume':
+        await rebuildPlan();
+        break;
+
+      case 'rebuild-refresh': {
+        state.rebuild = null; state.rebuildLoaded = false;
+        await loadRebuild(true);
+        await render();
+        break;
+      }
+
+      case 'rebuild-extract':
+        await rebuildExtractBatch(Number(actionEl.dataset.index));
+        break;
+
+      case 'rebuild-confirm':
+        await rebuildConfirm([Number(actionEl.dataset.index)]);
+        break;
+
+      case 'rebuild-confirm-all':
+        await rebuildConfirm(null);
+        break;
+
+      case 'rebuild-cancel':
+        await rebuildCancel();
+        break;
+
+      // P4：共享资料库（作者动作入口；导入 / 删除都先预览、再确认）
+      case 'library-refresh':
+        await libraryRefresh();
+        break;
+
+      case 'library-search':
+        await librarySearchRun();
+        break;
+
+      case 'library-search-clear':
+        librarySearchSeq += 1; // 清空后，在途检索响应不得再把结果贴回来
+        state.librarySearch = null;
+        await libraryRenderSafely();
+        break;
+
+      case 'library-category':
+        await librarySetCategory(actionEl.dataset.category || '');
+        break;
+
+      case 'library-view':
+        await libraryViewDoc(Number(actionEl.dataset.id));
+        break;
+
+      case 'library-toggle':
+        await libraryToggleEnabled(actionEl.dataset.enabled === '1');
+        break;
+
+      case 'library-import-preview':
+        await libraryPreviewImport();
+        break;
+
+      case 'library-import-confirm':
+        await libraryConfirmImport();
+        break;
+
+      case 'library-mark':
+        await libraryMarkMissing(Number(actionEl.dataset.id));
+        break;
+
+      case 'library-delete':
+        await libraryDeleteDoc(Number(actionEl.dataset.id));
+        break;
+
+      case 'library-doc-page':
+        await libraryViewDoc(
+          Number(state.libraryDoc && state.libraryDoc.doc && state.libraryDoc.doc.id),
+          Math.max(0, Number(actionEl.dataset.offset) || 0)
+        );
+        break;
+
+      case 'library-doc-close':
+        libraryDocSeq += 1; // 关闭后，在途的「读原文」响应不得再把卡贴回来
+        state.libraryDoc = null;
+        await libraryRenderSafely();
+        break;
+
+      // R11：剧情分支沙盘（候选是提案；采纳/丢弃/取消/重开是作者动作）
+      case 'branch-open-sandbox':
+        openBranchSandboxModal();
+        break;
+
+      case 'branch-do-open':
+        await branchCreateSandbox();
+        break;
+
+      case 'branch-submit':
+        openBranchSubmitModal();
+        break;
+
+      case 'branch-fill-template': {
+        const ta = $('#branch-candidates-json');
+        if (ta) ta.value = branchTemplate();
+        break;
+      }
+
+      case 'branch-do-submit':
+        await branchSubmitCandidates(actionEl.dataset.sandboxId || '');
+        break;
+
+      case 'branch-view':
+        await branchView(Number(actionEl.dataset.id));
+        break;
+
+      case 'branch-compare':
+        await branchCompareAll();
+        break;
+
+      case 'branch-adopt':
+        await branchAdopt(Number(actionEl.dataset.id), false);
+        break;
+
+      case 'branch-adopt-force':
+        await branchAdopt(Number(actionEl.dataset.id), true);
+        break;
+
+      case 'branch-discard':
+        openBranchConfirm('discard', Number(actionEl.dataset.id));
+        break;
+
+      case 'branch-do-discard':
+        await branchDiscard(Number(actionEl.dataset.id));
+        break;
+
+      case 'branch-cancel':
+        openBranchConfirm('cancel', Number(actionEl.dataset.id));
+        break;
+
+      case 'branch-do-cancel':
+        await branchCancel(Number(actionEl.dataset.id));
+        break;
+
+      case 'branch-reopen':
+        await branchReopen(Number(actionEl.dataset.id));
+        break;
+
       case 'new-world-entry':
         openWorldEntryModal();
         break;
@@ -10340,6 +12677,12 @@ document.addEventListener('keydown', (e) => {
     if (box) box.hidden = true;
     if ($('#modal-root').innerHTML) closeModal();
   }
+  // P4：资料检索框的回车 = 点「检索」（输入框随重绘换新元素，用 document 委托）
+  // （isComposing：中文输入法候选确认的回车不算检索）
+  if (e.key === 'Enter' && !e.isComposing && e.target && e.target.id === 'library-q') {
+    e.preventDefault();
+    librarySearchRun();
+  }
 });
 
 // ---------- init ----------
@@ -10391,7 +12734,12 @@ async function init() {
       state.view = 'works';
     }
   }
-  if (!state.workId) state.view = 'works';
+  if (!state.workId) {
+    // R06：首页视图（含「借鉴与致谢」）刷新后恢复；没有记录或记录非法时回到「我的作品」。
+    let homeView = '';
+    try { homeView = sessionStorage.getItem('ns_home_view') || ''; } catch (_) { /* 存储不可用时静默 */ }
+    state.view = ['works', 'ai-create', 'ai', 'thanks', 'library'].includes(homeView) ? homeView : 'works';
+  }
   await render();
 }
 

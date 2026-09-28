@@ -1,0 +1,157 @@
+{
+  "started_at": "2026-09-28T10:34:07.495Z",
+  "root": "viking://user/default/resources/novel-studio-library",
+  "docs": [
+    "viking://user/default/resources/novel-studio-library/方法/冲突设计.md",
+    "viking://user/default/resources/novel-studio-library/方法/节奏控制.md",
+    "viking://user/default/resources/novel-studio-library/范例/雪线场景写法.md"
+  ],
+  "write": [
+    {
+      "uri": "viking://user/default/resources/novel-studio-library/方法/冲突设计.md",
+      "ok": true,
+      "took_ms": 27246
+    },
+    {
+      "uri": "viking://user/default/resources/novel-studio-library/方法/节奏控制.md",
+      "ok": true,
+      "took_ms": 54323
+    },
+    {
+      "uri": "viking://user/default/resources/novel-studio-library/范例/雪线场景写法.md",
+      "ok": true,
+      "took_ms": 45574
+    }
+  ],
+  "preview": {
+    "query": "冲突设计的两难抉择与节奏控制；雪线场景写法（写作方法）",
+    "hits": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/方法/冲突设计.md",
+        "score": 0.6689001321792603,
+        "abstract": "本文档是一份关于“冲突设计”的写作指南，目的是说明如何让场景中的角色面对两难选择并承担代价，而非仅写吵架。主要部分包括“是什么”“怎么写”“常见错误”“对照表”和“远端附录”。关键定义是冲突等于目标、阻力与代价，目标越具体阻力越贴身；经典例"
+      },
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/方法/.abstract.md",
+        "score": 0.5829147100448608,
+        "abstract": "本目录围绕写作技法中的两难冲突与节奏调度展开，主要收录可操作的写作指南，帮助写作者让场景具备目标、阻力与代价，也让段落通过句子长度、场景长度与信息密度控制张力。核心关键词包括冲突设计、节奏控制、选择、后果、短句、长句、呼吸感、常见错误与对照"
+      },
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/范例/雪线场景写法.md",
+        "score": 0.5579044818878174,
+        "abstract": "本文是雪线场景写法范例，说明低温、视野、体力与决定窗口（标记-雪线-甲）的书写要点，供高海拔、风雪、体能受限场景参考。章节有是什么、怎么写、常见错误、对照表、远端附录。“是什么”指出冷、白、滑、看不清且时间有限，景物即阻力；“怎么写”建议体"
+      },
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/.abstract.md",
+        "score": 0.5333288908004761,
+        "abstract": "本目录是一个面向小说写作的资料库，当前可见内容以两个子目录组织，分别涉及写作方法和范例。其中，“方法”子目录主要收录可操作的写作指南，聚焦写作技法中的两难冲突与节奏调度，帮助写作者为场景建立目标、阻力与代价，并通过句子长度、场景长度和信息密"
+      },
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/方法/节奏控制.md",
+        "score": 0.4790056645870209,
+        "abstract": "本文是一份写作技法指南，核心是说明节奏控制即句子长度、场景长度与信息密度的统一调度，适用于在动作与停顿间切换张力、并与冲突设计配合的段落。文档按“是什么、怎么写、常见错误、对照表”组织，末尾附远端附录。它定义节奏为单位篇幅里的信息密度与情绪"
+      }
+    ]
+  },
+  "enabled_work": {
+    "work_id": 1,
+    "status": 200,
+    "ov_uri": "0cd6c14233556e3ab55fcc9c17c03112",
+    "library_recall": {
+      "enabled": true,
+      "status": "ok",
+      "hits": [
+        {
+          "uri": "viking://user/default/resources/novel-studio-library/方法/冲突设计.md",
+          "label": "参考资料｜冲突设计：让每个场景都有两难",
+          "score": 69,
+          "text_len": 301,
+          "canon": "reference"
+        },
+        {
+          "uri": "viking://user/default/resources/novel-studio-library/范例/雪线场景写法.md",
+          "label": "参考资料｜范例：雪线场景的写法（范例，非本书事实）",
+          "score": 64,
+          "text_len": 301,
+          "canon": "reference"
+        },
+        {
+          "uri": "viking://user/default/resources/novel-studio-library/方法/节奏控制.md",
+          "label": "参考资料｜节奏控制：松紧交替的长短句",
+          "score": 52,
+          "text_len": 301,
+          "canon": "reference"
+        }
+      ],
+      "omitted": [
+        {
+          "uri": "viking://user/default/resources/novel-studio-library/范例/.abstract.md",
+          "code": "library_reserved",
+          "reason": "路径段「.abstract.md」是保留前缀（工具/系统伴随文件，如 .abstract.md/.overview.md），不进入上下文"
+        },
+        {
+          "uri": "viking://user/default/resources/novel-studio-library/方法/.abstract.md",
+          "code": "library_reserved",
+          "reason": "路径段「.abstract.md」是保留前缀（工具/系统伴随文件，如 .abstract.md/.overview.md），不进入上下文"
+        },
+        {
+          "uri": "viking://user/default/resources/novel-studio-library/.abstract.md",
+          "code": "library_reserved",
+          "reason": "路径段「.abstract.md」是保留前缀（工具/系统伴随文件，如 .abstract.md/.overview.md），不进入上下文"
+        }
+      ]
+    },
+    "layer_in_manifest": true,
+    "assembled_has_label": true,
+    "assembled_len": 2341
+  },
+  "disabled_work": {
+    "work_id": 1,
+    "status": 200,
+    "library_recall": {
+      "enabled": false,
+      "status": "unknown",
+      "hits": 0
+    },
+    "assembled_has_label": false,
+    "assembled_has_doc_text": false
+  },
+  "ov_disabled_smoke": {
+    "status": 200,
+    "library_recall": {
+      "enabled": false,
+      "status": "disabled"
+    },
+    "assembled_has_label": false,
+    "server_log_tail": "[logger:server] 工具配置已加载（OpenViking 凭证来源：配置文件/环境变量；dsh 仓库覆盖：未设置）\n[logger:server] Novel Studio 服务启动\n[logger:server] 追踪时钟自检通过（单调与纪元相差 20724 天）\nNovel Studio is running at http://localhost:13524\n[logger:ai] 上下文贡献记录：11 层 / 1129 字（预算 26000）；来源 11 条，其中未使用 0 条\n"
+  },
+  "cleanup": {
+    "removed": [
+      "viking://user/default/resources/novel-studio-library/方法/冲突设计.md",
+      "viking://user/default/resources/novel-studio-library/方法/节奏控制.md",
+      "viking://user/default/resources/novel-studio-library/范例/雪线场景写法.md"
+    ],
+    "read_back": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/方法/冲突设计.md",
+        "ok": false,
+        "text_len": 0
+      },
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/方法/节奏控制.md",
+        "ok": false,
+        "text_len": 0
+      },
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/范例/雪线场景写法.md",
+        "ok": false,
+        "text_len": 0
+      }
+    ],
+    "residue": [],
+    "clean": true
+  },
+  "pass": 18,
+  "fails": [],
+  "finished_at": "2026-09-28T10:36:17.286Z"
+}

@@ -869,7 +869,7 @@ textarea { resize: vertical; }
   color: var(--text);
 }
 
-/* SillyTavern 设置 */
+/* 创作上下文（历史名 SillyTavern 设置） */
 .st-character-list, .st-world-list { display: flex; flex-direction: column; gap: 8px; }
 .st-character-item, .st-world-item {
   background: rgba(255,255,255,.015);

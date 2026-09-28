@@ -40,6 +40,9 @@
 | **Z3** | 2026-09-26 轮：确定性故事状态内核（门控层 + 10 张新表 + 18 条状态路由 + 8 工具）+ 第五步 Golden Novel 联合回归 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **Z4** | 2026-09-25 轮：DSH 0.1.7-rc.1 → rc.2 兼容性审查（报告 + 只读探针） | ✅ 可独立回滚 |
 | **Z5** | 2026-09-25 轮：成文耗时测量层（口径 A 机器时间 / 口径 B 交付时间 的埋点补真） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **R** | 2026-09-27 增强交付 R01—R12（导入安全与导入后重建 / 剧情分支沙盘 / 披露派生视图 / 作者样文与三级意图 / 编辑规则 / 长正文处理 / 审批与整次采纳 / OV 召回来源边界 / 运行时上下文贡献记录） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **PI** | 2026-09-27 落地后独立重审（001.txt）：本轮修复 + 审计证据 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **L** | 2026-09-28 知识库专项：跨作品共享写作资料库（门控层 library + 导入链 + 模型侧查回） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：U、V、Z4。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -50,11 +53,11 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - 文件 .p0-recon/capture-dsh-request.mjs 同时属于 P0/Z1——改动改在同一批代码里，撤不干净
-  - 文件 harness-plugins/novel-writing/ENGINE.md 同时属于 P0/Z1/Z3——改动改在同一批代码里，撤不干净
-  - 文件 harness-plugins/novel-writing/cordis.patch.yml 同时属于 P0/Z1——改动改在同一批代码里，撤不干净
-  - 文件 harness-plugins/novel-writing/novel-tools.mjs 同时属于 P0/Z3——改动改在同一批代码里，撤不干净
-  - 文件 harness-plugins/novel-writing/package.json 同时属于 P0/Z3——改动改在同一批代码里，撤不干净
-  - 文件 harness-plugins/novel-writing/plugin.json 同时属于 P0/Z3——改动改在同一批代码里，撤不干净
+  - 文件 harness-plugins/novel-writing/ENGINE.md 同时属于 P0/Z1/Z3/L——改动改在同一批代码里，撤不干净
+  - 文件 harness-plugins/novel-writing/NATIVE_PLUGIN_GUIDE.md 同时属于 P0/L——改动改在同一批代码里，撤不干净
+  - 文件 harness-plugins/novel-writing/README.md 同时属于 P0/L——改动改在同一批代码里，撤不干净
+  - 文件 harness-plugins/novel-writing/agent.cordis.yml 同时属于 P0/L——改动改在同一批代码里，撤不干净
+  - 文件 harness-plugins/novel-writing/cordis.patch.yml 同时属于 P0/Z1/L——改动改在同一批代码里，撤不干净
 - **说明**：harness.js 同时被 P4/P6 改过；profile 本身的回滚是卸掉 novel profile 与 bundle 接线（install-profile.mjs 反向操作）。
 - **验收证据**：`.p0-recon/README.md`、`.p0-recon/verify-harness-profile.mjs`、`.p0-recon/compare-composed.mjs`、`.p0-recon/novel.p3.txt`、`.p0-recon/capture-dsh-request.mjs`
 - **本阶段认领的文件**（36 个）：
@@ -99,7 +102,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 ai/context/layers.mjs 同时属于 P1/Z2/Z3——改动改在同一批代码里，撤不干净
+  - 文件 ai/context/layers.mjs 同时属于 P1/Z2/Z3/L——改动改在同一批代码里，撤不干净
   - ai/context/layers.mjs 被 .p1-baseline/golden-novel.mjs（验收工具，Z3）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
   - ai/context/layers.mjs 被 .p1-baseline/test-context-manifest.mjs（验收工具，Z2/Z3）import——撤掉会让该工具失效
@@ -129,9 +132,9 @@
 - **阻断原因（推导得出）**：
   - 文件 ai/context/assembler.mjs 同时属于 P2/Z2/Z3——改动改在同一批代码里，撤不干净
   - ai/context/assembler.mjs 被 .p1-baseline/test-context-manifest.mjs（验收工具，Z2/Z3）import——撤掉会让该工具失效
-  - ai/context/assembler.mjs 被**生产代码** server.js（P3/P4/P5/Z2/Z3）import——撤掉会打断线上路径
+  - ai/context/assembler.mjs 被**生产代码** server.js（P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
   - 文件 docs/ai-core.md 同时属于 P2/Z1/Z2——改动改在同一批代码里，撤不干净
-  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3——改动改在同一批代码里，撤不干净
+  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L——改动改在同一批代码里，撤不干净
 - **说明**：改动集中在 server.js 的 buildNovelContext 与路由；与 P3/P4/P5 同处一个大文件，**无法只撤 P2**。
 - **验收证据**：`docs/p2-assembler-verification.md`、`docs/ai-core.md`、`.p1-baseline/verify-invariants.mjs`、`.p1-baseline/test-assembler.mjs`
 - **本阶段认领的文件**（7 个）：
@@ -147,8 +150,8 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5——改动改在同一批代码里，撤不干净
-  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI——改动改在同一批代码里，撤不干净
+  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L——改动改在同一批代码里，撤不干净
 - **说明**：检索桶加在 server.js 的 search()、查回路径在 layers.mjs 的 RETRIEVAL；分别与 P2/P5 共享文件。
 - **验收证据**：`docs/p3-retrieval-verification.md`、`.p1-baseline/verify-retrieval.mjs`、`.p1-baseline/verify-plugin-tools.mjs`
 - **本阶段认领的文件**（5 个）：
@@ -162,12 +165,12 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - ai/policy.mjs 被**生产代码** db.js（P5/Z3）import——撤掉会打断线上路径
+  - ai/policy.mjs 被**生产代码** db.js（P5/Z3/L）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** harness.js（P0/Z1）import——撤掉会打断线上路径
-  - ai/policy.mjs 被**生产代码** server.js（P2/P3/P5/Z2/Z3）import——撤掉会打断线上路径
+  - ai/policy.mjs 被**生产代码** server.js（P2/P3/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
   - 文件 docs/p4-policy-verification.md 同时属于 P4/S——改动改在同一批代码里，撤不干净
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5——改动改在同一批代码里，撤不干净
-  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI——改动改在同一批代码里，撤不干净
+  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L——改动改在同一批代码里，撤不干净
 - **说明**：策略单点化本身可撤（恢复各处字面量），但 ai/policy.mjs 被 harness.js 与 server.js import，前端与 server.js 又被 P3/P5 共同修改 → 无法只撤 P4。
 - **验收证据**：`docs/p4-policy-verification.md`、`ai/policy.mjs`、`.p1-baseline/verify-ai-branches.mjs`、`.p1-baseline/test-model-switch-gate.mjs`
 - **本阶段认领的文件**（6 个）：
@@ -182,12 +185,12 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - ai/edit-distance.mjs 被**生产代码** server.js（P2/P3/P4/Z2/Z3）import——撤掉会打断线上路径
-  - 文件 db.js 同时属于 P5/Z3——改动改在同一批代码里，撤不干净
+  - ai/edit-distance.mjs 被**生产代码** server.js（P2/P3/P4/Z2/Z3/PI/L）import——撤掉会打断线上路径
+  - 文件 db.js 同时属于 P5/Z3/L——改动改在同一批代码里，撤不干净
   - db.js 被 .p1-baseline/probe-recall-direct.mjs（验收工具，P1）import——撤掉会让该工具失效
-  - db.js 被**生产代码** ai/story-state/store.mjs（Z3）import——撤掉会打断线上路径
-  - db.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
-  - db.js 被**生产代码** server.js（P2/P3/P4/Z2/Z3）import——撤掉会打断线上路径
+  - db.js 被**生产代码** ai/branch/store.mjs（R）import——撤掉会打断线上路径
+  - db.js 被**生产代码** ai/import/rebuild-store.mjs（R）import——撤掉会打断线上路径
+  - db.js 被**生产代码** ai/library/store.mjs（L）import——撤掉会打断线上路径
 - **说明**：建表是增量迁移（向后兼容），但埋点挂钩落在 server.js 与 public/app.js（与 P3/P4 共享），ai/edit-distance.mjs 还被 server.js import → 无法只撤 P5。
 - **验收证据**：`docs/p5-memory-eval-verification.md`、`ai/edit-distance.mjs`、`.p1-baseline/test-edit-distance.mjs`、`.p1-baseline/verify-eval-metric.mjs`
 - **本阶段认领的文件**（7 个）：
@@ -230,7 +233,7 @@
   - 文件 .p1-baseline/test-memory-compress-guard.mjs 同时属于 D8/Z2——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-recall-gap.mjs 同时属于 D8/Z2——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-task-settings.mjs 同时属于 D8/Z1——改动改在同一批代码里，撤不干净
-  - ai/context/cache.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3）import——撤掉会打断线上路径
+  - ai/context/cache.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
   - ai/memory-compress-guard.mjs 被 .p1-baseline/test-memory-compress-guard.mjs（验收工具，Z2）import——撤掉会让该工具失效
 - **说明**：D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。
 - **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`、`.p1-baseline/revert-matrix.mjs`
@@ -277,7 +280,7 @@
   - .p1-baseline/audit-llm-calls.mjs 被 .p1-baseline/audit-llm-calls.mjs（验收工具，Z2）import——撤掉会让该工具失效
   - .p1-baseline/audit-llm-calls.mjs 被 .p1-baseline/verify-all.mjs（验收工具，Z2/Z3）import——撤掉会让该工具失效
   - .p1-baseline/audit-llm-calls.mjs 被 .p1-baseline/verify-guard-on-real-output.mjs（验收工具，D8）import——撤掉会让该工具失效
-  - .p1-baseline/blackhole.mjs 被 .p0-recon/capture-dsh-request.mjs（验收工具，P0/Z1）import——撤掉会让该工具失效
+  - .p1-baseline/audit-llm-calls.mjs 被**生产代码** .verify-post/tools/attribute-check.mjs（PI）import——撤掉会打断线上路径
 - **说明**：验收工具与总纲；单独撤回只会让验收能力变弱，不影响线上行为——但注意 X 内部彼此 import（verify-all ↔ 各工具），且被 .p0-recon 的线路层工具引用。
 - **验收证据**：`.p1-baseline/verify-all.mjs`、`.p1-baseline/README.md`、`docs/README.md`
 - **本阶段认领的文件**（34 个）：
@@ -325,7 +328,7 @@
   - 文件 .p1-baseline/probe-cold-start.mjs 同时属于 S/Z2——改动改在同一批代码里，撤不干净
   - 文件 ai/harness-pool.mjs 同时属于 S/Z2——改动改在同一批代码里，撤不干净
   - debug-trace.js 被**生产代码** harness.js（P0/Z1）import——撤掉会打断线上路径
-  - debug-trace.js 被**生产代码** openviking-sync.js（D8）import——撤掉会打断线上路径
+  - debug-trace.js 被**生产代码** openviking-sync.js（D8/L）import——撤掉会打断线上路径
 - **说明**：本会话改动落在已被 P0–P6/D8 认领的共享文件里（server.js / public/app.js / harness.js / ai/policy.mjs / db.js），所以**不能单独回滚**：撤掉 openviking.js 会打断 server.js 的启动路径，撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。
 - **验收证据**：`.p1-baseline/test-policy-tiers.mjs`、`env-tools-test.mjs`、`.p1-baseline/test-harness-pool.mjs`、`.p1-baseline/mutation-check-harness-pool.mjs`、`docs/self-review-2026-09-18.md`
 - **本阶段认领的文件**（24 个）：
@@ -358,7 +361,8 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - zip-reader.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3）import——撤掉会打断线上路径
+  - zip-reader.mjs 被 .p1-baseline/test-import-guard.mjs（验收工具，R）import——撤掉会让该工具失效
+  - zip-reader.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
 - **说明**：本轮改动的主体落在**已被 P2–P5 认领的共享文件**里（server.js 的 compressStoryMemory / agentMemoryGuardOf / getPath，public/app.js 的 directAIWrite / streamAIDirectWrite / loadAIContext / aiContextBlock）与**已被 S 认领的** frontend-test.mjs，所以主体**不能单独回滚**：撤掉 Q1/Q2 会退回"出场判定只读章节头部"，压缩摘要可以静默丢实体、并喂给之后每一章；撤掉 Q4 会让前端重新拿无预算的旧拼装喂进约 7.4 万字。本阶段唯一可单独撤的是 zip-reader.mjs 的两个上限常量（撤掉=回到无上限解压，不影响其它阶段）。完整回滚用改动前的快照 `data/backup-review-v096-*`（12 个受影响文件，逐文件同构还原；该目录在 .gitignore 内，不进仓库）。
 - **验收证据**：`docs/code-review-2026-09-19-summary.md`
 - **本阶段认领的文件**（3 个）：
@@ -401,7 +405,7 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - 文件 LICENSE 同时属于 W2/Z2——改动改在同一批代码里，撤不干净
-  - 文件 README.md 同时属于 X/W2/Z0/Z2——改动改在同一批代码里，撤不干净
+  - 文件 README.md 同时属于 X/W2/Z0/Z2/L——改动改在同一批代码里，撤不干净
   - 文件 vendor/README.md 同时属于 W2/Z0/Z2——改动改在同一批代码里，撤不干净
 - **说明**：展示面优化：README 新增「为什么是这套机制」对比表（通用对话式工具 vs 本项目）与「一次成文请求的数据流」架构图、第一屏加英文关键词行（GitHub 搜索与英文读者理解）、补上此前未被引用的 assets/preview.png 截图、把 CI 条数口径从 31 校正为实测 32；把第三方组件声明从 LICENSE 移出到 THIRD-PARTY-NOTICES.md——原因是附加中文声明会让 GitHub licensee 把整个仓库判成 spdx=NOASSERTION（显示 "Other" 而不是 MIT），移出后 LICENSE 只含标准 MIT 全文。仓库级 Description 与 Topics 经 GitHub API 写入，属仓库设置而非文件，不进 git。
 - **验收证据**：`README.md`、`LICENSE`、`THIRD-PARTY-NOTICES.md`
@@ -415,8 +419,8 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - ai/continuity-guard-source.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3）import——撤掉会打断线上路径
-  - ai/continuity-guard.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3）import——撤掉会打断线上路径
+  - ai/continuity-guard-source.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
+  - ai/continuity-guard.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
 - **说明**：本轮的**行为改动**落在已被 P2–P5 认领的 `server.js`（两条端点 + `app_settings` 读写）、已被 S 认领的 `public/app.js`（预检块 + 内联进审稿提示词）与 `api-test-suite.mjs`（F11–F16）里，所以整轮**不能单独回滚**：撤掉 `ai/continuity-guard*.mjs` 会让 server.js 的 import 当场失败（启动即崩）。可单独撤的只有那份说明书本身。 另外这轮**刻意不改任何作品数据**：`chapters.target_words`、角色卡状态、风格文本一律原样——判据里报出来的「口径冲突」正是要交回作者决定的事（报告 C6），工具只负责把冲突摆到台面上。
 - **验收证据**：`docs/continuity-guard.md`、`.p1-baseline/test-continuity-guard.mjs`、`.p1-baseline/verify-continuity-guard-on-real-data.mjs`
 - **本阶段认领的文件**（6 个）：
@@ -431,7 +435,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 README.md 同时属于 X/W2/Z0/Z2——改动改在同一批代码里，撤不干净
+  - 文件 README.md 同时属于 X/W2/Z0/Z2/L——改动改在同一批代码里，撤不干净
   - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5——改动改在同一批代码里，撤不干净
   - 文件 vendor/README.md 同时属于 W2/Z0/Z2——改动改在同一批代码里，撤不干净
 - **说明**：回滚口径（诚实版，分两层）：① **资产层可独立撤**——这几个文件不被任何生产代码 import（只有文档引用路径），删掉 vendor/ 与拉取脚本后产品照常启动，代价只是「服务端不需要联网下模型」这条能力消失（OpenViking 会退回它自己的默认行为：首次启动去 HuggingFace 下载，本机必然失败）。② **文件层不可单独回滚**——README.md / docs/README.md 与 X/Z2 改在同一批文件里，而且撤掉资产后那两行指路会变成死链，必须同批处理。 校验口径以 vendor/README.md 里那张表为准（SHA256）；镜像返回的 ETag 与真实内容**不一致**，别拿 ETag 当校验。**已定案（2026-09-25）：该二进制随仓库提交**（代价：每次 clone +47.9MB；本轮提交时一并 `git add`；不想要就删掉 `vendor/models/`，产品照常启动，只是「离线可用」这条能力随之消失）。
@@ -532,7 +536,7 @@
   - ai/context/assembler.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
 - **说明**：**不能单独回滚**：内核被 server.js、层规格与插件工具面同时引用，而那三处又是 P1–P6 / Z2 改过的同一批函数。 本轮的**设计前提**是「机制生效 ≠ 强制接入」：作品开关 story_state_config.enabled 默认 0，未开启时该层不进 manifest、不进 excluded、不计入可执行下限（floor(settings) 仍 = 18173）。 质量红线：本轮**没有**改模型、prompt 语义、reasoning effort、token 预算、层顺序与默认 AI route；逐字节上下文基线 **50/50 相同**；活实例断言「开启后只多一层且其余各层 emitted 逐层相同」。 详见 docs/story-state-kernel-2026-09-26.md。 第五步 Golden Novel 联合回归（19 类难 case）另抓到并修掉两处真实缺陷：① character_knowledge 的 upsert 少了部分唯一索引的 WHERE 谓词 → 角色知识边界整条路不可用（S14 回归 + 变异对照）；② knowledgeOf 的 unknown/suspected/false_belief 可见窗口方向反了 → 最需要提醒的章节反而看不见（S15 回归 + 变异对照）。 另补 GET /api/novel/state/facts（契约 1.1.0 → 1.2.0，附加式）。详见 docs/golden-novel-regression-2026-09-26.md。
 - **验收证据**：`docs/story-state-kernel-2026-09-26.md`、`docs/host-contract-1.1-2026-09-26.md`、`.p1-baseline/test-story-state-api.mjs`、`.p1-baseline/golden-novel.mjs`、`.p1-baseline/golden-out.json`、`docs/golden-novel-regression-2026-09-26.md`、`docs/host-contract.v1.json`
-- **本阶段认领的文件**（36 个）：
+- **本阶段认领的文件**（38 个）：
   - `.p1-baseline/golden-novel.mjs`
   - `.p1-baseline/golden-out.json`
   - `.p1-baseline/test-context-manifest.mjs`
@@ -542,8 +546,10 @@
   - `.p1-baseline/verify-phase-map.mjs`
   - `ai/context/assembler.mjs`
   - `ai/context/layers.mjs`
+  - `ai/story-state/approval.mjs`
   - `ai/story-state/canon.mjs`
   - `ai/story-state/contract.mjs`
+  - `ai/story-state/disclosure.mjs`
   - `ai/story-state/entities.mjs`
   - `ai/story-state/foreshadow.mjs`
   - `ai/story-state/hash.mjs`
@@ -590,8 +596,8 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5——改动改在同一批代码里，撤不干净
-  - 文件 frontend-test.mjs 同时属于 S/Z5——改动改在同一批代码里，撤不干净
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5——改动改在同一批代码里，撤不干净
+  - 文件 frontend-test.mjs 同时属于 S/Z5/PI——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI——改动改在同一批代码里，撤不干净
 - **说明**：**不能单独回滚**：public/app.js 是 P2–P5 / Z2 / Z3 反复改过的同一个文件。 本轮两件事，都是附加式：① 成文耗时测量层——新增 newWriteTiming() 分轮耗时账本；streamAIDirectWrite 多返回 ms/ttftMs； runHarnessJob 多返回客户端观测 ms；三处 showAIWritingResult 传入真实 channel/model/ms/timing （此前从未传过，导致 ai_eval_events 的 ms 恒为 0、channel/model 恒为空串）， 并附加一条 app_logs kind=ai_write_timing（含分轮明细与 draft_key）；② 超长 prompt 走 argv 触发 spawn ENAMETOOLONG 的修复（仅 Windows、仅超长时改走 dsh --profile novel - + stdin）——短/中文本与非 Windows 路径逐字不变，回滚只需把 useStdinPrompt 置 false。 质量红线：**没有**改模型、prompt 语义、上下文、reasoning effort、token 预算，也没有改任何生成分支的判断条件—— 测量值不参与决策，全部是附加字段。之所以走 app_logs 而不给 ai_eval_events 加列：避免 schema 迁移 与已冻结的 Host Contract 表清单变更（零迁移、零契约变更、零回滚风险）。 证据：frontend-test.mjs 新增 108h / 112a / 112b / 112c 四条断言（**既有期望值一字未改**）钉住 "埋点落库请求里就是真值"；任务设置离线 49/49、离线清单 32/32、API 186/190（0 失败）、插件冒烟 39/39 全绿。 详见 docs/ai-write-latency-plan.md 与 docs/HARNESS_ARGV_LIMIT_FIX.md。
 - **验收证据**：`docs/ai-write-latency-plan.md`、`docs/HARNESS_ARGV_LIMIT_FIX.md`、`frontend-test.mjs`
 - **本阶段认领的文件**（5 个）：
@@ -601,9 +607,270 @@
   - `frontend-test.mjs`
   - `public/app.js`
 
+### R · 2026-09-27 增强交付 R01—R12（导入安全与导入后重建 / 剧情分支沙盘 / 披露派生视图 / 作者样文与三级意图 / 编辑规则 / 长正文处理 / 审批与整次采纳 / OV 召回来源边界 / 运行时上下文贡献记录）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - 文件 .p1-baseline/test-ov-recall-boundary.mjs 同时属于 R/L——改动改在同一批代码里，撤不干净
+  - ai/branch/sandbox.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
+  - ai/branch/store.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
+  - ai/context/contributions.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
+  - ai/editing/rules.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
+  - ai/editing/scan.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L）import——撤掉会打断线上路径
+- **说明**：**不能单独回滚**：本阶段只新增文件，但这些新模块被**生产代码**import（server.js / public/app.js / ai/context/* 等）， 撤掉它们必须先撤掉那些挂钩点，而挂钩点与 P2–P5 / Z2 / Z3 / T 改在同一批文件里。 交付内容是**附加式**的：新能力全部门控或按需触发（导入安全校验只作用于导入；重建流程只有作者显式规划才建表； 分支沙盘 / 样文 / 编辑规则 / 披露视图都默认不参与既有作品的装配），既有作品在功能关闭时装配与默认生成路径逐字节不变。 证据链：scripts/ci-offline-checks.mjs（45 条，含导入安全、导入重建与迁移幂等三条离线检查）、frontend-test.mjs、docs/enhancement-acceptance.md； 另有用户授权预算内的实机验收（能力探针 7/0 + 整链写作冒烟 7/0，8 次调用 ≈¥0.035，见验收报告 §6.2）。
+- **验收证据**：`docs/enhancement-acceptance.md`、`docs/enhancement-progress.json`、`docs/plugin-runtime-map.md`、`docs/openviking-call-map.md`、`.verify-enh/live-capabilities-2026-09-27.json`、`.verify-enh/smoke-chain-2026-09-27.usage.json`、`.p1-baseline/test-import-guard.mjs`、`.p1-baseline/test-import-rebuild.mjs`、`.p1-baseline/test-branch-sandbox.mjs`
+- **本阶段认领的文件**（33 个）：
+  - `.p1-baseline/probe-live-capabilities.mjs`
+  - `.p1-baseline/test-adopt-atomic.mjs`
+  - `.p1-baseline/test-agent-write-boundary.mjs`
+  - `.p1-baseline/test-approval-boundary.mjs`
+  - `.p1-baseline/test-author-style.mjs`
+  - `.p1-baseline/test-branch-sandbox.mjs`
+  - `.p1-baseline/test-context-contributions.mjs`
+  - `.p1-baseline/test-disclosure.mjs`
+  - `.p1-baseline/test-editing-rules.mjs`
+  - `.p1-baseline/test-import-guard.mjs`
+  - `.p1-baseline/test-import-rebuild.mjs`
+  - `.p1-baseline/test-long-text.mjs`
+  - `.p1-baseline/test-migration-idempotent.mjs`
+  - `.p1-baseline/test-ov-recall-boundary.mjs`
+  - `.verify-enh/live-capabilities-2026-09-27.json`
+  - `.verify-enh/smoke-chain-2026-09-27.usage.json`
+  - `ai/branch/sandbox.mjs`
+  - `ai/branch/store.mjs`
+  - `ai/context/contributions.mjs`
+  - `ai/editing/rules.mjs`
+  - `ai/editing/scan.mjs`
+  - `ai/import/guard.mjs`
+  - `ai/import/rebuild-store.mjs`
+  - `ai/import/rebuild.mjs`
+  - `ai/openviking/recall-meta.mjs`
+  - `ai/style/author-profile.mjs`
+  - `ai/style/store.mjs`
+  - `docs/enhancement-acceptance.md`
+  - `docs/enhancement-audit.md`
+  - `docs/enhancement-progress.json`
+  - `docs/openviking-call-map.md`
+  - `docs/plugin-runtime-map.md`
+  - `public/long-text.js`
+
+### PI · 2026-09-27 落地后独立重审（001.txt）：本轮修复 + 审计证据
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - 文件 frontend-test.mjs 同时属于 S/Z5/PI——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI——改动改在同一批代码里，撤不干净
+  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L——改动改在同一批代码里，撤不干净
+- **说明**：独立重审（不继承上一轮 PASS）发现并修复的缺陷：① ISSUE-02：server.js 漏 import sampleSetHash，作品尚无文风档案时 GET /api/novel/style/profile 必 500 → 前端作者样文/档案/意图整卡降级；② ISSUE-03：R08 长文本单请求路径三处缺陷——revision_patch 的 parse 依赖 segment（单请求必抛 TypeError，「先审稿再应用→按清单修稿」永远出不了差异预览）；review / 按清单修稿 / 写作精修三类调用在单请求路径会先把模型跑一遍再让老路径跑第二遍（同一次任务双倍计费、双倍等待）；AI 写作草稿链的差异合并指纹以草稿为基准比对正文，永远拒绝合并。 修复全是最小改动（补齐 import / 单请求路径 singleRunByCaller 交回调用方 / 合并以审稿启动时的正文指纹为基准）， 未改 prompt 语义、模型路由、预算与任何注入字节。frontend-test.mjs 新增 58ad/58ae/58af 三条断言（先复现红，再转绿）。 证据：.verify-post/（本轮全部脚本与日志，可整体删除）。
+- **验收证据**：`docs/post-implementation-audit.md`、`docs/post-implementation-acceptance.md`、`docs/post-implementation-issues.md`、`docs/post-implementation-results.json`
+- **本阶段认领的文件**（154 个）：
+  - `.verify-post/audit-after-adversarial.json`
+  - `.verify-post/audit-window-adversarial.json`
+  - `.verify-post/baseline-git-diff-name-status.txt`
+  - `.verify-post/baseline-git-diff-stat.txt`
+  - `.verify-post/baseline-git-status.txt`
+  - `.verify-post/baselines-current/summary.json`
+  - `.verify-post/baselines-current/w16-c108-ai_context.json`
+  - `.verify-post/baselines-current/w16-c108-continuation.json`
+  - `.verify-post/baselines-current/w16-c108-fragment.json`
+  - `.verify-post/baselines-current/w16-c108-full.json`
+  - `.verify-post/baselines-current/w16-c108-settings.json`
+  - `.verify-post/baselines-current/w16-c168-ai_context.json`
+  - `.verify-post/baselines-current/w16-c168-continuation.json`
+  - `.verify-post/baselines-current/w16-c168-fragment.json`
+  - `.verify-post/baselines-current/w16-c168-full.json`
+  - `.verify-post/baselines-current/w16-c168-settings.json`
+  - `.verify-post/baselines-current/w16-c227-ai_context.json`
+  - `.verify-post/baselines-current/w16-c227-continuation.json`
+  - `.verify-post/baselines-current/w16-c227-fragment.json`
+  - `.verify-post/baselines-current/w16-c227-full.json`
+  - `.verify-post/baselines-current/w16-c227-settings.json`
+  - `.verify-post/baselines-current/w18-c228-ai_context.json`
+  - `.verify-post/baselines-current/w18-c228-continuation.json`
+  - `.verify-post/baselines-current/w18-c228-fragment.json`
+  - `.verify-post/baselines-current/w18-c228-full.json`
+  - `.verify-post/baselines-current/w18-c228-settings.json`
+  - `.verify-post/baselines-current/w18-c230-ai_context.json`
+  - `.verify-post/baselines-current/w18-c230-continuation.json`
+  - `.verify-post/baselines-current/w18-c230-fragment.json`
+  - `.verify-post/baselines-current/w18-c230-full.json`
+  - `.verify-post/baselines-current/w18-c230-settings.json`
+  - `.verify-post/baselines-current/w18-c232-ai_context.json`
+  - `.verify-post/baselines-current/w18-c232-continuation.json`
+  - `.verify-post/baselines-current/w18-c232-fragment.json`
+  - `.verify-post/baselines-current/w18-c232-full.json`
+  - `.verify-post/baselines-current/w18-c232-settings.json`
+  - `.verify-post/baselines-current/w2-c107-ai_context.json`
+  - `.verify-post/baselines-current/w2-c107-continuation.json`
+  - `.verify-post/baselines-current/w2-c107-fragment.json`
+  - `.verify-post/baselines-current/w2-c107-full.json`
+  - `.verify-post/baselines-current/w2-c107-settings.json`
+  - `.verify-post/baselines-current/w9-c31-ai_context.json`
+  - `.verify-post/baselines-current/w9-c31-continuation.json`
+  - `.verify-post/baselines-current/w9-c31-fragment.json`
+  - `.verify-post/baselines-current/w9-c31-full.json`
+  - `.verify-post/baselines-current/w9-c31-settings.json`
+  - `.verify-post/baselines-current/w9-c34-ai_context.json`
+  - `.verify-post/baselines-current/w9-c34-continuation.json`
+  - `.verify-post/baselines-current/w9-c34-fragment.json`
+  - `.verify-post/baselines-current/w9-c34-full.json`
+  - `.verify-post/baselines-current/w9-c34-settings.json`
+  - `.verify-post/baselines-current/w9-c36-ai_context.json`
+  - `.verify-post/baselines-current/w9-c36-continuation.json`
+  - `.verify-post/baselines-current/w9-c36-fragment.json`
+  - `.verify-post/baselines-current/w9-c36-full.json`
+  - `.verify-post/baselines-current/w9-c36-settings.json`
+  - `.verify-post/debug-st-view.json`
+  - `.verify-post/dom-dump.json`
+  - `.verify-post/e2e-fake-llm.jsonl`
+  - `.verify-post/e2e-import.md`
+  - `.verify-post/e2e-report.json`
+  - `.verify-post/e2e-run-9-server-log.txt`
+  - `.verify-post/e2e-server-log.txt`
+  - `.verify-post/e2e-shots/00-home.png`
+  - `.verify-post/e2e-shots/01-thanks.png`
+  - `.verify-post/e2e-shots/02-writing.png`
+  - `.verify-post/e2e-shots/03-narrow.png`
+  - `.verify-post/e2e-shots/04-polish.png`
+  - `.verify-post/e2e-shots/05-import.png`
+  - `.verify-post/e2e-shots/06-home.png`
+  - `.verify-post/edge-smoke.json`
+  - `.verify-post/inst-stress/novel.db`
+  - `.verify-post/inst-stress/novel.db-shm`
+  - `.verify-post/inst-stress/novel.db-wal`
+  - `.verify-post/inst-stress2/novel.db`
+  - `.verify-post/inst-stress2/novel.db-shm`
+  - `.verify-post/inst-stress2/novel.db-wal`
+  - `.verify-post/live-capabilities-this-round.json`
+  - `.verify-post/live-phase-start-ts.txt`
+  - `.verify-post/negative-matrix.json`
+  - `.verify-post/prev-round-live-capabilities.json`
+  - `.verify-post/round1-records.json`
+  - `.verify-post/round1-records2.json`
+  - `.verify-post/round1-records3.json`
+  - `.verify-post/server-log-bx.txt`
+  - `.verify-post/tools/add-r-and-sections.mjs`
+  - `.verify-post/tools/attribute-check.mjs`
+  - `.verify-post/tools/audit-money-window.mjs`
+  - `.verify-post/tools/build-acceptance.mjs`
+  - `.verify-post/tools/db-snapshot.mjs`
+  - `.verify-post/tools/db-tables.mjs`
+  - `.verify-post/tools/debug-st-view.mjs`
+  - `.verify-post/tools/diag-edge-cdp.mjs`
+  - `.verify-post/tools/dump-e2e-log.mjs`
+  - `.verify-post/tools/e2e-browser.mjs`
+  - `.verify-post/tools/edge-smoke.mjs`
+  - `.verify-post/tools/explore-dom.mjs`
+  - `.verify-post/tools/fix-dbg.mjs`
+  - `.verify-post/tools/fix-e2e-2.mjs`
+  - `.verify-post/tools/fix-e2e-3.mjs`
+  - `.verify-post/tools/fix-e2e-4.mjs`
+  - `.verify-post/tools/fix-e2e-5.mjs`
+  - `.verify-post/tools/fix-e2e-6.mjs`
+  - `.verify-post/tools/fix-e2e-7.mjs`
+  - `.verify-post/tools/fix-e2e-8.mjs`
+  - `.verify-post/tools/fix-e2e-9.mjs`
+  - `.verify-post/tools/fix-e2e-anchor.mjs`
+  - `.verify-post/tools/fix-e2e-junk.mjs`
+  - `.verify-post/tools/fix-fe-test.mjs`
+  - `.verify-post/tools/fix-fe-test2.mjs`
+  - `.verify-post/tools/fix-fixer.mjs`
+  - `.verify-post/tools/fix-issue02.mjs`
+  - `.verify-post/tools/fix-olddb.mjs`
+  - `.verify-post/tools/fix-phase-map.mjs`
+  - `.verify-post/tools/fix-post05-doc.mjs`
+  - `.verify-post/tools/fix-probe.mjs`
+  - `.verify-post/tools/fix-r08-single-path.mjs`
+  - `.verify-post/tools/inspect-e2e-db.cjs`
+  - `.verify-post/tools/inspect-e2e-db.mjs`
+  - `.verify-post/tools/inspect-e2e-db2.cjs`
+  - `.verify-post/tools/inspect-schema.cjs`
+  - `.verify-post/tools/inspect-stress.mjs`
+  - `.verify-post/tools/list-edge-targets.mjs`
+  - `.verify-post/tools/list-endpoints.cjs`
+  - `.verify-post/tools/live-stress-checks.mjs`
+  - `.verify-post/tools/merge-results.mjs`
+  - `.verify-post/tools/patch-adversarial.mjs`
+  - `.verify-post/tools/patch-adversarial2.mjs`
+  - `.verify-post/tools/patch-busy-2.mjs`
+  - `.verify-post/tools/patch-busy-timeout.mjs`
+  - `.verify-post/tools/patch-explore.mjs`
+  - `.verify-post/tools/perf-probe.mjs`
+  - `.verify-post/tools/post-adversarial.mjs`
+  - `.verify-post/tools/post05-update.json`
+  - `.verify-post/tools/probe-branch-submit.mjs`
+  - `.verify-post/tools/probe-bundle-identity.mjs`
+  - `.verify-post/tools/probe-old-db-migration.mjs`
+  - `.verify-post/tools/probe-secret-hygiene.mjs`
+  - `.verify-post/tools/probe-style-profile.mjs`
+  - `.verify-post/tools/probe-syncturns.mjs`
+  - `.verify-post/tools/render-check-attributions.mjs`
+  - `.verify-post/tools/schema-jobs.mjs`
+  - `.verify-post/tools/schema-probe.mjs`
+  - `.verify-post/tools/schema-reviews.mjs`
+  - `.verify-post/tools/tables-probe.mjs`
+  - `.verify-post/tools/write-results.mjs`
+  - `.verify-post/tools/zstd-inspect.mjs`
+  - `docs/post-implementation-acceptance.md`
+  - `docs/post-implementation-audit.md`
+  - `docs/post-implementation-issues.md`
+  - `docs/post-implementation-results.json`
+  - `frontend-test.mjs`
+  - `public/app.js`
+  - `server.js`
+
+### L · 2026-09-28 知识库专项：跨作品共享写作资料库（门控层 library + 导入链 + 模型侧查回）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - 文件 .p1-baseline/test-ov-recall-boundary.mjs 同时属于 R/L——改动改在同一批代码里，撤不干净
+  - 文件 README.md 同时属于 X/W2/Z0/Z2/L——改动改在同一批代码里，撤不干净
+  - 文件 ai/context/layers.mjs 同时属于 P1/Z2/Z3/L——改动改在同一批代码里，撤不干净
+  - ai/context/layers.mjs 被 .p1-baseline/compare-baseline.mjs（验收工具，P1）import——撤掉会让该工具失效
+  - ai/context/layers.mjs 被 .p1-baseline/golden-novel.mjs（验收工具，Z3）import——撤掉会让该工具失效
+  - ai/context/layers.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
+- **说明**：**不能单独回滚**：`ai/library/` 被 server.js（P2–P5/Z2/Z3/PI）与 openviking-sync.js 直接 import， 且层规格 / 来源校验 / 登记表分别改在 ai/context/layers.mjs（P1/Z2/Z3）、ai/openviking/recall-meta.mjs（R）、db.js（P5/Z3）里。 本轮全部为附加式：新增门控层 `library`（默认关闭；`library_enabled=0` 的作品 assembled/manifest 与接入前**逐字节一致**， 见 `.p1-baseline/verify-library-identity.mjs` 的 4/4）、新增登记表 `library_docs`（纯 CREATE TABLE IF NOT EXISTS，旧 46 张表零改动）、 新增 7 条端点与工具 `novel_library`（写操作模型侧 403）。 关闭开关即恢复旧行为，不需要动数据。 证据链：离线 `.p1-baseline/test-library-import.mjs`（34/34，隔离实例 + OV stub）与 `test-ov-recall-boundary.mjs`（54/54，含资料根用例）； 真机 `.p1-baseline/verify-library-realmachine.mjs`（18/18，真实 OV v0.4.21 + 隔离实例，写共享资料根 3 篇后清理，根零残留）； 契约见 docs/host-contract.md §20；调用链见 docs/openviking-call-map.md 链 C。
+- **验收证据**：`docs/host-contract.md`、`.p1-baseline/test-library-import.mjs`、`.p1-baseline/verify-library-identity.mjs`、`.p1-baseline/verify-library-realmachine.result.json`、`.p1-baseline/probe-library-p0.result.json`、`.p1-baseline/test-ov-recall-boundary.mjs`、`docs/openviking-call-map.md`
+- **本阶段认领的文件**（35 个）：
+  - `.p1-baseline/library-identity-before.json`
+  - `.p1-baseline/probe-library-p0.mjs`
+  - `.p1-baseline/probe-library-p0.result.json`
+  - `.p1-baseline/test-library-import.mjs`
+  - `.p1-baseline/test-ov-recall-boundary.mjs`
+  - `.p1-baseline/verify-library-identity.mjs`
+  - `.p1-baseline/verify-library-realmachine.mjs`
+  - `.p1-baseline/verify-library-realmachine.result.json`
+  - `README.md`
+  - `ai/context/layers.mjs`
+  - `ai/library/library-doc.mjs`
+  - `ai/library/library-ingest.mjs`
+  - `ai/library/library-recall.mjs`
+  - `ai/library/library-roots.mjs`
+  - `ai/library/store.mjs`
+  - `ai/openviking/recall-meta.mjs`
+  - `db.js`
+  - `docs/host-contract.md`
+  - `docs/host-contract.v1.json`
+  - `docs/openviking-call-map.md`
+  - `harness-plugins/novel-writing/ENGINE.md`
+  - `harness-plugins/novel-writing/NATIVE_PLUGIN_GUIDE.md`
+  - `harness-plugins/novel-writing/README.md`
+  - `harness-plugins/novel-writing/agent.cordis.yml`
+  - `harness-plugins/novel-writing/cordis.patch.yml`
+  - `harness-plugins/novel-writing/headless-cordis.patch.yml`
+  - `harness-plugins/novel-writing/install-profile.mjs`
+  - `harness-plugins/novel-writing/install.ps1`
+  - `harness-plugins/novel-writing/novel-tools.mjs`
+  - `harness-plugins/novel-writing/package.json`
+  - `harness-plugins/novel-writing/plugin.json`
+  - `harness-plugins/novel-writing/test/smoke.mjs`
+  - `openviking-sync.js`
+  - `scripts/ci-offline-checks.mjs`
+  - `server.js`
+
 ## 三、归属核对
 
-- 真实改动集：**241** 个文件
+- 真实改动集：**439** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

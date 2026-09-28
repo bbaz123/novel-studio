@@ -1,0 +1,180 @@
+{
+  "started_at": "2026-09-28T10:20:23.492Z",
+  "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+  "parent_entries": [
+    "viking://user/default/resources/context-optimization-review-report",
+    "viking://user/default/resources/hindsight-plugin-backup-20260914",
+    "viking://user/default/resources/novel-studio",
+    "viking://user/default/resources/novel-studio-model-routing-review",
+    "viking://user/default/resources/openviking-watchdog-handover-review-20260917"
+  ],
+  "write": {
+    "ok": true,
+    "status": 200,
+    "took_ms": 28870,
+    "error": ""
+  },
+  "index": {
+    "index_wait_ms": 32,
+    "polls": 1
+  },
+  "find": {
+    "FM": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.443,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "INTRO": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.443,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "SEC1": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.469,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "SEC2": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.445,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "SEC2B": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.445,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "SEC3": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.464,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "SEC4": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.458,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "SEC5": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.448,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ],
+    "NOPE": [
+      {
+        "uri": "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md",
+        "score": 0.366,
+        "abstract": "《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限",
+        "overview_type": "null"
+      }
+    ]
+  },
+  "raw_entry_keys": [
+    "context_type",
+    "uri",
+    "level",
+    "score",
+    "abstract",
+    "tags"
+  ],
+  "raw_entry_preview": "{\"context_type\":\"resource\",\"uri\":\"viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md\",\"level\":2,\"score\":0.4639650285243988,\"abstract\":\"《P0 格式探针：共享资料库 P0》属格式探针/临时文件，记录知识库格式约定冻结前的一次性真机实验，用于验证切块、检索与读回，验证后立即删除。正文五节对应不同召回位置：ZQK7SEC1 测首节单独召回；ZQK7SEC2 位于中部，用于对比不同段召回分数，含第二甲补给清单；ZQK7SEC3 代表中后段深段内容；ZQK7SEC4 验证中后段召回；ZQK7SEC5 验证尾部召回与取回窗口。关键标识有 ZQK7FM、ZQK7INTRO 及 ZQK7SEC1 至 ZQK7SEC5。目标受众为执行探针、评估召回行为的人员；仅限探针期间使用。\",\"tags\":[]}",
+  "raw_buckets": [
+    "memories",
+    "resources",
+    "skills",
+    "total"
+  ],
+  "read": {
+    "full": {
+      "ok": true,
+      "chars": 864,
+      "lines": 54,
+      "markers": [
+        "ZQK7FM",
+        "ZQK7INTRO",
+        "ZQK7SEC1",
+        "ZQK7SEC2",
+        "ZQK7SEC2B",
+        "ZQK7SEC3",
+        "ZQK7SEC4",
+        "ZQK7SEC5"
+      ]
+    },
+    "win30": {
+      "ok": true,
+      "chars": 484,
+      "lines": 31,
+      "markers": [
+        "ZQK7FM",
+        "ZQK7INTRO",
+        "ZQK7SEC1",
+        "ZQK7SEC2",
+        "ZQK7SEC2B"
+      ],
+      "has_frontmatter": true,
+      "text": "---\ntitle: P0 格式探针\nprobe_marker: ZQK7FM\ntags: [格式探针, 临时文件]\n---\n\n# 格式探针：共享资料库 P0\n\n一句话结论：ZQK7INTRO 本文件是知识库格式约定冻结前的一次性真机实验，验证切块、检索与读回行为；验证后立即删除。\n适用场景：仅探针期间存在。\n\n## 第一节：北岭雪线的风向标（ZQK7SEC1）\n\n- ZQK7SEC1 本节只用来测「第一节能否被单独召回」。\n- 雪线以上风速稳定，旗标指向与谷底相反。\n- 夜间结霜会把标绳冻成硬线，需要清晨先敲再拉。\n- 遇白雾时以绳结计数，不依赖目视距离。\n- 记录口令：每走两百步报一次绳结数。\n\n## 第二节：雾港潮汐的铜尺（ZQK7SEC2）\n\n- ZQK7SEC2 本节刻意写在文件中部，用来对比不同段的召回分数。\n- 潮位以铜尺读数报出，尺身刻到半寸。\n- 大潮日退潮窗口短，进出港要错开。\n- 铜尺受热会伸长，读数需按温标修正。\n- 口令沿用旧例：先报潮位，再报风向。\n\n### 第二甲：补给清单（ZQK7SEC2B）\n\n- 绳、蜡、干粮、备尺。\n"
+    },
+    "win60": {
+      "ok": true,
+      "chars": 380,
+      "lines": 24,
+      "markers": [
+        "ZQK7SEC3",
+        "ZQK7SEC4",
+        "ZQK7SEC5"
+      ],
+      "head": "\n## 第三节：铜环律令的例外条款（ZQK7SEC3）\n\n- ZQK7SEC3 本节位于文件中后段，代表「后期才被召回的深段内容」。\n- 律令第七条允许在雾季临时改线，但必须两人附议。\n- 例外条款只在铜环出示后生效。\n- 改线记录当日抄送"
+    }
+  },
+  "list": {
+    "dir_ok": true,
+    "dir_entries": [
+      "viking://user/default/resources/novel-studio-library/_probe/p0-format-probe.md"
+    ],
+    "root_ok": true,
+    "root_entries": [
+      "viking://user/default/resources/novel-studio-library/_probe"
+    ]
+  },
+  "delete": {
+    "rm_ok": true,
+    "readback_ok": false,
+    "find_after_delete": []
+  },
+  "verdict": {
+    "cleanup_confirmed": true,
+    "frontmatter_vectorized": true,
+    "chunking_observation": "见 find[SEC*] 的 abstract 对比：若不同段的 abstract 不同 → 段级切块；相同 → 文件级",
+    "window30_note": "见 read.win30：行数/字数/是否含 front matter"
+  },
+  "cleanup": {
+    "rm_ok": true,
+    "readback_ok": false,
+    "dir_rm_ok": true,
+    "residue": []
+  },
+  "finished_at": "2026-09-28T10:20:56.104Z"
+}

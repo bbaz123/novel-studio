@@ -51,6 +51,12 @@ export const LAYERS = [
     source: 'story_memories（版本化）' },
   { id: 'recall', label: '相关记忆检索（语义召回）', kind: 'cond', cap: 1400,
     source: 'OpenViking find（top-8 / 阈值 0.3 / 每段截 300 字）' },
+  // ⚠ gated: true —— 共享资料库层（跨作品写作资料）：作品显式打开 library_enabled:<workId>
+  // 才存在（与 story_state 同口径：未开启的作品 assembled/manifest 逐字节不变）。
+  // 资料永不 canon：层标题与条目标注一律写明「参考资料（非本书事实）」（见 ai/library/ 与
+  // recall-meta.mjs 的资料分支）。P0 实测：find 文件级命中、取回窗口 = 前 30 行。
+  { id: 'library', label: '参考资料（非本书事实）', kind: 'cond', cap: 1200, gated: true,
+    source: 'OpenViking find（共享资料根 top-4 / 阈值 0.40 / 每条 300 字 / 前 30 行）' },
   { id: 'events', label: '最近事件（事件账本）', kind: 'fixed', cap: 1800,
     source: 'story_events 近 30 条 × 每条 200 字' },
   { id: 'foreshadows', label: '未闭合伏笔（写作时必须照顾）', kind: 'fixed', cap: 1200,
@@ -74,6 +80,14 @@ export const LAYERS = [
   // 因此 assembled、manifest、excluded 三者都与它出现之前逐字节一致。
   { id: 'story_state', label: '故事状态（正典/时间线/契约/知识边界）', kind: 'cond', cap: 2400, gated: true,
     source: 'story_facts + story_timeline_entries + chapter_contracts + character_knowledge + story_entities' },
+  // ⚠ gated: true —— R07 编辑规则层：作者在「创作上下文 → 编辑规则」里显式打开后才推进层列表。
+  // 未打开的作品里它**根本不存在**（不是 emitted:false），assembled/manifest/excluded 与它出现之前逐字节一致。
+  { id: 'edit_rules', label: '编辑规则（保护规则 / 档位 / 能力 / 题材档）', kind: 'cond', cap: 2400, gated: true,
+    source: 'ai/editing/rules.mjs（本项目自写规则资产；版本与 hash 见 /api/novel/editing）' },
+  // ⚠ gated: true —— R09 作者意图 / 文风证据层：作品里有作者意图或启用的样文时才推进层列表。
+  // 没有这些数据的作品里它**根本不存在**（不是 emitted:false）：assembled/manifest/excluded 与接入前逐字节一致。
+  { id: 'author_intent', label: '作者意图与文风证据（长期方向/阶段重点/本章意图 + 样文风格统计）', kind: 'cond', cap: 2400, gated: true,
+    source: 'author_intents + author_samples/style_profiles（作者侧数据；样文只作风格证据，不是本书事实）' },
   { id: 'redlines', label: '写作风格红线', kind: 'fixed', cap: 4000,
     source: 'writing_redlines + style_positive' },
 ];
@@ -101,6 +115,7 @@ export const RETRIEVAL = {
   outline:     { tool: 'novel_lookup', note: '被省略的中间章节可用标题/摘要关键词检索到' },
   memory:      { tool: 'novel_memory_read', endpoint: '/api/story_memory', full: true },
   recall:      { tool: null, intrinsic: true, note: '本层自身就是检索结果，没有更上层原文可查（非缺口）' },
+  library:     { tool: 'novel_library', endpoint: '/api/novel/library/search', note: '资料被预算截断时可用 novel_library 按关键词/分类查回原文（GET /api/novel/library/doc 读全文窗口）' },
   events:      { tool: 'novel_events', endpoint: '/api/novel/events', countable: 'story_events' },
   foreshadows: { tool: 'novel_foreshadows', endpoint: '/api/novel/foreshadows?status=all', countable: 'foreshadow' },
   scene:       { tool: 'novel_lookup', note: '章节标题/摘要可检索' },
@@ -114,6 +129,8 @@ export const RETRIEVAL = {
   // /api/novel/redlines 与 novel_style_contract 现在同时返回正向风格契约，查回路径与装配路径同源。
   redlines:    { tool: 'novel_style_contract', endpoint: '/api/novel/redlines', countable: 'writing_redlines' },
   story_state: { tool: 'novel_state', endpoint: '/api/novel/story_state', note: '整块状态可用 GET /api/novel/story_state 读回；逐条事实/时间线/契约各有专用端点' },
+  edit_rules:  { tool: 'novel_context', endpoint: '/api/novel/editing', note: '规则块是宿主的静态规则资产（本项目自写）；GET /api/novel/editing 可读回目录、原文与版本/hash' },
+  author_intent: { tool: 'novel_context', endpoint: '/api/novel/author_intent', note: '意图原文、样文原文与风格证据可用 GET /api/novel/author_intent 读回（含装配预算截断前的样文证据）' },
 };
 
 /**
@@ -133,6 +150,9 @@ export const RECALL_GAP_CN = {
   'no-hits': '检索没有命中（可能索引还没建，或本作品确实没有相关内容）',
   unavailable: '记忆服务当前不可用',
   error: '检索过程出错',
+  // R04：检索回来了，但全部条目被来源校验（跨书 / 未来章 / 候选内容 / 布局不明）拦下。
+  // 必须显式说明——"全部被拦"和"本来就没有"是两件事，静默成 no-hits 会让作者以为索引是空的。
+  filtered: '召回结果全部未通过来源校验（跨书内容、未来章节或候选/草稿内容不得进入上下文）',
 };
 
 /** @param {{enabled?:boolean,status?:string}} recall getSemanticRecall 的返回值 */
@@ -307,6 +327,12 @@ export const PROVENANCE = {
     selection: 'retrieval',
     reason: '语义召回：补固定分层漏掉的旧章正文/词条/角色卡；不可用时插显式占位而不是静默消失',
   },
+  library: {
+    source: 'OpenViking 共享资料库（作者显式导入；novel-studio-library 根）', temporal_scope: 'any',
+    knowledge_scope: 'author', selection: 'retrieval',
+    reason: '跨作品共享的写作参考资料（方法/素材/范例）：需要专业细节时给模型可引用的依据；资料不是本书事实，永不进入正典判定',
+    known_gap: '默认关闭：作品未打开 library_enabled 时没有这一层；导入后约 30 秒内可能召回不到（异步索引，P0 实测 wait:true 阻塞 28.9s）',
+  },
   events: {
     source: 'story_events', temporal_scope: 'past', knowledge_scope: 'mixed', selection: 'recent',
     reason: '事件账本近 30 条：防"上一章刚发生的事这一章当作没发生"',
@@ -356,6 +382,18 @@ export const PROVENANCE = {
     temporal_scope: 'present', knowledge_scope: 'mixed', selection: 'direct',
     reason: '确定性故事状态：正典切片 / 时间线 / 本章契约 / 角色知识边界 / 伏笔状态——防「第 3 章死掉的人第 12 章又出场」这类跨章崩坏',
     known_gap: '只放**当前章节点看得见**的条目（future 一律不进）；被截断时可用 novel_state / 各专用端点读回全文',
+  },
+  edit_rules: {
+    source: 'ai/editing/rules.mjs（宿主自写的规则资产，不是作品数据）', temporal_scope: 'plan',
+    knowledge_scope: 'author', selection: 'direct',
+    reason: '编辑规则块（保护规则 / 编辑档位 / 七项能力 / 题材档）：防「精修把作者的声音改没」与「反 AI 腔改写引入新套路」',
+    known_gap: '默认关闭：未打开的作品没有这一层；规则文本是宿主静态资产，可用 GET /api/novel/editing 读回目录与版本/hash',
+  },
+  author_intent: {
+    source: 'author_intents + author_samples + style_profiles（作者侧：意图与文风证据）', temporal_scope: 'plan+present',
+    knowledge_scope: 'author', selection: 'direct',
+    reason: '作者意图（长期/阶段/本章）与文风证据：让生成贴着作者自己的方向与笔法走，本章具体意图可覆盖较泛偏好但不静默取消长期硬约束',
+    known_gap: '默认关闭：作品没有任何作者意图与启用样文时没有这一层；样文只做风格统计与风格证据，**不进入** story_facts/事件/角色知识（负向测试见 test-author-style.mjs）',
   },
   redlines: {
     source: 'writing_redlines + works.style_positive', temporal_scope: 'any',

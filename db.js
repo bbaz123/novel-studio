@@ -19,6 +19,34 @@ db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA busy_timeout = 5000;');
 
+// ── 深度感知事务原语（2026-09-27，R03）──────────────────────────────────────
+// 为什么放在 db.js：宿主（server.js）与故事状态内核（ai/story-state/store.mjs）都要开事务，
+// 而 R03 的「原子采纳」必须把它们**嵌进同一个事务**。SQLite 不允许嵌套 BEGIN——内层必须用
+// SAVEPOINT。把深度裁决放在唯一共享的模块里，才不会出现"每个调用方各写一份 tx 参数"：
+// 2026-09-27 实测缺陷——旧提案采纳路径（settleProposals → addStoryEvent/saveStoryMemory）
+// 因为内层再次 BEGIN，整条作者「采纳」通道 100% 报 "cannot start a transaction within a transaction"。
+let txDepth = 0;
+export function inTransaction() { return txDepth > 0; }
+export function withTransaction(fn) {
+  const outer = txDepth === 0;
+  const savepoint = `sp_${txDepth}`;
+  db.exec(outer ? 'BEGIN' : `SAVEPOINT ${savepoint}`);
+  txDepth += 1;
+  try {
+    const result = fn();
+    txDepth -= 1;
+    db.exec(outer ? 'COMMIT' : `RELEASE ${savepoint}`);
+    return result;
+  } catch (e) {
+    txDepth -= 1;
+    try {
+      if (outer) db.exec('ROLLBACK');
+      else { db.exec(`ROLLBACK TO ${savepoint}`); db.exec(`RELEASE ${savepoint}`); }
+    } catch (_) { /* 事务可能已回滚 / 保存点已释放 */ }
+    throw e;
+  }
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS works (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -483,6 +511,224 @@ CREATE TABLE IF NOT EXISTS story_validations (
   result_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+
+-- 作者审批记录（2026-09-27，R02.2）：把"作者同意"从工具描述里的口头纪律变成**服务端可校验
+-- 的执行边界**。模型侧写入（带 X-Novel-Agent 标记的请求）必须引用一条仍有效、未消费、
+-- 且绑定完全匹配的审批；审批只能由作者界面（不带该标记）创建，默认单次消费、带有效期。
+--   op            chapter_save / state_proposal_apply / proposal_apply / state_rollback
+--   baseline_hash 操作对象的基线（章节正文哈希 / 状态哈希 / 提案集合哈希）
+--   binding_json  结构化绑定（提案 id+版本哈希、快照 id、章节 id 等）
+CREATE TABLE IF NOT EXISTS author_approvals (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER,
+  op TEXT NOT NULL,
+  baseline_hash TEXT NOT NULL DEFAULT '',
+  binding_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  consumed_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_author_approvals_scope ON author_approvals(work_id, op, status);
+-- 幂等账本（2026-09-27，R03）：整次采纳（正文 + 选中提案）的 operation 记录。
+-- 同一 idempotency_key + 同一 payload 重放 → 返回原结果；同一 key + 不同 payload → 冲突。
+CREATE TABLE IF NOT EXISTS adoption_operations (
+  idempotency_key TEXT PRIMARY KEY,
+  payload_hash TEXT NOT NULL DEFAULT '',
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+-- 投影 outbox（2026-09-27，R03）：正文/状态提交与「事务外副作用」（OpenViking 同步、Embedding）
+-- 之间的**持久化边界**。记录必须与正文写在同一事务里，提交后再由 worker 执行外部调用；
+-- 进程在 commit 与投影之间崩溃时，重启只凭这张表就能恢复（不依赖"提交后再 enqueue 一次"）。
+--   kind        投影类型（目前：ov_work_sync）
+--   status      pending / running / done / failed（failed 可经 retry 复位为 pending）
+--   dedup_key   幂等键（同一 operation 重放不重复投影；空串不参与唯一约束）
+CREATE TABLE IF NOT EXISTS projection_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER,
+  kind TEXT NOT NULL,
+  dedup_key TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_projection_outbox_status ON projection_outbox(status, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projection_outbox_dedup ON projection_outbox(dedup_key) WHERE dedup_key != '';
+-- OpenViking 投影审计（2026-09-27，R04）：delete / rebuild 这类**破坏性外部操作**的待删除集合
+-- 与范围证明必须可审计（任务书 §7.4）。只记条目摘要与计数，不记记忆正文。
+CREATE TABLE IF NOT EXISTS ov_projection_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  op TEXT NOT NULL,
+  scope_uri TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  expected_count INTEGER NOT NULL DEFAULT 0,
+  actual_count INTEGER NOT NULL DEFAULT 0,
+  deletable_json TEXT NOT NULL DEFAULT '[]',
+  foreign_json TEXT NOT NULL DEFAULT '[]',
+  unexpected_json TEXT NOT NULL DEFAULT '[]',
+  detail TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT 'author',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ov_projection_audit_work ON ov_projection_audit(work_id, id);
+-- 作者样文（2026-09-27，R09）：作者自己的（或有权使用的）文本，作为**文风证据**。
+-- 关键边界：样文是数据，不是本书事实——它只用于文风分析与按预算的风格证据注入，
+-- 绝不写进 story_facts / story_events / character_knowledge（负向测试见 test-author-style.mjs）。
+CREATE TABLE IF NOT EXISTS author_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL DEFAULT '',
+  chars INTEGER NOT NULL DEFAULT 0,
+  content_hash TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'author',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_author_samples_work ON author_samples(work_id, id);
+-- 结构化文风档案（R09）：确定性计数 + 口径（how/unit），语义推断未跑时为 null 且状态 not_run。
+--   sample_set_hash 是"档案基于哪一批样文"的指纹：样文增删改后旧档案自动判 stale。
+CREATE TABLE IF NOT EXISTS style_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  profile_json TEXT NOT NULL DEFAULT '{}',
+  profile_hash TEXT NOT NULL DEFAULT '',
+  analysis_version TEXT NOT NULL DEFAULT '',
+  sample_set_hash TEXT NOT NULL DEFAULT '',
+  semantic_json TEXT NOT NULL DEFAULT '',
+  semantic_status TEXT NOT NULL DEFAULT 'not_run',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_style_profiles_work ON style_profiles(work_id, id DESC);
+-- 三级作者意图（R09）：长期方向 / 当前阶段重点 / 本章意图。
+-- chapter_id = 0 表示作品级（长期/阶段），>0 表示章节级；UNIQUE 让同一层级只有一条（幂等更新）。
+CREATE TABLE IF NOT EXISTS author_intents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER NOT NULL DEFAULT 0,
+  tier TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  hard INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(work_id, chapter_id, tier)
+);
+CREATE INDEX IF NOT EXISTS idx_author_intents_work ON author_intents(work_id, chapter_id, tier);
+-- 剧情分支沙盘（2026-09-27，R11）：宿主保存候选 + 依赖基线（状态 / 正文 / 契约 / 作者意图 / 披露指纹）。
+-- 关键边界：候选**不是**本书事实——它只描述"可以往哪写"；采纳只形成章节蓝图与契约建议，
+-- 正文 / 正典事实 / 角色状态一律不动（负向测试见 test-branch-sandbox.mjs）。
+CREATE TABLE IF NOT EXISTS branch_sandboxes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'open',
+  requested INTEGER NOT NULL DEFAULT 3,
+  deps_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_branch_sandboxes_work ON branch_sandboxes(work_id, chapter_id, id DESC);
+CREATE TABLE IF NOT EXISTS branch_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  sandbox_id INTEGER,
+  chapter_id INTEGER,
+  ordinal INTEGER NOT NULL DEFAULT 1,
+  title TEXT NOT NULL DEFAULT '',
+  core_action TEXT NOT NULL DEFAULT '',
+  conflict TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  deps_json TEXT NOT NULL DEFAULT '{}',
+  deps_hash TEXT NOT NULL DEFAULT '',
+  distinct_json TEXT NOT NULL DEFAULT '{}',
+  stale INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  adopted_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT 'author',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_branch_candidates_work ON branch_candidates(work_id, chapter_id, status, id);
+CREATE INDEX IF NOT EXISTS idx_branch_candidates_sandbox ON branch_candidates(sandbox_id, ordinal);
+-- 导入后分析重建（2026-09-27，R12）：一次「分析并重建创作状态」= 一个 run + 若干批次。
+-- 关键边界：批次只保存**抽取结果候选**与基线指纹（source/配置/结果 hash）；确认前不写任何正式状态。
+-- 表名与判据单点在 ai/import/rebuild.mjs（纯逻辑）与 ai/import/rebuild-store.mjs（读写）里。
+CREATE TABLE IF NOT EXISTS import_rebuild_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'planned',
+  extractor_version TEXT NOT NULL DEFAULT '',
+  schema_version TEXT NOT NULL DEFAULT '',
+  route_json TEXT NOT NULL DEFAULT '{}',
+  categories_json TEXT NOT NULL DEFAULT '[]',
+  batch_size INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_import_rebuild_runs_work ON import_rebuild_runs(work_id, id DESC);
+CREATE TABLE IF NOT EXISTS import_rebuild_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES import_rebuild_runs(id) ON DELETE CASCADE,
+  work_id INTEGER NOT NULL,
+  batch_index INTEGER NOT NULL DEFAULT 0,
+  chapter_ids_json TEXT NOT NULL DEFAULT '[]',
+  chapter_indexes_json TEXT NOT NULL DEFAULT '[]',
+  chapter_hashes_json TEXT NOT NULL DEFAULT '[]',
+  chars INTEGER NOT NULL DEFAULT 0,
+  baseline_json TEXT NOT NULL DEFAULT '{}',
+  baseline_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT NOT NULL DEFAULT '',
+  result_hash TEXT NOT NULL DEFAULT '',
+  proposals_json TEXT NOT NULL DEFAULT '[]',
+  proposal_ids_json TEXT NOT NULL DEFAULT '[]',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_import_rebuild_batches_run ON import_rebuild_batches(run_id, batch_index);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_import_rebuild_batches_uq ON import_rebuild_batches(run_id, batch_index);
+-- 共享资料库登记表（2026-09-28，library）：作者显式导入的参考资料（跨作品共享）。
+-- 边界：这里是**登记表**，不是事实表——资料永不进入正典事实/事件/角色知识；
+-- uri 唯一（重导即按 uri 更新）；删除策略默认只改 status='marked_missing'（作者确认后才删行）。
+-- 读写在 ai/library/store.mjs（单点），导入链在 ai/library/library-ingest.mjs。
+CREATE TABLE IF NOT EXISTS library_docs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL DEFAULT 'shared',
+  work_id INTEGER,
+  uri TEXT NOT NULL,
+  rel TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  slug TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  sha256 TEXT NOT NULL DEFAULT '',
+  bytes INTEGER NOT NULL DEFAULT 0,
+  chars INTEGER NOT NULL DEFAULT 0,
+  est_chunks INTEGER NOT NULL DEFAULT 0,
+  source_path TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  indexed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_library_docs_uri ON library_docs(uri);
+CREATE INDEX IF NOT EXISTS idx_library_docs_status ON library_docs(status, category);
 -- AI 效果埋点（P5）：记录「生成 → 采纳/丢弃」的行为信号，用于回答
 -- 「上下文质量到底有没有变好」——这是契约里唯一无法靠结构化断言回答的问题。
 --   action      generate（产出草稿）| adopt（写回正文）| discard（丢弃）
@@ -562,6 +808,9 @@ const MIGRATIONS = [
   // 提案来源标记（AI 自压缩 = 'agent'）：让「来源」能跨落库/读取存活到作者采纳那一刻。
   // 默认空串 → 存量提案仍按普通提案处理，采纳语义不变。
   `ALTER TABLE story_memory_proposals ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,
+  // 沙盘来源（author / agent）：与候选的 created_by 同义，便于区分「谁开的那一轮沙盘」。
+  // 默认空串 → 之前开的沙盘按未知来源处理，语义不变。
+  `ALTER TABLE branch_sandboxes ADD COLUMN created_by TEXT NOT NULL DEFAULT ''`,
 ];
 for (const sql of MIGRATIONS) {
   try { db.exec(sql); } catch (e) {
@@ -694,4 +943,3 @@ const STORY_STATE_UNIQUE = [
 for (const [sql, label] of STORY_STATE_UNIQUE) {
   try { db.exec(sql); } catch (e) { console.warn(`[db] ${label}创建失败：${e.message}`); }
 }
-

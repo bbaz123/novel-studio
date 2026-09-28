@@ -747,6 +747,148 @@ export const PHASES = [
       + ' "埋点落库请求里就是真值"；任务设置离线 49/49、离线清单 32/32、API 186/190（0 失败）、插件冒烟 39/39 全绿。'
       + ' 详见 docs/ai-write-latency-plan.md 与 docs/HARNESS_ARGV_LIMIT_FIX.md。',
   },
+  {
+    id: 'R',
+    title: '2026-09-27 增强交付 R01—R12（导入安全与导入后重建 / 剧情分支沙盘 / 披露派生视图 / 作者样文与三级意图 / 编辑规则 / 长正文处理 / 审批与整次采纳 / OV 召回来源边界 / 运行时上下文贡献记录）',
+    files: [
+      // 新增内核模块（R12 导入安全与重建、R11 分支沙盘、R10 披露、R09 样式、R07 编辑规则、R04 召回来源、R05 贡献记录、R08 长正文前端）——
+      // 每个文件都是本批次新建，不与既有阶段重叠；但它们**被生产代码 import**（server.js / public/app.js 等，属 P2–P5/Z2/Z3），
+      // 所以整体声明的回滚级别是 shared（见 note）。
+      'ai/import/guard.mjs',
+      'ai/import/rebuild.mjs',
+      'ai/import/rebuild-store.mjs',
+      'ai/branch/sandbox.mjs',
+      'ai/branch/store.mjs',
+      'ai/context/contributions.mjs',
+      'ai/editing/rules.mjs',
+      'ai/editing/scan.mjs',
+      'ai/openviking/recall-meta.mjs',
+      'ai/style/store.mjs',
+      'ai/style/author-profile.mjs',
+      'public/long-text.js',
+      // 新增离线验收（每条都进 scripts/ci-offline-checks.mjs 的检查清单，零计费）
+      '.p1-baseline/test-agent-write-boundary.mjs',
+      '.p1-baseline/test-approval-boundary.mjs',
+      '.p1-baseline/test-adopt-atomic.mjs',
+      '.p1-baseline/test-ov-recall-boundary.mjs',
+      '.p1-baseline/test-context-contributions.mjs',
+      '.p1-baseline/test-editing-rules.mjs',
+      '.p1-baseline/test-long-text.mjs',
+      '.p1-baseline/test-author-style.mjs',
+      '.p1-baseline/test-disclosure.mjs',
+      '.p1-baseline/test-branch-sandbox.mjs',
+      '.p1-baseline/test-import-guard.mjs',
+      '.p1-baseline/test-import-rebuild.mjs',
+      '.p1-baseline/test-migration-idempotent.mjs',
+      // 交付文档与机器可读账本
+      'docs/enhancement-audit.md',
+      'docs/enhancement-acceptance.md',
+      'docs/enhancement-progress.json',
+      'docs/plugin-runtime-map.md',
+      'docs/openviking-call-map.md',
+      // 手动实机验收（有限预算；不进 CI）：探针本体 + 两份机读证据（日志由 snapshot 排除规则过滤）
+      '.p1-baseline/probe-live-capabilities.mjs',
+      '.verify-enh/live-capabilities-2026-09-27.json',
+      '.verify-enh/smoke-chain-2026-09-27.usage.json',
+    ],
+    evidence: [
+      'docs/enhancement-acceptance.md',
+      'docs/enhancement-progress.json',
+      'docs/plugin-runtime-map.md',
+      'docs/openviking-call-map.md',
+      '.verify-enh/live-capabilities-2026-09-27.json',
+      '.verify-enh/smoke-chain-2026-09-27.usage.json',
+      '.p1-baseline/test-import-guard.mjs',
+      '.p1-baseline/test-import-rebuild.mjs',
+      '.p1-baseline/test-branch-sandbox.mjs',
+    ],
+    rollback: 'shared',
+    note: '**不能单独回滚**：本阶段只新增文件，但这些新模块被**生产代码**import（server.js / public/app.js / ai/context/* 等），'
+      + ' 撤掉它们必须先撤掉那些挂钩点，而挂钩点与 P2–P5 / Z2 / Z3 / T 改在同一批文件里。'
+      + ' 交付内容是**附加式**的：新能力全部门控或按需触发（导入安全校验只作用于导入；重建流程只有作者显式规划才建表；'
+      + ' 分支沙盘 / 样文 / 编辑规则 / 披露视图都默认不参与既有作品的装配），既有作品在功能关闭时装配与默认生成路径逐字节不变。'
+      + ' 证据链：scripts/ci-offline-checks.mjs（45 条，含导入安全、导入重建与迁移幂等三条离线检查）、frontend-test.mjs、docs/enhancement-acceptance.md；'
+      + ' 另有用户授权预算内的实机验收（能力探针 7/0 + 整链写作冒烟 7/0，8 次调用 ≈¥0.035，见验收报告 §6.2）。',
+  },
+  {
+    id: 'PI',
+    title: '2026-09-27 落地后独立重审（001.txt）：本轮修复 + 审计证据',
+    files: [
+      // 本轮修复触及的产品/测试文件（与 R / Z5 / P2–P5 改在同一批文件里——无法单独回滚）
+      'server.js',
+      'public/app.js',
+      'frontend-test.mjs',
+      // 审计证据与交付文档（纯证据；整目录删除即可回滚，不影响产品）
+      '.verify-post/',
+      'docs/post-implementation-audit.md',
+      'docs/post-implementation-acceptance.md',
+      'docs/post-implementation-issues.md',
+      'docs/post-implementation-results.json',
+    ],
+    evidence: [
+      'docs/post-implementation-audit.md',
+      'docs/post-implementation-acceptance.md',
+      'docs/post-implementation-issues.md',
+      'docs/post-implementation-results.json',
+    ],
+    rollback: 'shared',
+    note: '独立重审（不继承上一轮 PASS）发现并修复的缺陷：'
+      + '① ISSUE-02：server.js 漏 import sampleSetHash，作品尚无文风档案时 GET /api/novel/style/profile 必 500 → 前端作者样文/档案/意图整卡降级；'
+      + '② ISSUE-03：R08 长文本单请求路径三处缺陷——revision_patch 的 parse 依赖 segment（单请求必抛 TypeError，「先审稿再应用→按清单修稿」永远出不了差异预览）；'
+      + 'review / 按清单修稿 / 写作精修三类调用在单请求路径会先把模型跑一遍再让老路径跑第二遍（同一次任务双倍计费、双倍等待）；'
+      + 'AI 写作草稿链的差异合并指纹以草稿为基准比对正文，永远拒绝合并。'
+      + ' 修复全是最小改动（补齐 import / 单请求路径 singleRunByCaller 交回调用方 / 合并以审稿启动时的正文指纹为基准），'
+      + ' 未改 prompt 语义、模型路由、预算与任何注入字节。frontend-test.mjs 新增 58ad/58ae/58af 三条断言（先复现红，再转绿）。'
+      + ' 证据：.verify-post/（本轮全部脚本与日志，可整体删除）。',
+  },
+  {
+    id: 'L',
+    title: '2026-09-28 知识库专项：跨作品共享写作资料库（门控层 library + 导入链 + 模型侧查回）',
+    files: [
+      // 新增内核模块（纯函数 + 登记表读写；被 server.js / openviking-sync.js import，属生产代码）
+      'ai/library/',
+      // 改造的生产文件（与 P2–P5 / R / PI 改在同一批文件里——无法单独回滚）
+      'server.js',
+      'openviking-sync.js',
+      'ai/context/layers.mjs',
+      'ai/openviking/recall-meta.mjs',
+      'db.js',
+      'harness-plugins/novel-writing/',
+      // 契约、离线验收与真机证据（离线项全部进 scripts/ci-offline-checks.mjs；真机项不进 CI）
+      '.p1-baseline/probe-library-p0.mjs',
+      '.p1-baseline/probe-library-p0.result.json',
+      '.p1-baseline/verify-library-identity.mjs',
+      '.p1-baseline/library-identity-before.json',
+      '.p1-baseline/verify-library-realmachine.mjs',
+      '.p1-baseline/verify-library-realmachine.result.json',
+      '.p1-baseline/test-library-import.mjs',
+      '.p1-baseline/test-ov-recall-boundary.mjs',
+      'scripts/ci-offline-checks.mjs',
+      'docs/host-contract.md',
+      'docs/host-contract.v1.json',
+      'docs/openviking-call-map.md',
+      'README.md',
+    ],
+    evidence: [
+      'docs/host-contract.md',
+      '.p1-baseline/test-library-import.mjs',
+      '.p1-baseline/verify-library-identity.mjs',
+      '.p1-baseline/verify-library-realmachine.result.json',
+      '.p1-baseline/probe-library-p0.result.json',
+      '.p1-baseline/test-ov-recall-boundary.mjs',
+      'docs/openviking-call-map.md',
+    ],
+    rollback: 'shared',
+    note: '**不能单独回滚**：`ai/library/` 被 server.js（P2–P5/Z2/Z3/PI）与 openviking-sync.js 直接 import，'
+      + ' 且层规格 / 来源校验 / 登记表分别改在 ai/context/layers.mjs（P1/Z2/Z3）、ai/openviking/recall-meta.mjs（R）、db.js（P5/Z3）里。'
+      + ' 本轮全部为附加式：新增门控层 `library`（默认关闭；`library_enabled=0` 的作品 assembled/manifest 与接入前**逐字节一致**，'
+      + ' 见 `.p1-baseline/verify-library-identity.mjs` 的 4/4）、新增登记表 `library_docs`（纯 CREATE TABLE IF NOT EXISTS，旧 46 张表零改动）、'
+      + ' 新增 7 条端点与工具 `novel_library`（写操作模型侧 403）。'
+      + ' 关闭开关即恢复旧行为，不需要动数据。'
+      + ' 证据链：离线 `.p1-baseline/test-library-import.mjs`（34/34，隔离实例 + OV stub）与 `test-ov-recall-boundary.mjs`（54/54，含资料根用例）；'
+      + ' 真机 `.p1-baseline/verify-library-realmachine.mjs`（18/18，真实 OV v0.4.21 + 隔离实例，写共享资料根 3 篇后清理，根零残留）；'
+      + ' 契约见 docs/host-contract.md §20；调用链见 docs/openviking-call-map.md 链 C。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

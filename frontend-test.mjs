@@ -107,12 +107,15 @@ const containers = {
   '#stale-banner': mkEl('stale-banner')
 };
 
+// document 级监听器按类型留档：app.js 的全局 keydown（Esc / 资料检索回车）走 document 委托，
+// 留档后测试才能真的把键盘事件送进去（click 不模拟：点击路径已由 handleAction 直调覆盖）。
+const docListeners = new Map();
 const doc = {
   getElementById: (id) => registered.get(`#${id}`) || null,
   querySelector: (sel) => containers[sel] || registered.get(sel) || null,
   querySelectorAll: () => [],
   createElement: (tag) => new El(tag),
-  addEventListener: () => {},
+  addEventListener: (type, fn) => { const list = docListeners.get(type) || []; list.push(fn); docListeners.set(type, list); },
   removeEventListener: () => {},
   body: new El('body'),
   documentElement: new El('html'),
@@ -136,6 +139,125 @@ const requests = [];
 // 可切换的桩状态：stale = 模拟「页面是新版、服务进程还是旧代码」→ 新接口一律 404 API not found
 // directEmptyOnce = 模拟实测现象「思考 token 吃光 max_tokens → 空回复」；blueprintAsProse = 模拟模型跳过蓝图直接给正文
 const stub = { stale: false, directEmptyOnce: false, blueprintAsProse: false };
+// R09 桩：作者样文 / 文风档案 / 三级意图。桩也维护"服务端状态"：
+// 这样断言的是"请求真的发出去了、界面用的是服务端回来的数据"，而不是本地状态自说自话。
+const styleStub = {
+  samples: [{ id: 5, work_id: 1, title: '我的旧作片段', text: '他推开门。', chars: 73, content_hash: 'd388e1f8c16df052', enabled: true }],
+  stale: true,
+  profile: {
+    profile_version: '1.0.0',
+    sample_set: { count: 1, chars: 73, hash: 'set-a33f821832b2d3b6', ids: [5] },
+    metrics: {
+      sentence_length: { value: { count: 12, mean: 18.25, p50: 17, p90: 33, distribution: {} }, unit: 'char', how: '按句末标点切句；长度按字符数' },
+      dialogue_rate: { value: { paragraphs: 3, dialogue_paragraphs: 1, ratio: 0.333 }, unit: 'ratio', how: '段落里含引号的占比' },
+      narration_person: { value: { third: 3, first: 0, second: 0 }, unit: 'paragraphs', how: '按段首人称词计数' },
+      punctuation_per_1000: { value: { comma: 5 }, unit: 'per_1000_chars', how: '每 1000 字符出现次数' },
+      paragraph_length: { value: { count: 3, mean: 23, long_ratio: 0 }, unit: 'char', how: '段落按空行切分；长度按字符数' },
+      rhetoric_per_1000: { value: { metaphor: 13.7, parallel_paragraphs: 0 }, unit: 'per_1000_chars', how: '比喻提示词与排比段每 1000 字符次数' },
+      emotion_per_1000: { value: 0, unit: 'per_1000_chars', how: '情绪直陈词每 1000 字符次数' },
+      suspense_tail: { value: { ends_with_ellipsis: false, ends_with_question: true, unterminated: false }, unit: 'bool', how: '章末悬疑标记' }
+    },
+    habits: { openings: ['他推开门，风从'], closings: ['像一枚旧邮票。'], keep: ['短句收尾'], avoid: ['滥用叹号'] }
+  },
+  intents: [{ id: 1, work_id: 1, chapter_id: 0, tier: 'long_term', text: '保持克制的叙述，不要直白抒情', hard: true }],
+  conflicts: [{ long_term_id: 1, other_tier: 'stage', other_id: 2, other_text: '不再克制，改成直白抒情', reason: '可能静默取消长期硬约束' }]
+};
+// R10 桩：故事状态总览 + 披露派生视图（只读派生，桩给一份"三档都有内容"的最小样本）
+const storyStub = {
+  enabled: true,
+  disclosure: {
+    cursor: { chapter_index: 2, chapter_id: 7, scene_index: null },
+    fingerprint: 'disclosure-abcdef0123456789',
+    rules: { effective_window: '在窗口内 ⇔ effective_from ≤ 当前章下标 且（effective_to 为空 或 effective_to > 当前章下标）。', undetermined: '没有任何知识记录的条目是「未定义」：既不算知道也不算不知道。' },
+    items: [],
+    author: { truth: [{ id: 2, label: '林昭 其实是 卧底', scope: 'AUTHOR_KNOWLEDGE', state: 'known', tier: 'author_truth', evidence: { chapter_index: 0, written: true } }], plan: [], retracted: [] },
+    reader: {
+      disclosed: [{ id: 1, label: '林昭 身份 潮汐会记账人', scope: 'CANON_KNOWLEDGE', state: 'known', tier: 'reader_disclosed', evidence: { chapter_index: 0, written: true } }],
+      not_yet: [{ id: 3, label: '碎钟 残片 被收进匣子', scope: 'CANON_KNOWLEDGE', state: 'known', tier: 'not_yet_disclosed', evidence: { chapter_index: 2, written: false } }],
+      future: [], private_not_disclosed: [], beliefs: [], disclosed_ids: [1]
+    },
+    characters: [{
+      character_id: 9, name: '林昭',
+      known: [{ fact_id: 1, label: '林昭 身份 潮汐会记账人' }], known_ids: [1], actionable_ids: [1],
+      unknown: [{ fact_key: '旧约的内容' }], suspected: [], false_beliefs: [],
+      undetermined: { count: 1, sample: ['暗格 藏着 一封没有署名的信'], ids: [9] }
+    }],
+    unknown: { no_evidence_ids: [5] },
+    counts: { facts: 5 }
+  }
+};
+// R11 桩：剧情分支沙盘。桩维护"服务端状态"：断言请求真的发出去、界面用的是服务端回来的数据。
+// stale_now=true 是服务端**现算**的（内容哈希变了），不是候选自己存的标记。
+const branchStub = {
+  sandboxes: [{ id: 21, work_id: 1, chapter_id: 7, requested: 3, status: 'open', deps: { hash: 'sandbox-1111222233334444' }, progress: { done: 2, requested: 3, missing: 1, complete: false } }],
+  candidates: [
+    { id: 101, work_id: 1, sandbox_id: 21, chapter_id: 7, ordinal: 1, title: '潜入钟楼', core_action: '林昭潜入潮汐钟楼夺取钥匙', conflict: '用偷窃解决通行问题', counts: { choices: 1, beats: 2, consequences: 2, risks: 1, required_setup: 1, relations_foreshadows: 1 }, intent_stance: 'follows', status: 'candidate', stale: false, stale_now: true, stale_changed: ['content'], created_by: 'agent', deps_hash: 'sandbox-1111222233334444' },
+    { id: 102, work_id: 1, sandbox_id: 21, chapter_id: 7, ordinal: 2, title: '正面质问', core_action: '林昭在账房当面质问账房先生', conflict: '摊牌的时机与代价', counts: { choices: 1, beats: 3, consequences: 1, risks: 1, required_setup: 0, relations_foreshadows: 0 }, intent_stance: 'neutral', status: 'candidate', stale: false, stale_now: false, stale_changed: [], created_by: 'author', deps_hash: 'sandbox-1111222233334444' },
+    { id: 103, work_id: 1, sandbox_id: 21, chapter_id: 7, ordinal: 3, title: '已被丢弃的方向', core_action: '无关方向', conflict: '无关', counts: { choices: 0, beats: 0, consequences: 0, risks: 0, required_setup: 0, relations_foreshadows: 0 }, intent_stance: 'neutral', status: 'discarded', stale: false, stale_now: false, stale_changed: [], created_by: 'author', deps_hash: 'sandbox-1111222233334444' }
+  ],
+  submitted: []
+};
+// R12 桩：导入后分析重建。桩维护"服务端状态"：批次状态/计数被写操作改变，读接口回读。
+const rebuildStub = {
+  run: { id: 31, work_id: 1, status: 'planned', extractor_version: '1.0.0', schema_version: '1.0.0', route: { model: 'default', reasoning_effort: 'default' }, batch_size: 2, note: '' },
+  batches: [
+    { batch_index: 0, chapter_ids: [7, 8], chapter_indexes: [0, 1], chars: 1234, baseline_hash: 'rb-0000111122223333', db_status: 'pending', state: 'pending', reason: '本批尚未抽取', result_hash: '', attempts: 0, proposals: 0, proposal_ids: [], error: '' },
+    { batch_index: 1, chapter_ids: [9], chapter_indexes: [2], chars: 600, baseline_hash: 'rb-4444555566667777', db_status: 'extracted', state: 'reuse', reason: '基线与结果均在，直接复用', result_hash: 'rboldresult123456', attempts: 1, proposals: 2, proposal_ids: [], error: '' }
+  ],
+  counts: { reuse: 1, stale: 0, pending: 1 },
+  recorded: [], confirmed: [], cancelled: false
+};
+const rebuildProgress = () => ({
+  batches: rebuildStub.batches.length,
+  pending: rebuildStub.batches.filter((b) => b.db_status === 'pending').length,
+  extracted: rebuildStub.batches.filter((b) => b.db_status === 'extracted').length,
+  confirmed: rebuildStub.batches.filter((b) => b.db_status === 'confirmed').length,
+  stale: rebuildStub.batches.filter((b) => b.db_status === 'stale').length,
+  failed: rebuildStub.batches.filter((b) => b.db_status === 'failed').length,
+  chars: rebuildStub.batches.reduce((n, b) => n + b.chars, 0),
+  proposals: rebuildStub.batches.reduce((n, b) => n + b.proposals, 0)
+});
+
+// P4 桩：共享资料库（跨作品写作参考资料）。桩维护"服务端状态"：写操作改桩状态、读接口回读；
+// 断言的是"请求真的发出去了、界面用的是服务端回来的数据"，而不是本地状态自说自话。
+const libraryStub = {
+  enabled: false,
+  ov: { disabled: false, semantic_enabled: true, connected: true, pending_ops: 0 },
+  docs: [
+    { id: 41, category: '设定', slug: 'tide-ledger', title: '潮汐会的记账规矩', chars: 1200, bytes: 2600, est_chunks: 3, status: 'active', indexed_at: '2026-09-28T03:00:00', source_path: 'D:/写作资料/设定/tide-ledger.md', rel: '设定/tide-ledger.md', uri: 'viking://user/default/resources/novel-studio-library/设定/tide-ledger.md' },
+    { id: 42, category: '风格', slug: 'short-lines', title: '短句范例', chars: 800, bytes: 1700, est_chunks: 2, status: 'active', indexed_at: '2026-09-27T21:00:00', source_path: 'D:/写作资料/风格/short-lines.md', rel: '风格/short-lines.md', uri: 'viking://user/default/resources/novel-studio-library/风格/short-lines.md' }
+  ],
+  // 读原文按 offset/limit 切片（34 行）：用于验证「窗口按行计」与翻页按钮的禁用状态
+  docLines: Array.from({ length: 34 }, (_, i) => `第 ${i + 1} 行：潮汐会的规矩写在总册扉页上。`),
+  docReads: []
+};
+function libraryStatusJson(workId) {
+  const active = libraryStub.docs.filter((d) => d.status === 'active');
+  const cats = [];
+  for (const d of libraryStub.docs) {
+    const hit = cats.find((c) => c.category === d.category);
+    if (hit) hit.n += 1; else cats.push({ category: d.category, n: 1 });
+  }
+  return {
+    ok: true,
+    root: 'viking://user/default/resources/novel-studio-library',
+    work_id: workId || null,
+    enabled: workId ? libraryStub.enabled : null,
+    ov: { ...libraryStub.ov },
+    index: { key: 'ov_indexed_at:library', last_indexed_at: '2026-09-28T03:00:00' },
+    summary: {
+      total: libraryStub.docs.length,
+      active: active.length,
+      marked_missing: libraryStub.docs.filter((d) => d.status === 'marked_missing').length,
+      bytes: libraryStub.docs.reduce((n, d) => n + d.bytes, 0),
+      chars: libraryStub.docs.reduce((n, d) => n + d.chars, 0),
+      categories: cats, last_indexed_at: '2026-09-28T03:00:00', last_updated_at: '2026-09-28T03:00:00'
+    },
+    docs: active.map((d) => ({ id: d.id, category: d.category, slug: d.slug, title: d.title, chars: d.chars, bytes: d.bytes, est_chunks: d.est_chunks, status: d.status, indexed_at: d.indexed_at, source_path: d.source_path })),
+    ingest: { version: '1.0.0', exts: ['.md', '.txt'], max_file_bytes: 2097152, max_files: 500, ignore_dirs: ['node_modules', '.git'], symlink: '不跟随（文件与目录都跳过）' }
+  };
+}
+
 const directCalls = []; // /api/ai/write 的请求体（用于断言"空回复重试"真的换了参数）
 const fetchStub = async (url, opts = {}) => {
   requests.push({ url: String(url), method: (opts.method || 'GET').toUpperCase(), headers: opts.headers || {}, body: opts.body });
@@ -154,6 +276,250 @@ const fetchStub = async (url, opts = {}) => {
   }
   // ⚠️ 桩必须与服务端契约同形：/api/novel/scan 返回的是 { kind, pattern, note, count, sample }，
   // **没有 word**。此前桩里写的是 { word: … }，于是"前端读错字段名"这个真实缺陷被桩掩盖了。
+  // R07：编辑规则（目录 + 选择 + 规则块预览）与确定性扫描端点
+  else if (u.includes('/api/novel/editing/scan')) json = {
+    ok: true,
+    findings: [{ rule_id: 'deterministic:ai-tell', layer: 'deterministic', severity: 'low', paragraph: 0, excerpt: '空气仿佛凝固了', message: '命中机械表达：「仿佛」式比喻', suggestion: '改为具体动作 / 感官细节 / 潜台词。' }],
+    skipped: [], scanned: { paragraphs: 3, chars: 30, deterministic: true, abilities: ['fiction-humanizer'], genre: 'general', task: 'review' }
+  };
+  else if (u.includes('/api/novel/editing')) json = {
+    ok: true,
+    catalog: {
+      version: '1.0.0',
+      tiers: [{ id: 'light', name: '轻度润色', summary: '最小改动' }, { id: 'deai', name: '去 AI 腔', summary: '保持剧情' }, { id: 'deep', name: '深度修稿', summary: '较大调整' }],
+      abilities: [{ id: 'fiction-humanizer', name: '去 AI 腔（Humanizer）', summary: '识别机械表达', tasks: ['write', 'review'], genre_affinity: [] }],
+      genres: [{ id: 'general', name: '通用' }, { id: 'mystery', name: '悬疑' }]
+    },
+    selection: { enabled: false, tier: 'light', abilities: [], genre: 'general' },
+    block: { text: '', hash: '0000000000000000', version: '1.0.0', decisions: [], sources: [] }
+  };
+  // R09：作者样文 / 文风档案 / 三级意图（写操作改桩状态，读操作回读桩状态）
+  else if (u.includes('/api/novel/style/samples')) {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method === 'POST') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const s = { id: 9, work_id: 1, title: body.title || '', text: body.text || '', chars: String(body.text || '').length, content_hash: 'aaaaaaaaaaaaaaaa', enabled: true };
+      styleStub.samples = [...styleStub.samples, s];
+      json = { ok: true, work_id: 1, sample: s, counts: { total: styleStub.samples.length, enabled: styleStub.samples.filter((x) => x.enabled).length, chars: 100, enabled_chars: 100 }, sample_set_hash: 'set-new' };
+    } else if (method === 'PUT') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      styleStub.samples = styleStub.samples.map((s) => (s.id !== body.id ? s : (body.enabled === undefined
+        ? { ...s, title: body.title !== undefined ? body.title : s.title, text: body.text !== undefined ? body.text : s.text }
+        : { ...s, enabled: !!body.enabled })));
+      json = { ok: true, work_id: 1, sample: styleStub.samples.find((s) => s.id === body.id) || null, counts: { total: styleStub.samples.length, enabled: styleStub.samples.filter((x) => x.enabled).length, chars: 73, enabled_chars: 73 }, sample_set_hash: 'set-a33f821832b2d3b6' };
+    } else if (method === 'DELETE') {
+      const id = Number((u.match(/[?&]id=(\d+)/) || [])[1] || 0);
+      styleStub.samples = styleStub.samples.filter((s) => s.id !== id);
+      json = { ok: true, work_id: 1, counts: { total: styleStub.samples.length, enabled: styleStub.samples.filter((x) => x.enabled).length, chars: 0, enabled_chars: 0 }, sample_set_hash: 'set-0' };
+    } else {
+      json = { ok: true, work_id: 1, samples: styleStub.samples, limits: { per_sample_chars: 20000, max_samples: 20, total_chars: 200000, min_sample_chars: 20 }, counts: { total: styleStub.samples.length, enabled: styleStub.samples.filter((x) => x.enabled).length, chars: 73, enabled_chars: 73 }, sample_set_hash: 'set-a33f821832b2d3b6' };
+    }
+  }
+  else if (u.includes('/api/novel/style/profile')) {
+    if ((opts.method || 'GET').toUpperCase() === 'POST') json = { ok: true, work_id: 1, profile: styleStub.profile, profile_hash: 'style-eb6c0b732c46fd60', semantic_status: 'not_run', replaced_previous: false, notes: {} };
+    else json = { ok: true, work_id: 1, profile: styleStub.profile, profile_hash: 'style-eb6c0b732c46fd60', analysis_version: '1.0.0', semantic_status: 'not_run', stale: styleStub.stale, notes: {}, limits: {} };
+  }
+  else if (u.includes('/api/novel/author_intent')) {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method === 'PUT') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const chapterId = Number(body.chapter_id) || 0;
+      const found = styleStub.intents.find((x) => x.tier === body.tier && x.chapter_id === chapterId);
+      if (found) { found.text = body.text; found.hard = !!body.hard; }
+      else styleStub.intents.push({ id: 20 + styleStub.intents.length, work_id: 1, chapter_id: chapterId, tier: body.tier, text: body.text, hard: !!body.hard });
+      json = { ok: true, work_id: 1, chapter_id: chapterId, saved: styleStub.intents.find((x) => x.tier === body.tier && x.chapter_id === chapterId), intents: styleStub.intents, merged: { resolved: [], conflicts: styleStub.conflicts, priority: [], note: '' } };
+    } else if (method === 'DELETE') {
+      json = { ok: true, work_id: 1, chapter_id: Number((u.match(/chapter_id=(\d+)/) || [])[1] || 0) };
+    } else {
+      json = { ok: true, work_id: 1, chapter_id: 0, intents: styleStub.intents, merged: { resolved: [], conflicts: styleStub.conflicts, priority: ['confirmed_story_constraints', 'chapter_contract', 'author_intent', 'generic_editing_rules'], note: '' }, tiers: [], priority: ['confirmed_story_constraints', 'chapter_contract', 'author_intent', 'generic_editing_rules'], block: '', samples: [], profile: null, evidence: { text: '', chars: 0, truncated: false, sample_ids: [] }, limits: {} };
+    }
+  }
+  else if (u.includes('/api/novel/story_state')) json = {
+    ok: true, work_id: 1, enabled: storyStub.enabled, facts: 5, timeline: 2, knowledge: 3, entities: 1, contracts: 1,
+    proposals_pending: 0, proposals_stale: 0, snapshots: 1, validations: 0, state_hash: 'abcdef0123456789', kernel_version: '1.0.0'
+  };
+  else if (u.includes('/api/novel/state/disclosure')) json = { ok: true, work_id: 1, chapter_id: 7, chapter_title: '第一章', state_enabled: true, ...storyStub.disclosure };
+  // R11：剧情分支沙盘（沙盘/候选/采纳/丢弃/取消/恢复/比较；写操作改桩状态）
+  else if (/\/api\/novel\/branch\/sandboxes\/\d+\/(cancel|reopen)/.test(u)) {
+    const id = Number((u.match(/sandboxes\/(\d+)/) || [])[1]);
+    const op = (u.match(/\/(cancel|reopen)/) || [])[1];
+    branchStub.sandboxes = branchStub.sandboxes.map((s) => (s.id === id ? { ...s, status: op === 'cancel' ? 'cancelled' : 'open' } : s));
+    json = { ok: true, sandbox: { ...(branchStub.sandboxes.find((s) => s.id === id) || {}), progress: { done: 2, requested: 3, missing: 1, complete: false } }, resume: op === 'reopen' };
+  }
+  else if (u.includes('/api/novel/branch/sandboxes')) {
+    if ((opts.method || 'GET').toUpperCase() === 'POST') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const sb = { id: 22, work_id: 1, chapter_id: body.chapter_id, requested: body.requested, status: 'open', deps: { hash: 'sandbox-newnewnewnew0000' }, progress: { done: 0, requested: body.requested, missing: body.requested, complete: false } };
+      branchStub.sandboxes = [...branchStub.sandboxes, sb];
+      json = { ok: true, sandbox: sb, progress: sb.progress, deps: sb.deps, cursor: { chapter_index: 2 }, limits: { min_candidates: 2, max_candidates: 5 }, boundary: { candidates_are_facts: false } };
+    } else {
+      json = { ok: true, work_id: 1, chapter_id: 7, sandboxes: branchStub.sandboxes, limits: { min_candidates: 2, max_candidates: 5 }, note: '沙盘运行可取消/恢复：取消后已产出的候选仍可阅读；恢复只继续未完成槽位，不重跑已完成候选。' };
+    }
+  }
+  else if (/\/api\/novel\/branch\/candidates\/\d+\/(adopt|discard)/.test(u)) {
+    const id = Number((u.match(/candidates\/(\d+)/) || [])[1]);
+    const op = (u.match(/\/(adopt|discard)/) || [])[1];
+    branchStub.candidates = branchStub.candidates.map((c) => (c.id === id ? { ...c, status: op === 'adopt' ? 'adopted' : 'discarded' } : c));
+    const c = branchStub.candidates.find((x) => x.id === id);
+    json = op === 'adopt'
+      ? { ok: true, candidate_id: id, candidate: c, adopted: { blueprint_written: true, contract_saved: false }, contract_saved: false }
+      : { ok: true, candidate_id: id, candidate: c };
+  }
+  else if (/\/api\/novel\/branch\/candidates\/\d+/.test(u)) {
+    const id = Number((u.match(/candidates\/(\d+)/) || [])[1]);
+    const c = branchStub.candidates.find((x) => x.id === id) || branchStub.candidates[0];
+    json = {
+      ok: true, candidate: { ...c, stale_now: true, stale_changed: ['content'] }, current_deps: {},
+      adoption_plan: { blueprint: { scene_goal: c.core_action, plot_points: '摸清换班时刻' }, contract_suggestion: { note: `来自剧情候选 #${id}（第一章）` }, never_touched: ['chapters.content', 'story_facts', 'story_events', 'character_knowledge', 'characters'], disclaimer: '只写蓝图' },
+      boundary: {}
+    };
+  }
+  else if (u.includes('/api/novel/branch/candidates')) {
+    if ((opts.method || 'GET').toUpperCase() === 'POST') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      branchStub.submitted.push(body);
+      const created = (body.candidates || []).map((c, i) => ({ id: 200 + i, work_id: 1, sandbox_id: body.sandbox_id || 21, chapter_id: body.chapter_id, ordinal: i + 1, title: c.title, core_action: c.core_action, conflict: c.conflict, counts: { choices: (c.character_choices || []).length, beats: 0, consequences: (c.consequences || []).length, risks: 0, required_setup: 0, relations_foreshadows: 0 }, intent_stance: 'neutral', status: 'candidate', created_by: 'author' }));
+      json = { ok: true, work_id: 1, chapter_id: body.chapter_id, sandbox: { id: body.sandbox_id || 21, requested: 3 }, progress: { done: 3, requested: 3, missing: 0, complete: true }, candidates: created, distinctness: { ok: true, report: [] }, knowledge: [{ index: 0, status: 'checked', warnings: [] }], deps: {}, boundary: { candidates_are_facts: false } };
+    } else {
+      json = { ok: true, work_id: 1, chapter_id: 7, status: null, candidates: branchStub.candidates, current_deps: {}, limits: {}, note: 'stale_now 表示保存候选时的依赖基线（状态/正文/契约/作者意图/披露指纹）与现在不一致：旧候选仍可阅读，重新采纳必须先复核或重新生成。' };
+    }
+  }
+  else if (u.includes('/api/novel/branch/compare')) {
+    const body = JSON.parse(String(opts.body || '{}'));
+    const ids = body.ids || [];
+    json = {
+      ok: true, work_id: 1,
+      candidates: ids.map((id) => branchStub.candidates.find((c) => c.id === id)),
+      comparisons: [{ a: { id: ids[0], title: '潜入钟楼' }, b: { id: ids[1], title: '正面质问' }, dimensions: [{ key: 'core_action', label: '核心行动', a: '潜入', b: '质问', same: false }, { key: 'risks', label: '风险', a: '守卫换班延迟', b: '守卫换班延迟', same: true }], differences: ['core_action'], same_count: 1, note: '只并列差异，不替作者打分或排序。' }],
+      note: '只并列差异，不替作者打分或排序；未采纳的候选不是本书事实。'
+    };
+  }
+  // R12：导入后分析重建（状态/规划/记录/确认/取消；写操作改桩状态）
+  else if (u.includes('/api/import/rebuild/status')) json = {
+    ok: true, work_id: 1, run: rebuildStub.run, batches: rebuildStub.batches, counts: rebuildStub.counts,
+    progress: rebuildProgress(), rules: { version: '1.0.0', batch: '整本书不得作为一次请求发送', resume: '基线一致才复用，变化标 stale' },
+    limits: { max_chapters_per_batch: 6, max_chars_per_batch: 12000 }, categories: [{ key: 'entity', label: '人物/实体' }]
+  };
+  else if (u.includes('/api/import/rebuild/plan')) {
+    const body = JSON.parse(String(opts.body || '{}'));
+    json = {
+      ok: true, work_id: body.work_id, run: rebuildStub.run, batches: rebuildStub.batches, counts: rebuildStub.counts,
+      progress: rebuildProgress(), rules: { version: '1.0.0' }, limits: { max_chapters_per_batch: 6 }, categories: [],
+      note: '抽取由调用方按批执行：挑 state=pending/stale 的批次逐批跑，再用 record 记录结果；不要整本一次请求。'
+    };
+  }
+  else if (u.includes('/api/import/rebuild/record')) {
+    const body = JSON.parse(String(opts.body || '{}'));
+    rebuildStub.recorded.push(body);
+    const items = (body.result && body.result.items) || [];
+    rebuildStub.batches = rebuildStub.batches.map((b) => Number(b.batch_index) === Number(body.batch_index)
+      ? { ...b, db_status: 'extracted', state: 'reuse', result_hash: 'rbnewresult654321', attempts: 1, proposals: items.length }
+      : b);
+    json = { ok: true, run_id: 31, batch_index: body.batch_index, status: 'extracted', result_hash: 'rbnewresult654321', stats: { items: items.length, valid: items.length, conflicts: 0 }, proposals: items.length, skipped: [], note: '候选已记录（未写入任何正式状态）' };
+  }
+  else if (u.includes('/api/import/rebuild/confirm')) {
+    const body = JSON.parse(String(opts.body || '{}'));
+    rebuildStub.confirmed.push(body);
+    const idx = Array.isArray(body.batch_indexes) && body.batch_indexes.length ? Number(body.batch_indexes[0]) : 1;
+    rebuildStub.batches = rebuildStub.batches.map((b) => Number(b.batch_index) === idx ? { ...b, db_status: 'confirmed', proposal_ids: [701, 702] } : b);
+    json = {
+      ok: true, applied: 1, proposals_created: 2, stale: 0, skipped: 1,
+      results: [{ batch_index: idx, verdict: 'confirmed', proposal_ids: [701, 702], applied_ops: 3, snapshot_id: 9 }],
+      progress: rebuildProgress(), rebuild_complete: false,
+      assembled: { story_state_enabled: true, context_ready: false, synced: true, note: '仍有未确认/过期的批次：不得宣称已完整重建（状态端点可查看剩余批次）。' }
+    };
+  }
+  else if (u.includes('/api/import/rebuild/cancel')) {
+    const body = JSON.parse(String(opts.body || '{}'));
+    rebuildStub.cancelled = true;
+    rebuildStub.run = { ...rebuildStub.run, status: 'cancelled' };
+    json = { ok: true, run: rebuildStub.run, progress: rebuildProgress(), note: '已取消：已记录的批次结果保留，恢复时用 plan 带 run_id 继续（基线不一致的批次会标 stale）。' };
+  }
+  // P4：共享资料库（列表 / 检索 / 读原文 / 开关 / 导入 plan+confirm / 标记与删除；写操作改桩状态）
+  else if (u.includes('/api/novel/library/')) {
+    if (u.includes('/library/status')) {
+      const workId = Number((u.match(/[?&]work_id=(\d+)/) || [])[1] || 0);
+      json = libraryStatusJson(workId);
+    } else if (u.includes('/library/search')) {
+      const q = decodeURIComponent((u.match(/[?&]q=([^&]*)/) || [])[1] || '');
+      const category = decodeURIComponent((u.match(/[?&]category=([^&]*)/) || [])[1] || '');
+      const docs = libraryStub.docs.filter((d) => d.status === 'active' && (!category || d.category === category));
+      const matched = q ? docs.filter((d) => `${d.title} ${d.slug} ${d.source_path}`.includes(q)) : [];
+      const mode = q && matched.length ? 'semantic' : 'keyword';
+      json = {
+        ok: true, q, category, mode, total: docs.length,
+        hits: matched.map((d) => ({
+          id: d.id, category: d.category, slug: d.slug, title: d.title, uri: d.uri,
+          score: mode === 'semantic' ? 87 : undefined,
+          abstract: mode === 'semantic' ? '潮汐会记账：先记账，再谈情。' : undefined
+        }))
+      };
+    } else if (u.includes('/library/doc/')) {
+      // DELETE /api/novel/library/doc/:id —— 默认只标记缺失；confirm=1 才真删
+      const id = Number((u.match(/\/library\/doc\/(\d+)/) || [])[1] || 0);
+      const doc = libraryStub.docs.find((d) => d.id === id) || null;
+      if (!doc) { json = { error: '资料不存在' }; status = 404; }
+      else if (u.includes('confirm=1')) {
+        libraryStub.docs = libraryStub.docs.filter((d) => d.id !== id);
+        json = { ok: true, removed: doc.uri, id };
+      } else {
+        doc.status = 'marked_missing';
+        json = { ok: true, marked_missing: true, doc: { id, status: 'marked_missing' }, hint: '默认只标记缺失；确认删除请带 confirm=1（会同时从记忆库删除该文件并删登记行）' };
+      }
+    } else if (u.includes('/library/doc')) {
+      // GET /api/novel/library/doc?id=&offset=&limit= —— 服务端按行切片
+      const id = Number((u.match(/[?&]id=(\d+)/) || [])[1] || 0);
+      const offset = Number((u.match(/[?&]offset=(\d+)/) || [])[1] || 0);
+      const limit = Number((u.match(/[?&]limit=(\d+)/) || [])[1] || 30);
+      const doc = libraryStub.docs.find((d) => d.id === id && d.status === 'active') || null;
+      if (!doc) { json = { error: '资料不存在或已被移除' }; status = 404; }
+      else {
+        libraryStub.docReads.push({ id, offset, limit });
+        json = {
+          ok: true,
+          doc: { id: doc.id, uri: doc.uri, rel: doc.rel, category: doc.category, slug: doc.slug, title: doc.title, total_chars: doc.chars, total_bytes: doc.bytes, status: doc.status, indexed_at: doc.indexed_at },
+          text: libraryStub.docLines.slice(offset, offset + limit).join('\n')
+        };
+      }
+    } else if (u.includes('/library/enabled')) {
+      const body = JSON.parse(String(opts.body || '{}'));
+      libraryStub.enabled = body.enabled === true;
+      libraryStub.enabledFor = Number(body.work_id) || 0;
+      json = { ok: true, work_id: Number(body.work_id) || 0, enabled: libraryStub.enabled };
+    } else if (u.includes('/library/import/confirm')) {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const dir = String(body.dir || '');
+      const indexedAt = '2026-09-28T04:00:00';
+      const updated = { id: 41, category: '设定', slug: 'tide-ledger', title: '潮汐会的记账规矩', chars: 1244, bytes: 2700, est_chunks: 3, status: 'active', indexed_at: indexedAt, source_path: `${dir}/设定/tide-ledger.md`, rel: '设定/tide-ledger.md', uri: 'viking://user/default/resources/novel-studio-library/设定/tide-ledger.md' };
+      const added = { id: 43, category: '方法', slug: 'scene-notes', title: '场景描写笔记', chars: 900, bytes: 1800, est_chunks: 2, status: 'active', indexed_at: indexedAt, source_path: `${dir}/方法/scene-notes.md`, rel: '方法/scene-notes.md', uri: 'viking://user/default/resources/novel-studio-library/方法/scene-notes.md' };
+      libraryStub.docs = libraryStub.docs.map((d) => (d.id === 41 ? updated : d)).concat([added]);
+      json = {
+        ok: true, executed: true, dir,
+        written: [{ rel: updated.rel, uri: updated.uri, action: 'update', chars: updated.chars }, { rel: added.rel, uri: added.uri, action: 'add', chars: added.chars }],
+        failed: [], skipped: [],
+        summary: { files_scanned: 3, add: 1, update: 1, skip_unchanged: 1, skipped_files: 0, will_write: 2, bytes: 4500, chars: 2144, est_chunks: 5, written: 2, failed: 0 },
+        index: { key: 'ov_indexed_at:library', at: indexedAt, wait: false, note: '异步索引：写后约 30 秒内可被召回' }
+      };
+    } else if (u.includes('/library/import')) {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const dir = String(body.dir || '');
+      // 与服务端同形：dry-run 返回 path.resolve 归一化后的目录（Windows 反斜杠、去尾斜杠）；
+      // 桩若直接回显原输入，前端「归一化后再比对」的行为会被测成假绿。
+      const resolvedDir = dir.replace(/\//g, '\\').replace(/\\+$/, '');
+      json = {
+        ok: true, dry_run: true, dir: resolvedDir,
+        items: [
+          { source_path: `${dir}/方法/scene-notes.md`, rel_path: '方法/scene-notes.md', uri: 'viking://user/default/resources/novel-studio-library/方法/scene-notes.md', rel: '方法/scene-notes.md', category: '方法', slug: 'scene-notes', title: '场景描写笔记', action: 'add', reason: '新入库', sha256: 'newsha1', bytes: 1800, chars: 900, est_chunks: 2, warnings: [] },
+          { source_path: `${dir}/设定/tide-ledger.md`, rel_path: '设定/tide-ledger.md', uri: 'viking://user/default/resources/novel-studio-library/设定/tide-ledger.md', rel: '设定/tide-ledger.md', category: '设定', slug: 'tide-ledger', title: '潮汐会的记账规矩', action: 'update', reason: '内容有更新（sha256 变了）', sha256: 'newsha2', bytes: 2700, chars: 1244, est_chunks: 3, warnings: [] },
+          { source_path: `${dir}/设定/old-notes.md`, rel_path: '设定/old-notes.md', uri: 'viking://user/default/resources/novel-studio-library/设定/old-notes.md', rel: '设定/old-notes.md', category: '设定', slug: 'old-notes', title: '旧笔记', action: 'skip', reason: '内容未变（sha256 相同）', sha256: 'same', bytes: 500, chars: 200, est_chunks: 1, warnings: [] }
+        ],
+        skipped: [{ path: '随笔.pdf', code: 'ext_not_allowed', reason: '扩展名不在白名单（.md / .txt）' }],
+        truncated: false,
+        summary: { files_scanned: 4, add: 1, update: 1, skip_unchanged: 1, skipped_files: 1, will_write: 2, bytes: 4500, chars: 2144, est_chunks: 5 },
+        rules: { version: '1.0.0', exts: ['.md', '.txt'], max_file_bytes: 2097152, max_files: 500, ignore_dirs: ['node_modules', '.git'], symlink: '不跟随（文件与目录都跳过）', encoding: '严格 UTF-8（失败即跳过，不猜编码）', target: '<共享资料根>/<分类>/<slug>.md（分类一层目录）' }
+      };
+    } else { json = { error: '未知的资料库操作' }; status = 404; }
+  }
   else if (u.includes('/api/novel/scan')) json = { ok: true, total: 1, hits: [{ kind: 'phrase', pattern: '嘴角勾起', note: '', count: 1, sample: '他嘴角勾起一抹笑' }] };
   else if (u.includes('/api/debug/state')) json = { ok: true, state: { recording: false }, config: {} };
   else if (u.includes('/api/debug/start')) json = { ok: true, recording: true, session_id: 'test-session' };
@@ -161,6 +527,9 @@ const fetchStub = async (url, opts = {}) => {
   else if (u.includes('/api/debug/op')) json = { ok: true, summary: { opId: 'x' } };
   else if (u.includes('/api/debug/ops')) json = { ok: true, ops: [], tools: [], summary: {} };
   else if (u.includes('/api/debug/sessions')) json = { ok: true, sessions: [{ file: 'trace-a.jsonl', size: 1024, mtime: '2026-09-14T10:00:00.000Z', current: true }] };
+  // 作品数据（编辑规则卡用例需要最小作品状态；其余用例不受影响：返回空集合）
+  else if (/\/api\/works\/\d+/.test(u)) json = { id: Number(u.match(/\/api\/works\/(\d+)/)[1]), title: '编辑规则测试书', description: '', author_note: '' };
+  else if (/\/(volumes|plotlines|chapters|categories|terms|characters|relations|plotline_characters|world_entries)\?work_id=/.test(u)) json = [];
   else if (u.includes('/api/works')) json = [];
   else if (u.includes('/api/api_configs')) json = [];
   else if (u.includes('/api/novel/openviking')) {
@@ -259,12 +628,26 @@ globalThis.__probe = {
   newWriteTiming,
   withThinkingHeadroom,
   verifyAIDraft,
-  pollHarnessJob
+  pollHarnessJob,
+  ATTRIBUTIONS, renderThanks, AI_TABS,
+  loadEditRules, renderEditRulesCard, collectEditSelection, saveEditRules, scanEditRules, renderEditScanHtml,
+  loadAuthorStyle, renderAuthorStyleCard, authorIntentRow, openAuthorSampleModal, saveAuthorSample, toggleAuthorSample, deleteAuthorSample, analyzeAuthorProfile, saveAuthorIntents,
+  loadStoryState, renderStoryStateCard, toggleStoryState, refreshDisclosure, disclosureListHtml,
+  loadBranch, renderBranchCard, branchCandidateHtml, branchPromptText, branchTemplate, openBranchSandboxModal, branchCreateSandbox, openBranchSubmitModal, branchSubmitCandidates, branchView, branchCompareAll, branchAdopt, branchDiscard, branchCancel, branchReopen, openBranchConfirm,
+  loadRebuild, renderRebuildCard, rebuildBatchById, rebuildPromptForBatch, rebuildPlan, rebuildExtractBatch, rebuildConfirm, rebuildCancel,
+  loadLibrary, renderLibrary, renderLibraryDocCard, libraryDocRow, libraryHitRow, libraryPlanHtml, libraryImportResultHtml, libraryStatusChip, librarySkipLabel, LIBRARY_SKIP_LABEL,
+  libraryRefresh, librarySearchRun, librarySetCategory, libraryViewDoc, libraryToggleEnabled, libraryPreviewImport, libraryConfirmImport, libraryMarkMissing, libraryDeleteDoc, libraryRenderSafely, handleAction,
+  longTextEngine, longTextLimits, longTextPlanFor, longTextRunTask, longTextStatusHtml, longTextContextBlock,
+  longTextKindMeta, longTextCancelRun, buildAIPolishMessages, buildAIExpandMessages, buildAIPersonalityMessages
 };
 `;
 const ctx = vm.createContext(sandbox);
 let runtimeError = null;
 try {
+  // R08：index.html 里 /long-text.js 先于 /app.js 加载；桩环境必须同序，
+  // 否则 app.js 里的分段模块会缺失（而这个缺失本身是**故意**的硬失败，不是静默降级）。
+  const longTextSrc = fs.readFileSync(path.join(repoRoot, 'public', 'long-text.js'), 'utf8');
+  new vm.Script(longTextSrc, { filename: 'long-text.js' }).runInContext(ctx, { timeout: 10000 });
   new vm.Script(src + probeSrc, { filename: 'app.js' }).runInContext(ctx, { timeout: 20000 });
 } catch (e) {
   runtimeError = e;
@@ -278,6 +661,8 @@ if (runtimeError) {
 const P = sandbox.__probe;
 check('1b 探针成功取出追踪模块引用', !!P && !!P.trace && typeof P.traceToggle === 'function');
 if (!P) process.exit(1);
+// 把 document 级 keydown 真的送到 app.js 的监听器（此前桩丢弃监听器 → 键盘路径不可测）
+const fireDocKeydown = (event) => { for (const fn of docListeners.get('keydown') || []) fn({ preventDefault() {}, ...event }); };
 
 // init() 是异步的，等它跑完
 await new Promise((r) => setTimeout(r, 800));
@@ -453,14 +838,871 @@ for (const m of src.matchAll(/helpDot\('([a-z_]+)'\)|fieldHelp\('([a-z_]+)'|help
 }
 check('52 没有永远不会显示的帮助文案（死条目）', helpKeys.every((k) => usedKeys.has(k)), helpKeys.filter((k) => !usedKeys.has(k)).join(','));
 check('53 helpDot/fieldHelp 的 key 都真实存在（拼错不会静默变空白）', [...usedKeys].every((k) => k in P.HELP_TEXT), [...usedKeys].filter((k) => !(k in P.HELP_TEXT)).join(','));
-check('54 用户点名的术语既写好了解释、也真的挂到了界面上', ['sillytavern', 'chapter_note', 'plotline', 'outline', 'plotline_vs_outline'].every((k) => k in P.HELP_TEXT && usedKeys.has(k)));
+check('54 用户点名的术语既写好了解释、也真的挂到了界面上', ['sillytavern', 'creation_context', 'chapter_note', 'plotline', 'outline', 'plotline_vs_outline'].every((k) => k in P.HELP_TEXT && usedKeys.has(k)));
 check('55 帮助标记可悬停也可键盘聚焦', String(P.helpDot('sillytavern')).includes('data-help="sillytavern"') && String(P.helpDot('sillytavern')).includes('tabindex="0"'));
 check('56 未知 key 不产生半个空标签', P.helpDot('not_a_real_key') === '' && P.fieldHelp('not_a_real_key') === '');
 check('57 字段小字把说明写进了 DOM', String(P.fieldHelp('plotline_vs_outline')).includes('两种看法'));
 
 // --- 5) 悬停气泡：帮助标记与词条链接共用同一个取值函数 ---
 const bubble = P.tooltipHtmlFor({ classList: { contains: () => false }, dataset: { help: 'sillytavern' } });
-check('58 悬停帮助标记能取到标题与解释', String(bubble).includes('SillyTavern 设置') && String(bubble).includes('tt-body'));
+check('58 悬停帮助标记能取到标题与解释', String(bubble).includes('创作上下文') && String(bubble).includes('tt-body'));
+// --- R06：改名与首页「借鉴与致谢」 ---
+// 命名纪律：用户面统一叫「创作上下文」；内部键 sillytavern / 视图 st / renderST 保留为兼容 alias
+// （旧会话、旧 localStorage、旧帮助锚点不能失效）；历史来源在正文里说清，不假装它从没叫过 SillyTavern。
+check('58a 用户面改名为创作上下文，且旧键仍可用（兼容 alias）',
+  P.HELP_TEXT.sillytavern.title === '创作上下文' && P.HELP_TEXT.creation_context === P.HELP_TEXT.sillytavern
+    && P.HELP_TEXT.sillytavern.body.includes('SillyTavern'),
+  P.HELP_TEXT.sillytavern.title);
+check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS.some(([k, l]) => k === 'st' && l.includes('创作上下文')) && !P.AI_TABS.some(([, l]) => l.includes('SillyTavern')), JSON.stringify(P.AI_TABS));
+{
+  const thanksEl = { innerHTML: '' };
+  P.renderThanks(thanksEl);
+  const thanks = String(thanksEl.innerHTML);
+  const brackets = thanks.match(/target="_blank"/g) || [];
+  const safe = thanks.match(/target="_blank" rel="noopener noreferrer"/g) || [];
+  check('58c 借鉴与致谢页列出三类关系（运行组件 / 设计参考 / 实际资产）',
+    thanks.includes('实际运行组件') && thanks.includes('设计 / 方法参考') && thanks.includes('实际引入的代码 / 规则 / 资产'));
+  check('58d 每张外链卡都带 noopener noreferrer（外链安全）', brackets.length > 0 && brackets.length === safe.length, `${safe.length}/${brackets.length}`);
+  check('58e 不显示 stars、不暗示官方合作/背书', !/stars/i.test(thanks) && !thanks.includes('官方合作伙伴') && thanks.includes('不表示与任何项目存在官方合作或背书'));
+  check('58f 参考项目都带许可核验版本（日期 + 仓库@commit + LICENSE）',
+    ['SillyTavern/SillyTavern', 'blader/humanizer', 'Narcooo/inkos', 'lingfengQAQ/webnovel-writer', 'zenstory-ai/oh-story-claudecode'].every((r) => thanks.includes(r))
+      && /核验 2026-09-27/.test(thanks) && /LICENSE/.test(thanks));
+  check('58g 未完成能力不写成已集成（状态字段如实标注“设计参考”）',
+    P.ATTRIBUTIONS[1].cards.every((c) => c.status.startsWith('设计参考')));
+}
+
+// --- 6b) R07：编辑规则卡（三档编辑 / 七项能力 / 题材档）---
+{
+  // 渲染创作上下文页需要最小作品状态；跑完必须原样还原（后面的用例依赖当前 state）。
+  const savedState = {
+    workId: P.state.workId, chapters: P.state.chapters, characters: P.state.characters,
+    worldEntries: P.state.worldEntries, work: P.state.work, currentChapterId: P.state.currentChapterId,
+    view: P.state.view, editRules: P.state.editRules,
+  };
+  P.state.workId = 1;
+  P.state.chapters = [];
+  P.state.characters = [];
+  P.state.worldEntries = [];
+  P.state.work = { title: '编辑规则测试书', author_note: '' };
+  P.state.editRules = null;
+  P.state.currentChapterId = null;
+  // AI 板块的子容器：renderAIBoard 把 renderST 的输出写进 #board-content（桩里必须先登记）。
+  containers['#board-content'] = mkEl('board-content');
+  P.goView('st');
+  await P.render();
+  const stHtml = String(containers['#content'].innerHTML);
+  const stHtmlFull = stHtml + String(containers['#board-content'].innerHTML);
+  check('58h 创作上下文页渲染出编辑规则卡（开关 / 档位 / 题材 / 能力 / 扫描 / 保存）',
+    stHtmlFull.includes('id="edit-rules-enabled"') && stHtmlFull.includes('name="edit-tier"') && stHtmlFull.includes('id="edit-genre"')
+      && stHtmlFull.includes('class="edit-ability"') && stHtmlFull.includes('data-action="scan-edit-rules"') && stHtmlFull.includes('data-action="save-edit-rules"'),
+    stHtmlFull.includes('编辑规则') ? 'has-card' : 'no-card');
+  check('58i 三档编辑都出现在界面上（轻度润色 / 去 AI 腔 / 深度修稿）',
+    ['轻度润色', '去 AI 腔', '深度修稿'].every((t) => stHtmlFull.includes(t)));
+  check('58j 能力卡带说明与适用任务（不是只有一个开关）',
+    stHtmlFull.includes('识别机械表达') && stHtmlFull.includes('适用：'));
+  // 保存：收集选择 → 真的发出 PUT（不是只改本地状态）
+  registered.set('#edit-rules-enabled', { checked: true });
+  registered.set('#edit-genre', { value: 'mystery' });
+  const sel = P.collectEditSelection();
+  check('58k 保存前收集作者选择（开关 / 档位 / 题材 / 能力列表）',
+    sel.enabled === true && sel.genre === 'mystery' && Array.isArray(sel.abilities), JSON.stringify(sel));
+  const beforePut = requests.length;
+  try { await P.saveEditRules(); } catch (e) { check('58l 保存编辑规则不抛错', false, e.message); }
+  const putReq = requests.slice(beforePut).find((r) => r.method === 'PUT' && r.url.includes('/api/novel/editing'));
+  check('58l 保存真的发出 PUT /api/novel/editing（设置持久化走服务端）',
+    !!putReq && JSON.parse(String(putReq.body)).enabled === true && JSON.parse(String(putReq.body)).genre === 'mystery',
+    putReq ? String(putReq.body).slice(0, 80) : 'no-put');
+  // 扫描：确定性结果渲染到卡片里（严重性 / 规则 / 摘录 / 建议）
+  registered.set('#edit-rules-enabled', { checked: false });
+  containers['#edit-rules-scan'] = mkEl('edit-rules-scan');
+  P.state.currentChapterId = 7;
+  await P.scanEditRules();
+  const scanHtml = String(containers['#edit-rules-scan'].innerHTML);
+  check('58m 扫描结果渲染出严重性 / 规则 id / 摘录 / 建议',
+    scanHtml.includes('deterministic:ai-tell') && scanHtml.includes('空气仿佛凝固了') && scanHtml.includes('建议：') && scanHtml.includes('low'),
+    scanHtml.slice(0, 90));
+  delete containers['#edit-rules-scan'];
+  registered.delete('#edit-rules-enabled');
+  registered.delete('#edit-genre');
+  Object.assign(P.state, savedState);
+}
+// --- R09 作者样文 / 文风档案 / 三级作者意图：卡片可读可写，写路径真的打到服务端 ---
+{
+  const savedR09State = {
+    workId: P.state.workId, chapters: P.state.chapters, characters: P.state.characters,
+    worldEntries: P.state.worldEntries, work: P.state.work, currentChapterId: P.state.currentChapterId,
+    view: P.state.view, editRules: P.state.editRules, authorStyle: P.state.authorStyle,
+  };
+  P.state.workId = 1;
+  P.state.chapters = [{ id: 7, title: '第一章' }];
+  P.state.currentChapterId = 7;
+  P.state.authorStyle = null;
+  containers['#board-content'] = mkEl('board-content');
+  P.goView('st');
+  await P.render();
+  const r09Html = String(containers['#content'].innerHTML) + String(containers['#board-content'].innerHTML);
+  check('R09-1 创作上下文页渲染出作者样文卡（添加 / 启用开关 / 编辑 / 删除 / 样文行）',
+    r09Html.includes('data-action="new-author-sample"') && r09Html.includes('data-action="toggle-author-sample"')
+      && r09Html.includes('data-action="edit-author-sample"') && r09Html.includes('data-action="delete-author-sample"')
+      && r09Html.includes('我的旧作片段'),
+    r09Html.includes('作者样文') ? 'has-card' : 'no-card');
+  check('R09-2 卡片写明样文是独立数据来源（不进入正典事实 / 人物 / 地点 / 事件）与上限',
+    r09Html.includes('独立数据来源') && r09Html.includes('正典事实') && r09Html.includes('20000'));
+  check('R09-3 文风档案区显示过期徽标 / 指标数字 / 计算口径',
+    r09Html.includes('已过期') && r09Html.includes('18.25') && r09Html.includes('对白段占比') && r09Html.includes('口径：'));
+  check('R09-4 三级意图三个输入框 + 硬约束复选框 + 冲突提请裁决都在界面上',
+    r09Html.includes('id="author-intent-long_term"') && r09Html.includes('id="author-intent-stage"')
+      && r09Html.includes('id="author-intent-chapter"') && r09Html.includes('id="author-intent-long_term-hard"')
+      && r09Html.includes('需要你裁决') && r09Html.includes('不再克制'));
+  {
+    const beforeToggle = requests.length;
+    await P.toggleAuthorSample('5', false);
+    const req = requests.slice(beforeToggle).find((r) => r.method === 'PUT' && r.url.includes('/api/novel/style/samples'));
+    check('R09-5 停用样文发出 PUT（enabled=false，走服务端而不是只改本地）',
+      !!req && JSON.parse(String(req.body)).enabled === false && JSON.parse(String(req.body)).id === 5,
+      req ? String(req.body).slice(0, 80) : 'no-put');
+  }
+  {
+    const beforeAnalyze = requests.length;
+    try { await P.analyzeAuthorProfile(); } catch (e) { check('R09-6 分析不抛错', false, e.message); }
+    const reqs = requests.slice(beforeAnalyze);
+    check('R09-6 分析 = POST /novel/style/profile（确定性计数，零模型调用）',
+      reqs.some((r) => r.method === 'POST' && r.url.includes('/api/novel/style/profile'))
+        && !reqs.some((r) => r.url.includes('/api/ai/')),
+      JSON.stringify(reqs.map((r) => r.url.slice(0, 40))));
+  }
+  {
+    registered.set('#author-intent-long_term', { value: '保持克制的叙述' });
+    registered.set('#author-intent-long_term-hard', { checked: true });
+    registered.set('#author-intent-stage', { value: '第二卷写决裂' });
+    registered.set('#author-intent-stage-hard', { checked: false });
+    registered.set('#author-intent-chapter', { value: '本章以雨夜追捕收尾' });
+    registered.set('#author-intent-chapter-hard', { checked: false });
+    const beforeSave = requests.length;
+    try { await P.saveAuthorIntents(); } catch (e) { check('R09-7 保存意图不抛错', false, e.message); }
+    const bodies = requests.slice(beforeSave)
+      .filter((r) => r.method === 'PUT' && r.url.includes('/api/novel/author_intent'))
+      .map((r) => JSON.parse(String(r.body)));
+    check('R09-7 保存三级意图发出三条 PUT（层级 / 章节归属 / 硬约束正确）',
+      bodies.length === 3 && bodies.find((b) => b.tier === 'long_term').hard === true
+        && bodies.find((b) => b.tier === 'long_term').chapter_id === 0
+        && bodies.find((b) => b.tier === 'chapter').chapter_id === 7
+        && bodies.find((b) => b.tier === 'stage').text === '第二卷写决裂',
+      JSON.stringify(bodies));
+  }
+  {
+    registered.set('#author-intent-stage', { value: '' });
+    const beforeDel = requests.length;
+    await P.saveAuthorIntents();
+    const dels = requests.slice(beforeDel).filter((r) => r.method === 'DELETE' && r.url.includes('tier=stage'));
+    check('R09-8 清空某一档 → 删除该档意图（不是写空字符串）', dels.length === 1,
+      JSON.stringify(requests.slice(beforeDel).map((r) => r.method + ' ' + r.url.slice(0, 70))));
+  }
+  {
+    const beforeDelete = requests.length;
+    try { await P.deleteAuthorSample('5'); } catch (e) { check('R09-9 删除样文不抛错', false, e.message); }
+    const del = requests.slice(beforeDelete).find((r) => r.method === 'DELETE' && r.url.includes('/api/novel/style/samples'));
+    check('R09-9 删除样文发出 DELETE 并带 work_id / id',
+      !!del && del.url.includes('work_id=1') && del.url.includes('id=5'), del ? del.url : 'no-del');
+  }
+  check('R09-10 卡片内容来自服务端读回（GET style/samples + style/profile + author_intent）',
+    requests.some((r) => r.method === 'GET' && r.url.includes('/api/novel/style/samples'))
+      && requests.some((r) => r.method === 'GET' && r.url.includes('/api/novel/style/profile'))
+      && requests.some((r) => r.method === 'GET' && r.url.includes('/api/novel/author_intent')));
+  delete containers['#board-content'];
+  Object.assign(P.state, savedR09State);
+  for (const k of ['#author-intent-long_term', '#author-intent-long_term-hard', '#author-intent-stage', '#author-intent-stage-hard', '#author-intent-chapter', '#author-intent-chapter-hard']) registered.delete(k);
+}
+// --- R10 故事状态与披露视图：按当前章看"作者真相 / 读者已披露 / 角色掌握" ---
+{
+  const savedR10State = {
+    workId: P.state.workId, chapters: P.state.chapters, characters: P.state.characters,
+    worldEntries: P.state.worldEntries, work: P.state.work, currentChapterId: P.state.currentChapterId,
+    view: P.state.view, editRules: P.state.editRules, authorStyle: P.state.authorStyle, storyState: P.state.storyState,
+  };
+  P.state.workId = 1;
+  P.state.chapters = [{ id: 7, title: '第一章' }];
+  P.state.currentChapterId = 7;
+  P.state.authorStyle = null;
+  P.state.storyState = null;
+  containers['#board-content'] = mkEl('board-content');
+  P.goView('st');
+  await P.render();
+  const r10Html = String(containers['#content'].innerHTML) + String(containers['#board-content'].innerHTML);
+  check('R10-1 创作上下文页渲染出故事状态卡（开关 / 计数 / 状态哈希 / 重算入口）',
+    r10Html.includes('data-action="toggle-story-state"') && r10Html.includes('data-action="refresh-disclosure"')
+      && r10Html.includes('状态哈希') && r10Html.includes('abcdef012345'),
+    r10Html.includes('故事状态') ? 'has-card' : 'no-card');
+  check('R10-2 三档视图都在：作者真相（读者未披露）/ 读者已披露 / 未披露，且带证据章与"已写/未写"',
+    r10Html.includes('作者真相（读者未披露）') && r10Html.includes('读者已披露') && r10Html.includes('尚未披露')
+      && r10Html.includes('林昭 其实是 卧底') && r10Html.includes('汐会记账人') && r10Html.includes('（未写）'));
+  check('R10-3 视图按当前章重算并给出指纹与口径（不是一句"读者已知"）',
+    r10Html.includes('第 3 章') && r10Html.includes('disclosure-abcdef0123456789') && r10Html.includes('effective_from ≤'));
+  check('R10-4 角色掌握分档显示：可行动 / 显式不知道 / 未定义（不得当成已知）',
+    r10Html.includes('可行动 1 条') && r10Html.includes('显式不知道 1') && r10Html.includes('未定义（不得当成已知）')
+      && r10Html.includes('暗格 藏着'));
+  {
+    const beforeToggle = requests.length;
+    try { await P.toggleStoryState(); } catch (e) { check('R10-5 切换故事状态不抛错', false, e.message); }
+    const put = requests.slice(beforeToggle).find((r) => r.method === 'PUT' && r.url.includes('/api/novel/story_state'));
+    check('R10-5 开关真的发 PUT /novel/story_state（enabled=false，作者显式控制）',
+      !!put && JSON.parse(String(put.body)).enabled === false && JSON.parse(String(put.body)).work_id === 1,
+      put ? String(put.body).slice(0, 80) : 'no-put');
+  }
+  {
+    const beforeRefresh = requests.length;
+    try { await P.refreshDisclosure(); } catch (e) { check('R10-6 重算不抛错', false, e.message); }
+    const reqs = requests.slice(beforeRefresh);
+    check('R10-6 重算只读：再次 GET /novel/state/disclosure，且没有任何写请求',
+      reqs.some((r) => r.method === 'GET' && r.url.includes('/api/novel/state/disclosure'))
+        && !reqs.some((r) => ['PUT', 'POST', 'DELETE'].includes(r.method)),
+      JSON.stringify(reqs.map((r) => r.method + ' ' + r.url.slice(0, 44))));
+  }
+  delete containers['#board-content'];
+  Object.assign(P.state, savedR10State);
+}
+// --- R11 剧情分支沙盘：候选是提案，采纳/丢弃/取消/重开是作者动作 ---
+{
+  const savedR11State = {
+    workId: P.state.workId, chapters: P.state.chapters, characters: P.state.characters, work: P.state.work,
+    currentChapterId: P.state.currentChapterId, branch: P.state.branch, storyState: P.state.storyState,
+    authorStyle: P.state.authorStyle, editRules: P.state.editRules, view: P.state.view, aiContext: P.state.aiContext
+  };
+  const savedBranchStub = JSON.parse(JSON.stringify(branchStub));
+  P.state.workId = 1;
+  P.state.chapters = [{ id: 7, title: '第一章' }];
+  P.state.characters = [{ id: 9, name: '林昭' }];
+  P.state.work = { title: '沙盘测试书' };
+  P.state.currentChapterId = 7;
+  P.state.branch = null;
+  P.state.storyState = null;
+  P.state.authorStyle = null;
+  P.state.editRules = null;
+  containers['#board-content'] = mkEl('board-content');
+  P.goView('st');
+  await P.render();
+  const r11 = String(containers['#content'].innerHTML) + String(containers['#board-content'].innerHTML);
+  check('R11-1 沙盘卡渲染出沙盘进度与候选（核心行动/冲突/计数/来源）',
+    r11.includes('data-action="branch-open-sandbox"') && r11.includes('data-action="branch-submit"')
+      && r11.includes('沙盘 #21') && r11.includes('候选 2/3') && r11.includes('还差 1 个')
+      && r11.includes('林昭潜入潮汐钟楼夺取钥匙') && r11.includes('人物选择 1') && r11.includes('模型提交'),
+    r11.includes('剧情分支沙盘') ? 'has-card' : 'no-card');
+  check('R11-2 过期候选显式标"重新采纳必须先复核"，卡片写明"未采纳前不进正文…模型侧 403"',
+    r11.includes('已过期') && r11.includes('重新采纳必须先复核')
+      && r11.includes('未采纳前不进正文') && r11.includes('模型侧调用返回 403'));
+  check('R11-3 只有未丢弃候选才有 采用/丢弃 按钮（已丢弃的只可查看）',
+    (r11.match(/data-action="branch-adopt"/g) || []).length === 2
+      && (r11.match(/data-action="branch-discard"/g) || []).length === 2
+      && (r11.match(/data-action="branch-view"/g) || []).length === 3,
+    'adopt=' + (r11.match(/data-action="branch-adopt"/g) || []).length);
+  check('R11-4 「复制沙盘提示词」把 novel_branch 的用法复制给会话（复制本身不调模型）',
+    r11.includes('data-action="copy-text"') && r11.includes('novel_branch') && r11.includes('disclosure')
+      && r11.includes('action=open') && r11.includes('action=submit'));
+  {
+    const input = mkEl('branch-requested', 'input');
+    input.value = '4';
+    const before = requests.length;
+    try { await P.branchCreateSandbox(); } catch (e) { check('R11-5 开沙盘不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/api/novel/branch/sandboxes'));
+    const body = post ? JSON.parse(String(post.body)) : {};
+    check('R11-5 开沙盘 = POST /novel/branch/sandboxes（work_id/chapter_id/requested 都来自界面）',
+      !!post && body.requested === 4 && body.chapter_id === 7 && body.work_id === 1,
+      post ? String(post.body) : 'no-post');
+    registered.delete('#branch-requested');
+  }
+  {
+    const ta = mkEl('branch-candidates-json', 'textarea');
+    ta.value = P.branchTemplate();
+    let templateOk = false;
+    try { const x = JSON.parse(ta.value); templateOk = Array.isArray(x) && x.length >= 1 && !!x[0].core_action && Array.isArray(x[0].character_choices) && Array.isArray(x[0].consequences); } catch (_) { templateOk = false; }
+    check('R11-6 「填入模板」给出可解析的候选 JSON（core_action/character_choices/consequences 齐）', templateOk, String(ta.value).slice(0, 80));
+    const before = requests.length;
+    try { await P.branchSubmitCandidates('21'); } catch (e) { check('R11-6 提交候选不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/api/novel/branch/candidates'));
+    const body = post ? JSON.parse(String(post.body)) : {};
+    check('R11-6 提交候选 = POST /novel/branch/candidates（解析成数组、带 sandbox_id，不是把 JSON 当字符串发）',
+      Array.isArray(body.candidates) && body.candidates.length === 1 && Number(body.sandbox_id) === 21 && body.chapter_id === 7,
+      post ? String(post.body).slice(0, 120) : 'no-post');
+    registered.delete('#branch-candidates-json');
+  }
+  {
+    const before = requests.length;
+    try { await P.branchView(101); } catch (e) { check('R11-9 查看不抛错', false, e.message); }
+    const get = requests.slice(before).find((r) => r.method === 'GET' && r.url.includes('/candidates/101'));
+    const html = String(containers['#modal-root'].innerHTML);
+    check('R11-9 查看 = GET 单条候选 + 采纳计划（只写蓝图；never_touched 明示）',
+      !!get && html.includes('采纳计划（只写章节蓝图') && html.includes('chapters.content') && html.includes('复核并采用'),
+      get ? 'GET 单条候选 + 采纳计划已渲染' : 'no-get');
+  }  {
+    const before = requests.length;
+    try { await P.branchAdopt(101, false); } catch (e) { check('R11-7 采纳不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/candidates/101/adopt'));
+    const body = post ? JSON.parse(String(post.body)) : {};
+    check('R11-7 采纳 = POST …/adopt（recheck=false；作者通道不带 X-Novel-Agent）',
+      !!post && body.recheck === false && body.work_id === 1 && !(post.headers && post.headers['X-Novel-Agent']),
+      post ? String(post.body) : 'no-post');
+  }
+  {
+    const before = requests.length;
+    try { await P.branchAdopt(102, true); } catch (e) { check('R11-7 复核采纳不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/candidates/102/adopt'));
+    check('R11-7 「复核并采用」= 同端点 recheck=true（过期候选不静默覆盖）',
+      !!post && JSON.parse(String(post.body)).recheck === true, post ? String(post.body) : 'no-post');
+  }
+  {
+    const before = requests.length;
+    try { await P.branchCompareAll(); } catch (e) { check('R11-8 比较不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/api/novel/branch/compare'));
+    const ids = post ? JSON.parse(String(post.body)).ids : [];
+    const html = String(containers['#modal-root'].innerHTML);
+    check('R11-8 比较 = POST /novel/branch/compare（≥2 个非丢弃候选），只列差异、不替作者打分',
+      !!post && ids.length >= 2 && !ids.includes(103) && html.includes('差异') && html.includes('不替作者打分')
+        && !/最好|推荐方向/.test(html),
+      post ? JSON.stringify(ids) : 'no-post');
+  }
+
+  {
+    const before = requests.length;
+    try { await P.branchDiscard(102); } catch (e) { check('R11-10 丢弃不抛错', false, e.message); }
+    try { await P.branchCancel(21); } catch (e) { check('R11-10 取消不抛错', false, e.message); }
+    try { await P.branchReopen(21); } catch (e) { check('R11-10 恢复不抛错', false, e.message); }
+    const reqs = requests.slice(before);
+    check('R11-10 丢弃/取消/重启恢复分别打到对应端点（都是作者动作，不带模型标记）',
+      reqs.some((r) => r.method === 'POST' && r.url.includes('/candidates/102/discard'))
+        && reqs.some((r) => r.method === 'POST' && r.url.includes('/sandboxes/21/cancel'))
+        && reqs.some((r) => r.method === 'POST' && r.url.includes('/sandboxes/21/reopen'))
+        && !reqs.some((r) => r.headers && r.headers['X-Novel-Agent']),
+      JSON.stringify(reqs.map((r) => r.method + ' ' + r.url.slice(0, 60))));
+  }
+  delete containers['#board-content'];
+  Object.assign(P.state, savedR11State);
+  Object.assign(branchStub, savedBranchStub);
+}
+
+// --- R12 导入后重建：分批抽取 / 基线复用 / 确认即原子应用 ---
+{
+  const savedR12State = { rebuild: P.state.rebuild, rebuildLoaded: P.state.rebuildLoaded, rebuildRunner: P.state.rebuildRunner, currentChapterId: P.state.currentChapterId, workId: P.state.workId };
+  const savedR12Stub = JSON.parse(JSON.stringify({ run: rebuildStub.run, batches: rebuildStub.batches, counts: rebuildStub.counts, recorded: rebuildStub.recorded, confirmed: rebuildStub.confirmed, cancelled: rebuildStub.cancelled }));
+
+  P.state.rebuild = null; P.state.rebuildLoaded = false;
+  P.state.currentChapterId = 7;
+  P.state.workId = 1;
+  P.state.chapters = [
+    { id: 7, title: '第一章', content: '<p>原文一句。</p>' },
+    { id: 8, title: '第二章', content: '<p>第二章正文。</p>' },
+    { id: 9, title: '第三章', content: '<p>第三章正文。</p>' }
+  ];
+  const r12Toasts = [];
+  const savedToast = sandbox.toast;
+  sandbox.toast = (m) => { r12Toasts.push(String(m)); };
+  try { await P.loadRebuild(true); } catch (e) { check('R12-1 读取重建状态不抛错', false, e.message); }
+  const card = String(P.renderRebuildCard());
+  check('R12-1 重建卡渲染批次与状态（可复用/待抽取/候选数/基线指纹），并写明取舍口径',
+    card.includes('导入后重建创作状态') && card.includes('批次 1/2') && card.includes('批次 2/2')
+      && card.includes('待抽取') && card.includes('可复用')
+      && card.includes('已过期') && card.includes('未确认前不进') && card.includes('会产生费用'),
+    card.slice(0, 120));
+  check('R12-2 只有已抽取未确认的批次显示「确认应用本批」，待抽取的显示「抽取本批」',
+    card.includes('抽取本批') && /确认应用本批（2 条候选）/.test(card),
+    card.slice(0, 200));
+
+  {
+    const before = requests.length;
+    try { await P.rebuildPlan(); } catch (e) { check('R12-3 规划不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/api/import/rebuild/plan'));
+    check('R12-3 「规划分析批次」= POST /import/rebuild/plan（带 work_id；不是把整本一次发给模型）',
+      !!post && JSON.parse(String(post.body)).work_id === 1
+        && !requests.slice(before).some((r) => /\/api\/ai\//.test(r.url) || /harness/.test(r.url)),
+      post ? String(post.body).slice(0, 100) : 'no-post');
+  }
+
+  {
+    let runnerCalls = 0;
+    P.state.rebuildRunner = async ({ prompt, index }) => {
+      runnerCalls += 1;
+      if (!prompt.includes('【章节 #7') || !prompt.includes('evidence.quote')) throw new Error('提示词缺少本批章节或证据口径');
+      return '先说明一下。\n' + '```json\n' + '{"items":[{"category":"entity","chapter_id":7,"chapter_index":0,"evidence":{"quote":"原文一句"},"data":{"name":"青雀"}}]}' + '\n```' + '\n以上。';
+    };
+    const before = requests.length;
+    try { await P.rebuildExtractBatch(0); } catch (e) { check('R12-4 抽取本批不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/api/import/rebuild/record'));
+    const body = post ? JSON.parse(String(post.body)) : null;
+    check('R12-4 「抽取本批」按批请求（注入 runner，不触发真实模型），围栏 JSON 能解析后 record（带 run_id/batch_index/items）',
+      runnerCalls === 1 && !!body && body.run_id === 31 && Number(body.batch_index) === 0
+        && Array.isArray(body.result.items) && body.result.items.length === 1
+        && !requests.slice(before).some((r) => /\/api\/ai\//.test(r.url))
+        && !r12Toasts.some((m) => /本批抽取失败|规划失败/.test(m)),
+      `runnerCalls=${runnerCalls} body=${post ? String(post.body).slice(0, 120) : 'no-post'} toast=${r12Toasts.join(' / ')}`);
+  }
+
+  {
+    const before = requests.length;
+    try { await P.rebuildConfirm([0]); } catch (e) { check('R12-5 确认不抛错', false, e.message); }
+    const post = requests.slice(before).find((r) => r.method === 'POST' && r.url.includes('/api/import/rebuild/confirm'));
+    const body = post ? JSON.parse(String(post.body)) : null;
+    check('R12-5 「确认应用本批」= POST …/confirm（batch_indexes=[0]，作者通道不带模型标记）',
+      !!body && JSON.stringify(body.batch_indexes) === '[0]' && body.run_id === 31
+        && !(post.headers && post.headers['X-Novel-Agent']),
+      post ? String(post.body).slice(0, 100) : 'no-post');
+  }
+
+  {
+    const before = requests.length;
+    try { await P.rebuildConfirm(null); } catch (e) { check('R12-6 确认全部不抛错', false, e.message); }
+    try { await P.rebuildCancel(); } catch (e) { check('R12-6 取消不抛错', false, e.message); }
+    const reqs = requests.slice(before);
+    const all = reqs.find((r) => r.method === 'POST' && r.url.includes('/api/import/rebuild/confirm'));
+    const cancel = reqs.find((r) => r.method === 'POST' && r.url.includes('/api/import/rebuild/cancel'));
+    check('R12-6 「确认全部」不带 batch_indexes（整跑确认）+「取消」保留已记录结果（都走作者通道）',
+      !!all && JSON.parse(String(all.body)).batch_indexes === undefined
+        && !!cancel && JSON.parse(String(cancel.body)).run_id === 31
+        && !reqs.some((r) => r.headers && r.headers['X-Novel-Agent']),
+      JSON.stringify(reqs.map((r) => r.method + ' ' + r.url.slice(0, 50))));
+  }
+
+  sandbox.toast = savedToast;
+  P.state.rebuildRunner = null;
+  Object.assign(P.state, savedR12State);
+  Object.assign(rebuildStub, savedR12Stub);
+}
+
+// --- P4 共享资料库：列表 / 检索 / 导入两段式 / 读原文 / 开关 / 标记与删除 ---
+// 边界口径：导入是"先预览（从不写入）→ 作者确认才写"；删除是"先标记缺失 → 确认才真删"；
+// 开关按作品、默认关闭；模型侧写操作一律 403（后端职责，此处断言界面不越权、不假装能写）。
+{
+  const savedLibState = {
+    workId: P.state.workId, work: P.state.work, view: P.state.view, chapters: P.state.chapters,
+    library: P.state.library, libraryLoaded: P.state.libraryLoaded, libraryKey: P.state.libraryKey, libraryDir: P.state.libraryDir,
+    libraryCategory: P.state.libraryCategory, librarySearch: P.state.librarySearch,
+    libraryDoc: P.state.libraryDoc, libraryPlan: P.state.libraryPlan, libraryImportResult: P.state.libraryImportResult
+  };
+  const savedLibStub = JSON.parse(JSON.stringify({ enabled: libraryStub.enabled, ov: libraryStub.ov, docs: libraryStub.docs, docReads: libraryStub.docReads }));
+  const savedConfirm = sandbox.confirm;
+  let confirmCalls = 0;
+  sandbox.confirm = () => { confirmCalls += 1; return true; };
+  P.state.workId = 1;
+  P.state.work = { title: '资料库测试书' };
+  P.state.library = null; P.state.libraryLoaded = false;
+  P.state.libraryDir = ''; P.state.libraryCategory = ''; P.state.librarySearch = null;
+  P.state.libraryDoc = null; P.state.libraryPlan = null; P.state.libraryImportResult = null;
+  libraryStub.enabled = false; libraryStub.ov.disabled = false; libraryStub.docReads = [];
+
+  P.goView('library');
+  await P.render();
+  let libHtml = String(containers['#content'].innerHTML);
+  check('LIB-1 资料库页渲染：标题 / 开关卡 / 列表行（字数·块数·分类）/ 导入卡 / 帮助入口齐备',
+    libHtml.includes('📎 资料库') && libHtml.includes('跨作品共享的写作参考资料')
+      && libHtml.includes('data-help="library"') && libHtml.includes('资料层开关（本作品）')
+      && libHtml.includes('data-action="library-import-preview"') && libHtml.includes('data-action="library-refresh"')
+      && libHtml.includes('潮汐会的记账规矩') && libHtml.includes('短句范例')
+      && libHtml.includes('设定（1）') && libHtml.includes('风格（1）') && libHtml.includes('预计 3 块')
+      && libHtml.includes('先「扫描预览」，再「确认导入」') && libHtml.includes('不跟随符号链接'),
+    libHtml.includes('📎 资料库') ? 'has-page' : 'no-page');
+
+  // 未进入作品：开关按作品生效，不给开 / 关按钮（不假装可以全局开关）
+  // 未进入作品：开关按作品生效，不给开 / 关按钮；缓存按作品为键——这里故意不清 libraryLoaded，
+  // 验证退回作品列表后会重新取状态，而不是复用上一个作品的「开关」。
+  P.state.workId = null;
+  const beforeNoWork = requests.length;
+  await P.render();
+  const noWorkHtml = String(containers['#content'].innerHTML);
+  check('LIB-2 未进入作品时开关卡只提示、不开按钮（开关按作品生效，默认关闭）',
+    noWorkHtml.includes('还没进入作品') && !noWorkHtml.includes('data-action="library-toggle"')
+      && requests.slice(beforeNoWork).some((r) => r.method === 'GET' && r.url.includes('/api/novel/library/status')),
+    noWorkHtml.includes('还没进入作品') ? 'hint-only' : 'has-buttons');
+  P.state.workId = 1; P.state.libraryLoaded = false;
+  await P.render();
+  const offPut = requests.filter((r) => r.method === 'PUT' && r.url.includes('/api/novel/library/enabled'));
+  check('LIB-2b 渲染资料库页从不悄悄替作者开 / 关资料层（没有 PUT /library/enabled）', offPut.length === 0, String(offPut.length));
+  // —— 异步竞态：过期响应不得覆盖新状态（作品切换 / 视图切走 / 快速连点）——
+  {
+    const realLibFetch = sandbox.fetch;
+    const libInFlight = [];
+    sandbox.fetch = (url, opts) => {
+      const u = String(url);
+      if (u.includes('/api/novel/library/status') || u.includes('/api/novel/library/doc?') || u.includes('/api/novel/library/search?')) {
+        return new Promise((resolve) => { libInFlight.push({ u, resolve }); });
+      }
+      return realLibFetch(url, opts);
+    };
+    const takeLibReq = (frag) => {
+      const idx = libInFlight.findIndex((p) => p.u.includes(frag));
+      if (idx < 0) return null;
+      return libInFlight.splice(idx, 1)[0];
+    };
+    const libReply = (json) => ({ ok: true, status: 200, headers: new Map(), text: async () => JSON.stringify(json), json: async () => json });
+
+    // 1) 等待期间切换作品：旧作品的 status 响应必须被丢弃
+    P.state.library = null; P.state.libraryLoaded = true; P.state.libraryKey = 1; P.state.workId = 1;
+    const pendingStatus = P.loadLibrary(true);
+    await new Promise((r) => setTimeout(r, 0));
+    P.state.workId = 2;
+    const stReq = takeLibReq('/api/novel/library/status');
+    if (!stReq) throw new Error('LIB-2c 桩未收到 library/status 请求');
+    stReq.resolve(libReply(libraryStatusJson(1)));
+    const staleOut = await pendingStatus;
+    check('LIB-2c 等待期间切换作品：过期 status 被丢弃（不把作品 1 的开关贴到作品 2）',
+      staleOut === null && P.state.library === null && P.state.libraryKey === 1,
+      'library=' + (P.state.library ? 'stale-written' : 'null'));
+
+    // 2) 等待期间切走视图：过期渲染不得覆盖新页面
+    P.state.workId = 1; P.state.library = null; P.state.libraryLoaded = false; P.state.libraryKey = null;
+    P.state.view = 'library';
+    const pendingRender = P.render();
+    await new Promise((r) => setTimeout(r, 0));
+    const stReq2 = takeLibReq('/api/novel/library/status');
+    if (!stReq2) throw new Error('LIB-2d 桩未收到 library/status 请求');
+    P.state.view = 'works';
+    containers['#content'].innerHTML = '<div id="works-marker">作品列表页</div>';
+    stReq2.resolve(libReply(libraryStatusJson(1)));
+    await pendingRender;
+    check('LIB-2d 等待服务端期间切走视图：过期渲染不覆盖当前页面',
+      String(containers['#content'].innerHTML).includes('works-marker'),
+      String(containers['#content'].innerHTML).slice(0, 40));
+
+    // 3) 快速连读两篇：迟到的旧响应不得覆盖新结果
+    P.state.view = 'library'; P.state.libraryLoaded = true; P.state.libraryKey = 1; P.state.library = libraryStatusJson(1);
+    P.state.libraryDoc = null;
+    const readA = P.libraryViewDoc(41);
+    const readB = P.libraryViewDoc(42);
+    await new Promise((r) => setTimeout(r, 0));
+    const reqA = takeLibReq('id=41');
+    const reqB = takeLibReq('id=42');
+    if (!reqA || !reqB) throw new Error('LIB-5c 桩未收到 doc 请求');
+    const docReply = (id) => {
+      const d = libraryStub.docs.find((x) => x.id === id) || {};
+      return { ok: true, doc: { id: d.id, rel: d.rel, title: d.title, total_chars: d.chars }, text: libraryStub.docLines.slice(0, 30).join('\n') };
+    };
+    reqB.resolve(libReply(docReply(42)));
+    await readB;
+    reqA.resolve(libReply(docReply(41)));
+    await readA;
+    check('LIB-5c 快速连读两篇：迟到的旧响应不覆盖新结果（读原文请求序号）',
+      P.state.libraryDoc && P.state.libraryDoc.doc && P.state.libraryDoc.doc.id === 42,
+      'doc=' + (((P.state.libraryDoc || {}).doc || {}).id || ''));
+
+    // 4) 连续检索：迟到的旧响应不得覆盖新结果
+    P.state.libraryDoc = null;
+    P.state.librarySearch = { q: '记账' };
+    const searchA = P.librarySearchRun();
+    P.state.librarySearch = { q: '短句' };
+    const searchB = P.librarySearchRun();
+    await new Promise((r) => setTimeout(r, 0));
+    const sReqA = takeLibReq('q=' + encodeURIComponent('记账'));
+    const sReqB = takeLibReq('q=' + encodeURIComponent('短句'));
+    if (!sReqA || !sReqB) throw new Error('LIB-3e 桩未收到 search 请求');
+    const searchReply = (q, mode) => ({ ok: true, q, mode, total: 2, hits: [{ id: 41, category: '设定', slug: 'tide-ledger', title: q === '短句' ? '短句范例' : '潮汐会的记账规矩' }] });
+    sReqB.resolve(libReply(searchReply('短句', 'keyword')));
+    await searchB;
+    sReqA.resolve(libReply(searchReply('记账', 'semantic')));
+    await searchA;
+    check('LIB-3e 连续检索：迟到的旧响应不覆盖新结果（检索请求序号）',
+      (P.state.librarySearch || {}).q === '短句',
+      'q=' + ((P.state.librarySearch || {}).q || ''));
+
+    sandbox.fetch = realLibFetch;
+    P.state.view = 'library'; P.state.libraryLoaded = false; P.state.libraryKey = null; P.state.library = null;
+    P.state.librarySearch = null; P.state.libraryDoc = null; P.state.workId = 1;
+    await P.render();
+  }
+
+  // 检索：请求真的打到服务端，界面用服务端返回的 mode/hits
+  const qInput = mkEl('library-q', 'input');
+  qInput.value = '记账';
+  const beforeSearch = requests.length;
+  await P.librarySearchRun();
+  const searchReq = requests.slice(beforeSearch).find((r) => r.method === 'GET' && r.url.includes('/api/novel/library/search'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-3 检索 = GET /novel/library/search（q 与 limit 来自界面），按服务端 mode/hits 渲染（语义 + 相关度）',
+    !!searchReq && searchReq.url.includes('q=' + encodeURIComponent('记账')) && searchReq.url.includes('limit=20')
+      && libHtml.includes('检索方式：语义') && libHtml.includes('相关度 87%')
+      && libHtml.includes('潮汐会的记账规矩') && libHtml.includes('先记账，再谈情'),
+    searchReq ? searchReq.url : 'no-get');
+  qInput.value = '不存在的词';
+  await P.librarySearchRun();
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-3b 没有命中时如实说明"语义与关键词都没找到"，并标出当前走的是关键词兜底',
+    libHtml.includes('没有命中（语义与关键词都没找到）') && libHtml.includes('关键词兜底'),
+    libHtml.includes('没有命中') ? 'empty-state' : 'no-empty');
+  // 回车 = 点「检索」：键盘走 document 委托，只有 library-q 上的 Enter 才算
+  qInput.value = '记账';
+  const beforeEnter = requests.length;
+  fireDocKeydown({ key: 'Enter', target: { id: 'global-search' } });
+  fireDocKeydown({ key: 'Enter', isComposing: true, target: qInput }); // 输入法候选确认的回车：不算检索
+  fireDocKeydown({ key: 'Enter', target: qInput });
+  await new Promise((r) => setTimeout(r, 0));
+  const enterReqs = requests.slice(beforeEnter).filter((r) => r.method === 'GET' && r.url.includes('/api/novel/library/search'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-3d 检索框回车 = 点「检索」（只在 library-q 上触发；结果按服务端返回渲染）',
+    enterReqs.length === 1 && enterReqs[0].url.includes('q=' + encodeURIComponent('记账'))
+      && libHtml.includes('检索方式：语义') && libHtml.includes('潮汐会的记账规矩'),
+    'enterReqs=' + enterReqs.length);
+  P.state.librarySearch = null;
+  const beforeCat = requests.length;
+  await P.librarySetCategory('风格');
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-3c 分类按钮来自服务端 summary.categories（含计数）；切到某类后列表只剩该类资料',
+    libHtml.includes('data-action="library-category" data-category="设定"') && libHtml.includes('data-category="风格"')
+      && libHtml.includes('全部分类')
+      && libHtml.includes('短句范例') && !libHtml.includes('潮汐会的记账规矩')
+      && !requests.slice(beforeCat).some((r) => ['POST', 'PUT', 'DELETE'].includes(r.method)),
+    libHtml.includes('短句范例') ? 'filtered' : 'not-filtered');
+  P.state.libraryCategory = '';
+  await P.render();
+
+  // 读原文：GET /novel/library/doc（按行窗口），翻页按钮走分派器
+  const beforeRead = requests.length;
+  await P.libraryViewDoc(41);
+  const readReq = requests.slice(beforeRead).find((r) => r.method === 'GET' && r.url.includes('/api/novel/library/doc?'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-4 读原文 = GET /novel/library/doc（id/offset/limit 均为界面参数），服务端返回的正文真的渲染出来',
+    !!readReq && readReq.url.includes('id=41') && readReq.url.includes('offset=0') && readReq.url.includes('limit=30')
+      && libHtml.includes('读原文：潮汐会的记账规矩') && libHtml.includes('第 1 行：潮汐会的规矩')
+      && libHtml.includes('data-offset="0" disabled') && libHtml.includes('data-offset="30" >'),
+    readReq ? readReq.url : 'no-get');
+  const beforePage = requests.length;
+  await P.handleAction('library-doc-page', { dataset: { offset: '30' } });
+  const pageReq = requests.slice(beforePage).find((r) => r.method === 'GET' && r.url.includes('/api/novel/library/doc?'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-5 分派 library-doc-page：用当前文档 id + 新 offset 再取一段；末段禁用「下一段」、可回退',
+    !!pageReq && pageReq.url.includes('id=41') && pageReq.url.includes('offset=30')
+      && libHtml.includes('data-offset="60" disabled') && libHtml.includes('data-offset="0" >')
+      && (libraryStub.docReads[1] || {}).offset === 30 && (libraryStub.docReads[1] || {}).limit === 30,
+    pageReq ? pageReq.url : 'no-get');
+  await P.handleAction('library-doc-close', { dataset: {} });
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-5b 分派 library-doc-close：读原文卡收起（不残留）',
+    P.state.libraryDoc === null && !libHtml.includes('读原文：潮汐会的记账规矩'));
+
+  // 导入两段式：扫描预览（从不写入）→ 作者确认才写共享资料根
+  const dirInput = mkEl('library-dir-input', 'input');
+  dirInput.value = 'D:/写作资料';
+  const docsBeforePlan = JSON.stringify(libraryStub.docs.map((d) => d.id).sort());
+  const beforePlan = requests.length;
+  await P.libraryPreviewImport();
+  const planReq = requests.slice(beforePlan).find((r) => r.method === 'POST' && r.url.includes('/api/novel/library/import'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-6 「扫描预览」= POST /novel/library/import（绝不带 confirm、不写任何东西）',
+    !!planReq && !planReq.url.includes('confirm') && JSON.parse(String(planReq.body)).dir === 'D:/写作资料'
+      && JSON.stringify(libraryStub.docs.map((d) => d.id).sort()) === docsBeforePlan,
+    planReq ? planReq.url : 'no-post');
+  check('LIB-6b 预览渲染新增/更新/未变/跳过计数与跳过原因中文说明；「未变」条目不进待写入清单',
+    libHtml.includes('<span class="chip">新增</span>') && libHtml.includes('<span class="chip">更新</span>')
+      && libHtml.includes('新增 1') && libHtml.includes('更新 1') && libHtml.includes('未变 1') && libHtml.includes('跳过 1')
+      && libHtml.includes('扩展名不在白名单') && libHtml.includes('确认导入 2 篇')
+      && !libHtml.includes('旧笔记'),
+    libHtml.includes('确认导入 2 篇') ? 'plan-rendered' : 'no-plan');
+  dirInput.value = 'D:/另一个目录';
+  const beforeBadConfirm = requests.length;
+  await P.libraryConfirmImport();
+  check('LIB-7 预览后目录被改 → 拒绝导入且不发确认请求（必须对新目录重新扫描）',
+    P.state.libraryPlan !== null
+      && !requests.slice(beforeBadConfirm).some((r) => r.method === 'POST' && r.url.includes('/import/confirm')),
+    'plan=' + (P.state.libraryPlan ? 'kept' : 'lost'));
+  dirInput.value = 'D:/写作资料/';
+  const beforeConfirm = requests.length;
+  await P.libraryConfirmImport();
+  const confirmReq = requests.slice(beforeConfirm).find((r) => r.method === 'POST' && r.url.includes('/import/confirm'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-7b 「确认导入」先经作者确认框，再 POST /import/confirm；结果卡给出写入/未变/异步索引说明',
+    confirmCalls === 1 && !!confirmReq && JSON.parse(String(confirmReq.body)).dir === 'D:/写作资料/'
+      && libHtml.includes('已写入 2') && libHtml.includes('未变 1') && libHtml.includes('异步索引')
+      && libraryStub.docs.length === 3,
+    'confirmCalls=' + confirmCalls + ' docs=' + libraryStub.docs.length);
+
+  // 开关：作者动作，PUT 按作品；界面状态以服务端回读为准
+  const beforeToggle = requests.length;
+  await P.handleAction('library-toggle', { dataset: { enabled: '1' } });
+  const putReq = requests.slice(beforeToggle).find((r) => r.method === 'PUT' && r.url.includes('/api/novel/library/enabled'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-8 分派 library-toggle = PUT /novel/library/enabled（带 work_id），开启后以服务端回读显示「已开启」',
+    !!putReq && JSON.parse(String(putReq.body)).work_id === 1 && JSON.parse(String(putReq.body)).enabled === true
+      && libraryStub.enabled === true && libHtml.includes('已开启'),
+    putReq ? String(putReq.body) : 'no-put');
+
+  // 删除边界：默认只标记缺失；确认框取消则什么都不删；确认才带 confirm=1
+  const beforeMark = requests.length;
+  await P.libraryMarkMissing(42);
+  const markReq = requests.slice(beforeMark).find((r) => r.method === 'DELETE' && r.url.includes('/api/novel/library/doc/42'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-9 「标记缺失」= DELETE 不带 confirm=1（记忆库文件与登记行都不删），列表随服务端状态刷新',
+    !!markReq && !markReq.url.includes('confirm=1')
+      && (libraryStub.docs.find((d) => d.id === 42) || {}).status === 'marked_missing'
+      && !libHtml.includes('短句范例') && libHtml.includes('标记缺失 1'),
+    markReq ? markReq.url : 'no-delete');
+  sandbox.confirm = () => { confirmCalls += 1; return false; };
+  const beforeAbort = requests.length;
+  await P.libraryDeleteDoc(41);
+  check('LIB-9b 「确认删除」点取消 → 不发删除请求（登记行与记忆库文件都不动）',
+    confirmCalls === 2 && !requests.slice(beforeAbort).some((r) => r.method === 'DELETE'),
+    'confirmCalls=' + confirmCalls);
+  sandbox.confirm = () => { confirmCalls += 1; return true; };
+  const beforeDel = requests.length;
+  await P.handleAction('library-delete', { dataset: { id: '41' } });
+  const delReq = requests.slice(beforeDel).find((r) => r.method === 'DELETE' && r.url.includes('/api/novel/library/doc/41'));
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-9c 分派 library-delete：确认后 DELETE 带 confirm=1，登记行随服务端回读消失',
+    confirmCalls === 3 && !!delReq && delReq.url.includes('confirm=1')
+      && !libraryStub.docs.some((d) => d.id === 41) && !libHtml.includes('潮汐会的记账规矩'),
+    delReq ? delReq.url : 'no-delete');
+
+  // 刷新：重取服务端状态（不是本地缓存回放）
+  P.state.libraryLoaded = true; P.state.library = { ok: true, summary: {}, docs: [] };
+  const beforeRefresh = requests.length;
+  await P.handleAction('library-refresh', { dataset: {} });
+  check('LIB-10 分派 library-refresh = 强制重取 GET /novel/library/status（刷新后以服务端最新状态渲染）',
+    requests.slice(beforeRefresh).some((r) => r.method === 'GET' && r.url.includes('/api/novel/library/status'))
+      && (((P.state.library || {}).docs) || []).length === libraryStub.docs.filter((d) => d.status === 'active').length,
+    'docs=' + ((((P.state.library || {}).docs) || []).length));
+
+  // 记忆库总闸关闭：如实说明能做什么、不能做什么（不假装能导入 / 删除）
+  libraryStub.ov.disabled = true; P.state.libraryLoaded = false;
+  await P.render();
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-11 记忆库总闸关闭时如实说明：可预览 / 关键词兜底，但确认导入与删除会被拒绝',
+    libHtml.includes('记忆库总闸已关闭') && libHtml.includes('确认导入与删除会被拒绝'));
+  libraryStub.ov.disabled = false;
+
+  // 旧服务端（没有该接口）：如实显示不可用，不假装有资料库、不抛错
+  P.state.library = null; P.state.libraryLoaded = true;
+  await P.render();
+  libHtml = String(containers['#content'].innerHTML);
+  check('LIB-11b 旧服务端不提供该接口时如实提示重启，而不是空列表 / 报错',
+    libHtml.includes('当前服务端不提供该接口') && libHtml.includes('重启 Novel Studio 后可用'));
+
+  registered.delete('#library-q');
+  registered.delete('#library-dir-input');
+  sandbox.confirm = savedConfirm;
+  Object.assign(P.state, savedLibState);
+  libraryStub.enabled = savedLibStub.enabled;
+  libraryStub.ov = savedLibStub.ov;
+  libraryStub.docs = savedLibStub.docs;
+  libraryStub.docReads = savedLibStub.docReads;
+}
+// --- R08 长正文：目标正文不再被 slice，分段处理必须有覆盖证明 ---
+{
+  const savedR08State = {
+    longTextSettings: P.state.longTextSettings, longTextRunner: P.state.longTextRunner,
+    longTextCancel: P.state.longTextCancel, longTextJobIds: P.state.longTextJobIds
+  };
+  const savedR08Store = sandbox.localStorage.getItem('ns_long_text_run');
+  const fnBody = (name) => {
+    const m = src.match(new RegExp('function ' + name + '\\([^)]*\\)[\\s\\S]*?\\n}'));
+    return m ? m[0] : '';
+  };
+  const targets = ['buildAIPolishMessages', 'buildAIExpandMessages', 'buildAIReviewPrompt', 'buildAIRevisionPrompt', 'buildAIRevisionPatchPrompt'];
+  check('58n 五个目标正文入口都不再 slice(0, 6000/12000)', targets.every((n) => fnBody(n) && !/slice\(0,\s*(6000|12000)\)/.test(fnBody(n))),
+    targets.filter((n) => !fnBody(n) || /slice\(0,\s*(6000|12000)\)/.test(fnBody(n))).join(','));
+  check('58o 邻接段被显式标成 context-only（不许改、不许回吐）',
+    fnBody('buildAIPolishMessages').includes('context-only')
+    && P.longTextContextBlock({ context_before: '上文一句', context_after: null }).includes('禁止修改'));
+  check('58p 长正文分段模块已加载（与 index.html 的脚本顺序一致）',
+    !!P.longTextEngine() && P.longTextEngine().VERSION === '1.0.0' && P.longTextEngine() === sandbox.NovelLongText);
+
+  const r08Chapter = Array.from({ length: 24 }, (_, i) => `第${i + 1}段：他推开门，雨点砸在台阶上。` + '这是一句用来凑长度的测试文本。'.repeat(4)).join('\n\n');
+  P.state.longTextSettings = { request_chars: 1500, output_reserve_chars: 400, protocol_chars: 100, max_segment_chars: 600, min_segment_chars: 100 };
+  const planShort = P.longTextPlanFor('polish', '短正文一段。', {});
+  const planLong = P.longTextPlanFor('polish', r08Chapter, {});
+  check('58q 短正文走单请求、超限正文自动分段（按最终序列化请求判定）',
+    planShort.mode === 'single' && planLong.mode === 'segmented' && planLong.segments.length > 3,
+    `${planShort.mode}/${planLong.mode}/${planLong.segments.length}`);
+  const ids1 = planLong.segments.map((x) => x.segment_id).join(',');
+  const ids2 = P.longTextPlanFor('polish', r08Chapter, {}).segments.map((x) => x.segment_id).join(',');
+  check('58r 片号由内容 hash 得出且稳定（不含随前文漂移的字符 offset）', ids1 === ids2 && /seg-[0-9a-f]{10}/.test(ids1));
+  const segMsg = P.buildAIPolishMessages(planLong.segments[1].target.text, '更口语化', { segment: planLong.segments[1], context: '作品背景' });
+  check('58s 单片消息含该片全文与片号，邻接段带 context-only 围栏',
+    segMsg[1].content.includes(planLong.segments[1].target.text) && segMsg[1].content.includes(planLong.segments[1].segment_id)
+    && segMsg[1].content.includes('context-only') && segMsg[1].content.includes('禁止修改'));
+
+  // 端到端（注入确定性 runner，不打电话）：跑完整章 → 覆盖清单通过 → 合并
+  const calls = [];
+  P.state.longTextRunner = async ({ segment }) => { calls.push(segment.segment_id); return segment.target.text + '（分段处理）'; };
+  const run = await P.longTextRunTask('polish', { text: r08Chapter, instruction: '', chapterId: 107, currentText: () => r08Chapter });
+  check('58t 分段跑完整章：每片恰好一次、覆盖清单通过、可合并',
+    run.mode === 'segmented' && calls.length === planLong.segments.length && new Set(calls).size === calls.length
+    && run.manifest.ok === true && typeof run.merged === 'string' && run.merged.split('（分段处理）').length - 1 === planLong.segments.length,
+    `calls=${calls.length}/${planLong.segments.length} ok=${run.manifest && run.manifest.ok}`);
+  check('58u 状态摘要含原文档位/片数/覆盖结论（UI 显示处理到哪儿）',
+    run.statusHtml.includes('原文版本') && run.statusHtml.includes('覆盖') && run.statusHtml.includes('结论') && run.statusHtml.includes(String(planLong.segments.length)));
+
+  // 部分失败：不合并、失败片点名；续跑只补失败片
+  const calls2 = [];
+  let failOnce = true;
+  P.state.longTextRunner = async ({ segment }) => {
+    calls2.push(segment.segment_id);
+    if (segment.segment_id === planLong.segments[2].segment_id && failOnce) { failOnce = false; throw new Error('模拟网络失败'); }
+    return segment.target.text + '（分段处理）';
+  };
+  const runFail = await P.longTextRunTask('polish', { text: r08Chapter, instruction: '', chapterId: 108, currentText: () => r08Chapter });
+  check('58v 单片刻失败 → 不合并（merged=null），失败片可见并可点名',
+    runFail.merged === null && runFail.resume.rerun.includes(planLong.segments[2].segment_id) && runFail.statusHtml.includes('失败'));
+  const callsBefore = calls2.length;
+  const runResume = await P.longTextRunTask('polish', { text: r08Chapter, instruction: '', chapterId: 108, currentText: () => r08Chapter });
+  check('58w 续跑只补失败片（已成功且源版本一致的片不重复调用）',
+    calls2.length === callsBefore + 1 && calls2[calls2.length - 1] === planLong.segments[2].segment_id
+    && runResume.manifest.ok === true && runResume.merged !== null);
+
+  // 越界拒绝
+  P.state.longTextRunner = async ({ segment }) => (segment.context_before ? segment.context_before : segment.target.text + '（改）');
+  const runCtx = await P.longTextRunTask('polish', { text: r08Chapter, instruction: '', chapterId: 109, currentText: () => r08Chapter });
+  check('58x 模型回吐邻接段 → 判越界（violation）且拒绝合并', runCtx.merged === null && runCtx.manifest.violations.length >= 1);
+
+  // 源版本在处理中被作者改动
+  P.state.longTextRunner = async ({ segment }) => segment.target.text + '（改）';
+  const runStale = await P.longTextRunTask('polish', { text: r08Chapter, instruction: '', chapterId: 110, currentText: () => r08Chapter + '\n\n作者又加了一段。' });
+  check('58y 处理中源正文被改动 → 候选过期（stale）且拒绝合并', runStale.merged === null && runStale.manifest.stale === true && runStale.statusHtml.includes('过期'));
+
+  // 分段审稿：报告合并后每条问题带片号
+  P.state.longTextRunner = async ({ segment }) => JSON.stringify({ summary: `第${segment.ordinal}片总评`, issues: [{ text: '节奏偏慢' }], strengths: [{ text: '对白自然' }] });
+  const runReview = await P.longTextRunTask('review', { text: r08Chapter, chapterId: 111, currentText: () => r08Chapter });
+  check('58z 分段审稿：报告按片合并、每条问题带片号，形态与单请求一致',
+    runReview.mode === 'segmented' && !!runReview.report && runReview.report.issues.length === planLong.segments.length
+    && typeof runReview.report.issues[0] === 'string' && runReview.report.issues[0].includes(planLong.segments[0].segment_id));
+
+  // 取消：片间生效、不产生可合并结果
+  let cancelCalls = 0;
+  P.state.longTextRunner = async ({ segment }) => { cancelCalls += 1; if (cancelCalls === 2) P.longTextCancelRun(); return segment.target.text + '（改）'; };
+  const runCancel = await P.longTextRunTask('polish', { text: r08Chapter, instruction: '', chapterId: 112, currentText: () => r08Chapter });
+  check('58aa 取消在片间生效：不再继续调用，且不产生可合并结果', runCancel.cancelled === true && runCancel.merged === null && cancelCalls === 2);
+
+  // 状态摘要必须转义
+  const escHtml = P.longTextStatusHtml({ plan: planLong, results: [], manifest: { ok: false, segments: [], unresolved: ['<script>alert(1)</script>'] } });
+  check('58ab 状态摘要按 HTML 转义（正文/模型文本不会变成脚本）', escHtml.includes('&lt;script&gt;') && !escHtml.includes('<script>'));
+  check('58ac 分段模块缺失时硬失败，拒绝用截断方式处理整章',
+    /长正文分段模块未加载/.test(src) && /拒绝用截断方式处理整章/.test(src));
+
+  // 单请求路径（不超限，不分段）：修稿解析不得依赖 segment；三类"调用方自己跑单请求"的任务
+  // 不得在模块内先跑一遍再让调用方跑第二遍（同一份钱花两次）。
+  const revBase = '雨点敲在窗上。陈默数着第七次雷声。';
+  const revJSON = JSON.stringify({ patches: [{ issue: 1, anchor: revBase, revised: revBase + '他按住口袋里的芯片。' }] });
+  let revParseErr = null; let revParsed = null;
+  try { revParsed = P.longTextKindMeta('revision_patch', { text: revBase, issues: ['补动作'] }).parse(null, revJSON); }
+  catch (e) { revParseErr = e; }
+  check('58ad 修稿单请求路径可直接解析补丁（解析不得要求 segment）',
+    !revParseErr && !!revParsed && revParsed.extra && revParsed.extra.applied === 1 && String(revParsed.output).includes('他按住口袋里的芯片'),
+    revParseErr ? String(revParseErr.message) : JSON.stringify(revParsed && revParsed.extra));
+
+  const singleCalls = [];
+  P.state.longTextRunner = async ({ segment, kind }) => { singleCalls.push(kind + ':' + (segment ? segment.segment_id : 'single')); return '模块内单请求结果'; };
+  let singleRev = null; let singleReview = null; let singleErr = null;
+  try {
+    singleRev = await P.longTextRunTask('revision_patch', { text: revBase, chapterId: 113, issues: ['补动作'], currentText: () => revBase, singleRunByCaller: true });
+    singleReview = await P.longTextRunTask('review', { text: revBase, chapterId: 113, currentText: () => revBase, singleRunByCaller: true });
+  } catch (e) { singleErr = e; }
+  check('58ae 单请求路径交回调用方执行：模块内不再预跑一次模型（避免一次任务双倍计费）',
+    !singleErr && !!singleRev && !!singleReview && singleRev.mode === 'single' && singleReview.mode === 'single' && singleCalls.length === 0 && singleRev.merged === null && singleReview.merged === null,
+    singleErr ? String(singleErr.message) : 'calls=' + singleCalls.length);
+  const singlePolish = await P.longTextRunTask('polish', { text: '短正文。', instruction: '', chapterId: 114, currentText: () => '短正文。' });
+  check('58af 其它任务（润色）单请求路径行为不变：模块内执行并返回结果',
+    singlePolish.mode === 'single' && singlePolish.merged === '模块内单请求结果' && singleCalls.length === 1);
+
+  P.state.longTextSettings = savedR08State.longTextSettings;
+  P.state.longTextRunner = savedR08State.longTextRunner;
+  P.state.longTextCancel = savedR08State.longTextCancel;
+  P.state.longTextJobIds = savedR08State.longTextJobIds;
+  if (savedR08Store === null) sandbox.localStorage.removeItem('ns_long_text_run'); else sandbox.localStorage.setItem('ns_long_text_run', savedR08Store);
+}
+
 check('59 未知帮助 key 不产生空气泡', P.tooltipHtmlFor({ classList: { contains: () => false }, dataset: { help: 'nope' } }) === '');
 check('60 词条链接没有缓存时不产生空气泡', P.tooltipHtmlFor({ classList: { contains: (c) => c === 'term-link' }, dataset: { termId: '999999' } }) === '');
 
@@ -562,8 +1804,27 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   const okOut = P.tryApplyRevisionOutput(strict, article);
   check('87 tryApplyRevisionOutput：补丁可用时返回 ok', !!okOut && okOut.ok === true && okOut.applied.length === 2);
   check('88 解析不出补丁时返回 null（调用方回退整章重写）', P.tryApplyRevisionOutput('这不是 JSON', article) === null);
-  check('89 空补丁清单也走回退（不假装成功）', P.tryApplyRevisionOutput('{"patches":[]}', article) === null);
+  // ⚠️ 2026-09-27 规格修正（R02.3）：空补丁是**合法的"无修改"**，不是解析失败。
+  //    旧行为（返回 null → 调用方回退整章重写）会让一次"没有要改的"任务再花一次钱，
+  //    还可能把整章改坏。现在的语义：ok + noop + 原文原样返回，调用方据此收尾。
+  check('89 空补丁清单 = 合法"无修改"（ok+noop，不回退整章重写）', (() => {
+    const r = P.tryApplyRevisionOutput('{"patches":[]}', article);
+    return !!r && r.ok === true && r.noop === true && r.text === article && r.applied.length === 0 && r.unresolved.length === 0;
+  })());
   check('90 补丁都定位不到时 ok=false（调用方据此回退）', (() => { const r = P.tryApplyRevisionOutput(JSON.stringify({ patches: [{ anchor: '不存在的段落。', revised: 'x' }] }), article); return !!r && r.ok === false && r.unresolved.length === 1; })());
+
+  // R02.3（2026-09-27）：唯一性与重叠必须显式失败，不能静默改错段/吞补丁。
+  const dupArticle = ['相同的话。', '第二段：别的。', '相同的话。'].join('\n\n');
+  const dup = P.applyRevisionPatches(dupArticle, [{ issue: 1, anchor: '相同的话。', revised: '改后。' }]);
+  check('90a 重复 anchor（逐字相同出现两段）拒绝改动并说明', dup.applied.length === 0 && dup.unresolved.length === 1 && /重复 anchor/.test(dup.unresolved[0].reason) && dup.text === dupArticle, JSON.stringify(dup.unresolved[0] && dup.unresolved[0].reason));
+  const ambArticle = ['甲：他摸到一枚芯片，指尖一缩。', '乙：他摸到一枚芯片，指尖一缩，然后又缩了一下。'].join('\n\n');
+  const amb = P.applyRevisionPatches(ambArticle, [{ issue: 2, anchor: '他摸到一枚芯片，指尖一缩', revised: '他摸到两枚芯片。' }]);
+  check('90b 包含型 anchor 命中多段时拒绝（非唯一）', amb.applied.length === 0 && /非唯一/.test(amb.unresolved[0].reason), JSON.stringify(amb.unresolved[0] && amb.unresolved[0].reason));
+  const overlap = P.applyRevisionPatches(article, [
+    { issue: 1, anchor: '第一段：陈默走进雨里。', revised: '第一段：改甲。' },
+    { issue: 2, anchor: '第一段：陈默走进雨里。', revised: '第一段：改乙。' },
+  ]);
+  check('90c 重叠补丁（同段两条）显式拒绝第二条、保留第一条', overlap.applied.length === 1 && overlap.unresolved.length === 1 && /重叠/.test(overlap.unresolved[0].reason) && overlap.text.includes('改甲。') && !overlap.text.includes('改乙。'), JSON.stringify(overlap.unresolved[0] && overlap.unresolved[0].reason));
 
   // 提示词契约：必须要求 JSON 补丁、只改相关段落、anchor 逐字
   const prompt = P.buildAIRevisionPatchPrompt(article, ['问题一', '问题二']);
@@ -713,20 +1974,67 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       api: sandbox.api, toast: sandbox.toast, applySelectedProposals: sandbox.applySelectedProposals,
       loadWorkData: sandbox.loadWorkData, render: sandbox.render, closeModal: sandbox.closeModal
     };
-    sandbox.api = async (url, opts = {}) => { calls.push({ url: String(url), body: opts.body }); return { ok: true }; };
+    // R02.3：合并现在会先取当前正文比对指纹（原文被改就拒绝）。stub 必须回出与预览底稿一致的正文。
+    sandbox.api = async (url, opts = {}) => {
+      calls.push({ url: String(url), body: opts.body });
+      if (String(url).includes('/chapters/107')) return { id: 107, content: '甲。' };
+      return { ok: true };
+    };
     sandbox.toast = (m) => { msgs.push(String(m)); };
     sandbox.applySelectedProposals = () => {};
     sandbox.loadWorkData = async () => {};
     sandbox.render = async () => {};
     sandbox.closeModal = () => {};
-    P.state.pendingReviewDiff = { newText: '乙。', chapterId: 107 };
+    // 差异预览（带生成时原文指纹）——合并闸门要能核到这一版底稿
+    // R03：结果弹窗关闭时固化下来的勾选集合（真实流程里先于差异预览产生），
+    // 差异预览会把它固化成「本次合并要采纳的提案」。
+    P.state.pendingProposalSelection = { workId: 1, ids: [71, 72] };
+    const realOpen2 = sandbox.openModal;
+    sandbox.openModal = () => {};
+    P.showReviewDiff('甲。', '乙。', { applied: 1, chapterId: 107 });
+    sandbox.openModal = realOpen2;
+    // R03：合并走 /novel/adopt 的整次采纳（正文 + 勾选提案同一事务），不再是 chapter_save + 另发提案请求
     await P.mergeReviewDiff();
     Object.assign(sandbox, saved);
-    const mergeCall = calls.find((c) => c.url.includes('/novel/chapter_save'));
-    check('107g 合并写回的是修稿所属的那一章（不是当前打开的章）',
-      !!mergeCall && Number(mergeCall.body && mergeCall.body.chapter_id) === 107,
+    const mergeCall = calls.find((c) => c.url.includes('/novel/adopt'));
+    check('107g 合并走整次采纳且写回的是修稿所属的那一章（不是当前打开的章）',
+      !!mergeCall && Number(mergeCall.body && mergeCall.body.chapter_id) === 107
+        && String(mergeCall.body.content || '').includes('乙'),
       JSON.stringify(mergeCall && mergeCall.body && mergeCall.body.chapter_id));
+    check('107g2 整次采纳携带勾选提案 id 与稳定的幂等键 operation_key',
+      !!mergeCall && Array.isArray(mergeCall.body.legacy_proposal_ids)
+        && mergeCall.body.legacy_proposal_ids.join(',') === '71,72'
+        && typeof mergeCall.body.operation_key === 'string' && mergeCall.body.operation_key.length >= 8,
+      JSON.stringify(mergeCall && mergeCall.body && { ids: mergeCall.body.legacy_proposal_ids, key: mergeCall.body.operation_key }));
+    check('107g3 不再出现"先正文后提案"的两次请求（旧路径必须消失）',
+      !calls.some((c) => c.url.includes('/novel/chapter_save')) && !calls.some((c) => c.url.includes('/novel/proposals/apply')),
+      calls.map((c) => c.url).join(','));
     check('107h 跨章合并后明确告知写到了哪一章', msgs.some((m) => m.includes('第107章')), msgs.join(' | ').slice(0, 70));
+
+    // R02.3：预览期间原文被改 → 拒绝合并（绝不覆盖更新的正文）
+    {
+      const calls2 = [];
+      const msgs2 = [];
+      const saved2 = { api: sandbox.api, toast: sandbox.toast, closeModal: sandbox.closeModal, loadWorkData: sandbox.loadWorkData, render: sandbox.render, applySelectedProposals: sandbox.applySelectedProposals, openModal: sandbox.openModal };
+      sandbox.api = async (url, opts = {}) => {
+        calls2.push({ url: String(url), body: opts.body });
+        if (String(url).includes('/chapters/107')) return { id: 107, content: '甲。作者又改过了。' };
+        return { ok: true };
+      };
+      sandbox.toast = (m) => { msgs2.push(String(m)); };
+      sandbox.closeModal = () => {};
+      sandbox.loadWorkData = async () => {};
+      sandbox.render = async () => {};
+      sandbox.applySelectedProposals = () => {};
+      sandbox.openModal = () => {};
+      P.state.currentChapterId = 108;
+      P.showReviewDiff('甲。', '乙。', { applied: 1, chapterId: 107 });
+      await P.mergeReviewDiff();
+      Object.assign(sandbox, saved2);
+      check('107h2 原文在预览后被修改 → 拒绝合并且不写库',
+        !calls2.some((c) => c.url.includes('/novel/adopt')) && msgs2.some((m) => /拒绝合并/.test(m)),
+        msgs2.join(' | ').slice(0, 90));
+    }
 
     // 底稿按章取：目标章 ≠ 当前章 → 取那一章已保存的正文；相等 → 用编辑器（不额外请求）
     const editor = mkEl('editor-content');

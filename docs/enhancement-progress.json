@@ -1,0 +1,536 @@
+{
+  "$comment": "Novel Studio R01—R12 增强任务的机器可读进度账本（2026-09-27 收尾版）。状态词：not_started / in_progress / implemented / tested / blocked / failed；另有 verdict 字段用任务书词汇 PASS/FAIL/BLOCKED/SKIP。证据等级：none / code_confirmed / runtime_verified。任何会话中断后从这里 + git diff + 测试证据恢复状态，不凭记忆。",
+  "task": "novel_studio_codex_full_delivery_prompt_v2",
+  "repo": "bbaz123/novel-studio",
+  "branch": "refactor/p0-p6",
+  "head_at_start": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+  "head_at_finish": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+  "working_tree_at_start": "clean",
+  "started_at": "2026-09-27",
+  "finished_at": "2026-09-27",
+  "committed": false,
+  "paid_model_calls_this_task": 8,
+  "paid_call_authorization": "用户 2026-09-27 显式授权「给予预算2元以内」；调用前预先记录硬上限（探针：调用 ≤ 8、单次 max_tokens ≤ 512、输出 ≤ 30000、总 tokens ≤ 120000、超时 120s、重试 0 次）；实付口径：8 次调用 ≈ ¥0.035（保守上限单价自检，账单以 provider 为准）",
+  "paid_runs": [
+    {
+      "name": "真实模型能力探针（6 类；/api/ai/write 与 /api/ai/test 直连通道）",
+      "calls": 7,
+      "tokens": 2226,
+      "estimate_cny": 0.0129,
+      "result": "7/0（connect_test、edit_deai、review_semantic、style_profile、branch_deduction、contract_suggestion、import_extract）",
+      "evidence": ".verify-enh/live-capabilities-2026-09-27.log、.verify-enh/live-capabilities-2026-09-27.json"
+    },
+    {
+      "name": "P6 真实写作整链冒烟（/api/harness/run → 真 dsh → 真 DeepSeek → 临时作品）",
+      "calls": 1,
+      "tokens": 10591,
+      "estimate_cny": 0.0222,
+      "result": "7/0（158 字正文；临时作品已删）",
+      "evidence": ".verify-enh/smoke-chain-2026-09-27.log、.verify-enh/smoke-chain-2026-09-27.usage.json"
+    }
+  ],
+  "delivery_verdict": "离线全部 PASS（45 条 CI + 前端 260 断言 + 隔离实例全量验收）；真实 DeepSeek 实机验收已执行（8 次调用，7/0 + 7/0，≈¥0.035 ≤ 授权 ¥2，见验收报告 §6.2）；真实 OV（1933 未监听）与浏览器 E2E 记 BLOCKED；1 条先于本任务存在的真实数据验收保持 FAIL（连续性预检漏报 system_frequency，见 docs/enhancement-acceptance.md §6.1）",
+  "baseline_commands": [
+    {
+      "cmd": "node scripts/ci-offline-checks.mjs",
+      "exit": 0,
+      "result": "32/32 pass（开工基线）",
+      "evidence": ".verify-enh/ci-offline-baseline.log"
+    }
+  ],
+  "final_commands": [
+    {
+      "cmd": "node scripts/ci-offline-checks.mjs",
+      "exit": 0,
+      "result": "45/45 pass，零计费",
+      "evidence": ".verify-enh/ci-offline-final.log"
+    },
+    {
+      "cmd": "node frontend-test.mjs",
+      "exit": 0,
+      "result": "ALL PASS（260 条断言）",
+      "evidence": ".verify-enh/frontend-run7.log"
+    },
+    {
+      "cmd": "node .p1-baseline/test-host-contract.mjs",
+      "exit": 0,
+      "result": "28/0，契约 1.10.0",
+      "evidence": "现场输出（见验收报告 §0）"
+    },
+    {
+      "cmd": "node .p1-baseline/verify-plugin-tools.mjs",
+      "exit": 0,
+      "result": "25 工具 / 68 端点 / 0.14.0 一致",
+      "evidence": "现场输出（见验收报告 §0）"
+    },
+    {
+      "cmd": "node .p1-baseline/probe-harness-tool-loop.mjs",
+      "exit": 0,
+      "result": "7/0，真 spawn dsh，零计费",
+      "evidence": ".verify-enh/r01-harness-tool-loop-run2.log"
+    },
+    {
+      "cmd": "node .p1-baseline/test-migration-idempotent.mjs",
+      "exit": 0,
+      "result": "13/0",
+      "evidence": ".verify-enh/migration-idempotent.log"
+    },
+    {
+      "cmd": "node scripts/ci-isolated-run.mjs --port 3739 -- node .p1-baseline/verify-all.mjs --base http://127.0.0.1:3739",
+      "exit": 1,
+      "result": "阶段映射修复前：47 通过 / 2 未通过 / 6 跳过；修复后复跑：48 通过 / 1 未通过 / 6 跳过（唯一未通过 = 先于本任务的连续性真实数据对照）",
+      "evidence": ".verify-enh/verify-all-final.log、.verify-enh/verify-all-final2.log"
+    },
+    {
+      "cmd": "node .p1-baseline/verify-continuity-guard-on-real-data.mjs",
+      "exit": 1,
+      "result": "命中 4 / 漏报 1（system_frequency@第五章）/ 误报 0（先于本任务存在）",
+      "evidence": ".verify-enh/continuity-real-final.log"
+    },
+    {
+      "cmd": "node .p1-baseline/probe-live-capabilities.mjs",
+      "exit": 0,
+      "result": "7/0（真实 DeepSeek 六类能力；7 次调用 / 2226 tokens / ≈¥0.013）",
+      "evidence": ".verify-enh/live-capabilities-2026-09-27.log、.verify-enh/live-capabilities-2026-09-27.json"
+    },
+    {
+      "cmd": "NOVELSTUDIO_SMOKE_ALLOW_BILLING=1 node scripts/ci-isolated-run.mjs --port <空闲端口> --data %TEMP%\\ns-smoke-chain-<随机> -- node .p6-cutover/smoke.mjs --base http://127.0.0.1:<端口>",
+      "exit": 0,
+      "result": "7/0（真 dsh → 真 DeepSeek → 临时作品；1 次调用 / 10591 tokens / ≈¥0.022；临时作品已删）",
+      "evidence": ".verify-enh/smoke-chain-2026-09-27.log、.verify-enh/smoke-chain-2026-09-27.usage.json"
+    }
+  ],
+  "items": {
+    "R01": {
+      "title": "DSH 插件实际加载、安装与能力对账",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "harness-plugins/novel-writing/plugin.json",
+        "harness-plugins/novel-writing/package.json",
+        "harness-plugins/novel-writing/novel-tools.mjs",
+        "docs/host-contract.v1.json",
+        "docs/host-contract.md",
+        "server.js",
+        "scripts/ci-offline-checks.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/probe-harness-tool-loop.mjs",
+        "node .p1-baseline/verify-plugin-tools.mjs",
+        "node .p1-baseline/test-host-contract.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/r01-harness-tool-loop-run2.log"
+      ],
+      "remaining": [
+        "无（§17.4 已补验：真实写作整链冒烟 7/0；工具循环形态由零计费假端点探针 7/0 覆盖）"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "真 spawn 隔离 DSH + 本地假模型端点；bundle 0.14.0（三处一致）/ 25 工具 / 68 端点；安装位是 Junction 指回仓库（只读核验）"
+    },
+    "R02": {
+      "title": "数据与工具边界修复（非法 action / 作者批准 / 补丁安全）",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "harness-plugins/novel-writing/novel-tools.mjs",
+        "server.js",
+        "db.js",
+        "ai/story-state/approval.mjs",
+        "public/app.js",
+        "frontend-test.mjs",
+        ".p1-baseline/test-agent-write-boundary.mjs",
+        ".p1-baseline/test-approval-boundary.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-agent-write-boundary.mjs",
+        "node .p1-baseline/test-approval-boundary.mjs",
+        "node frontend-test.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/boundary.log",
+        ".verify-enh/approval-boundary-run2.log"
+      ],
+      "remaining": [],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "白名单 dispatch 24/0（含阴性对照）；审批边界 50/0（单次消费/过期/撤销/基线/跨书/事务原子）；补丁硬化由 frontend 89/90b/90c/107i 钉住"
+    },
+    "R03": {
+      "title": "正文＋选中提案协同采纳（原子事务/幂等/outbox）",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "server.js",
+        "db.js",
+        "ai/story-state/store.mjs",
+        ".p1-baseline/test-adopt-atomic.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-adopt-atomic.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/adopt-atomic-run2.log"
+      ],
+      "remaining": [],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "单 SQLite 事务；幂等键同键同载荷回放/不同载荷 409；中途注入失败一起回滚；OV 失败正文保留、outbox 重启续跑 attempts 递增"
+    },
+    "R04": {
+      "title": "OpenViking 两条接入链与三类数据边界",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/openviking/recall-meta.mjs",
+        "openviking.js",
+        "openviking-sync.js",
+        "server.js",
+        ".p1-baseline/test-ov-recall-boundary.mjs",
+        "docs/openviking-call-map.md"
+      ],
+      "commands": [
+        "node .p1-baseline/test-ov-recall-boundary.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/ov-recall-boundary.log"
+      ],
+      "remaining": [
+        "真实 OV 双闭环（BLOCKED：1933 未监听 + namespace 隔离无法证明 + 可能触发付费；见 docs/openviking-call-map.md）"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "fail-closed 四判据 + 范围证明；38/0（跨书/未来章/候选/布局不明/rebuild 范围证明失败 → 拒绝执行零删除）"
+    },
+    "R05": {
+      "title": "最终模型上下文可追踪（附加式贡献记录）",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/context/contributions.mjs",
+        "server.js",
+        ".p1-baseline/test-context-contributions.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-context-contributions.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/context-contributions.log"
+      ],
+      "remaining": [],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "只读端点 GET /api/novel/context/contributions 已纳入契约声明面（68 条之一）；27/0：来源/hash/长度/去重/省略原因、不记完整正文与密钥、默认行为不变"
+    },
+    "R06": {
+      "title": "创作上下文改名与首页借鉴页面",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "code_confirmed",
+      "files_changed": [
+        "public/app.js",
+        "public/index.html",
+        "public/styles.css",
+        "README.md",
+        "docs/新手入门.md",
+        "THIRD-PARTY-NOTICES.md"
+      ],
+      "commands": [
+        "node frontend-test.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/frontend-run7.log"
+      ],
+      "remaining": [
+        "真实浏览器点击流程（§17.2，BLOCKED：无浏览器驱动）"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "用户面统一「创作上下文」并保留 sillytavern/creation_context 兼容 alias；致谢页三类关系 + noopener + 许可核验；58a—58g"
+    },
+    "R07": {
+      "title": "小说编辑、Humanizer 与审稿增强",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/editing/rules.mjs",
+        "ai/editing/scan.mjs",
+        "ai/context/layers.mjs",
+        "server.js",
+        "public/app.js",
+        ".p1-baseline/test-editing-rules.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-editing-rules.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/editing-rules.log"
+      ],
+      "remaining": [
+        "三档编辑/语义审稿的真实模型有限验证已做（edit_deai / review_semantic 通过，见验收报告 §6.2）；文学质量人工评阅未做（主观项）"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "门控层 edit_rules 默认关闭逐字节一致；规则真的进请求并进 R05 贡献记录；模型侧 PUT 403；45/0"
+    },
+    "R08": {
+      "title": "完整长正文处理",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "public/long-text.js",
+        "public/app.js",
+        ".p1-baseline/test-long-text.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-long-text.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/long-text.log"
+      ],
+      "remaining": [
+        "未执行：真实模型 4 万字级长章端到端成文（本次预算优先用于六类能力探针与整链冒烟；离线 58/0 覆盖分段/覆盖/续跑机制）"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "移除 6000/12000 字切片；分段 + 覆盖清单 + 续跑 + 取消语义；58/0（含尾部哨兵与邻接段不重复编辑）"
+    },
+    "R09": {
+      "title": "作者样文、文风档案与三级作者意图",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/style/store.mjs",
+        "ai/style/author-profile.mjs",
+        "db.js",
+        "server.js",
+        "public/app.js",
+        ".p1-baseline/test-author-style.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-author-style.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/author-style.log"
+      ],
+      "remaining": [
+        "已补验：style_profile 真实模型探针通过（引文可回溯，见 §6.2）；长样文风格的人工质量评阅不在自动验收范围"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "门控层 author_intent 默认关闭逐字节一致；样文不进 story_facts/事件/知识；52/0（上限/过期/证据预算/冲突呈现/模型侧只读）"
+    },
+    "R10": {
+      "title": "契约、知识边界与流程闭环增强",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/story-state/disclosure.mjs",
+        "ai/story-state/index.mjs",
+        "ai/story-state/store.mjs",
+        "db.js",
+        "server.js",
+        "public/app.js",
+        ".p1-baseline/test-disclosure.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-disclosure.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/r12-suite-counts.log"
+      ],
+      "remaining": [],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "只读披露派生端点携带指纹、按时点重算、失效重算；角色知识边界约束 POV 可见性；31/0；contract_suggestion 真实模型探针通过（must_facts ≥ 2 / red_lines ≥ 1，见 §6.2）"
+    },
+    "R11": {
+      "title": "剧情分支沙盘（2—5 候选）",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/branch/sandbox.mjs",
+        "ai/branch/store.mjs",
+        "db.js",
+        "server.js",
+        "public/app.js",
+        ".p1-baseline/test-branch-sandbox.mjs"
+      ],
+      "commands": [
+        "node .p1-baseline/test-branch-sandbox.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/r12-suite-counts.log"
+      ],
+      "remaining": [
+        "已补验：branch_deduction 真实模型探针通过（恰 2 个互异候选，见 §6.2）；推演内容的人工质量评阅不在自动验收范围"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "候选不进正典、采纳只写蓝图、stale 强制复核、取消恢复不重跑、模型侧采纳/丢弃 403；66/0"
+    },
+    "R12": {
+      "title": "导入后的 AI 状态重建",
+      "verdict": "PASS",
+      "status": "tested",
+      "evidence_level": "runtime_verified",
+      "files_changed": [
+        "ai/import/guard.mjs",
+        "ai/import/rebuild.mjs",
+        "ai/import/rebuild-store.mjs",
+        "zip-reader.mjs",
+        "db.js",
+        "server.js",
+        "public/app.js",
+        ".p1-baseline/test-import-guard.mjs",
+        ".p1-baseline/test-import-rebuild.mjs",
+        ".p1-baseline/test-migration-idempotent.mjs",
+        "scripts/ci-offline-checks.mjs",
+        "docs/enhancement-acceptance.md"
+      ],
+      "commands": [
+        "node .p1-baseline/test-import-guard.mjs",
+        "node .p1-baseline/test-import-rebuild.mjs",
+        "node .p1-baseline/test-migration-idempotent.mjs"
+      ],
+      "evidence_files": [
+        ".verify-enh/ci-offline-final.log",
+        ".verify-enh/migration-idempotent.log"
+      ],
+      "remaining": [
+        "已补验：import_extract 真实模型探针通过（实体/事件带可回溯证据；只用自造短文本，未上传真实书稿）；分批/断点/按批原子由离线 28/0 覆盖"
+      ],
+      "verified_head": "be38b17c09f632ee546026fffe2723c5a9b3a18c",
+      "note": "TXT/MD/EPUB 基线不倒退（EPUB 由 B1—B3 + 插件冒烟 §8i 双证）；30/0 + 28/0；迁移幂等 13/0；重建先是候选、按批原子确认"
+    }
+  },
+  "tests": {
+    "node scripts/ci-offline-checks.mjs": {
+      "result": "45/45 PASS",
+      "zero_paid": true,
+      "evidence": ".verify-enh/ci-offline-final.log"
+    },
+    "node frontend-test.mjs": {
+      "result": "ALL PASS（260 断言）",
+      "evidence": ".verify-enh/frontend-run7.log"
+    },
+    ".p1-baseline/test-agent-write-boundary.mjs": {
+      "result": "24/0",
+      "evidence": ".verify-enh/boundary.log"
+    },
+    ".p1-baseline/test-approval-boundary.mjs": {
+      "result": "50/0",
+      "evidence": ".verify-enh/approval-boundary-run2.log"
+    },
+    ".p1-baseline/test-adopt-atomic.mjs": {
+      "result": "36/0",
+      "evidence": ".verify-enh/adopt-atomic-run2.log"
+    },
+    ".p1-baseline/test-ov-recall-boundary.mjs": {
+      "result": "38/0",
+      "evidence": ".verify-enh/ov-recall-boundary.log"
+    },
+    ".p1-baseline/test-context-contributions.mjs": {
+      "result": "27/0",
+      "evidence": ".verify-enh/context-contributions.log"
+    },
+    ".p1-baseline/test-editing-rules.mjs": {
+      "result": "45/0",
+      "evidence": ".verify-enh/editing-rules.log"
+    },
+    ".p1-baseline/test-long-text.mjs": {
+      "result": "58/0",
+      "evidence": ".verify-enh/long-text.log"
+    },
+    ".p1-baseline/test-author-style.mjs": {
+      "result": "52/0",
+      "evidence": ".verify-enh/author-style.log"
+    },
+    ".p1-baseline/test-disclosure.mjs": {
+      "result": "31/0",
+      "evidence": ".verify-enh/r12-suite-counts.log"
+    },
+    ".p1-baseline/test-branch-sandbox.mjs": {
+      "result": "66/0",
+      "evidence": ".verify-enh/r12-suite-counts.log"
+    },
+    ".p1-baseline/test-import-guard.mjs": {
+      "result": "30/0",
+      "evidence": ".verify-enh/ci-offline-run15.log"
+    },
+    ".p1-baseline/test-import-rebuild.mjs": {
+      "result": "28/0",
+      "evidence": ".verify-enh/ci-offline-final.log"
+    },
+    ".p1-baseline/test-migration-idempotent.mjs": {
+      "result": "13/0",
+      "evidence": ".verify-enh/migration-idempotent.log"
+    },
+    ".p1-baseline/probe-harness-tool-loop.mjs": {
+      "result": "7/0（真 spawn dsh + 假端点，零计费）",
+      "evidence": ".verify-enh/r01-harness-tool-loop-run2.log"
+    },
+    ".p1-baseline/probe-live-capabilities.mjs": {
+      "result": "7/0（真实 DeepSeek，7 次调用，非零计费；见 paid_runs）",
+      "evidence": ".verify-enh/live-capabilities-2026-09-27.log、.verify-enh/live-capabilities-2026-09-27.json"
+    },
+    "P6 真实写作整链冒烟（.p6-cutover/smoke.mjs + ci-isolated-run）": {
+      "result": "7/0（真 dsh + 真 DeepSeek + 临时作品；1 次调用，非零计费；见 paid_runs）",
+      "evidence": ".verify-enh/smoke-chain-2026-09-27.log、.verify-enh/smoke-chain-2026-09-27.usage.json"
+    },
+    ".p1-baseline/test-host-contract.mjs": {
+      "result": "28/0（契约 1.10.0）",
+      "evidence": "现场输出"
+    },
+    ".p1-baseline/verify-plugin-tools.mjs": {
+      "result": "25 工具 / 68 端点 / 0.14.0 一致",
+      "evidence": "现场输出"
+    },
+    "node scripts/ci-isolated-run.mjs --port 3739 -- node .p1-baseline/verify-all.mjs --base http://127.0.0.1:3739": {
+      "result": "48/1/6（唯一未通过 = 先于本任务的连续性真实数据对照；见 .verify-enh/verify-all-final2.log）",
+      "evidence": ".verify-enh/verify-all-final.log、.verify-enh/verify-all-final2.log"
+    },
+    ".p1-baseline/verify-continuity-guard-on-real-data.mjs": {
+      "result": "FAIL — 命中 4 / 漏报 1（system_frequency@第五章）/ 误报 0；先于本任务存在",
+      "evidence": ".verify-enh/continuity-real-final.log"
+    }
+  },
+  "blocked_items": [
+    {
+      "item": "真实 OV 双闭环（§17.5）",
+      "reason": "127.0.0.1:1933 未监听（2026-09-27 复测 run2）；3737 未监听；namespace 隔离无法证明"
+    },
+    {
+      "item": "真实浏览器 E2E（§17.2）",
+      "reason": "环境无浏览器驱动；DOM 桩不冒充真浏览器"
+    }
+  ],
+  "skip_items": [
+    {
+      "item": "§18 prompt injection 专用红队用例",
+      "reason": "链路防线有独立测试，但无专门注入用例；真实模型侧本轮未做注入红队 live；不伪造"
+    },
+    {
+      "item": "真实 4 万字级长章端到端成文（R08）",
+      "reason": "本次实机预算优先用于 §17.4 六类能力探针与整链冒烟；离线 58/0 覆盖分段/覆盖清单/续跑/取消机制；如实记未执行"
+    },
+    {
+      "item": "verify-all 的 6 条跳过",
+      "reason": "缺活实例前置 / 会真 spawn dsh 或建真实任务（需显式授权）；跳过≠通过；其中整链冒烟已在本次单独执行（7/0）"
+    }
+  ],
+  "isolation": {
+    "temp_data_dirs": "全部测试使用 %TEMP% 下随机名（novel-studio-ci-* / ns-*）；真实 data/ 未写入",
+    "dsh_home": "写作任务按设计使用专用 home ~/.dsh-novel（novel bundle 安装位 = Junction 指回仓库；会话元数据写入其中，不改任何配置）；~/.dsh 未触碰",
+    "ov_namespace": "无（NOVELSTUDIO_OV_DISABLED=1 或本地 stub；未写入任何正式 OV namespace）",
+    "ports": [
+      "3739（verify-all 隔离实例）",
+      "2611（假 LLM 端点）",
+      "系统分配的空闲端口（实机探针/冒烟用；跑完即关，本次冒烟用 12115）"
+    ],
+    "real_db_access": "三处只读（host-contract D 用副本；verify-continuity-guard-on-real-data.mjs readOnly:true；probe-live-capabilities.mjs 只读第 1 行 api_configs 构造请求体），零写入",
+    "cleanup": "done — 今天创建的 6 个临时目录已删（含 ns-smoke-chain-c5db8dd6）；更早 3 个临时目录与 326 个脚手架文件已删；本轮另删遗留脚手架 .p1-baseline/.tmp-probe-apiconfig.cjs；2026-09-25 的先存遗留目录未动"
+  },
+  "user_pre_existing_changes": "开工时工作区干净（git status --porcelain 0 行）⇒ 当前全部未提交改动均为本任务产生，无需区分",
+  "commit_tag_push": "未执行（无 commit / tag / push / merge / rebase / reset / clean / stash，未切换分支，未 git add）"
+}

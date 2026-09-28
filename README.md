@@ -202,7 +202,7 @@ npm start
 - **总览**：作品数据总览、最近更新、快捷入口
 - **正文写作**：章节树 + 富文本编辑 + AI 写作
 - **小说设定**：剧情线、大纲、设定库、角色、长期记忆
-- **AI创造板块**：AI 设置、SillyTavern 设置（AI 创作已移到初始页）
+- **AI创造板块**：AI 设置、创作上下文（AI 创作已移到初始页）
 
 ### 小说设定板块
 
@@ -236,7 +236,7 @@ npm start
 - **入账提案确认**：AI 生成任务里提交的事件/记忆先落提案（不直接写入账本），在「AI 写作结果」弹窗勾选采纳，或到「小说设定 → 长期记忆 → 📥 待确认提案」逐条处理
 - **伏笔闭环与一致性核对**：`novel_foreshadows` 查未闭合伏笔、正文回收时自动标记 resolved；成文后 `novel_consistency` 核对未闭合伏笔/角色状态/事件账本；AI 成稿可一键写回章节（旧稿自动存历史版本）
 - **任务进度与取消**：所有 Harness 慢通道任务都有悬浮进度卡（阶段文案 / 实时耗时 / 输出尾部），输出已过滤内核内部提示词，只显示人话进度；支持「停止」按钮中途取消（会杀掉 dsh 进程树，已生成内容不落库）
-- **SillyTavern 设置**：管理角色卡、世界观词条、作者注，用于丰富 AI 上下文（需进入作品后使用）
+- **创作上下文**：管理角色卡、世界观词条、作者注，用于丰富 AI 上下文（需进入作品后使用；旧称“SillyTavern 设置”，只是历史叫法）
 
 ### 全局能力
 
@@ -526,7 +526,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 | 总览 | 当前作品的章节数、设定数、角色数、剧情线数 |
 | 正文写作 | 选择章节并写作，支持 AI 写作与富文本排版 |
 | 小说设定 | 剧情线 / 大纲 / 设定库 / 角色 / 长期记忆 |
-| AI创造板块 | 进入作品后显示：AI 设置 / SillyTavern 设置 |
+| AI创造板块 | 进入作品后显示：AI 设置 / 创作上下文 |
 | 🐞 运行追踪 | 作品内外均可访问：录制开关 + 按操作分组的调用链、Token 汇总、筛选、历史录制回看与导出 |
 | 🧾 日志 | 作品内外均可访问：统一日志系统的错误/慢操作/进程异常记录 |
 
@@ -562,7 +562,10 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 
 工坊与 OpenViking 共享同一个记忆库：六类小说数据（章节正文 / 长期记忆 / 事件账本与伏笔 / 设定词条 / 角色卡 / 大纲剧情线）会自动渲染成 Markdown 写入 OpenViking（`user/default/resources/novel-studio/<作品id>/`），由它的本地 bge Embedding（512 维）向量化，不额外占用一套模型与向量库。
 
+> 定位说明：OpenViking 是**派生投影 / 语义检索**后端——正式正文、作者维护的长期记忆与 Canon Story State 仍以工坊宿主数据为准；DSH 会话记忆、作品资源投影与共享资料库是三条独立数据链，只是共用同一个记忆库实例提供跨会话与跨作品召回。
+
 - **语义召回层**：AI 写作上下文装配新增「相关记忆检索（语义召回）」层——写第 N 章时按当前章节/蓝图/最近事件语义召回全库相关片段（top 8、阈值 0.3、预算 1400 字），正文 AI 写作提示词（蓝图/成文/续写）同样注入召回结果；可在写作页参考面板「上下文」页签预览命中与相关度，并可一键开关。
+- **共享资料库（跨作品参考资料）**：跨作品共用的写作资料（方法 / 素材 / 范例）。把作者显式指定的目录扫描成 **dry-run 计划**（`.md`/`.txt` 白名单、单文件 ≤2MB、单批 ≤500 篇、不跟随符号链接、严格 UTF-8），确认后才写入共享资料根 `user/default/resources/novel-studio-library/<分类>/<slug>.md`，由同一个 OpenViking 本地向量化；作品打开开关后，写作上下文新增门控层「参考资料（非本书事实）」（top-4、阈值 0.40、单条 300 字、独立预算 1200 字），模型可用 `novel_library` 按关键词/分类把被预算裁掉的原文查回。资料**永不 canon**——只作参考，不进事实 / 事件 / 角色知识；开关默认关闭、逐作品开启，未打开的作品装配与接入前逐字节一致；导入 / 删除 / 开关都是作者动作，模型侧一律拒绝。（界面入口：侧栏「📎 资料库」页——资料列表与分类 / 关键词检索 / 导入两段式（扫描预览 → 确认导入）/ 按行读原文 / 按作品开关 / 标记缺失与确认删除；不喜欢用界面时端点仍可直接调用。）
 - **增量同步**：保存/删除章节、词条、角色、记忆、事件等会自动防抖同步到记忆库（2s 合并）；服务器离线时进本地 pending 队列自动重放；`POST /api/novel/semantic_index` 可全量重建索引。
 - **dsh 双通道共享**：GUI dsh（web profile）与工坊后台 headless dsh 都安装 `@openviking/dsh-memory-plugin`，写作任务会话自动采集进同一记忆库（跨会话可召回）；`harness.js` 会把 headless 任务归属到工坊 peer（`OPENVIKING_PEER_ID`，可用 `NOVELSTUDIO_OPENVIKING_PEER_ID` 覆盖）。
 - **检索语义化**：全局搜索与 `novel_lookup` 叠加语义结果（`/api/search` 返回 `semantic.hits`）。
@@ -627,7 +630,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 `ai/context/`：`assemble`（唯一上下文装配器，P2 起）、`renderSection`（单层渲染）。
 `ai/policy.mjs`：模型档位与思考强度（P4 起为唯一来源）。
 
-`openviking-sync.js`：`syncWorkFull`（记忆库全量同步）、`getSemanticRecall`（语义召回）、`semanticSearchMerge`（检索合并）。
+`openviking-sync.js`：`syncWorkFull`（记忆库全量同步）、`getSemanticRecall`（语义召回）、`getLibraryRecall`（共享资料召回，独立 find / 预算 / 微缓存）、`semanticSearchMerge`（检索合并）。
 
 `harness.js`：harness 任务（会话级，含成功/失败/超时/取消四种结局）。
 
@@ -770,7 +773,7 @@ novel-studio/
 - `vendor/models/bge-small-zh-v1.5-f16.gguf` —— 上游模型 `BAAI/bge-small-zh-v1.5`
   （模型卡标注 MIT），GGUF 转换件来自 `CompendiumLabs/bge-small-zh-v1.5-gguf`；
   本仓库**原样**随源码分发（不改字节），SHA256 见 [vendor/README.md](vendor/README.md)
-- DeepSeek Harness（`dsh`）与 OpenViking 是**独立项目**，不包含在本仓库内
+- DeepSeek Harness（`dsh`）与 OpenViking 是**独立项目**，不包含在本仓库内；许可与版本核验记录见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（dsh：MIT，本机 0.1.7-rc.1；OpenViking：以本机实际安装版本为准，当前上游主项目 AGPL-3.0）
 
 ---
 
@@ -875,7 +878,7 @@ novel-studio/
 - **🧠 OpenViking 记忆库卡**：填地址 / 访问令牌、点「测试连接」即可用，「保存并生效」当场重建客户端（不需要重启服务）；卡上如实显示**这份凭证是从哪来的**（环境变量 / 本页填写 / `ovcli.conf` / `ov.conf` / 默认值），并提供「写入全局配置」——写 `~/.openviking/ovcli.conf` 前自动备份、只改 `url` 与 `api_key`、其它字段原样保留，读不懂的旧文件直接拒绝写入
 - **🛠 本地创作内核（dsh）卡**：界面里就能告诉工坊「dsh 装在哪」，并检测它**在不在、构建好没有、像不像 dsh 仓库**；报错会列出按顺序找过的每一个位置。路径解析链：`NOVELSTUDIO_DSH_REPO` → 本页填写 → `DSH_HOME` → 工坊隔壁的 `deepseek-harness`
 - **📦 工具与环境清单**：一张表说清 Node.js / dsh / 创作插件 / OpenViking 各自**是干什么的、装没装（真去磁盘看）、不装会少什么、去哪儿装**，命令一键复制；"装没装"来自后端检测，不是写死的文案
-- **界面内帮助**：标题旁的小问号（`?`）与字段小字，悬停或键盘聚焦即可看解释——先覆盖新手最容易卡住的术语：SillyTavern、作品/章节作者注、**剧情线↔大纲的关系**、长期记忆↔事件账本、章节蓝图、红线、上下文、直连 vs 慢通道
+- **界面内帮助**：标题旁的小问号（`?`）与字段小字，悬停或键盘聚焦即可看解释——先覆盖新手最容易卡住的术语：创作上下文（历史名 SillyTavern）、作品/章节作者注、**剧情线↔大纲的关系**、长期记忆↔事件账本、章节蓝图、红线、上下文、直连 vs 慢通道
 - **修复：点「查看上次审稿」必报 `plainText is not defined`**（v0.9.3 提交引入的既有缺陷：三处调用了一个**前端从来没有过**的纯文本函数）。改为 `editorPlainText()` —— 基于浏览器原生 `DOMParser`、**保留段落边界**（修稿差异预览按 `/\n{2,}/` 分段，压平会让整章变成一个段落）；并新增**派生式护栏**：前端测试会把仓库所有服务端 `.js` 的函数名收集起来，凡 `public/app.js` 调用却自己没定义的（"幽灵调用"）一律判红——这条护栏经变异测试验证（把 `plainText` 放回去它确实会红，而它的第一版因为读错目录恒为空、假绿）
 - **验证**：接口回归 **177/177**、前端执行验证 **76/76**、离线配置测试 **32/32**；本轮验证**零真实模型调用**（隔离实例 + 黑洞端点零连接 + harness 子进程被沙箱拦下）
 
@@ -898,4 +901,4 @@ novel-studio/
 - 本项目基于 DeepSeek Harness（dsh）的 AI 能力开发，有问题请直接询问 dsh
 - 应用本体仓库：<https://github.com/bbaz123/novel-studio>
 - 创作插件仓库（发布镜像）：<https://github.com/bbaz123/novel-writing-plugin>
-- 借鉴开源项目：SillyTavern，利用其世界观等特色加深 AI 写作能力
+- 借鉴开源项目：SillyTavern，利用其世界观等特色加深 AI 写作能力（相关实现见工坊首页「🙏 借鉴与致谢」，含许可核验记录）
