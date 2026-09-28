@@ -102,6 +102,8 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 
 ## 工具一览
 
+当前工具面 **26 个**（权威清单 = `plugin.json` 的 `tools` 字段，由 `.p1-baseline/verify-plugin-tools.mjs` 与 `test-host-contract.mjs` 双向核对）：
+
 | 工具 | 作用 |
 | --- | --- |
 | `novel_context` | 取作品/章节分层上下文（大纲/记忆/事件/未闭合伏笔/本章蓝图/目标字数/前后章衔接/角色卡/激活世界观/红线），分层预算截断 |
@@ -119,6 +121,17 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 | `novel_blueprint` | 保存本章写作蓝图（场景目标/情节点/冲突/钩子/目标字数），作者确认后落库 |
 | `novel_review` | 保存成文的审稿报告（总评/问题清单/优点），作者在工坊界面确认清单并按清单修稿 |
 | `novel_chapter_save` | 成稿写回章节正文（旧稿自动存历史版本，返回红线扫描） |
+| `novel_state` | 读作品确定性故事状态的一个切片（overview/facts/timeline/knowledge/entities/foreshadows/contract，只读） |
+| `novel_contract` | 保存本章章节契约（目标 / 必须与禁止的情节点 / 实体 / 事件 / 状态变化 / 伏笔 / 风格 / 连续性 / 验收项），版本化可追溯 |
+| `novel_preflight` | 写前预检：用确定性内核报出这一章可能写崩的地方（未来泄漏 / 时间线倒置 / 死人复活 / 未登记实体 / 伏笔逾期 / 知识越界），带证据，**不阻断创作** |
+| `novel_validate` | 写后校验：对照章节契约逐项核对并做一致性检查，只给结论与证据，**不改正文** |
+| `novel_state_propose` | 把正文确认发生的状态变化登记成**提案**（不直接写状态）：canon_fact / character_knowledge / timeline_entry / foreshadow / entity_* / memory / event |
+| `novel_state_commit` | 复核 / 应用 / 驳回状态提案：应用前做陈旧检查、落快照、单事务执行，基线不一致即拒绝覆盖 |
+| `novel_snapshot` | 故事状态快照与回滚（回滚**不删除任何行**，只改回取值并把新增标记为 superseded） |
+| `novel_approvals` | 列出作者为当前作品创建的**一次性审批**（只读）：模型侧写入必须先由作者在界面生成审批，再把 approval id 传给对应工具 |
+| `novel_write_pipeline` | 写作编排层（推荐主入口）：一次调用完成状态读取 → 写前预检 → 唯一上下文 → 写作简报；正文仍由模型创作 |
+| `novel_branch` | 剧情分支沙盘：给出 2–5 个**互异**候选方向（核心行动 / 冲突 / 人物选择 / 节拍 / 后果 / 关系伏笔 / 风险 / 必要铺垫 / 与作者意图关系）并读回列表、单条视图与九维比较；**采纳 / 丢弃 / 取消 / 重开是作者动作，模型侧一律 403** |
+| `novel_library` | 检索**共享资料库**（跨作品写作参考资料）并按 id 读回原文窗口；资料不是本书事实，引用须标注「参考资料」。上下文的「参考资料」层被预算截断时用它查回 |
 
 ## 关键机制
 
@@ -181,9 +194,22 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 - 请求体上限 32MB（EPUB 导入用）；红线正则长度上限 500、豁免词单个上限 100；非法 JSON/非 JSON 响应显式报错。
 - 蓝图/审稿/正文写回等写类端点校验 `work_id` 与章节归属，防止串作品误写。
 
+## 插件 0.15.0 更新：共享资料库 + 工具面 26 / 端点 75（2026-09-28）
+
+- **新增工具 `novel_library`**：检索共享资料库（跨作品写作参考资料）并按 id 读回原文窗口；
+  资料**不是本书事实**——引用须标注「参考资料」，条目永不 canon
+- **门控上下文层**：作品打开「共享资料库」开关后，`novel_context` 里新增「参考资料（非本书事实）」层
+  （top-4 / 阈值 0.40 / 单条 300 字 / 独立预算 1200 字）；未打开的作品装配与接入前逐字节不变
+- **新增工具 `novel_branch`**（0.13.0 起）：剧情分支沙盘只提候选与读回（open / submit / list / view / compare）；
+  **采纳 / 丢弃 / 取消 / 重开不在工具面内**，模型侧调这些端点一律 403
+- **工具面演进**：0.9.0 的 15 个 → 1.1.0 追加 8 个（故事状态内核）→ 1.3.0 `novel_approvals` →
+  1.9.0 `novel_branch` → 1.11.0 `novel_library`，现共 **26 个**；`engineEndpoints` 声明 **75 条**
+- **对账口径**：`plugin.json` / `package.json` / `novel-tools.mjs` 的 `PLUGIN_VERSION` **三处必须一致**，
+  由 `.p1-baseline/verify-plugin-tools.mjs` 与 `test-host-contract.mjs` 双向核对（含"契约里每条端点在 `server.js` 里真的存在"）
+
 ## 插件 0.9.0 更新：按 P0–P6 重构后的内核**完全适配** + AI 能力结合（2026-09-18）
 
-> 版本号有两套，别混：**插件版本**在 `plugin.json`（当前 **0.9.0**，三处必须同步——`plugin.json` /
+> 版本号有两套，别混：**插件版本**在 `plugin.json`（当前 **0.15.0**，三处必须同步——`plugin.json` /
 > `package.json` / `novel-tools.mjs` 的 `PLUGIN_VERSION`）；下面各节标题里的 `v0.9.3` / `v0.8.0`
 > 是**工坊本体版本**（根 `package.json`），讲的是服务端能力。
 

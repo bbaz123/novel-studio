@@ -1,13 +1,15 @@
 # 宿主 / DSH 小说 bundle / OV bundle / 服务端：边界与实际加载路径
 
 > **用途**：让复核者能**照着路径核对**「谁加载谁、实际跑的是哪一份代码」，而不是听叙述（任务书 §19.2）。
-> **采集方式**：本机只读枚举 + 本次实测（2026-09-27，Windows，Node v24.19.0）。**未改写用户的全局 dsh profile**。
+> **采集方式**：本机只读枚举 + 本次实测（2026-09-27 首采，Windows，Node v24.19.0）。
+> **2026-09-28 复核更新**：版本与规模（插件 / 契约 / 工具 / 端点 / 离线清单条数）已按当前仓库状态刷新，
+> 并修正了下方 A/B 双闭环与浏览器 E2E 的状态；**未改写用户的全局 dsh profile**。
 > 关联文档：`docs/host-contract.md` §7（Plugin Adapter contract）、`docs/openviking-call-map.md`（OV 三条链）。
 
 ## 0. 一句话结构
 
 浏览器（同源前端） → **宿主 novel-studio**（`server.js`：HTTP + SQLite + 唯一装配器 + 作业设施）
-→ **dsh 子进程**（专用 profile `novel` + 专用 `DSH_HOME`）→ **novel-writing 插件**（25 个 `novel_*` 工具）
+→ **dsh 子进程**（专用 profile `novel` + 专用 `DSH_HOME`）→ **novel-writing 插件**（26 个 `novel_*` 工具）
 → 模型（直连 `POST /api/ai/*` 或慢通道 `POST /api/harness/job|run`，走策略表）；
 旁路：**OpenViking 共享记忆库**（工坊侧 A 链 + dsh 会话侧 B 链，见另一份文档）。
 
@@ -16,10 +18,10 @@
 | 组件 | 实际值 | 证据 |
 | --- | --- | --- |
 | 仓库 | `C:\Users\a1941\Desktop\DeepSeek\novel-studio` | 工作目录 |
-| 分支 / HEAD | `refactor/p0-p6` / `be38b17c09f632ee546026fffe2723c5a9b3a18c`（本任务未提交、未打标签） | `git rev-parse HEAD` |
+| 分支 / HEAD | `refactor/p0-p6`（2026-09-27 采集时为 `be38b17`；两轮改动已于 2026-09-28 提交并推送，当前 HEAD 见仓库） | `git rev-parse HEAD` |
 | 运行时 | Node **v24.19.0**；`package.json` 无 dependencies（`node:sqlite` 内建） | `node -v`、`package.json` |
-| 宿主契约 | **1.10.0**（`server.js` 的 `HOST_CONTRACT_VERSION`；`GET /api/novel/ping` 回报） | `test-host-contract.mjs` 28/28 |
-| 插件 | `harness-plugins/novel-writing` **v0.14.0**：25 个工具 / 68 条端点声明 | `plugin.json` + `verify-plugin-tools.mjs` |
+| 宿主契约 | **1.11.0**（`server.js` 的 `HOST_CONTRACT_VERSION`；`frozen_at` 2026-09-28；`GET /api/novel/ping` 回报） | `test-host-contract.mjs` 28/28 |
+| 插件 | `harness-plugins/novel-writing` **v0.15.0**：26 个工具 / 75 条端点声明 | `plugin.json` + `verify-plugin-tools.mjs` |
 | 故事状态内核 | `ai/story-state/index.mjs` — `STORY_STATE_VERSION = 1.0.0` | 代码 |
 | dsh | **0.1.7-rc.2**；本地仓库 `C:\Users\a1941\Desktop\DeepSeek\deepseek-harness`，预构建入口 `apps/cli/lib/bin.js` | 工具循环探针日志（`预构建产物启动`） |
 | 专用 DSH_HOME | `C:\Users\a1941\.dsh-novel`；profile `novel`；`node_modules/novel-writing` 是 **Junction** → 仓库 `harness-plugins/novel-writing` | 只读 `Get-Item`（LinkType=Junction） |
@@ -59,20 +61,25 @@
 - **真实工具循环（RUNTIME-VERIFIED，零计费）**：`NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1 node .p1-baseline/probe-harness-tool-loop.mjs`
   → 真 spawn dsh，本地假模型端点看到 2 条请求（第 1 条 `tool_turn=true`、工具 `glob`；第 2 条 `tool_results=1`），
   收尾正文等于罐头文本；**7/7 通过**（日志 `.verify-enh/r01-harness-tool-loop-run2.log`）。
-- **插件面 / 契约一致**：`verify-plugin-tools.mjs`（25 工具、68 端点、三处版本 0.14.0 一致）；
+- **插件面 / 契约一致**：`verify-plugin-tools.mjs`（26 工具、75 端点、三处版本 0.15.0 一致）；
   `test-host-contract.mjs` 28/28（含"契约里每条端点在 `server.js` 里都有对应实现"）。
 - **真实 DeepSeek（RUNTIME-VERIFIED，有限预算）**：用户 2026-09-27 授权「预算2元以内」——
   `probe-live-capabilities.mjs` 六类能力 **7/0**（7 次调用 / 2226 tokens ≈¥0.013）＋
   `ci-isolated-run + .p6-cutover/smoke.mjs` 整链写作冒烟 **7/0**（1 次调用 / 10591 tokens ≈¥0.022）；合计 ≈¥0.035 ≤ ¥2。
   证据：`.verify-enh/live-capabilities-2026-09-27.{log,json}`、`.verify-enh/smoke-chain-2026-09-27.{log,usage.json}`。
 - **BLOCKED（不写 PASS）**：
-  - 真实 OV 双闭环：本机 `1933` 端口**未监听**（2026-09-27 复测；只做 TCP 探测，未发请求、未读写任何 namespace）；OV-VLM 未验证；
-  - 真实浏览器 E2E：**未执行**（环境无浏览器驱动）。前端只做了离线执行验证（vm + DOM 桩，`frontend-test.mjs` ALL PASS）——它**不能**替代浏览器 E2E。
+  - 真实 OV **A / B 双闭环**：2026-09-27 本机 `1933` 端口未监听；**2026-09-28 知识库专项期间 OV 在线（v0.4.21）**，
+    共享资料链（C）已在隔离实例上真机验证（`verify-library-realmachine.mjs` 18/18，写共享资料根 3 篇后删除、根零残留）；
+    但作品资源链（A）与会话链（B）的 live 闭环仍记为 BLOCKED——缺足够的 namespace 隔离授权，
+    不能把测试哨兵写进作者正式作品/共享长期记忆来强行验收（判据与证据见 `docs/openviking-call-map.md` §3）。OV-VLM 未验证；
+  - 真实浏览器 E2E：**已执行**——2026-09-28 独立重审轮用 Edge headless + CDP（`E2E_DSH=1`）跑 **19/19**
+    （含慢链 `AI 写作 → 先审稿再应用 → 按清单修稿 → 合并 → 采纳`）。前端另有 vm + DOM 桩的离线执行验证
+    （`frontend-test.mjs` 263 断言 PASS）——它**不能**替代浏览器 E2E，两者是两层证据。
 
 ## 5. 复验命令
 
 ```powershell
-node scripts/ci-offline-checks.mjs                 # 45 条离线检查（零计费）
+node scripts/ci-offline-checks.mjs                 # 46 条离线检查（零计费）
 node .p1-baseline/verify-plugin-tools.mjs          # 工具面 / 版本 / 端点声明
 node .p1-baseline/test-host-contract.mjs           # 宿主契约（含端点存在性）
 $env:NOVELSTUDIO_ALLOW_HARNESS_SPAWN='1'

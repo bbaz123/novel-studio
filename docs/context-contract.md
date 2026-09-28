@@ -77,6 +77,17 @@
 | 13 | 相关设定词条（写作约束） | 800 | 条件层 | `terms`（标题/标签/正文关键词命中 + 最近更新优先，≤12 × 每条 300 字） |
 | 14 | 写作风格红线 | 4000 | 不收缩 | `writing_redlines` + `style_positive` |
 
+**门控层（默认不存在，不计入可执行下限）**：下面 4 层由作品开关或作者显式打开；关闭时该层**根本不存在**（也不进 `excluded`、不计入下限），因此上表 1–14 的编号与预算核算不受影响：
+
+| 门控层 | 位置 | cap | 打开条件 | 数据来源 |
+|---|---|---|---|---|
+| 参考资料（非本书事实） `library` | `recall` 之后 | 1200 | 作品开关 `library_enabled:<workId>`（缺省即关闭） | OpenViking 共享资料根 `novel-studio-library`；条目 canon 记 `reference`，**永不 canon** |
+| 故事状态（正典/时间线/契约/知识边界） `story_state` | `terms` 之后 | 2400 | 作品开关（确定性故事状态，既有作品默认 `0`） | `story_facts` / `story_timeline_entries` / `character_knowledge` / `chapter_contracts` 等 |
+| 编辑规则（保护规则 / 档位 / 能力 / 题材档） `edit_rules` | `story_state` 之后 | 2400 | 作者在「创作上下文 → 编辑规则」里显式打开 | `ai/editing/rules.mjs`（`EDITING_RULE_VERSION` + `ruleHash`） |
+| 作者意图与文风证据 `author_intent` / 样文统计 | `edit_rules` 之后 | 2400 | 作品里有作者意图，或启用过样文时 | `author_intents` / `author_samples` / `style_profiles`（`ai/style/`）；样文只作证据，不进事实 |
+
+> **门控层的验收口径**：关闭时 `assembled` / `manifest` 与接入前**逐字节一致**——`library` 有 `.p1-baseline/verify-library-identity.mjs` 的 4/4 对照；故事状态与编辑规则由 `verify-all` 的装配回归 + `capture-baseline` / `compare-baseline` 逐字节对照覆盖（见 `docs/phase-map.md` 对应阶段）。
+
 **弹性层顺序**：`ai/context/layers.mjs` 的 `FLEX_ORDER` —— `story_tail`、`outline`、`world`
 （即「前文衔接」「大纲」「世界观」）。
 
@@ -367,7 +378,23 @@ WARNING **不是通过**：它表示"现状可以接受，但这是**已知缺�
 2. **不许静默截断**：任何丢字都必须标成 `truncated`（C8 会抓）；
 3. **不许不可追踪的裁剪**：被裁的层必须留查回路径（C5 会提醒；没有的话如实记 WARNING）。
 
-### 8.6 怎么复现这一节
+### 8.7 运行时贡献记录（2026-09-27，R05）
+
+8.3 说的是**静态声明**（每层"应该"来自哪、为什么需要），8.4 是**本次装配的信封**。
+两者之间还差一问：「这一层**实际**带进来了什么、又被怎么处理了？」——由 `ai/context/contributions.mjs`
+产出的**运行时贡献记录**回答，随只读端点 `GET /api/novel/context/contributions?work_id=&chapter_id=` 下发：
+
+| 记录项 | 含义 |
+|---|---|
+| 来源 id / 版本 hash | 这一层这一次实际读的是哪条数据、内容指纹是什么 |
+| 长度 | 进入装配的字符数（用来解释"为什么轮到它被裁"） |
+| 去重标识与动作 | 来源感知去重：默认 `dedup_action: 'off'`（**只标注不删除**，旧作品行为不变）；作品打开 `ov_recall_dedup` 后才真正去掉重复条目 |
+| 使用 / 省略原因 | 进了装配，或没进（没数据 / 模式跳过 / 被预算裁掉 / 召回来源校验没通过） |
+
+**边界（同样是纪律）**：只记结构与元信息——**不记完整正文与密钥**；这条链是一次**附加**，
+不改装配结果（`test-context-contributions.mjs` 27/27，含"默认行为不变"的对照）。
+
+### 8.8 怎么复现这一节（P6 之后各轮的补验）
 
 ```powershell
 # 离线：判据真值表 + 阴性对照 + 溯源/信封形状（不需要实例、零计费）

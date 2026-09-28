@@ -145,14 +145,14 @@
 | 项 | 内容 |
 |---|---|
 | **输入** | 无（宿主内部）；插件**不得**直接打开 `novel.db` |
-| **输出** | 46 张表（见 fixture `db.tables`）。1.0.0 冻结的 25 张（见 fixture `db.frozen_tables`）：works / volumes / plotlines / chapters / categories / terms / characters / character_relations / world_entries / creation_tasks / story_memories / memory_versions / plotline_characters / api_configs / chapter_save_versions / harness_jobs / story_events / writing_redlines / story_event_proposals / story_memory_proposals / chapter_reviews / ai_eval_events / app_settings / app_logs / ai_error_logs；
+| **输出** | 47 张表（见 fixture `db.tables`）。1.0.0 冻结的 25 张（见 fixture `db.frozen_tables`）：works / volumes / plotlines / chapters / categories / terms / characters / character_relations / world_entries / creation_tasks / story_memories / memory_versions / plotline_characters / api_configs / chapter_save_versions / harness_jobs / story_events / writing_redlines / story_event_proposals / story_memory_proposals / chapter_reviews / ai_eval_events / app_settings / app_logs / ai_error_logs；
 1.1.0 附加的 10 张（见 fixture `db.tables_added_in_v1_1`）：story_state_config（作品开关，**既有作品默认 0**）/ story_timeline_entries / story_facts / character_knowledge / story_entities / story_entity_aliases / chapter_contracts / story_state_proposals / story_snapshots / story_validations；
-1.3.0 附加的 2 张（见 fixture `db.tables_added_in_v1_3`）：author_approvals（模型侧写入的一次性审批边界）/ adoption_operations（整次采纳的幂等账本）；1.4.0 附加的 1 张（见 fixture `db.tables_added_in_v1_4`）：projection_outbox（提交后失败的投影可见 / 可重试 / 重启可恢复）；1.5.0 附加的 1 张（见 fixture `db.tables_added_in_v1_5`）：ov_projection_audit（delete / rebuild 的待删除集合与范围证明，可审计）；1.7.0 附加的 3 张（见 fixture `db.tables_added_in_v1_7`）：author_samples / style_profiles / author_intents（作者样文 / 文风档案 / 三级作者意图）；1.9.0 附加的 2 张（见 fixture `db.tables_added_in_v1_9`）：branch_sandboxes（沙盘：章节时点 + 依赖基线 hash + 状态 + 来源）/ branch_candidates（候选：核心行动/冲突/人物选择/节拍/后果/风险/铺垫/意图关系 + 依赖基线 + 来源；采纳记录在 `adopted_json`）；1.10.0 附加的 2 张（见 fixture `db.tables_added_in_v1_10`）：import_rebuild_runs（导入后重建的运行：作品 / 章节源指纹 / 抽取器与 schema 版本 / 模型路由与思考档位 / 状态）/ import_rebuild_batches（批次：章节范围与索引、基线 hash、结果 hash、尝试次数、候选草稿与提案 id、状态） |
+1.3.0 附加的 2 张（见 fixture `db.tables_added_in_v1_3`）：author_approvals（模型侧写入的一次性审批边界）/ adoption_operations（整次采纳的幂等账本）；1.4.0 附加的 1 张（见 fixture `db.tables_added_in_v1_4`）：projection_outbox（提交后失败的投影可见 / 可重试 / 重启可恢复）；1.5.0 附加的 1 张（见 fixture `db.tables_added_in_v1_5`）：ov_projection_audit（delete / rebuild 的待删除集合与范围证明，可审计）；1.7.0 附加的 3 张（见 fixture `db.tables_added_in_v1_7`）：author_samples / style_profiles / author_intents（作者样文 / 文风档案 / 三级作者意图）；1.9.0 附加的 2 张（见 fixture `db.tables_added_in_v1_9`）：branch_sandboxes（沙盘：章节时点 + 依赖基线 hash + 状态 + 来源）/ branch_candidates（候选：核心行动/冲突/人物选择/节拍/后果/风险/铺垫/意图关系 + 依赖基线 + 来源；采纳记录在 `adopted_json`）；1.10.0 附加的 2 张（见 fixture `db.tables_added_in_v1_10`）：import_rebuild_runs（导入后重建的运行：作品 / 章节源指纹 / 抽取器与 schema 版本 / 模型路由与思考档位 / 状态）/ import_rebuild_batches（批次：章节范围与索引、基线 hash、结果 hash、尝试次数、候选草稿与提案 id、状态）；1.11.0 附加的 1 张（见 fixture `db.tables_added_in_v1_11`）：library_docs（共享资料登记表：uri 唯一；删除默认只标 `marked_missing`，作者确认后才删登记行与记忆库文件） |
 | **状态** | `PRAGMA journal_mode = WAL` / `foreign_keys = ON` / `busy_timeout = 5000` |
 | **错误码** | 无（DB 层错误由 API 层转成 4xx/5xx） |
 | **retryable** | 写冲突由 `busy_timeout` 吸收；业务层不重试 |
 | **兼容策略** | **只增不减**：`CREATE TABLE IF NOT EXISTS` + `try ALTER TABLE ... ADD COLUMN`（列已存在即忽略）；**绝不** `DROP TABLE` / `DROP COLUMN` / `RENAME` / 删除用户数据 |
-| **版本** | 1.10.0（累计 46 张表；1.0.0 冻结的 25 张旧表零结构改动，新增表全部是新表） |
+| **版本** | 1.11.0（累计 47 张表；1.0.0 冻结的 25 张旧表零结构改动，新增表全部是新表） |
 | **不变条件** | ① 旧作品/旧章节/旧记忆继续可打开；② 对旧库零 schema 写入、零数据删除（验收实测：`sqlite_master` 指纹 `3cb7e5d9ac4f67b9` 前后一致）；③ 新增表全部是**新表**，不改旧表结构；`story_state_config.enabled` 对既有作品默认 `0`（未开启 = 行为与 1.0.0 完全一致） |
 | **可观测字段** | `sqlite_master`（表/索引/视图/触发器）、关键表行数 |
 | **不可绕过** | 插件不得直接读写 `novel.db`（含 `-wal` / `-shm`）；不得要求宿主"顺手"改字段 |
@@ -163,7 +163,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **输入** | 插件清单 `harness-plugins/novel-writing/plugin.json`：`tools`（25 个）、`engineEndpoints`（68 条）、`dshPlugin.contract`（exports / registersToolsVia）、`identityEnv`、`proposeModeEnv` |
+| **输入** | 插件清单 `harness-plugins/novel-writing/plugin.json`：`tools`（26 个）、`engineEndpoints`（75 条）、`dshPlugin.contract`（exports / registersToolsVia）、`identityEnv`、`proposeModeEnv` |
 | **输出** | dsh 侧工具注册（`ctx.tools.register`）+ 对宿主的 HTTP 调用；插件日志经 `POST /api/logs`（layer=`plugin`） |
 | **状态** | 插件进程是 dsh headless；无宿主侧长驻状态 |
 | **错误码** | 与所调端点一致（见各契约）；插件自身的失败必须上报日志而不是静默 |
@@ -357,11 +357,11 @@ DELETE /api/novel/library/doc/:id
 
 | 层次 | 工具 | 覆盖 |
 |---|---|---|
-| **契约测试** | `node .p1-baseline/test-host-contract.mjs`（离线清单 32 条之一；也已接进一键验收） | 代码↔契约漂移、文档↔契约腐烂、边界是否真的在代码里成立、旧库兼容；含**负向对照**（改坏预算/工具名/信封字段必须报红） |
+| **契约测试** | `node .p1-baseline/test-host-contract.mjs`（离线清单 46 条之一；也已接进一键验收） | 代码↔契约漂移、文档↔契约腐烂、边界是否真的在代码里成立、旧库兼容；含**负向对照**（改坏预算/工具名/信封字段必须报红） |
 | **契约夹具** | `docs/host-contract.v1.json` | 由真实代码导出的可机读契约面（层/预算/清单字段/策略/工具面/端点面/日志层级/表清单） |
-| **adapter 测试** | `.p1-baseline/verify-plugin-tools.mjs` + `harness-plugins/novel-writing/test/smoke.mjs` | 15 个工具 ↔ 26 条端点的对账；插件冒烟 39 组 |
+| **adapter 测试** | `.p1-baseline/verify-plugin-tools.mjs` + `harness-plugins/novel-writing/test/smoke.mjs` | 26 个工具 ↔ 75 条端点的对账；插件冒烟 39 组 |
 | **迁移/旧库兼容** | `test-host-contract.mjs`（§D）+ `api-test-suite.mjs` | 旧库 schema 指纹与表清单；旧作品/章节/记忆可读可写 |
-| **宿主整体** | `node .p1-baseline/verify-all.mjs --base http://127.0.0.1:3739` | **53 通过 / 0 未通过 / 1 跳过**（含本契约测试、清单完整性、查回路径、策略单点、作业接线、花钱总闸） |
+| **宿主整体** | `node scripts/ci-isolated-run.mjs --port 3739 -- node .p1-baseline/verify-all.mjs`（隔离实例；缺活实例/外部仓库的检查会标"跳过"） | **44 通过 / 1 未通过 / 10 跳过**（2026-09-28 实测）。唯一未通过 = **先于本轮存在**的连续性预检真实数据对照（`system_frequency`），见 `docs/post-implementation-issues.md` OBS-02。⚠️ **跳过 ≠ 通过**：三条会真的 `spawn dsh` 的检查需 `NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1` 才转成运行；且**不要与其它会真 spawn dsh 的探针并发跑**（并发会让"套件总闸"把探针会话误判为无法归属的真实调用，即 OBS-01） |
 | **质量回归** | `capture-baseline.mjs` + `compare-baseline.mjs` | 50 例上下文与 pre-V2 基线**逐字节**相同（冻结时实测） |
 
 ---

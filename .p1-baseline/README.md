@@ -89,9 +89,36 @@
 | `verify-memory-compress-input.mjs` | 压缩输入的**前后对照**（只读数据库，零成本）：修前「最近章节尾部」恒为空 vs 修后带上的正文，逐作品报数 |
 | `bench-context-build.mjs` | 上下文构建的**耗时基线**（热路径 vs 冷路径；冷路径用幂等写作废缓存）。只报数不下结论，判定看 p50/p95 |
 
+### 一之四、创作内核增强各轮新增的工具（2026-09-27/28）
+
+下面这批是 R01–R12 增强轮、落地后独立重审轮与共享资料库轮新增的（**全部零计费**；
+需要活实例或真实 OV 的几条会在文件头写明前置）。括号里的记录值取自本轮验收证据，
+改动后请以实际运行输出为准。
+
+| 文件 | 作用 |
+|---|---|
+| `test-context-contributions.mjs` | **运行时上下文贡献记录**（R05）：来源 / 版本 hash / 长度 / 去重标识 / 使用或省略原因的结构可审计、来源感知去重、**默认行为不变**的对照（27/27） |
+| `test-agent-write-boundary.mjs` | **模型侧写入边界**（R02）：非法 action / 组合 / 未知字段一律拒绝且零写入，含阴性对照（24/24） |
+| `test-approval-boundary.mjs` | **作者审批执行边界**（R02）：未授权 / 过期 / 已消费 / 跨书 / 基线不符 / 事务失败一律拒写，含伪造审批的负向用例（50/50） |
+| `test-adopt-atomic.mjs` | **整次采纳的原子性**（R03）：正文 + 提案 + 投影 outbox 同一事务；幂等键、冲突、回滚、重启后 outbox 恢复（36/36） |
+| `test-ov-recall-boundary.mjs` | **召回来源边界**（R04 + L）：跨书 / 未来章 / 候选 / 布局不明 / 资料根形状一律拦下并可归因，含 rebuild 范围证明与资料根拒绝（54/54） |
+| `test-editing-rules.mjs` | **编辑保护规则**（R07）：规则真的进请求、关闭即不进、题材门控、模型侧只读、确定性扫描不调用模型（45/45） |
+| `test-author-style.mjs` | **作者样文 / 文风档案 / 三级意图**（R09）：上限、过期、证据预算、冲突呈现、模型侧只读、**样文不进事实**（52/52） |
+| `test-disclosure.mjs` | **披露派生视图**（R10）：作者真相 / 读者披露 / 角色掌握分层、角色知识边界、时点重算、回滚与指纹（31/31） |
+| `test-branch-sandbox.mjs` | **剧情分支沙盘**（R11）：候选形状与九维比较、知识边界、采纳只写蓝图、stale 强制复核、取消恢复（66/66） |
+| `test-long-text.mjs` | **完整长篇处理**（R08）：分段计划 / 覆盖清单 / 断点续跑 / 越界拒绝 / 部分失败可恢复（58/58） |
+| `test-import-guard.mjs` | **导入安全隔离**（R12）：TXT / MD / EPUB 基线不倒退 + 路径穿越 / symlink / 压缩炸弹 / 编码 / 上限安全失败 + 零半导入（30/30） |
+| `test-import-rebuild.mjs` | **导入后重建**（R12）：分批规划 / 批次基线 / 断点续跑或重试 / 候选不落正式状态 / 确认按批原子（28/28） |
+| `test-library-import.mjs` | **共享资料导入链**（L）：隔离实例 + OV stub 的扫描 / 计划 / 开关 / dry-run→confirm / 幂等 / 查回 / 删除 / 总闸关闭（34/34） |
+| `test-migration-idempotent.mjs` | **迁移幂等与损坏库**：空库建表 / 重复启动不漂移不丢行 / 旧库只读指纹 / 损坏库响亮失败且不篡改原文件（13/13） |
+| `verify-library-identity.mjs` | **未开启资料层的作品逐字节不变**（L）：`library_enabled=0` 时 assembled + manifest 与接入前一致（4/4）；对照基线 `library-identity-before.json` |
+| `verify-library-realmachine.mjs` | **共享资料链真机验证**（L，需本机 OV 在线、不进 CI）：写前 fail-closed → 只写共享资料根 → 命中预览 → 装配出现资料层 → readContent 按行 → 删后根零残留（18/18）；结果留档 `verify-library-realmachine.result.json` |
+| `probe-library-p0.mjs` | **P0 格式探针**（一次性，真实 OV + 临时文件）：write `wait:true` 阻塞时长、find 粒度、readContent 行语义、删除即时性；结果留档 `probe-library-p0.result.json` |
+| `probe-live-capabilities.mjs` | **真实模型能力探针**（**会计费**，需显式授权与预算）：编辑 / 审稿 / 样文 / 推演 / 契约 / 抽取六类各做实质断言（记录值 7/7，≈¥0.0137） |
+
 配套（在 `scripts/`，**不在本目录**）：
 
-- `scripts/ci-offline-checks.mjs` —— CI 离线检查清单的**唯一来源**（32 条）；
+- `scripts/ci-offline-checks.mjs` —— CI 离线检查清单的**唯一来源**（46 条）；
   `node scripts/ci-offline-checks.mjs` 本地跑的就是 CI 跑的那一批，零计费；
 - `scripts/ci-isolated-run.mjs` —— 起隔离实例 → 跑命令 → 关掉（跨平台 Node 代码，不用各平台各写一份 shell）。
   ⚠️ 2026-09-25 修：它此前**只把隔离变量给服务端、没给被跑的命令**，于是 `api-test-suite.mjs` 的封卷三条

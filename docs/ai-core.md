@@ -18,11 +18,20 @@
 HTTP 服务 (server.js)
    │
    ├── ai/context/  ← 上下文装配内核（唯一实现）
-   │     layers.mjs    层规格：14 层的 cap / kind / 收缩属性 / 查回路径
-   │     assembler.mjs 装配器：预算内渲染、收敛收缩、裁剪清单、溢出标记
+   │     layers.mjs        层规格：18 条（14 条常规 + 4 条门控）的 cap / kind / 收缩属性 / 查回路径
+   │     assembler.mjs     装配器：预算内渲染、收敛收缩、裁剪清单、溢出标记
+   │     contributions.mjs 运行时贡献记录：每层的来源 / 长度 / 去重 / 省略原因（只读端点下发）
    │
    ├── ai/policy.mjs ← 模型与思考强度的唯一来源（档位 → 模型名）
    ├── ai/harness-env.mjs ← dsh 子进程环境契约（实例地址默认值 → 任务回连本实例）
+   │
+   ├── ai/story-state/ ← 确定性故事状态内核（正典 / 时间线 / 知识边界 / 契约 / 提案与快照回滚）
+   ├── ai/branch/      ← 剧情分支沙盘（候选项与九维比较；采纳只写章节蓝图）
+   ├── ai/editing/     ← 编辑保护规则资产 + 确定性扫描（**不调用模型**）
+   ├── ai/style/       ← 作者样文 / 文风档案 / 三级作者意图（样文只作证据，不进事实）
+   ├── ai/import/      ← 不可信导入的边界 + 导入后 AI 状态重建
+   ├── ai/library/     ← 共享资料库（跨作品参考资料；条目永不 canon）
+   ├── ai/openviking/recall-meta.mjs ← 召回来源 fail-closed 校验（生产方与装配器共用同一实现）
    │
    ├── 两条 AI 通道
    │     直连（callAI / callAIStream，SSE）—— 秒级
@@ -44,13 +53,14 @@ HTTP 服务 (server.js)
 
 ### 层规格（`ai/context/layers.mjs` 的 `LAYERS`）
 
-14 层，分四类：
+18 条规格 = 14 条常规层 + 4 条**门控层**，分五类（门控层默认不计入可执行下限）：
 
 | 类别 | 含义 | 层 |
 |---|---|---|
 | `fixed` | 零损失层，**永不参与收敛收缩** | 作品、长期记忆、最近事件、未闭合伏笔、写作红线、（角色卡为 `entity`） |
 | `flex` | 可被总预算压缩（按 `FLEX_ORDER` 顺序逐档） | 前文衔接、大纲、世界观 |
 | `cond` | 条件层：数据缺失时整层不存在 | 语义召回、当前场景、本章蓝图、人物关系、相关设定词条 |
+| `cond` + `gated: true` | **门控条件层**：作品开关或作者显式打开后才存在；关闭时该层**根本不存在**、不进 `excluded`、不计入下限 | 参考资料 `library`、故事状态 `story_state`、编辑规则 `edit_rules`、作者意图 `author_intent` |
 | `entity` | 正文边界由构建函数决定 | 出场角色卡（`buildCharacterCards` 的 5 级降级） |
 
 **每个层都声明了「查回路径」**（`RETRIEVAL`）：被裁剪的内容用什么工具能取回原文。
@@ -148,8 +158,14 @@ HTTP 服务 (server.js)
 - **关键词检索**（`server.js` 的 `search`）：覆盖 设定词条 / 章节 / 角色 / 剧情线 /
   **世界观 / 人物关系**（后两者是 P3 新增的桶）
 - **语义召回**（OpenViking）：top-8、阈值 0.3、每段截 300 字；结论进「相关记忆检索」层
+- **共享资料召回**（跨作品参考资料，**门控**）：共享资料根 `novel-studio-library` 下 top-4、阈值 0.40、
+  单条 300 字、独立预算 1200 字；条目**永不 canon**（canon 记 `reference`，kind 记「参考资料」），
+  层标题与条目标注一律写明「参考资料（非本书事实）」
+- **召回来源 fail-closed**：进装配之前逐行核对 work / scope / canon / 时间语义
+  （`ai/openviking/recall-meta.mjs`，召回生产方与宿主装配器**共用同一实现**）；证明不了来源即拒绝进入，并留审计原因
 - **模型侧查回入口**：`novel_lookup`（关键词）、`novel_memory_read`（长期记忆全文）、
-  `novel_events`（事件账本）、`novel_foreshadows(status=all)`、`novel_style_contract`
+  `novel_events`（事件账本）、`novel_foreshadows(status=all)`、`novel_style_contract`、
+  `novel_library`（检索共享资料，并按 id 读回被预算裁掉的原文窗口）
 
 ## 六、运行宿主
 
@@ -205,3 +221,7 @@ node .p1-baseline/verify-all.mjs        # 一键跑完全部验证并输出汇�
 | ~~建作品/删作品的异步竞态留下孤儿记忆目录~~ | ~~生产记忆库 183 个孤儿目录~~ | **已解决**（D8-#6，2026-09-16）：`ai/sync-gate.mjs` 先举旗再排空、然后才删，并如实上报移除失败；**存量孤儿目录已按决策 D7 清理**（见下表） |
 | ~~记忆库内容缺失~~ | ~~部分作品的语义召回层长期为空（`ov_indexed_at` 却声称已索引）~~ | **已解决**（决策 D3，2026-09-16）：两部作品全部重建，`work#2` ok/6、`work#9` ok/8，召回层真正进入 prompt。⚠️ 该信号（`app_settings` 的 `ov_indexed_at:<workId>`）**只表示"同步跑过"、不表示"记忆库真的有内容"**——P1 的 F7 正是这个坑（时间戳有值但目录不存在）；判"有没有内容"要看 `works.ov_uri` 指向的目录 |
 | ~~记忆库里的**孤儿目录**~~ | ~~生产记忆库有 183 个目录（2,022 文件）在数据库里已无对应作品；占空间、干扰判读~~ | **已解决**（决策 D7，2026-09-16）：**先导出清单留档再删**——`.p1-baseline/d7-orphan-manifest-*.json`（删前）与 `d7-purge-result-*.json`（删后）；183/183 清完，剩 2 个活目录，**活目录逐文件 sha256 未变**（该留的一个字节没动） |
+| 真实 OpenViking 的 **A / B 双闭环**（作品资源链 / 会话链）尚未 live 验证 | 只能证明"宿主侧判据与边界"，**不能**声称"真实服务端行为"；共享资料链（C）已有真实 OV + 隔离实例的证据（18/18），但它不构成 A / B 的 live 证据 | **BLOCKED**：需带测试标识的专用 account/peer/work/session/resource namespace 授权；判据与证据见 `docs/openviking-call-map.md` §3 |
+| `ai/story-state/injection.mjs` 的 `wrapAsData` / `verifyProtectedBlocks`（DATA 围栏）**没有生产调用点** | 模块头声明的三条防护里，实际生效的只有 `scanInjection`；注入防护目前由审批门、工具面策略、导入剥标签与召回 fail-closed 承担 | **P3 · 本轮未改**（改围栏会改动所有请求字节，违反"最小改动 + 不改冻结装配"纪律；见 `docs/post-implementation-issues.md` OBS-06） |
+| 连续性预检在**作者真实作品**上有一条既有 FAIL（`system_frequency`） | 该条**先于**增强轮存在、尚未归因；`verify-all` 总回归因此长期是"1 未通过"而不是全绿 | **待归因**（`docs/post-implementation-issues.md` OBS-02；禁止用放宽容差或删用例的方式"修绿"） |
+| CI 的 `ubuntu-latest` 两格本机无 Linux 可预演 | 首次真跑只能由 CI 告诉我们平台差异；已知的两类（写死 Windows 路径、缺自足前置夹具）已各修一次 | **未预演**：真跑若红按"平台事实"那一步定位并修脚本，不许整格 `continue-on-error` |

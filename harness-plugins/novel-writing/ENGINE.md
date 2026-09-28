@@ -274,6 +274,24 @@ profile 补丁层；**带 `--patch` 且该补丁覆盖 `agent-default-model` 时
 | `GET /api/ai/policy` | 模型与思考强度策略快照（`ai/policy.mjs` 单点，前端取同一份，不再各存常量） |
 | `GET/POST /api/ai/eval` | AI 效果埋点：POST 记一条行为信号，GET 取聚合（采纳率 / 编辑距离 / 上下文成本；D8-#8 哨兵调它，不自己写 SQL） |
 
+> ⚠️ **这张表是核心面，不是全量**。**权威端点是 `plugin.json` 的 `engineEndpoints`（当前 75 条）**，
+> 由 `.p1-baseline/verify-plugin-tools.mjs` 与 `test-host-contract.mjs` 双向核对（含"契约里每条端点在 `server.js` 里真的存在"）；
+> 逐条契约见 `docs/host-contract.md` §7 与 §13–§20。
+
+### 三之补、P6 之后各轮新增的端点（按功能分组，2026-09-26 ~ 09-28）
+
+| 功能组 | 端点 | 边界（谁不能用） |
+| --- | --- | --- |
+| 确定性故事状态 | `GET /api/novel/state/timeline|entities|knowledge|foreshadows|facts`、`GET/PUT /api/novel/state/contract`、`POST /api/novel/state/preflight|validate|quality`、`GET/POST /api/novel/state/proposals` + `POST .../review|apply|reject`、`GET/POST /api/novel/state/snapshot`、`POST /api/novel/state/rollback` | 读与预检/校验模型侧可用；**提案应用与回滚是作者动作** |
+| 作者审批 | `GET/POST /api/novel/approvals` | 只读列出模型侧可用；**生成审批是作者动作**（模型侧写入必须先拿到 approval id） |
+| 披露派生视图 | `GET /api/novel/state/disclosure?work_id=&chapter_id=&character_id=&scene=` | 只读，模型侧可用（作者真相 / 读者披露 / 角色掌握三视图） |
+| 编辑规则 | `GET /api/novel/editing`、`GET /api/novel/editing/rules?task=`、`POST /api/novel/editing/scan` | 读与确定性扫描模型侧可用；**开 / 关与档位是作者动作** |
+| 作者样文与意图 | `GET/POST/PUT/DELETE /api/novel/style/samples`、`GET/POST /api/novel/style/profile`、`GET/PUT/DELETE /api/novel/author_intent` | 读只读可用；**写是作者动作（模型侧 403）** |
+| 剧情分支沙盘 | `GET/POST /api/novel/branch/sandboxes` + `:id` + `:id/cancel|reopen`、`GET/POST /api/novel/branch/candidates` + `:id` + `:id/adopt|discard`、`POST /api/novel/branch/compare` | 开沙盘 / 提候选 / 列表 / 单条 / 比较模型侧可用；**采纳 / 丢弃 / 取消 / 重开是作者动作（403）** |
+| 导入安全与重建 | `GET /api/import/guard`、`POST /api/import/rebuild/plan|record|confirm|cancel`、`GET /api/import/rebuild/status` | 规划与记录自己的抽取结果模型侧可用；**confirm 是作者动作（403）** |
+| 运行时贡献记录 | `GET /api/novel/context/contributions?work_id=&chapter_id=` | 只读 |
+| 共享资料库 | `GET /api/novel/library/status|search|doc`、`PUT /api/novel/library/enabled`、`POST /api/novel/library/import|import/confirm`、`DELETE /api/novel/library/doc/:id` | 读只读可用（含 `novel_library` 工具查回）；**导入 / 删除 / 开关是作者动作（403）** |
+
 ## 四、dsh 侧挂载（install.ps1 自动完成）
 
 1. **GUI/交互会话**：agent preset 安装到 `~/.dsh/.agent-presets/novel-writing/`

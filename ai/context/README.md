@@ -8,8 +8,9 @@
 
 | 文件 | 作用 |
 |---|---|
-| `layers.mjs` | **层规格的唯一来源**：14 层的 id / 标题 / 正文 cap / kind（fixed·flex·cond·entity）/ 收缩属性 / 模式差异；并导出可执行下限核算 `computeFloor()` |
+| `layers.mjs` | **层规格的唯一来源**：18 条规格（14 条常规层 + 4 条**门控层** `library` / `story_state` / `edit_rules` / `author_intent`；门控层默认不计入可执行下限）的 id / 标题 / 正文 cap / kind（fixed·flex·cond·entity）/ 门控标记 / 收缩属性 / 模式差异；并导出可执行下限核算 `computeFloor()` |
 | `assembler.mjs` | **唯一装配器**：按预算渲染各层、执行收敛收缩、产出裁剪清单与溢出标记。纯函数、零依赖、不碰数据库 |
+| `contributions.mjs` | **运行时贡献记录**（R05）：每层实际进入装配时的来源 / 版本 hash / 长度 / 去重标识 / 使用或省略原因，由 `server.js` 的只读端点 `GET /api/novel/context/contributions` 下发（只记结构与元信息，不记完整正文与密钥） |
 | `cache.mjs` | **装配结果缓存**（D8-#7）：判定"这份结果还算数吗"。版本 = 进程内数据版本 + `externalVersionOf(scope)` 给出的**进程外状态**（现为 `ov_indexed_at:<workId>`）。记忆库索引一完成，缓存立刻失效；TTL 只兜"没人通知我们"的情况。注入式的版本源让它能**离线单测**（含阴性对照） |
 
 ## 为什么要有它
