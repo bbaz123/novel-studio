@@ -904,11 +904,27 @@ try {
     ok('日志：筛选查询 / 统计 / 文件地址与代码位置');
 
     // 5) 文本文件双写（data/logs/app-YYYY-MM-DD.log）
+    //    为什么不"读一次就断言"（2026-09-29 实测到过一次偶发假红）：
+    //      ① 文件日志是**缓冲后落盘**的（1s 去抖；`POST /api/logs` 会在响应前显式 flushLogs()，
+    //         但仍存在"写入尚未完成/文件被占用"的窗口），读一次就断言会偶发漏读；
+    //      ② 文件名取自 `logFilePath()` 的 **UTC 日期**（`toISOString()`），跨零点时目录里
+    //         会同时存在两天的文件——只读 `logFiles[0]`（字典序第一份）会挑到旧的那一份。
+    //    所以：当天全部 app-*.log 合起来看 + 有界等待（最长 5s），断言强度不变（消息必须真的落盘）。
     const logDir = join(dataDir, 'logs');
-    const logFiles = readdirSync(logDir).filter((f) => /^app-\d{4}-\d{2}-\d{2}\.log$/.test(f));
-    assert.ok(logFiles.length > 0, 'data/logs 下应存在滚动日志文件');
-    const fileContent = readFileSync(join(logDir, logFiles[0]), 'utf8');
-    assert.ok(fileContent.includes('smoke 插件上报测试'), '文件日志应包含上报消息');
+    const readAllAppLogs = () => {
+      if (!existsSync(logDir)) return { files: [], text: '' };
+      const files = readdirSync(logDir).filter((f) => /^app-\d{4}-\d{2}-\d{2}\.log$/.test(f));
+      return { files, text: files.map((f) => readFileSync(join(logDir, f), 'utf8')).join('\n') };
+    };
+    const logDeadline = Date.now() + 5000;
+    let logRead = readAllAppLogs();
+    while (!logRead.text.includes('smoke 插件上报测试') && Date.now() < logDeadline) {
+      await new Promise((r) => setTimeout(r, 100));
+      logRead = readAllAppLogs();
+    }
+    assert.ok(logRead.files.length > 0, 'data/logs 下应存在滚动日志文件');
+    const fileContent = logRead.text;
+    assert.ok(fileContent.includes('smoke 插件上报测试'), '文件日志应包含上报消息（等待 5s 仍未落盘）');
     assert.ok(fileContent.includes('"layer":"plugin"'), '文件日志应包含技术栈层级');
     assert.ok(fileContent.includes('"ts":"'), '文件日志应包含发生时间');
     ok('日志：滚动文件落盘（时间/层级/消息字段）');
