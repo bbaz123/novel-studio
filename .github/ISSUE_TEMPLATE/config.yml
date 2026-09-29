@@ -1,8 +1,17 @@
 blank_issues_enabled: true
 contact_links:
+  - name: 🇬🇧 README (English) — what it does, how to install, FAQ
+    url: https://github.com/bbaz123/novel-studio/blob/HEAD/README.md
+    about: Project overview, quick start, configuration and the privacy model
+  - name: 🇬🇧 Contributing (English) / 参与贡献
+    url: https://github.com/bbaz123/novel-studio/blob/HEAD/CONTRIBUTING.md
+    about: Issue-first workflow, project conventions and the gates to run before a PR
+  - name: 🔐 Security policy (English / 简体中文)
+    url: https://github.com/bbaz123/novel-studio/blob/HEAD/SECURITY.md
+    about: Please report vulnerabilities privately, not as a public issue
   - name: 📖 新手入门（逐步骤讲解 + 逐条排错）
-    url: https://github.com/bbaz123/novel-studio/blob/refactor/p0-p6/docs/%E6%96%B0%E6%89%8B%E5%85%A5%E9%97%A8.md
+    url: https://github.com/bbaz123/novel-studio/blob/HEAD/docs/%E6%96%B0%E6%89%8B%E5%85%A5%E9%97%A8.md
     about: 装不上、启动失败、报错看不懂 —— 先看这份
   - name: 🆘 常见问题（Node 版本 / 端口占用 / 数据备份 / 卸载）
-    url: https://github.com/bbaz123/novel-studio/blob/refactor/p0-p6/README.md#-新手常见问题先看这里
+    url: https://github.com/bbaz123/novel-studio/blob/HEAD/README.zh-CN.md#-新手常见问题先看这里
     about: README 里的新手常见问题表

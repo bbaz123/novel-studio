@@ -1,5 +1,20 @@
 # docs/ 索引
 
+> 🇬🇧 **English readers — start here**
+>
+> - [`ai-core.md`](ai-core.md) — the AI kernel: architecture, the data flow of one drafting request, how to verify it, known gaps
+> - [`context-contract.md`](context-contract.md) — the context contract and its invariants I1–I7
+> - [`host-contract.md`](host-contract.md) — the host / plugin / server boundary and the actual load paths
+> - [`phase-map.md`](phase-map.md) — which phase changed which files, and how each one can be rolled back
+> - [`pending-decisions.md`](pending-decisions.md) — the open backlog
+> - Project overview: [**README.md**](../README.md) · `README.zh-CN.md`
+>
+> Everything else in this folder is a **Chinese-language** verification report or design note.
+> Two batches are mixed together here: notes from the 2026-09-15 AI-kernel refactor (P0–P6) and
+> later rounds describe the **current** code, while reports from 2026-09-06 ~ 09-14 describe the
+> **pre-refactor** code — their line numbers and function layout are stale, so find code by
+> symbol name rather than by line.
+
 > 🧑💻 **第一次用这个项目、只想尽快跑起来？** 请看 **[新手入门.md](新手入门.md)** ——
 > 装 Node.js → 下载 → 双击启动 → 写出第一章 → 出错了怎么查，全在里面。
 >
