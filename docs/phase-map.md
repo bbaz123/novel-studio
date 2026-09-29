@@ -44,7 +44,7 @@
 | **PI** | 2026-09-27 落地后独立重审（001.txt）：本轮修复 + 审计证据 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **L** | 2026-09-28 知识库专项：跨作品共享写作资料库（门控层 library + 导入链 + 模型侧查回） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **Z6** | 2026-09-29 方向驱动检索 + 索引层化（A–E）：direction 检索输入 / 资料索引 / 小说资产索引 / 检索计划 / 两类计数分开 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
-| **G1** | 2026-09-29 轮：GitHub 增长面优化（英文 README 成为首页 + 中文 README 独立 + 真实界面截图 + 社区健康度文件） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **G1** | 2026-09-29 轮：GitHub 增长面优化（英文 README 成为首页 + 中文 README 逐节对齐 + 真实界面截图 + 社区健康度文件） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：U、V、Z4。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -769,7 +769,7 @@
   - `scripts/ci-offline-checks.mjs`
   - `server.js`
 
-### G1 · 2026-09-29 轮：GitHub 增长面优化（英文 README 成为首页 + 中文 README 独立 + 真实界面截图 + 社区健康度文件）
+### G1 · 2026-09-29 轮：GitHub 增长面优化（英文 README 成为首页 + 中文 README 逐节对齐 + 真实界面截图 + 社区健康度文件）
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
@@ -777,7 +777,7 @@
   - 文件 CONTRIBUTING.md 同时属于 W/Z2/G1——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1——改动改在同一批代码里，撤不干净
   - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1——改动改在同一批代码里，撤不干净
-- **说明**：**展示面 / 增长轮，不触碰任何生产路径**（0 处 import 变化、0 处运行时行为变化）—— 但 README.md / docs/README.md / CONTRIBUTING.md 与 X / W / W2 / Z2 / L / Z6 共享， 按文件粒度判定只能整体回滚，故声明为 shared。 内容要点：① 英文 README 成为仓库首页，中文正文迁到 README.zh-CN.md（逐行未改，只调整「分支说明」措辞、 补 CI 与 License 徽章、替换错配的 preview.png 配文）； ② 修正一处**既有的事实错误**——旧 README 把 assets/preview.png（图标多尺寸预览，供 novel-studio-icon.ps1 生成 .ico） 配文成「深色护眼主题下的作品总览与设定管理」，它其实**不是**界面截图； ③ 社区健康度补齐 SECURITY.md 与 CODE_OF_CONDUCT.md； ④ .github/ISSUE_TEMPLATE/config.yml 的链接由写死分支名 blob/refactor/p0-p6 改为 blob/HEAD （分支改名不再失效），并补英文入口； ⑤ CONTRIBUTING.md 增英文段，原中文段整段保留、仅降一级标题。 仓库级 Description 与 Topics 经 GitHub API 写入，属**仓库设置而非文件**，不进 git（与 W / W2 同例）。
+- **说明**：**展示面 / 增长轮，不触碰任何生产路径**（0 处 import 变化、0 处运行时行为变化）—— 但 README.md / docs/README.md / CONTRIBUTING.md 与 X / W / W2 / Z2 / L / Z6 共享， 按文件粒度判定只能整体回滚，故声明为 shared。 内容要点：① 英文 README 成为仓库首页，中文正文迁到 README.zh-CN.md（脚本搬运，不手抄）； 随后把中文版重排为与英文版逐节对齐的章节顺序（新增「⭐ 功能特性」「💻 使用」「🙏 致谢」三节， 标题与英文版一一对应，原有正文内容照搬未改写）； ② 修正一处**既有的事实错误**——旧 README 把 assets/preview.png（图标多尺寸预览，供 novel-studio-icon.ps1 生成 .ico） 配文成「深色护眼主题下的作品总览与设定管理」，它其实**不是**界面截图； ③ 社区健康度补齐 SECURITY.md 与 CODE_OF_CONDUCT.md； ④ .github/ISSUE_TEMPLATE/config.yml 的链接由写死分支名 blob/refactor/p0-p6 改为 blob/HEAD （分支改名不再失效），并补英文入口； ⑤ CONTRIBUTING.md 增英文段，原中文段整段保留、仅降一级标题。 仓库级 Description 与 Topics 经 GitHub API 写入，属**仓库设置而非文件**，不进 git（与 W / W2 同例）。
 - **验收证据**：`README.md`、`README.zh-CN.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、`assets/screenshot-settings-characters.png`
 - **本阶段认领的文件**（11 个）：
   - `.github/ISSUE_TEMPLATE/config.yml`

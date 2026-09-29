@@ -17,6 +17,10 @@
 >
 > 🔎 **English keywords**：local-first AI novel writing studio / novel writing software · AI writing assistant · AI 小说写作软件 · Chinese web novel (网文) / long-form fiction · character consistency & foreshadowing tracker · worldbuilding tool · story bible · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted & privacy-first, your data never leaves your machine.
 
+![写作台：左侧章节树、中间正文编辑器、右侧实时参考面板——截图取自仓库内一键导入的示例小说《雾都缝匠》](assets/screenshot-writing.png)
+
+---
+
 ## 🎯 30 秒讲清它解决什么问题
 
 用对话式 AI 写长篇，通常写到第 20～80 章之间开始崩，症状很具体：
@@ -43,6 +47,8 @@
   成文后一致性核对逐项指出冲突；丢实体的记忆摘要被护栏拒绝入库
 ```
 
+---
+
 ## 🚫 它不做什么 · 什么时候才需要它
 
 - **不需要联网，也不需要 AI**：手写、设定管理、大纲、导出全部本地完成、零费用。**不接 AI 它也是一个完整的小说管理工具**
@@ -52,152 +58,30 @@
 - **不替你做创作决策**：AI 会先一次只问一个问题来澄清需求（可以跳过），也可以全程不用 AI
 - **不是 SaaS**：没有账号、没有云同步、没有团队协作
 
-<details>
-<summary><b>📑 目录</b>（点开）</summary>
-
-- [30 秒讲清它解决什么问题](#-30-秒讲清它解决什么问题)
-- [为什么是这套机制](#-为什么是这套机制)
-- [它不做什么 · 什么时候才需要它](#-它不做什么--什么时候才需要它)
-- [它长什么样](#-它长什么样)
-- [三步跑起来（约 3 分钟）](#-三步跑起来windows-新手版--约-3-分钟)
-- [第一次打开，先做这 4 件事](#-第一次打开先做这-4-件事)
-- [我该看哪份文档](#-我该看哪份文档)
-- [功能亮点](#-功能亮点)
-- [安装与运行（详细步骤）](#-安装与运行详细步骤)
-- [AI 功能配置](#-ai-功能配置)
-- [配置项（环境变量）](#-配置项环境变量)
-- [界面导航速览](#-界面导航速览)
-- [新手常见问题](#-新手常见问题先看这里)
-- [进阶功能（可选）](#-进阶功能可选--不影响手动写作)
-- [测试与验证](#-测试与验证)
-- [数据与隐私](#-数据与隐私)
-- [项目结构](#-项目结构)
-- [Roadmap](#-roadmap)
-- [参与贡献](#-参与贡献)
-- [License](#-license)
-- [更新记录](#-更新记录)
-
-</details>
-
 ---
 
-## 👀 它长什么样
-
-![正文写作：左侧章节树、中间富文本编辑器、右侧设定参考面板](assets/screenshot-writing.png)
-
-![小说设定 · 角色：基础档案、当前状态与人物关系](assets/screenshot-settings-characters.png)
-
-![总览：章节、设定词条、角色与剧情线的一屏统计](assets/screenshot-overview.png)
-
-> 💡 以上截图都取自仓库内一键导入的示例小说《雾都缝匠》。
-> （`assets/preview.png` 是应用图标的多尺寸预览，用于生成桌面快捷方式图标，**不是**界面截图。）
-
-打开后是一屏三栏的写作台：
-
-- **左侧导航**：`📚 我的作品`（管理多部作品）、`✨ AI 创作`（用一段描述让 AI 从零生成新书）；进入某部作品后是 `总览 / 正文写作 / 小说设定 / AI创造板块`，下方还有常驻的 `🐞 运行追踪` 与 `🧾 日志`
-- **中间正文编辑器**：左侧章节树选章，右侧写正文——富文本排版、自动保存、实时字数统计，工具栏一键调起 `✍️ AI 写作`
-- **右侧参考面板**：随手查本章涉及的设定词条、角色卡、剧情线，以及「AI 这次到底看到了什么」的上下文预览（含语义召回命中与相关度）
-
-## ⚡ 三步跑起来（Windows 新手版 · 约 3 分钟）
-
-> **只想自己动手写小说？** 不需要 `npm install`、不需要装数据库、不需要联网、不需要 API Key，也不产生任何费用。
-> 唯一要装的东西是 **Node.js**。
-
-### 第 1 步 · 装 Node.js（只需装一次）
-
-打开 <https://nodejs.org> → 下载 **LTS 版**（**22.13 或更高**，推荐直接装最新的 24.x）→ 一路「下一步」装完。
-
-装好后按 `Win + R` 输入 `cmd` 回车，在弹出的黑窗口里敲：
-
-```bash
-node -v
-```
-
-能看到 `v24.x.x`，或 `v22.13.0` 以上的任意版本，就说明装好了。
-**如果版本低于 22.13，请下载新版覆盖安装**——原因见下面「🆘 新手常见问题」里 `node:sqlite` 那一条。
-
-### 第 2 步 · 下载本项目
-
-在本仓库页面点绿色的 **`Code` → `Download ZIP`**，解压到一个**路径里不含中文和空格**的目录，例如 `D:\novel-studio`。
-
-（会用 Git 的话：`git clone https://github.com/bbaz123/novel-studio.git`）
-
-### 第 3 步 · 双击启动
-
-进入解压出来的文件夹，**双击 `start-novel-studio.cmd`**。
-
-它会自动弹出一个黑色服务窗口，并帮你打开浏览器。当服务窗口里出现下面这两行、浏览器里出现「📚 我的作品」页面，就成功了：
-
-```text
-[logger:server] Novel Studio 服务启动
-Novel Studio is running at http://localhost:3737
-```
-
-（两行之间可能还有一行自检日志，属正常现象。若浏览器没自动打开，手动访问 <http://localhost:3737> 即可。）
-
-- 以后每次写作都只要重复**第 3 步**：双击同一个文件。
-- 想停止服务：在服务窗口里按 **`Ctrl + C`**（推荐，会先把数据落盘再退出），或直接关掉那个黑色窗口。
-- 服务**只监听本机**（`127.0.0.1`），同一局域网里的其它设备访问不到，作品不会被别人看到。
-
-<details>
-<summary><b>macOS / Linux 用户点这里</b></summary>
-
-装好 Node 22.13+ 后，在项目目录里执行：
-
-```bash
-npm start
-```
-
-然后浏览器打开 <http://localhost:3737>；停止服务按 `Ctrl + C`。
-
-</details>
-
-## 🎬 第一次打开，先做这 4 件事
-
-| 顺序 | 做什么 | 怎么做 |
-| --- | --- | --- |
-| 1 | **导入一本示例小说**（强烈建议） | 首屏「🧪 示例小说」区块 → 点「✨ 一键导入示例小说《雾都缝匠》」→ 再点「打开《雾都缝匠》」。它自带章节、角色、设定词条、长期记忆与事件账本，能让你立刻看懂每个页面是干什么的 |
-| 2 | **逛一圈** | 左侧点「总览」看数据统计 → 「正文写作」点章节树里的任意一章，试着改几个字（会自动保存）→ 「小说设定」看剧情线 / 大纲 / 设定库 / 角色 / 长期记忆 |
-| 3 | **建自己的作品** | 点左上角「📚 我的作品」回到初始页 → 右上角「新建作品」→ 填书名 → 进入后用「新建章节」按钮就能开写（建议先建一卷；新建章节的对话框里可以指定它属于哪一卷，不指定也能写，会显示为「未分卷」） |
-| 4 | **（可选）接入 AI** | 想用 AI 写作 / 续写 / AI 生成大纲，再看「🤖 AI 功能配置」。这一步需要你自己准备模型服务的 API Key，**会产生费用**，不急 |
-
-> 💡 示例小说随时可以删：在「我的作品」页的「🧪 示例小说」区块点「删除示例数据」即可，你自己的作品不受影响。
-
-![我的作品页：右上角「新建作品」，下方「🧪 示例小说」区块可一键导入《雾都缝匠》](assets/screenshot-home.png)
-
-## 📚 我该看哪份文档？
-
-| 你的情况 | 直接看 |
-| --- | --- |
-| **第一次用，只想尽快跑起来** | 本文「⚡ 三步跑起来」；卡住了看 **[docs/新手入门.md](docs/新手入门.md)**（逐步骤讲解 + 逐条排错） |
-| 想先知道有哪些功能 | 本文「✨ 为什么是这套机制」 |
-| 启动失败 / 报错看不懂 | 本文「🆘 新手常见问题」→ 详细版见 [docs/新手入门.md](docs/新手入门.md) |
-| 想接 AI 写作 | 本文「🤖 AI 功能配置」 |
-| 想知道每个版本改了什么 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
-| 想改代码 / 了解 AI 内核与上下文装配 | [docs/ai-core.md](docs/ai-core.md)、上下文契约 [docs/context-contract.md](docs/context-contract.md) |
-| 想跑验证 / 看验收口径 | `node .p1-baseline/verify-all.mjs`；说明见 [.p1-baseline/README.md](.p1-baseline/README.md) |
-| 想参与开发 | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| 想找某份具体文档 | [docs/README.md](docs/README.md)（全部文档索引） |
-
-> 🔗 **相关仓库**：本仓库是工坊主程序，创作插件源码内置在 [`harness-plugins/novel-writing/`](harness-plugins/novel-writing/)，
-> 另有独立发布镜像 [bbaz123/novel-writing-plugin](https://github.com/bbaz123/novel-writing-plugin)。
-
----
-
-## ✨ 为什么是这套机制
-
-市面上「AI 写小说」的工具不少，差别不在功能清单有多长，而在**出问题的地方有没有机制兜住**。下表是选这套工具时最该先看的几件事。
-
-| 你的处境 | 通用对话式工具 | Novel Studio |
-| --- | --- | --- |
-| 写到第 20～80 章开始崩（设定漂移 / 伏笔失踪 / 角色状态错乱） | 靠更长的提示词、靠你记得提醒 | **确定性检查**：连续性预检 + 成文后一致性核对，冲突逐条报出 |
-| 每次都要手动把设定贴进对话框 | 贴少了它编，贴多了超上下文 | **14 层上下文自动装配**（另有 4 个门控层按作品开关启用；含角色当前状态与未闭合伏笔），按预算裁剪，且裁剪后可查回 |
-| 不知道 AI 到底看到了什么 / 这笔钱花在哪 | 只能翻日志或猜 | **可追问**：`context_id` + 逐层溯源，点开参考面板就能核对 |
-| 数据与 API Key 放在别人服务器上 | 默认如此 | **只监听 `127.0.0.1`**，数据是本机一个 SQLite 文件 |
+## ⭐ 功能特性
 
 <a id="-功能亮点"></a>
 
-> 下面的 **功能亮点** 是该机制对应的具体功能面。
+### 一致性机制（这个项目存在的理由）
+
+- **角色状态一致性**：角色卡带基础档案、当前状态、人物关系与剧情线级状态；装配器把**对应章节时点**的快照送进上下文，成文后再核对一次，谁的行为与状态对不上就报出来。
+- **伏笔闭环（不是记事本）**：伏笔在事件账本里是**一等公民**，可标「已埋下 / 已回收」；模型能查询尚未闭合的线，正文回收时自动标记 resolved。
+- **设定与世界观真的进上下文**：设定词条、世界观、角色卡、剧情线、长期记忆、事件账本**自动装配**，不必每次手动往对话框里贴。
+- **14 层上下文装配**：作品 → 大纲 → 长期记忆 → 语义召回 → 事件账本 → 未闭合伏笔 → 当前场景 → 本章蓝图 → 前文衔接 → 出场角色卡 → 人物关系 → 世界观 → 设定词条 → 写作红线。按预算裁剪，且**凡裁剪必可查回**（每层都给出 `tool_hint`）。
+- **零损失记忆护栏**：压缩长期记忆时，凡是正文里出场过的实体（含别名）**一个都不许丢**；违反直接**拒绝落库**并返回缺失名单。
+- **反 AI 腔红线**：确定性正则扫描 + 正向风格契约，写作与审稿两条通道同源。
+- **成文后一致性核对**：逐项对照未闭合伏笔 / 角色当前状态 / 事件账本 / 已登记命名实体 / 本章边界，冲突如实报出。
+- **故事状态内核**：实体 / 时间线 / 伏笔 / 披露 / 知识 / 审批 / 风格质量，通过单一契约暴露。
+- **AI 产出先落提案**：AI 抽取的事件与记忆先落「提案」，**你勾选之后才入账**；AI 写的正文绝不自动覆盖章节（旧稿自动存历史版本）。
+
+### 工程特性
+
+- **零 npm 依赖**：`package.json` 里没有 `dependencies`，运行时不引入任何第三方包；用的是 Node 自带的 `node:sqlite`
+- **纯 ESM**、无构建步骤（前端是原生页面，改完刷新即生效）
+- **CI 零计费**：49 条离线检查 + 隔离实例活测，Windows / Linux 双平台，**绝不调用真实模型**
+- **服务只监听 `127.0.0.1`**，写请求校验 `Origin` / `Host`（防 DNS rebinding）
 
 ### 作品管理
 
@@ -257,7 +141,112 @@ npm start
 
 ---
 
-## 🚀 安装与运行（详细步骤）
+## ✨ 为什么是这套机制
+
+市面上「AI 写小说」的工具不少，差别不在功能清单有多长，而在**出问题的地方有没有机制兜住**。下表是选这套工具时最该先看的几件事。
+
+| 你的处境 | 通用对话式工具 | Novel Studio |
+| --- | --- | --- |
+| 写到第 20～80 章开始崩（设定漂移 / 伏笔失踪 / 角色状态错乱） | 靠更长的提示词、靠你记得提醒 | **确定性检查**：连续性预检 + 成文后一致性核对，冲突逐条报出 |
+| 每次都要手动把设定贴进对话框 | 贴少了它编，贴多了超上下文 | **14 层上下文自动装配**（另有 4 个门控层按作品开关启用；含角色当前状态与未闭合伏笔），按预算裁剪，且裁剪后可查回 |
+| 不知道 AI 到底看到了什么 / 这笔钱花在哪 | 只能翻日志或猜 | **可追问**：`context_id` + 逐层溯源，点开参考面板就能核对 |
+| 数据与 API Key 放在别人服务器上 | 默认如此 | **只监听 `127.0.0.1`**，数据是本机一个 SQLite 文件 |
+
+> 上方的 [**⭐ 功能特性**](#-功能特性) 是该机制对应的具体功能面。
+
+---
+
+## 🚀 快速开始（Windows 新手版 · 约 3 分钟）
+
+> **只想自己动手写小说？** 不需要 `npm install`、不需要装数据库、不需要联网、不需要 API Key，也不产生任何费用。
+> 唯一要装的东西是 **Node.js**。
+
+### 第 1 步 · 装 Node.js（只需装一次）
+
+打开 <https://nodejs.org> → 下载 **LTS 版**（**22.13 或更高**，推荐直接装最新的 24.x）→ 一路「下一步」装完。
+
+装好后按 `Win + R` 输入 `cmd` 回车，在弹出的黑窗口里敲：
+
+```bash
+node -v
+```
+
+能看到 `v24.x.x`，或 `v22.13.0` 以上的任意版本，就说明装好了。
+**如果版本低于 22.13，请下载新版覆盖安装**——原因见下面「🆘 新手常见问题」里 `node:sqlite` 那一条。
+
+### 第 2 步 · 下载本项目
+
+在本仓库页面点绿色的 **`Code` → `Download ZIP`**，解压到一个**路径里不含中文和空格**的目录，例如 `D:\novel-studio`。
+
+（会用 Git 的话：`git clone https://github.com/bbaz123/novel-studio.git`）
+
+### 第 3 步 · 双击启动
+
+进入解压出来的文件夹，**双击 `start-novel-studio.cmd`**。
+
+它会自动弹出一个黑色服务窗口，并帮你打开浏览器。当服务窗口里出现下面这两行、浏览器里出现「📚 我的作品」页面，就成功了：
+
+```text
+[logger:server] Novel Studio 服务启动
+Novel Studio is running at http://localhost:3737
+```
+
+（两行之间可能还有一行自检日志，属正常现象。若浏览器没自动打开，手动访问 <http://localhost:3737> 即可。）
+
+- 以后每次写作都只要重复**第 3 步**：双击同一个文件。
+- 想停止服务：在服务窗口里按 **`Ctrl + C`**（推荐，会先把数据落盘再退出），或直接关掉那个黑色窗口。
+- 服务**只监听本机**（`127.0.0.1`），同一局域网里的其它设备访问不到，作品不会被别人看到。
+
+<details>
+<summary><b>macOS / Linux 用户点这里</b></summary>
+
+装好 Node 22.13+ 后，在项目目录里执行：
+
+```bash
+npm start
+```
+
+然后浏览器打开 <http://localhost:3737>；停止服务按 `Ctrl + C`。
+
+</details>
+
+---
+
+## 🎬 第一次打开，先做这 4 件事
+
+| 顺序 | 做什么 | 怎么做 |
+| --- | --- | --- |
+| 1 | **导入一本示例小说**（强烈建议） | 首屏「🧪 示例小说」区块 → 点「✨ 一键导入示例小说《雾都缝匠》」→ 再点「打开《雾都缝匠》」。它自带章节、角色、设定词条、长期记忆与事件账本，能让你立刻看懂每个页面是干什么的 |
+| 2 | **逛一圈** | 左侧点「总览」看数据统计 → 「正文写作」点章节树里的任意一章，试着改几个字（会自动保存）→ 「小说设定」看剧情线 / 大纲 / 设定库 / 角色 / 长期记忆 |
+| 3 | **建自己的作品** | 点左上角「📚 我的作品」回到初始页 → 右上角「新建作品」→ 填书名 → 进入后用「新建章节」按钮就能开写（建议先建一卷；新建章节的对话框里可以指定它属于哪一卷，不指定也能写，会显示为「未分卷」） |
+| 4 | **（可选）接入 AI** | 想用 AI 写作 / 续写 / AI 生成大纲，再看「🤖 AI 功能配置」。这一步需要你自己准备模型服务的 API Key，**会产生费用**，不急 |
+
+> 💡 示例小说随时可以删：在「我的作品」页的「🧪 示例小说」区块点「删除示例数据」即可，你自己的作品不受影响。
+
+![我的作品页：右上角「新建作品」，下方「🧪 示例小说」区块可一键导入《雾都缝匠》](assets/screenshot-home.png)
+
+---
+
+## 📚 我该看哪份文档？
+
+| 你的情况 | 直接看 |
+| --- | --- |
+| **第一次用，只想尽快跑起来** | 本文「🚀 快速开始」；卡住了看 **[docs/新手入门.md](docs/新手入门.md)**（逐步骤讲解 + 逐条排错） |
+| 想先知道有哪些功能 | 本文「✨ 为什么是这套机制」 |
+| 启动失败 / 报错看不懂 | 本文「🆘 新手常见问题」→ 详细版见 [docs/新手入门.md](docs/新手入门.md) |
+| 想接 AI 写作 | 本文「🤖 AI 功能配置」 |
+| 想知道每个版本改了什么 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
+| 想改代码 / 了解 AI 内核与上下文装配 | [docs/ai-core.md](docs/ai-core.md)、上下文契约 [docs/context-contract.md](docs/context-contract.md) |
+| 想跑验证 / 看验收口径 | `node .p1-baseline/verify-all.mjs`；说明见 [.p1-baseline/README.md](.p1-baseline/README.md) |
+| 想参与开发 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 想找某份具体文档 | [docs/README.md](docs/README.md)（全部文档索引） |
+
+> 🔗 **相关仓库**：本仓库是工坊主程序，创作插件源码内置在 [`harness-plugins/novel-writing/`](harness-plugins/novel-writing/)，
+> 另有独立发布镜像 [bbaz123/novel-writing-plugin](https://github.com/bbaz123/novel-writing-plugin)。
+
+---
+
+## 📦 安装与运行（详细步骤）
 
 ### 第 0 步：环境要求
 
@@ -486,199 +475,50 @@ npm start
 
 ---
 
-## 🔧 配置项（环境变量）
+## 💻 使用
 
-全部可选。**只手动写作的话，一个都不需要设**；下面这些只在多实例、隔离测试、或想调整默认行为时才用。
+**日常写作**：在章节树里选一章，直接在编辑器里写，**自动保存**。切到三栏布局后，右侧参考面板常驻显示设定词条、角色、剧情线，以及「**AI 这次到底会看到什么**」的上下文预览（含语义召回命中与相关度）。
 
-启动：
+**用 AI 写作**：工具栏的 `✍️ AI 写作` 会先弹**需求确认框**（含「直接开始」），**确认后才发起付费调用**，不会误触扣费。AI 一次只问一个问题，问清楚之后才动笔；产出的事件与记忆先落成**提案**，你勾选才入账。
 
-- `PORT` —— 服务端口，默认 `3737`
-- `NOVELSTUDIO_DATA_DIR` —— 数据目录，默认项目内的 `data/`（多开或隔离测试时用）
-
-AI / 创作内核：
-
-- `NOVELSTUDIO_DSH_REPO` —— DeepSeek Harness 仓库所在目录（**优先于界面里填的路径**）
-- `NOVELSTUDIO_DSH_PROFILE` —— 写作任务使用的 dsh profile，默认 `novel`
-- `NOVELSTUDIO_DSH_LAUNCH` —— `source` / `built`，强制走源码或预构建产物（默认自动判断：产物存在且不比源码旧才用）
-- `NOVELSTUDIO_DSH_HOME` —— 给写作任务指定一份专用 dsh home（进阶）
-- dsh 热备池（`ai/harness-pool.mjs`）—— **尚未接线到生产路径**（没有环境变量开关，`harness.js` 仍走"每任务一个子进程"）。冷启动收益现在来自"优先用预构建产物"，不是热备池；接线前需先测收益
-- `NOVELSTUDIO_CONTEXT_CACHE_TTL_MS` —— 上下文装配缓存 TTL，默认 10 分钟（只作兜底：索引一旦完成缓存立刻失效）
-
-记忆库与护栏：
-
-- `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1` —— 对「从未出场的实体被提及」也严格拒绝（默认只记日志放行）
-- `NOVELSTUDIO_COMPRESS_MIN_COVERAGE` —— 压缩覆盖率下限（0~1），用于放宽护栏
-- `NOVELSTUDIO_OV_DISABLED=1` —— 整体停用 OpenViking 集成（冒烟 / 隔离环境）
-- `NOVELSTUDIO_OV_AUTOINDEX=0` —— 关闭启动时的自动建索引
-- `NOVELSTUDIO_OPENVIKING_PEER_ID` —— 覆盖写作任务归属的记忆库 peer
-
-运行追踪：
-
-- `NOVELSTUDIO_TRACE_KEEP` —— 保留最近多少个录制会话文件，默认 20
-- `NOVELSTUDIO_TRACE_MAX_NODES` —— 单次操作最多采集多少个节点，默认 2000
-- `NOVELSTUDIO_TRACE_IDLE_MS` —— 前端心跳丢失后多久自动停止录制，默认 20 秒
-
-> 另有一组 `NOVELSTUDIO_BASE_URL` / `_WORK_ID` / `_CHAPTER_ID` / `_MODE` / `_PROPOSE_MODE`：
-> 那是**工坊下发给 dsh 子进程的**任务上下文，不是给你手动设的配置项（见 `server.js` 的 spawn 段）。
+**HTTP API**：界面是本地 HTTP API 之上的一层薄客户端，因此可以脚本化：
 
 ```bash
-# 例：换端口 + 换数据目录（Windows PowerShell）
-$env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
+# 健康检查
+curl http://localhost:3737/api/novel/ping
+
+# 导入示例小说（可选；界面上那个按钮做的是同一件事）
+curl -X POST http://localhost:3737/api/demo/install \
+  -H 'Content-Type: application/json' -d '{}'
+
+# 查看某个作品的创作上下文（也就是「模型这次会收到什么」）
+curl 'http://localhost:3737/api/novel/context?work_id=1'
 ```
 
----
-
-## 🧭 界面导航速览
-
-| 入口 | 说明 |
-| --- | --- |
-| 我的作品 | 未进入作品时默认显示，管理所有小说项目 |
-| ✨ AI 创作 | 未进入作品时显示：AI 自动创建小说 / 创作工作台 / 创作任务历史 / AI 设置 |
-| 总览 | 当前作品的章节数、设定数、角色数、剧情线数 |
-| 正文写作 | 选择章节并写作，支持 AI 写作与富文本排版 |
-| 小说设定 | 剧情线 / 大纲 / 设定库 / 角色 / 长期记忆 |
-| AI创造板块 | 进入作品后显示：AI 设置 / 创作上下文 |
-| 🐞 运行追踪 | 作品内外均可访问：录制开关 + 按操作分组的调用链、Token 汇总、筛选、历史录制回看与导出 |
-| 🧾 日志 | 作品内外均可访问：统一日志系统的错误/慢操作/进程异常记录 |
-
-> 顶栏常驻「🐞 运行追踪」按钮可直接开/关录制，不必先进入追踪页；录制中按钮显示「● 录制中」。
+> 写请求只允许**同源的本地调用**：服务端会校验 `Origin` / `Host`，并且只监听 `127.0.0.1`——这同时也挡住了 DNS rebinding。
 
 ---
 
-## 🆘 新手常见问题（先看这里）
+## 🖼️ 界面截图
 
-| 现象 | 原因 | 怎么办 |
-| --- | --- | --- |
-| 双击 `start-novel-studio.cmd` 后浏览器打不开，或提示「无法访问此网站」 | 服务还没启动完，或启动失败已退出 | 等 5 秒刷新页面；仍打不开，就看那个黑色服务窗口里的报错，对照下面几行 |
-| 服务窗口一闪就没了，或提示 `Node.js 22+ is required` | 没装 Node.js，或版本太旧 | 到 <https://nodejs.org> 装 LTS 版后重试 |
-| 报错里出现 `node:sqlite`（如 `No such built-in module: node:sqlite`，或提示需要 `--experimental-sqlite`） | Node.js 版本是 22.5 ~ 22.12：这个区间里 `node:sqlite` 还需要额外的 `--experimental-sqlite` 启动参数 | 升级到 **22.13 或更高**（推荐 24 LTS）。官方版本说明：v22.13.0 起该模块不再需要此参数 |
-| 报错 `listen EADDRINUSE: address already in use 127.0.0.1:3737` 然后窗口退出 | 3737 端口被别的程序占用了 | 换端口启动：`$env:PORT=3738; npm start`（PowerShell）或 `PORT=3738 npm start`（macOS/Linux）；想知道谁占用了就执行 `netstat -ano`，在输出里找结尾是 3737 的那一行，记下它的进程号（PID）去任务管理器结束 |
-| 想换端口 / 换数据目录 | 默认端口 3737，数据在项目里的 `data/` | 用 `PORT=3738` 换端口；用 `NOVELSTUDIO_DATA_DIR="D:\novel-data"` 换数据目录（多开或隔离测试时用） |
-| 需要联网吗？要花钱吗？ | — | **手动写作完全不联网、零费用**；只有使用 AI 功能时才会请求你配置的模型服务商并产生费用 |
-| 我的作品数据在哪？怎么备份？ | 全部数据都在项目里的 `data/` 目录 | 数据库是 `data/novel.db`（含全部作品与 API Key）。备份请**先关掉服务、再复制整个 `data` 文件夹**——数据库启用了 WAL 模式，只拷 `novel.db` 会漏掉最近的写入（它含密钥，别发给别人） |
-| 怎么彻底卸载？ | 程序是绿色免安装的 | 删掉整个项目文件夹即可，系统里不会有残留 |
-| 能在手机或另一台电脑上打开吗？ | 服务只监听 `127.0.0.1` | 默认不能。确实需要局域网访问，得自行修改 `server.js` 的监听地址（属进阶改动） |
-| AI 任务报 `HTTP_404: DeepSeek Messages request failed`（慢通道 / 深度写作） | 你手动设的 `DEEPSEEK_BASE_URL` 指向了 **OpenAI 兼容**的地址，而 dsh 0.1.7 起走 **Messages API** | 把它改成 Messages 兼容根（官方：`https://api.deepseek.com/anthropic`），或**直接清掉这个变量**用 dsh 自带配置。详见「配置 DeepSeek Harness」一节的提示 |
+![正文写作：左侧章节树、中间富文本编辑器、右侧设定参考面板](assets/screenshot-writing.png)
 
----
+![小说设定 · 角色：基础档案、当前状态与人物关系](assets/screenshot-settings-characters.png)
 
-## 🧩 进阶功能（可选 · 不影响手动写作）
+![总览：章节、设定词条、角色与剧情线的一屏统计](assets/screenshot-overview.png)
 
-下面三节是给「想接 AI 写作」或「想深挖实现」的人看的，**新手可以整段跳过**：
-共享记忆的语义召回、统一日志系统、运行追踪（把界面上的每次操作录成可回看的调用链）。
+> 💡 以上截图都取自仓库内一键导入的示例小说《雾都缝匠》。
+> （`assets/preview.png` 是应用图标的多尺寸预览，用于生成桌面快捷方式图标，**不是**界面截图。）
+
+打开后是一屏三栏的写作台：
+
+- **左侧导航**：`📚 我的作品`（管理多部作品）、`✨ AI 创作`（用一段描述让 AI 从零生成新书）；进入某部作品后是 `总览 / 正文写作 / 小说设定 / AI创造板块`，下方还有常驻的 `🐞 运行追踪` 与 `🧾 日志`
+- **中间正文编辑器**：左侧章节树选章，右侧写正文——富文本排版、自动保存、实时字数统计，工具栏一键调起 `✍️ AI 写作`
+- **右侧参考面板**：随手查本章涉及的设定词条、角色卡、剧情线，以及「AI 这次到底看到了什么」的上下文预览（含语义召回命中与相关度）
 
 ---
 
-## 🧠 OpenViking 共享记忆（语义召回 · v0.9.0）
-
-工坊与 OpenViking 共享同一个记忆库：六类小说数据（章节正文 / 长期记忆 / 事件账本与伏笔 / 设定词条 / 角色卡 / 大纲剧情线）会自动渲染成 Markdown 写入 OpenViking（`user/default/resources/novel-studio/<作品id>/`），由它的本地 bge Embedding（512 维）向量化，不额外占用一套模型与向量库。
-
-> 定位说明：OpenViking 是**派生投影 / 语义检索**后端——正式正文、作者维护的长期记忆与 Canon Story State 仍以工坊宿主数据为准；DSH 会话记忆、作品资源投影与共享资料库是三条独立数据链，只是共用同一个记忆库实例提供跨会话与跨作品召回。
-
-- **语义召回层**：AI 写作上下文装配新增「相关记忆检索（语义召回）」层——写第 N 章时按当前章节/蓝图/最近事件语义召回全库相关片段（top 8、阈值 0.3、预算 1400 字），正文 AI 写作提示词（蓝图/成文/续写）同样注入召回结果；可在写作页参考面板「上下文」页签预览命中与相关度，并可一键开关。
-- **共享资料库（跨作品参考资料）**：跨作品共用的写作资料（方法 / 素材 / 范例）。把作者显式指定的目录扫描成 **dry-run 计划**（`.md`/`.txt` 白名单、单文件 ≤2MB、单批 ≤500 篇、不跟随符号链接、严格 UTF-8），确认后才写入共享资料根 `user/default/resources/novel-studio-library/<分类>/<slug>.md`，由同一个 OpenViking 本地向量化；作品打开开关后，写作上下文新增门控层「参考资料（非本书事实）」（top-4、阈值 0.40、单条 300 字、独立预算 1200 字），模型可用 `novel_library` 按关键词/分类把被预算裁掉的原文查回。资料**永不 canon**——只作参考，不进事实 / 事件 / 角色知识；开关默认关闭、逐作品开启，未打开的作品装配与接入前逐字节一致；导入 / 删除 / 开关都是作者动作，模型侧一律拒绝。（界面入口：侧栏「📎 资料库」页——资料列表与分类 / 关键词检索 / 导入两段式（扫描预览 → 确认导入）/ 按行读原文 / 按作品开关 / 标记缺失与确认删除；不喜欢用界面时端点仍可直接调用。）
-- **增量同步**：保存/删除章节、词条、角色、记忆、事件等会自动防抖同步到记忆库（2s 合并）；服务器离线时进本地 pending 队列自动重放；`POST /api/novel/semantic_index` 可全量重建索引。
-- **dsh 双通道共享**：GUI dsh（web profile）与工坊后台 headless dsh 都安装 `@openviking/dsh-memory-plugin`，写作任务会话自动采集进同一记忆库（跨会话可召回）；`harness.js` 会把 headless 任务归属到工坊 peer（`OPENVIKING_PEER_ID`，可用 `NOVELSTUDIO_OPENVIKING_PEER_ID` 覆盖）。
-- **检索语义化**：全局搜索与 `novel_lookup` 叠加语义结果（`/api/search` 返回 `semantic.hits`）。
-- **环境变量**：`NOVELSTUDIO_OV_DISABLED=1` 整体停用集成（冒烟测试/隔离环境）；`NOVELSTUDIO_OV_AUTOINDEX=0` 关闭启动自动建索引；OpenViking 地址/凭证走 `OPENVIKING_*` 环境变量 → **AI 设置页「OpenViking 记忆库」卡里填的值** → `~/.openviking/ovcli.conf` → `~/.openviking/ov.conf` → 默认 `http://127.0.0.1:1933`
-- **在界面里配置（v0.9.4）**：`✨ AI 创作 → ⚙️ AI 设置 → 🧠 OpenViking 记忆库` 可直接填地址/访问令牌并「测试连接」，「保存并生效」当场重建客户端、无需重启；卡上标出**这份凭证当前来自哪一层**。「写入全局配置」会把生效的 `url` + `api_key` 写进 `~/.openviking/ovcli.conf`（**先自动备份、只改这两个字段、其它字段原样保留**；原文件不是合法 JSON 时直接拒绝写入），这样 GUI 会话与写作任务读到的就是同一份凭证——否则容易出现「工坊连上了、AI 写作却召回不到」的错觉。
-- **降级**：OpenViking 服务器不可用时语义召回静默跳过，写作与装配完全不受影响。
-- **模型从哪来（不必联网）**：公开端口用的本地 embedding 模型 `bge-small-zh-v1.5-f16` 已经随源码带了一份
-  （`vendor/models/`，47.9 MB，SHA256 可校验），把 OpenViking 的 `ov.conf` 里 `embedding.dense.model_path`
-  指过来即可 —— 服务端就不会再去 HuggingFace 下载。完整下载地址、配置字段说明、验证清单与常见问题见
-  **[docs/openviking-embedding-setup.md](docs/openviking-embedding-setup.md)**；
-  核对或补齐那一份用 `node scripts/fetch-embedding-model.mjs --verify-only`（去掉 `--verify-only` 即补齐）。
-
----
-
-## 🧾 统一日志系统（诊断与性能监测）
-
-工坊内置零依赖日志系统，对**代码运行错误、阻塞卡顿、慢操作、进程异常**等不正常问题全程记录，每条日志都带**发生时间（毫秒级）**、**技术栈层级**（`layer`）、**代码位置**（文件:行号:函数）与**文件地址**（绝对路径）：
-
-- **双写存储**：SQLite `app_logs` 表（侧栏「🧾 日志」页按级别/层级/关键词筛选查看、展开堆栈、一键清空、每 5 秒自动刷新）+ `data/logs/app-YYYY-MM-DD.log` 滚动 JSONL 文件（应用整体卡死/崩溃后重启仍可排查）；保留策略：数据库最新 5000 条 / 30 天，文件 14 天
-- **全层覆盖**：`server`（接口 500 与慢请求 >500ms）、`db`、`harness`（任务开始/完成/超时/退出/构建失败）、`ai`（统一 AI 错误，旧 ai_error_logs 自动迁移）、`openviking`/`sync`（记忆库同步失败/队列丢弃）、`plugin`（dsh 插件进程经 `POST /api/logs` 上报）、`frontend`（浏览器运行时错误/未处理 Promise/慢 API/页面卡顿经 `sendBeacon` 上报）、`process`（未捕获异常/未处理拒绝/退出）
-- **主动监测**：事件循环滞后采样（卡顿 >400ms 记 `block`，1.5s 以上升级为错误）、慢操作归因（上下文装配/搜索/导出/全量同步超阈值记 `slow_op` 并定位代码位置）
-- **防刷屏**：同层同消息 10 秒窗口去重（AI 错误沿用 30 分钟窗口），进程崩溃时先落日志再退出
-- **接口**：`GET /api/logs`（筛选+统计+翻页）、`POST /api/logs`（远端上报，仅接受 frontend/plugin 层）、`DELETE /api/logs`（清空）
-
----
-
-## 🐞 运行追踪（调试录制 · 代码运行可视化）
-
-顶栏「🐞 运行追踪」按钮是一个**录制开关**：点一下开始，再点一下停止。录制期间，你在界面上的每一次操作都会被记成一条**操作记录**，回答三个问题——**这一步跑了哪些代码、在哪一行、花了多久、得到什么结果**。
-
-- **一个操作 = 一条记录**：按业务语义归并。例如点「AI 写本章」是一条操作，它内部触发的上下文装配、AI 调用、红线扫描、保存等 N 次调用都折叠在这一条下面，可展开看完整调用链。
-- **前后端同一条时间线**：前端通过 `X-Trace-Op` 头把操作 id 下发给后端，后端用 `AsyncLocalStorage` 让整条异步链归属同一操作，因此「前端处理器 → HTTP 请求 → 路由 → 业务函数 → SQL → 外部调用」按发生顺序排在一起，每个节点都带 `文件:行号:函数名` 与耗时。
-- **Token 用量**：直连通道（`/api/ai/*`）逐次采集 provider 返回的 `usage`（输入/输出 token、缓存命中），挂在对应的 AI 节点上，并在操作、会话两级汇总。
-- **分层深度**：业务主干函数全量记录；渲染/字符串/数学这类高频工具函数只累计「调用次数 + 合计耗时」，不逐条展开，避免淹没业务链路。
-- **落盘与保留**：明细写 `data/debug/trace-<会话>.jsonl`（内存缓冲 1 秒批量追加，崩溃最多丢 1 秒）。会话文件是**自描述**的——开头有 `session-start`、每条操作结束有 `op-end`（含耗时/Token/是否截断的摘要），因此回看不需要额外的索引表；视图内可查看历史录制、导出 JSON；默认只保留最近 20 个会话文件，可一键清空。
-- **安全阀**：单次操作节点数超过上限（默认 2000）后停止采集并在界面上标「已截断（丢弃 N 条）」；`/api/debug/*`、`/api/logs`、`/api/stats`、`/api/harness/job` 等自身与轮询接口不参与追踪，避免「记录行为本身」放大负载。
-- **忘关保护**：前端每 10 秒心跳一次，页面关闭后后端 20 秒内自动停止录制。
-
-### 明确的边界（先说清楚，避免误解）
-
-- **不记录正文**：所有参数与返回值都只转成「形状摘要」（类型 / 长度 / 字段名 / 关键 id），长文本用长度占位，**绝不落盘小说正文或提示词正文**；写入型 SQL 也只记绑定值的形状（例如"写入了 12480 字的正文"）。
-- **慢通道 Token 不可得**：`/api/harness/*` 走的 dsh 子进程里，headless 驱动显式丢弃了 usage 事件（`dsh-headless/lib/index.js` 的 `case "usage": return;`），stdout 只输出正文，因此那条通道只记到任务级（job id / 状态 / 耗时 / 成败），界面上会明确标注这一原因。
-- **高频工具函数**合并计数，不逐条列出（见上文「分层深度」）。
-
-### 接口
-
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/api/debug/state` | 当前录制状态、实时统计与上限配置 |
-| `POST` | `/api/debug/start` / `stop` / `ping` | 开始 / 停止录制、前端心跳 |
-| `GET` | `/api/debug/ops` | 当前会话的操作列表 + 工具函数累计表 |
-| `GET` | `/api/debug/op?op_id=` | 单次操作的完整调用链（内存优先，回退会话文件） |
-| `GET` | `/api/debug/stream` | SSE 实时推送节点（供追踪页边录边看） |
-| `POST` | `/api/debug/op` | 前端回传客户端节点、渲染结果与 toast（与后端节点合流） |
-| `GET` | `/api/debug/sessions` / `session?file=` | 历史录制列表 / 读取某个会话 |
-| `DELETE` | `/api/debug/purge` | 清空全部录制文件 |
-
-### 已埋点的业务主干（函数级节点）
-
-`server.js`：`search`（关键词检索）、`selectSceneCharacters`（选出场角色）、`buildAIContext`（UI 预览上下文）、`scanAgainstRedlines`（红线扫描）、`buildNovelContext`（创作上下文装配）、`compressStoryMemory`（压缩长期记忆）、`splitTextIntoCapters`（导入拆章）、`installDemo`（导入示例）、`callAI` / `callAIStream`（AI 调用，带 Token）。
-
-`ai/context/`：`assemble`（唯一上下文装配器，P2 起）、`renderSection`（单层渲染）。
-`ai/policy.mjs`：模型档位与思考强度（P4 起为唯一来源）。
-
-`openviking-sync.js`：`syncWorkFull`（记忆库全量同步）、`getSemanticRecall`（语义召回）、`getLibraryRecall`（共享资料召回，独立 find / 预算 / 微缓存）、`semanticSearchMerge`（检索合并）。
-
-`harness.js`：harness 任务（会话级，含成功/失败/超时/取消四种结局）。
-
----
-
-## 🧪 测试与验证
-
-```bash
-# 离线清单（49 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
-node scripts/ci-offline-checks.mjs
-
-# 活实例回归：起一个隔离实例（临时数据目录 + 停用 OpenViking）再跑，跑完自动关掉
-node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
-node scripts/ci-isolated-run.mjs --port 3738 -- node harness-plugins/novel-writing/test/smoke.mjs
-
-# 前端执行验证（最小 DOM 桩里真跑 public/app.js：渲染、开关、节点上报、形状摘要）
-node frontend-test.mjs
-```
-
-> 这三条都有 CI 兜底（`.github/workflows/ci.yml`：Windows + Linux、Node 24，另有一格
-> Node 22.15 验证依赖下限）。CI **绝不调用真实模型**——离线项只读文件，活实例项用本机
-> 假端点/死端口。要跑齐**全部**验收（含需要你自己数据的那些）用
-> `node .p1-baseline/verify-all.mjs`，缺前置的项会被标成「跳过」而**不是**通过。
-
----
-
-## 🔒 数据与隐私
-
-- 所有数据保存在本机：`novel-studio/data/novel.db`；运行日志位于 `data/logs/`（14 天自动清理）
-- 运行追踪的录制明细位于 `data/debug/trace-*.jsonl`（默认保留最近 20 个会话，可在追踪页一键清空）；**其中不包含小说正文与提示词正文**，只含代码位置、耗时与长度等形状信息
-- API Key 也只保存在本地 SQLite 数据库中
-- `data/` 目录（含数据库备份目录 `data/backup-*` 与 `data/debug/`）已被 `.gitignore` 排除，**不会随仓库上传**
-- 首次启动时如果数据库不存在，程序会自动创建所需的表结构
-
----
-
-## 📁 项目结构
+## 🏗️ 架构
 
 ### 一次成文请求的数据流（架构）
 
@@ -748,7 +588,59 @@ novel-studio/
 
 ---
 
-## 🚩 Roadmap
+## ⚙️ 配置项（环境变量）
+
+全部可选。**只手动写作的话，一个都不需要设**；下面这些只在多实例、隔离测试、或想调整默认行为时才用。
+
+启动：
+
+- `PORT` —— 服务端口，默认 `3737`
+- `NOVELSTUDIO_DATA_DIR` —— 数据目录，默认项目内的 `data/`（多开或隔离测试时用）
+
+AI / 创作内核：
+
+- `NOVELSTUDIO_DSH_REPO` —— DeepSeek Harness 仓库所在目录（**优先于界面里填的路径**）
+- `NOVELSTUDIO_DSH_PROFILE` —— 写作任务使用的 dsh profile，默认 `novel`
+- `NOVELSTUDIO_DSH_LAUNCH` —— `source` / `built`，强制走源码或预构建产物（默认自动判断：产物存在且不比源码旧才用）
+- `NOVELSTUDIO_DSH_HOME` —— 给写作任务指定一份专用 dsh home（进阶）
+- dsh 热备池（`ai/harness-pool.mjs`）—— **尚未接线到生产路径**（没有环境变量开关，`harness.js` 仍走"每任务一个子进程"）。冷启动收益现在来自"优先用预构建产物"，不是热备池；接线前需先测收益
+- `NOVELSTUDIO_CONTEXT_CACHE_TTL_MS` —— 上下文装配缓存 TTL，默认 10 分钟（只作兜底：索引一旦完成缓存立刻失效）
+
+记忆库与护栏：
+
+- `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1` —— 对「从未出场的实体被提及」也严格拒绝（默认只记日志放行）
+- `NOVELSTUDIO_COMPRESS_MIN_COVERAGE` —— 压缩覆盖率下限（0~1），用于放宽护栏
+- `NOVELSTUDIO_OV_DISABLED=1` —— 整体停用 OpenViking 集成（冒烟 / 隔离环境）
+- `NOVELSTUDIO_OV_AUTOINDEX=0` —— 关闭启动时的自动建索引
+- `NOVELSTUDIO_OPENVIKING_PEER_ID` —— 覆盖写作任务归属的记忆库 peer
+
+运行追踪：
+
+- `NOVELSTUDIO_TRACE_KEEP` —— 保留最近多少个录制会话文件，默认 20
+- `NOVELSTUDIO_TRACE_MAX_NODES` —— 单次操作最多采集多少个节点，默认 2000
+- `NOVELSTUDIO_TRACE_IDLE_MS` —— 前端心跳丢失后多久自动停止录制，默认 20 秒
+
+> 另有一组 `NOVELSTUDIO_BASE_URL` / `_WORK_ID` / `_CHAPTER_ID` / `_MODE` / `_PROPOSE_MODE`：
+> 那是**工坊下发给 dsh 子进程的**任务上下文，不是给你手动设的配置项（见 `server.js` 的 spawn 段）。
+
+```bash
+# 例：换端口 + 换数据目录（Windows PowerShell）
+$env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
+```
+
+---
+
+## 🔒 数据与隐私
+
+- 所有数据保存在本机：`novel-studio/data/novel.db`；运行日志位于 `data/logs/`（14 天自动清理）
+- 运行追踪的录制明细位于 `data/debug/trace-*.jsonl`（默认保留最近 20 个会话，可在追踪页一键清空）；**其中不包含小说正文与提示词正文**，只含代码位置、耗时与长度等形状信息
+- API Key 也只保存在本地 SQLite 数据库中
+- `data/` 目录（含数据库备份目录 `data/backup-*` 与 `data/debug/`）已被 `.gitignore` 排除，**不会随仓库上传**
+- 首次启动时如果数据库不存在，程序会自动创建所需的表结构
+
+---
+
+## 🗺️ Roadmap
 
 这一节只列**能在仓库里核对到现状**的条目；完整的待决清单与逐项代价见
 [docs/pending-decisions.md](docs/pending-decisions.md) 与最近的审查报告。
@@ -761,6 +653,8 @@ novel-studio/
 - **可选的局域网访问开关**：当前服务只监听 `127.0.0.1`，想在平板或手机上写作得手动改 `server.js`
 - **更多导出格式**：现已支持整书 TXT / 整书 Markdown / 单章 TXT；EPUB / DOCX 尚未支持
 
+---
+
 ## 🤝 参与贡献
 
 这个项目目前由作者一个人维护，**Issue 与 PR 都欢迎**。动手之前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)，要点只有几条：
@@ -770,6 +664,8 @@ novel-studio/
 - **不要提交 `data/`**：里面是你的作品与 API Key（已在 `.gitignore` 内）
 - **代码风格**：零 npm 依赖、纯 ESM、中文注释解释**为什么**这么做，而不是复述代码在做什么
 - **`docs/` 里的历史报告描述的是当时的代码**：行号可能已过时，找代码请按符号名
+
+---
 
 ## 📄 License
 
@@ -785,6 +681,16 @@ novel-studio/
   （模型卡标注 MIT），GGUF 转换件来自 `CompendiumLabs/bge-small-zh-v1.5-gguf`；
   本仓库**原样**随源码分发（不改字节），SHA256 见 [vendor/README.md](vendor/README.md)
 - DeepSeek Harness（`dsh`）与 OpenViking 是**独立项目**，不包含在本仓库内；许可与版本核验记录见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（dsh：MIT，本机 0.1.7-rc.1；OpenViking：以本机实际安装版本为准，当前上游主项目 AGPL-3.0）
+
+---
+
+## 🙏 致谢
+
+本项目基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 AI 能力开发；世界观与角色处理的设计思路借鉴了 [SillyTavern](https://github.com/SillyTavern/SillyTavern)。
+
+工坊首页的「**🙏 借鉴与致谢**」页列出了**实际用到的**每一个开源组件与设计参考来源，以及对应的许可核验记录——只写真实关系，不显示会过期的人气计数，也不暗示官方合作或背书。
+
+第三方资产（`vendor/models/*.gguf` 等）遵循其上游许可，详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 与 [vendor/README.md](vendor/README.md)。
 
 ---
 
@@ -948,3 +854,143 @@ novel-studio/
 - 应用本体仓库：<https://github.com/bbaz123/novel-studio>
 - 创作插件仓库（发布镜像）：<https://github.com/bbaz123/novel-writing-plugin>
 - 借鉴开源项目：SillyTavern，利用其世界观等特色加深 AI 写作能力（相关实现见工坊首页「🙏 借鉴与致谢」，含许可核验记录）
+
+---
+
+## 🧭 界面导航速览
+
+| 入口 | 说明 |
+| --- | --- |
+| 我的作品 | 未进入作品时默认显示，管理所有小说项目 |
+| ✨ AI 创作 | 未进入作品时显示：AI 自动创建小说 / 创作工作台 / 创作任务历史 / AI 设置 |
+| 总览 | 当前作品的章节数、设定数、角色数、剧情线数 |
+| 正文写作 | 选择章节并写作，支持 AI 写作与富文本排版 |
+| 小说设定 | 剧情线 / 大纲 / 设定库 / 角色 / 长期记忆 |
+| AI创造板块 | 进入作品后显示：AI 设置 / 创作上下文 |
+| 🐞 运行追踪 | 作品内外均可访问：录制开关 + 按操作分组的调用链、Token 汇总、筛选、历史录制回看与导出 |
+| 🧾 日志 | 作品内外均可访问：统一日志系统的错误/慢操作/进程异常记录 |
+
+> 顶栏常驻「🐞 运行追踪」按钮可直接开/关录制，不必先进入追踪页；录制中按钮显示「● 录制中」。
+
+---
+
+## 🆘 新手常见问题（先看这里）
+
+| 现象 | 原因 | 怎么办 |
+| --- | --- | --- |
+| 双击 `start-novel-studio.cmd` 后浏览器打不开，或提示「无法访问此网站」 | 服务还没启动完，或启动失败已退出 | 等 5 秒刷新页面；仍打不开，就看那个黑色服务窗口里的报错，对照下面几行 |
+| 服务窗口一闪就没了，或提示 `Node.js 22+ is required` | 没装 Node.js，或版本太旧 | 到 <https://nodejs.org> 装 LTS 版后重试 |
+| 报错里出现 `node:sqlite`（如 `No such built-in module: node:sqlite`，或提示需要 `--experimental-sqlite`） | Node.js 版本是 22.5 ~ 22.12：这个区间里 `node:sqlite` 还需要额外的 `--experimental-sqlite` 启动参数 | 升级到 **22.13 或更高**（推荐 24 LTS）。官方版本说明：v22.13.0 起该模块不再需要此参数 |
+| 报错 `listen EADDRINUSE: address already in use 127.0.0.1:3737` 然后窗口退出 | 3737 端口被别的程序占用了 | 换端口启动：`$env:PORT=3738; npm start`（PowerShell）或 `PORT=3738 npm start`（macOS/Linux）；想知道谁占用了就执行 `netstat -ano`，在输出里找结尾是 3737 的那一行，记下它的进程号（PID）去任务管理器结束 |
+| 想换端口 / 换数据目录 | 默认端口 3737，数据在项目里的 `data/` | 用 `PORT=3738` 换端口；用 `NOVELSTUDIO_DATA_DIR="D:\novel-data"` 换数据目录（多开或隔离测试时用） |
+| 需要联网吗？要花钱吗？ | — | **手动写作完全不联网、零费用**；只有使用 AI 功能时才会请求你配置的模型服务商并产生费用 |
+| 我的作品数据在哪？怎么备份？ | 全部数据都在项目里的 `data/` 目录 | 数据库是 `data/novel.db`（含全部作品与 API Key）。备份请**先关掉服务、再复制整个 `data` 文件夹**——数据库启用了 WAL 模式，只拷 `novel.db` 会漏掉最近的写入（它含密钥，别发给别人） |
+| 怎么彻底卸载？ | 程序是绿色免安装的 | 删掉整个项目文件夹即可，系统里不会有残留 |
+| 能在手机或另一台电脑上打开吗？ | 服务只监听 `127.0.0.1` | 默认不能。确实需要局域网访问，得自行修改 `server.js` 的监听地址（属进阶改动） |
+| AI 任务报 `HTTP_404: DeepSeek Messages request failed`（慢通道 / 深度写作） | 你手动设的 `DEEPSEEK_BASE_URL` 指向了 **OpenAI 兼容**的地址，而 dsh 0.1.7 起走 **Messages API** | 把它改成 Messages 兼容根（官方：`https://api.deepseek.com/anthropic`），或**直接清掉这个变量**用 dsh 自带配置。详见「配置 DeepSeek Harness」一节的提示 |
+
+---
+
+## 🧩 进阶功能（可选 · 不影响手动写作）
+
+下面三节是给「想接 AI 写作」或「想深挖实现」的人看的，**新手可以整段跳过**：
+共享记忆的语义召回、统一日志系统、运行追踪（把界面上的每次操作录成可回看的调用链）。
+
+---
+
+## 🧠 OpenViking 共享记忆（语义召回 · v0.9.0）
+
+工坊与 OpenViking 共享同一个记忆库：六类小说数据（章节正文 / 长期记忆 / 事件账本与伏笔 / 设定词条 / 角色卡 / 大纲剧情线）会自动渲染成 Markdown 写入 OpenViking（`user/default/resources/novel-studio/<作品id>/`），由它的本地 bge Embedding（512 维）向量化，不额外占用一套模型与向量库。
+
+> 定位说明：OpenViking 是**派生投影 / 语义检索**后端——正式正文、作者维护的长期记忆与 Canon Story State 仍以工坊宿主数据为准；DSH 会话记忆、作品资源投影与共享资料库是三条独立数据链，只是共用同一个记忆库实例提供跨会话与跨作品召回。
+
+- **语义召回层**：AI 写作上下文装配新增「相关记忆检索（语义召回）」层——写第 N 章时按当前章节/蓝图/最近事件语义召回全库相关片段（top 8、阈值 0.3、预算 1400 字），正文 AI 写作提示词（蓝图/成文/续写）同样注入召回结果；可在写作页参考面板「上下文」页签预览命中与相关度，并可一键开关。
+- **共享资料库（跨作品参考资料）**：跨作品共用的写作资料（方法 / 素材 / 范例）。把作者显式指定的目录扫描成 **dry-run 计划**（`.md`/`.txt` 白名单、单文件 ≤2MB、单批 ≤500 篇、不跟随符号链接、严格 UTF-8），确认后才写入共享资料根 `user/default/resources/novel-studio-library/<分类>/<slug>.md`，由同一个 OpenViking 本地向量化；作品打开开关后，写作上下文新增门控层「参考资料（非本书事实）」（top-4、阈值 0.40、单条 300 字、独立预算 1200 字），模型可用 `novel_library` 按关键词/分类把被预算裁掉的原文查回。资料**永不 canon**——只作参考，不进事实 / 事件 / 角色知识；开关默认关闭、逐作品开启，未打开的作品装配与接入前逐字节一致；导入 / 删除 / 开关都是作者动作，模型侧一律拒绝。（界面入口：侧栏「📎 资料库」页——资料列表与分类 / 关键词检索 / 导入两段式（扫描预览 → 确认导入）/ 按行读原文 / 按作品开关 / 标记缺失与确认删除；不喜欢用界面时端点仍可直接调用。）
+- **增量同步**：保存/删除章节、词条、角色、记忆、事件等会自动防抖同步到记忆库（2s 合并）；服务器离线时进本地 pending 队列自动重放；`POST /api/novel/semantic_index` 可全量重建索引。
+- **dsh 双通道共享**：GUI dsh（web profile）与工坊后台 headless dsh 都安装 `@openviking/dsh-memory-plugin`，写作任务会话自动采集进同一记忆库（跨会话可召回）；`harness.js` 会把 headless 任务归属到工坊 peer（`OPENVIKING_PEER_ID`，可用 `NOVELSTUDIO_OPENVIKING_PEER_ID` 覆盖）。
+- **检索语义化**：全局搜索与 `novel_lookup` 叠加语义结果（`/api/search` 返回 `semantic.hits`）。
+- **环境变量**：`NOVELSTUDIO_OV_DISABLED=1` 整体停用集成（冒烟测试/隔离环境）；`NOVELSTUDIO_OV_AUTOINDEX=0` 关闭启动自动建索引；OpenViking 地址/凭证走 `OPENVIKING_*` 环境变量 → **AI 设置页「OpenViking 记忆库」卡里填的值** → `~/.openviking/ovcli.conf` → `~/.openviking/ov.conf` → 默认 `http://127.0.0.1:1933`
+- **在界面里配置（v0.9.4）**：`✨ AI 创作 → ⚙️ AI 设置 → 🧠 OpenViking 记忆库` 可直接填地址/访问令牌并「测试连接」，「保存并生效」当场重建客户端、无需重启；卡上标出**这份凭证当前来自哪一层**。「写入全局配置」会把生效的 `url` + `api_key` 写进 `~/.openviking/ovcli.conf`（**先自动备份、只改这两个字段、其它字段原样保留**；原文件不是合法 JSON 时直接拒绝写入），这样 GUI 会话与写作任务读到的就是同一份凭证——否则容易出现「工坊连上了、AI 写作却召回不到」的错觉。
+- **降级**：OpenViking 服务器不可用时语义召回静默跳过，写作与装配完全不受影响。
+- **模型从哪来（不必联网）**：公开端口用的本地 embedding 模型 `bge-small-zh-v1.5-f16` 已经随源码带了一份
+  （`vendor/models/`，47.9 MB，SHA256 可校验），把 OpenViking 的 `ov.conf` 里 `embedding.dense.model_path`
+  指过来即可 —— 服务端就不会再去 HuggingFace 下载。完整下载地址、配置字段说明、验证清单与常见问题见
+  **[docs/openviking-embedding-setup.md](docs/openviking-embedding-setup.md)**；
+  核对或补齐那一份用 `node scripts/fetch-embedding-model.mjs --verify-only`（去掉 `--verify-only` 即补齐）。
+
+---
+
+## 🧾 统一日志系统（诊断与性能监测）
+
+工坊内置零依赖日志系统，对**代码运行错误、阻塞卡顿、慢操作、进程异常**等不正常问题全程记录，每条日志都带**发生时间（毫秒级）**、**技术栈层级**（`layer`）、**代码位置**（文件:行号:函数）与**文件地址**（绝对路径）：
+
+- **双写存储**：SQLite `app_logs` 表（侧栏「🧾 日志」页按级别/层级/关键词筛选查看、展开堆栈、一键清空、每 5 秒自动刷新）+ `data/logs/app-YYYY-MM-DD.log` 滚动 JSONL 文件（应用整体卡死/崩溃后重启仍可排查）；保留策略：数据库最新 5000 条 / 30 天，文件 14 天
+- **全层覆盖**：`server`（接口 500 与慢请求 >500ms）、`db`、`harness`（任务开始/完成/超时/退出/构建失败）、`ai`（统一 AI 错误，旧 ai_error_logs 自动迁移）、`openviking`/`sync`（记忆库同步失败/队列丢弃）、`plugin`（dsh 插件进程经 `POST /api/logs` 上报）、`frontend`（浏览器运行时错误/未处理 Promise/慢 API/页面卡顿经 `sendBeacon` 上报）、`process`（未捕获异常/未处理拒绝/退出）
+- **主动监测**：事件循环滞后采样（卡顿 >400ms 记 `block`，1.5s 以上升级为错误）、慢操作归因（上下文装配/搜索/导出/全量同步超阈值记 `slow_op` 并定位代码位置）
+- **防刷屏**：同层同消息 10 秒窗口去重（AI 错误沿用 30 分钟窗口），进程崩溃时先落日志再退出
+- **接口**：`GET /api/logs`（筛选+统计+翻页）、`POST /api/logs`（远端上报，仅接受 frontend/plugin 层）、`DELETE /api/logs`（清空）
+
+---
+
+## 🐞 运行追踪（调试录制 · 代码运行可视化）
+
+顶栏「🐞 运行追踪」按钮是一个**录制开关**：点一下开始，再点一下停止。录制期间，你在界面上的每一次操作都会被记成一条**操作记录**，回答三个问题——**这一步跑了哪些代码、在哪一行、花了多久、得到什么结果**。
+
+- **一个操作 = 一条记录**：按业务语义归并。例如点「AI 写本章」是一条操作，它内部触发的上下文装配、AI 调用、红线扫描、保存等 N 次调用都折叠在这一条下面，可展开看完整调用链。
+- **前后端同一条时间线**：前端通过 `X-Trace-Op` 头把操作 id 下发给后端，后端用 `AsyncLocalStorage` 让整条异步链归属同一操作，因此「前端处理器 → HTTP 请求 → 路由 → 业务函数 → SQL → 外部调用」按发生顺序排在一起，每个节点都带 `文件:行号:函数名` 与耗时。
+- **Token 用量**：直连通道（`/api/ai/*`）逐次采集 provider 返回的 `usage`（输入/输出 token、缓存命中），挂在对应的 AI 节点上，并在操作、会话两级汇总。
+- **分层深度**：业务主干函数全量记录；渲染/字符串/数学这类高频工具函数只累计「调用次数 + 合计耗时」，不逐条展开，避免淹没业务链路。
+- **落盘与保留**：明细写 `data/debug/trace-<会话>.jsonl`（内存缓冲 1 秒批量追加，崩溃最多丢 1 秒）。会话文件是**自描述**的——开头有 `session-start`、每条操作结束有 `op-end`（含耗时/Token/是否截断的摘要），因此回看不需要额外的索引表；视图内可查看历史录制、导出 JSON；默认只保留最近 20 个会话文件，可一键清空。
+- **安全阀**：单次操作节点数超过上限（默认 2000）后停止采集并在界面上标「已截断（丢弃 N 条）」；`/api/debug/*`、`/api/logs`、`/api/stats`、`/api/harness/job` 等自身与轮询接口不参与追踪，避免「记录行为本身」放大负载。
+- **忘关保护**：前端每 10 秒心跳一次，页面关闭后后端 20 秒内自动停止录制。
+
+### 明确的边界（先说清楚，避免误解）
+
+- **不记录正文**：所有参数与返回值都只转成「形状摘要」（类型 / 长度 / 字段名 / 关键 id），长文本用长度占位，**绝不落盘小说正文或提示词正文**；写入型 SQL 也只记绑定值的形状（例如"写入了 12480 字的正文"）。
+- **慢通道 Token 不可得**：`/api/harness/*` 走的 dsh 子进程里，headless 驱动显式丢弃了 usage 事件（`dsh-headless/lib/index.js` 的 `case "usage": return;`），stdout 只输出正文，因此那条通道只记到任务级（job id / 状态 / 耗时 / 成败），界面上会明确标注这一原因。
+- **高频工具函数**合并计数，不逐条列出（见上文「分层深度」）。
+
+### 接口
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/api/debug/state` | 当前录制状态、实时统计与上限配置 |
+| `POST` | `/api/debug/start` / `stop` / `ping` | 开始 / 停止录制、前端心跳 |
+| `GET` | `/api/debug/ops` | 当前会话的操作列表 + 工具函数累计表 |
+| `GET` | `/api/debug/op?op_id=` | 单次操作的完整调用链（内存优先，回退会话文件） |
+| `GET` | `/api/debug/stream` | SSE 实时推送节点（供追踪页边录边看） |
+| `POST` | `/api/debug/op` | 前端回传客户端节点、渲染结果与 toast（与后端节点合流） |
+| `GET` | `/api/debug/sessions` / `session?file=` | 历史录制列表 / 读取某个会话 |
+| `DELETE` | `/api/debug/purge` | 清空全部录制文件 |
+
+### 已埋点的业务主干（函数级节点）
+
+`server.js`：`search`（关键词检索）、`selectSceneCharacters`（选出场角色）、`buildAIContext`（UI 预览上下文）、`scanAgainstRedlines`（红线扫描）、`buildNovelContext`（创作上下文装配）、`compressStoryMemory`（压缩长期记忆）、`splitTextIntoCapters`（导入拆章）、`installDemo`（导入示例）、`callAI` / `callAIStream`（AI 调用，带 Token）。
+
+`ai/context/`：`assemble`（唯一上下文装配器，P2 起）、`renderSection`（单层渲染）。
+`ai/policy.mjs`：模型档位与思考强度（P4 起为唯一来源）。
+
+`openviking-sync.js`：`syncWorkFull`（记忆库全量同步）、`getSemanticRecall`（语义召回）、`getLibraryRecall`（共享资料召回，独立 find / 预算 / 微缓存）、`semanticSearchMerge`（检索合并）。
+
+`harness.js`：harness 任务（会话级，含成功/失败/超时/取消四种结局）。
+
+---
+
+## 🧪 测试与验证
+
+```bash
+# 离线清单（49 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
+node scripts/ci-offline-checks.mjs
+
+# 活实例回归：起一个隔离实例（临时数据目录 + 停用 OpenViking）再跑，跑完自动关掉
+node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
+node scripts/ci-isolated-run.mjs --port 3738 -- node harness-plugins/novel-writing/test/smoke.mjs
+
+# 前端执行验证（最小 DOM 桩里真跑 public/app.js：渲染、开关、节点上报、形状摘要）
+node frontend-test.mjs
+```
+
+> 这三条都有 CI 兜底（`.github/workflows/ci.yml`：Windows + Linux、Node 24，另有一格
+> Node 22.15 验证依赖下限）。CI **绝不调用真实模型**——离线项只读文件，活实例项用本机
+> 假端点/死端口。要跑齐**全部**验收（含需要你自己数据的那些）用
+> `node .p1-baseline/verify-all.mjs`，缺前置的项会被标成「跳过」而**不是**通过。

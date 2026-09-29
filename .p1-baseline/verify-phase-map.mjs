@@ -942,11 +942,12 @@ export const PHASES = [
   },
   {
     id: 'G1',
-    title: '2026-09-29 轮：GitHub 增长面优化（英文 README 成为首页 + 中文 README 独立 + 真实界面截图 + 社区健康度文件）',
+    title: '2026-09-29 轮：GitHub 增长面优化（英文 README 成为首页 + 中文 README 逐节对齐 + 真实界面截图 + 社区健康度文件）',
     files: [
       // —— 本轮首次获得归属的文件 ——
       // README 首次拆成中英两份：英文版占用 README.md（GitHub 首页与仓库搜索权重最高的一份），
-      // 中文正文**逐行原样**迁到 README.zh-CN.md（用脚本搬运，不手抄，避免中文正文抄写漂移）。
+      // 中文正文**原样**迁到 README.zh-CN.md（用脚本搬运，不手抄，避免中文正文抄写漂移）；
+      // 中文版随后重排成与英文版一致的章节顺序，并按英文版补齐「功能特性 / 使用 / 致谢」三节。
       'README.zh-CN.md',
       // README 首次引用的真实界面截图（此前只有一张 writing 截图）。截图由
       // .verify-post/tools/gen-readme-shots.mjs 在**隔离实例**上重放示例作品《雾都缝匠》后采集，
@@ -974,8 +975,9 @@ export const PHASES = [
     note: '**展示面 / 增长轮，不触碰任何生产路径**（0 处 import 变化、0 处运行时行为变化）——'
       + ' 但 README.md / docs/README.md / CONTRIBUTING.md 与 X / W / W2 / Z2 / L / Z6 共享，'
       + ' 按文件粒度判定只能整体回滚，故声明为 shared。'
-      + ' 内容要点：① 英文 README 成为仓库首页，中文正文迁到 README.zh-CN.md（逐行未改，只调整「分支说明」措辞、'
-      + ' 补 CI 与 License 徽章、替换错配的 preview.png 配文）；'
+      + ' 内容要点：① 英文 README 成为仓库首页，中文正文迁到 README.zh-CN.md（脚本搬运，不手抄）；'
+      + ' 随后把中文版重排为与英文版逐节对齐的章节顺序（新增「⭐ 功能特性」「💻 使用」「🙏 致谢」三节，'
+      + ' 标题与英文版一一对应，原有正文内容照搬未改写）；'
       + ' ② 修正一处**既有的事实错误**——旧 README 把 assets/preview.png（图标多尺寸预览，供 novel-studio-icon.ps1 生成 .ico）'
       + ' 配文成「深色护眼主题下的作品总览与设定管理」，它其实**不是**界面截图；'
       + ' ③ 社区健康度补齐 SECURITY.md 与 CODE_OF_CONDUCT.md；'
