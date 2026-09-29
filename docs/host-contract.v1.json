@@ -1,7 +1,7 @@
 {
   "$comment": "Host Contract 的可机读契约面（由真实代码导出，不是手抄）。任何字段的变化都必须走主体变更流程：改代码 → 改本文件 → 改 docs/host-contract.md → 跑 .p1-baseline/test-host-contract.mjs。",
-  "host_contract": "1.11.0",
-  "frozen_at": "2026-09-28",
+  "host_contract": "1.12.0",
+  "frozen_at": "2026-09-29",
   "host": {
     "service": "novel-studio",
     "engine": "novel-core",
@@ -12,8 +12,8 @@
   },
   "context": {
     "endpoints": [
-      "GET /api/novel/context?work_id=&chapter_id=&mode=",
-      "GET /api/ai_context?chapter_id="
+      "GET /api/novel/context?work_id=&chapter_id=&mode=&direction=&library_recall_phase=&direction_source=&request_id=",
+      "GET /api/ai_context?chapter_id=&direction=&library_recall_phase=&direction_source=&request_id="
     ],
     "modes": [
       "full",
@@ -548,7 +548,20 @@
       "import_rebuild_batches",
       "import_rebuild_runs",
       "library_docs",
+      "library_index",
       "memory_versions",
+      "novel_index_chapters",
+      "novel_index_characters",
+      "novel_index_events",
+      "novel_index_foreshadows",
+      "novel_index_items",
+      "novel_index_knowledge",
+      "novel_index_locations",
+      "novel_index_meta",
+      "novel_index_relations",
+      "novel_index_style",
+      "novel_index_threads",
+      "novel_index_world",
       "ov_projection_audit",
       "plotline_characters",
       "plotlines",
@@ -643,6 +656,21 @@
     ],
     "tables_added_in_v1_11": [
       "library_docs"
+    ],
+    "tables_added_in_v1_12": [
+      "library_index",
+      "novel_index_chapters",
+      "novel_index_characters",
+      "novel_index_events",
+      "novel_index_foreshadows",
+      "novel_index_items",
+      "novel_index_knowledge",
+      "novel_index_locations",
+      "novel_index_meta",
+      "novel_index_relations",
+      "novel_index_style",
+      "novel_index_threads",
+      "novel_index_world"
     ]
   },
   "plugin_adapter": {

@@ -889,6 +889,57 @@ export const PHASES = [
       + ' 真机 `.p1-baseline/verify-library-realmachine.mjs`（18/18，真实 OV v0.4.21 + 隔离实例，写共享资料根 3 篇后清理，根零残留）；'
       + ' 契约见 docs/host-contract.md §20；调用链见 docs/openviking-call-map.md 链 C。',
   },
+  {
+    id: 'Z6',
+    title: '2026-09-29 方向驱动检索 + 索引层化（A–E）：direction 检索输入 / 资料索引 / 小说资产索引 / 检索计划 / 两类计数分开',
+    files: [
+      // 本批次新建的生产模块（被 server.js / openviking-sync.js / db.js import，属生产代码）
+      'ai/direction.mjs',
+      'ai/retrieval-stats.mjs',
+      'ai/novel-index/',
+      // 本批次新建的离线验收（已进 scripts/ci-offline-checks.mjs，零计费）
+      '.p1-baseline/test-retrieval-plan.mjs',
+      '.p1-baseline/test-direction-retrieval.mjs',
+      '.p1-baseline/test-library-index.mjs',
+      '.p1-baseline/bench-library-index.mjs',
+      // 改在与 L / R / PI / Z5 共享的文件里（含 ai/library/library-index.mjs，归 L 的 ai/library/ 前缀）——无法单独回滚
+      'db.js',
+      'openviking-sync.js',
+      'server.js',
+      'public/app.js',
+      'frontend-test.mjs',
+      'harness-plugins/novel-writing/',
+      'scripts/ci-offline-checks.mjs',
+      'docs/host-contract.md',
+      'docs/host-contract.v1.json',
+      'docs/plugin-runtime-map.md',
+      'docs/README.md',
+      'README.md',
+      '.p1-baseline/test-migration-idempotent.mjs',
+    ],
+    evidence: [
+      '.p1-baseline/test-direction-retrieval.mjs',
+      '.p1-baseline/test-retrieval-plan.mjs',
+      'docs/host-contract.md',
+    ],
+    rollback: 'shared',
+    note: '**不能单独回滚**：新模块 `ai/direction.mjs` / `ai/retrieval-stats.mjs` / `ai/novel-index/` 被 server.js / openviking-sync.js / db.js 直接 import，'
+      + ' 且行为改动落在与 L / R / PI / Z5 共享的文件里（含 `ai/library/library-index.mjs`，归 L 的 `ai/library/` 前缀）。'
+      + ' 本轮全部为**附加式**：direction 只是**检索数据**（不解析其中的指令、不写作品、不新增任何规划 / 裁决模型调用）；'
+      + ' 资料索引（`library_index` + 可选 FTS5）与小说资产索引（12 张 `novel_index_*`）默认关闭（`library_index_enabled=0` / `novel_index_enabled=0`），'
+      + ' 关闭时 `retrieval_stats.index_queries.total=0`，assembled / manifest / context_id 与 1.11.0 逐字节一致'
+      + ' （`.p1-baseline/verify-library-identity.mjs` 4/4、`test-direction-retrieval.mjs` 的 E5 用例）。'
+      + ' 检索计划并发查多个索引，但**先汇总后装配**——只给 buildNovelContext 准备输入，不新增编排层、不绕过唯一装配器；'
+      + ' `retrieval_stats` 把「资料召回次数」与「索引查询次数」分开统计（任何消费方不得合并）。'
+      + ' ⚠️ E5 为**保守落地**：计划开启不改变既有层内容（assembled 与关闭时逐字节一致），只增加审计字段；'
+      + ' 「用索引替代全量读取」按梯队后续推进，未声称已达成。'
+      + ' 自审（同日）：召回微缓存命中时把本次 searches/index_queries/timings 归零（缓存命中不是一次检索）、空查询不写微缓存（恢复旧行为）、'
+      + ' FTS 候选改为先按 bm25 排序再截断并修正 lexical_score 方向、finalize 输出补 request_id——都有对应断言。'
+      + ' 终审补修：计划缓存命中不把上一次的 by_index 重复计入本次（只记 cached，「索引查询次数」= 本次实际发生的次数；E6b/6.1/7.4）、'
+      + ' request_id 截断改按码点（不撕裂代理对；C0.6）——同样各有断言。'
+      + ' 证据链：`.p1-baseline/test-retrieval-plan.mjs`（65/65）、`.p1-baseline/test-direction-retrieval.mjs`（47/47）、'
+      + ' `.p1-baseline/test-library-index.mjs`（19/19）、docs/host-contract.md 的 1.12.0 行。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

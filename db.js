@@ -729,6 +729,176 @@ CREATE TABLE IF NOT EXISTS library_docs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_docs_uri ON library_docs(uri);
 CREATE INDEX IF NOT EXISTS idx_library_docs_status ON library_docs(status, category);
+-- 知识库专用候选索引（D 模块，2026-09-29）：每篇一条**轻量**记录，不复制全文。
+-- 它只用于「先廉价缩小候选 → 再语义排名 → 再确定性放行」，候选/关键词/summary 默认
+-- 不进入模型上下文；词法检索用 FTS5（library_index_fts，见下方单独建表）。
+-- sha256 与 library_docs 同源：未变即不更新（D3 增量维护）。
+CREATE TABLE IF NOT EXISTS library_index (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL,
+  uri TEXT NOT NULL,
+  sha256 TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  keywords TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  head_text TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  index_version INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_library_index_category ON library_index(category);
+-- ── Novel Index Layer（E 模块，2026-09-29）：把「会持续增长、每章只用一小部分」的资产
+-- 从全量扫描改为先定位再读取。结构化/精确查询走这些表；语义检索仍只走 OpenViking。
+-- 全部为按作品的派生索引（信息来自既有正典表，绝不反向写入正典）；可幂等重建。
+CREATE TABLE IF NOT EXISTS novel_index_characters (
+  work_id INTEGER NOT NULL,
+  character_id INTEGER NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  aliases TEXT NOT NULL DEFAULT '',
+  importance INTEGER NOT NULL DEFAULT 0,
+  current_location TEXT NOT NULL DEFAULT '',
+  factions TEXT NOT NULL DEFAULT '',
+  relationships_json TEXT NOT NULL DEFAULT '[]',
+  last_active_chapter INTEGER,
+  knowledge_topics TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, character_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_events (
+  work_id INTEGER NOT NULL,
+  event_id INTEGER NOT NULL,
+  chapter_id INTEGER,
+  chapter_position INTEGER,
+  time_text TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  participants TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT '',
+  causal_parent INTEGER,
+  consequences TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, event_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_foreshadows (
+  work_id INTEGER NOT NULL,
+  event_id INTEGER NOT NULL,
+  planted_chapter INTEGER,
+  related_entities TEXT NOT NULL DEFAULT '',
+  trigger_topics TEXT NOT NULL DEFAULT '',
+  expected_window TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  importance INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, event_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_world (
+  work_id INTEGER NOT NULL,
+  entry_id INTEGER NOT NULL,
+  domain TEXT NOT NULL DEFAULT '',
+  entities TEXT NOT NULL DEFAULT '',
+  applies_to TEXT NOT NULL DEFAULT '',
+  exceptions TEXT NOT NULL DEFAULT '',
+  hard_or_soft TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 50,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, entry_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_relations (
+  work_id INTEGER NOT NULL,
+  relation_id INTEGER NOT NULL,
+  from_character_id INTEGER NOT NULL,
+  to_character_id INTEGER NOT NULL,
+  relation_type TEXT NOT NULL DEFAULT '',
+  trust REAL,
+  conflict REAL,
+  debt REAL,
+  last_changed_chapter INTEGER,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, relation_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_locations (
+  work_id INTEGER NOT NULL,
+  location_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  parent TEXT NOT NULL DEFAULT '',
+  region TEXT NOT NULL DEFAULT '',
+  connected_to TEXT NOT NULL DEFAULT '',
+  travel_time TEXT NOT NULL DEFAULT '',
+  occupants TEXT NOT NULL DEFAULT '',
+  factions TEXT NOT NULL DEFAULT '',
+  scene_tags TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, location_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_threads (
+  work_id INTEGER NOT NULL,
+  thread_id INTEGER NOT NULL,
+  topic TEXT NOT NULL DEFAULT '',
+  participants TEXT NOT NULL DEFAULT '',
+  opened_chapter INTEGER,
+  last_progress INTEGER,
+  next_expected TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, thread_id)
+);
+-- 第三梯队：本次只建结构与预留接口，不接入上下文装配（E3）。
+CREATE TABLE IF NOT EXISTS novel_index_items (
+  work_id INTEGER NOT NULL,
+  item_id TEXT NOT NULL,
+  owner TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  quantity TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  acquired_chapter INTEGER,
+  consumed_chapter INTEGER,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, item_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_chapters (
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  participants TEXT NOT NULL DEFAULT '',
+  locations TEXT NOT NULL DEFAULT '',
+  events TEXT NOT NULL DEFAULT '',
+  emotional_state TEXT NOT NULL DEFAULT '',
+  unresolved_threads TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, chapter_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_style (
+  work_id INTEGER NOT NULL,
+  sample_id INTEGER NOT NULL,
+  pov TEXT NOT NULL DEFAULT '',
+  scene_type TEXT NOT NULL DEFAULT '',
+  emotion TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, sample_id)
+);
+CREATE TABLE IF NOT EXISTS novel_index_knowledge (
+  work_id INTEGER NOT NULL,
+  character_id INTEGER NOT NULL,
+  knowledge_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  acquired_chapter INTEGER,
+  confidence REAL,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, character_id, knowledge_id)
+);
+-- 每作品索引版本与指纹：缓存失效判据（取版本不得全量扫描知识库——这里只读一行）。
+CREATE TABLE IF NOT EXISTS novel_index_meta (
+  work_id INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (work_id, key)
+);
 -- AI 效果埋点（P5）：记录「生成 → 采纳/丢弃」的行为信号，用于回答
 -- 「上下文质量到底有没有变好」——这是契约里唯一无法靠结构化断言回答的问题。
 --   action      generate（产出草稿）| adopt（写回正文）| discard（丢弃）
@@ -778,6 +948,19 @@ CREATE TABLE IF NOT EXISTS app_logs (
   dedup_key TEXT NOT NULL DEFAULT ''
 );
 `);
+
+// 知识库索引的词法检索表（D2）。FTS5 单独建、且失败只降级：
+//   · node:sqlite 的官方构建自带 FTS5（2026-09-29 实测 SQLite 3.53.3 可建可查），
+//     但这是运行时能力而不是源码保证——若某个环境缺 FTS5，**不能把整个服务启动打断**，
+//     只让 library_index 的「词法候选」不可用（queryLibraryIndex 返回 index_unavailable，
+//     调用方降级为纯 OpenViking 路径）。
+//   · content 不挂外部表：doc_id/tokens 由 library-index.mjs 在每次 upsert/delete 时同步维护，
+//     避免 external-content 触发器在重建顺序上制造隐式状态。
+try {
+  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS library_index_fts USING fts5(tokens, doc_id UNINDEXED, tokenize='unicode61');`);
+} catch (e) {
+  console.warn(`[db] FTS5 不可用：library_index 词法检索将按 index_unavailable 降级（${e.message}）`);
+}
 
 // 兼容旧数据库：给已存在的表补充新增列；「列已存在」是预期情况静默跳过，其余错误告警（不再全吞）。
 const MIGRATIONS = [

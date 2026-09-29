@@ -1,4 +1,4 @@
-# Host Contract 1.11.0（宿主契约 · 冻结）
+# Host Contract 1.12.0（宿主契约 · 冻结）
 
 > **这份文档是 novel-writing 插件阶段的稳定地面。**
 > 冻结的是**已经验收过的行为与接口**，不是"理论完美"；任何新增宿主行为都必须以后再走主体变更流程（质量门 → 行为门 → 兼容门），
@@ -6,7 +6,7 @@
 >
 > - 机读契约面（由真实代码导出，不是手抄）：`docs/host-contract.v1.json`
 > - 契约测试（离线、零计费）：`node .p1-baseline/test-host-contract.mjs`
-> - 版本：**host-contract 1.11.0**（`HOST_CONTRACT_VERSION` 在 `server.js`；`GET /api/novel/ping` 会回报它）
+> - 版本：**host-contract 1.12.0**（`HOST_CONTRACT_VERSION` 在 `server.js`；`GET /api/novel/ping` 会回报它）
 > - 1.0.0 冻结于 **2026-09-25**（依据：`docs/main-v2-acceptance-2026-09-25.md` 的 A PASS 验收结论）
 > - 1.1.0 冻结于 **2026-09-26**（**附加式**扩展：确定性故事状态内核；预算常量、层顺序、默认生成路径均未变，逐字节基线 50/50 复验。见 §13）
 > - 1.2.0 冻结于 **2026-09-26**（**附加式**：只读事实端点 `GET /api/novel/state/facts`；并修正派生视图的章序展示——内部 0 基下标，展示一律 +1。见 §13）
@@ -19,6 +19,7 @@
 > - 1.9.0 冻结于 **2026-09-27**（**附加式 + 候选/事实隔离**：R11 剧情分支沙盘。新增 2 张表 `branch_sandboxes` / `branch_candidates` 与 9 条端点；新增模型工具 `novel_branch`（只提候选与读回；采纳 / 丢弃 / 取消 / 重开是作者动作，模型侧一律 403）。候选带依赖基线 hash 与来源；重复候选 409 且整批不写；基线变化即 `stale`，重新采纳须复核。候选未采纳前不进正文 / 正典事实 / 事件 / 角色知识 / 上下文层。见 §13、§18）
 > - 1.10.0 冻结于 **2026-09-27**（**附加式 + 不可信输入边界**：R12 导入安全校验（`ai/import/guard.mjs`：大小 / 编码 / 路径穿越 / symlink / 压缩比 / 条目数与深度；零临时目录；畸形与超限安全失败、不留半导入状态）与可选的「分析并重建创作状态」流程（分批规划 / 逐批基线 / 只恢复基线一致的完成批次 / 证据必须能在原文定位 / 抽取先落候选 / **作者确认后按批短事务原子应用**）。新增 2 张表与 7 条端点（含 R05 只读的 `GET /api/novel/context/contributions?work_id=&chapter_id=`）；TXT / Markdown / EPUB 三种既有格式全部保留；宿主不做模型调用。见 §13、§19）
 > - 1.11.0 冻结于 **2026-09-28**（**附加式 + 参考资料边界**：共享资料库（跨作品写作参考资料）。新增门控上下文层 `library`（`kind=cond`、`cap=1200`，标题「参考资料（非本书事实）」，排在 `recall` 之后、`story_state` 之前；**默认关闭**——`library_enabled=0` 的作品 assembled / manifest 与接入前逐字节一致）；新增登记表 `library_docs` 与 7 条端点（`GET /api/novel/library/status|search|doc`、`PUT /api/novel/library/enabled`、`POST /api/novel/library/import|import/confirm`、`DELETE /api/novel/library/doc/:id`）与模型工具 `novel_library`（检索 + 按 id 读回原文窗口）。资料不是本书事实：条目只证明「在共享资料根注册表内」、canon 记 `reference` 永不 canon，层标题与条目标注一律写明「参考资料」；普通召回层与资料层互不混层。导入链是新的本地读取面：只读显式传入的目录、白名单 `.md`/`.txt`、单文件上限、单批上限、不跟随符号链接、严格 UTF-8、默认 dry-run；导入 / 删除 / 开关为作者动作（模型侧 403）。见 §13、§20）
+> - 1.12.0 冻结于 **2026-09-29**（**附加式 + 方向驱动检索与索引层化**：`GET /api/novel/context` 与 `GET /api/ai_context` 新增可选参数 `direction`（≤400 码点，规范化为纯检索数据，**不改变正典查询**）/ `direction_source`（仅审计）/ `library_recall_phase`（`default|defer|direction`；`defer` 不查资料库、不写缓存、不插占位）/ `request_id`；新增 additive 响应字段 `retrieval_stats`（**资料召回次数与索引查询次数分开统计**）与 `retrieval_plan`（确定性检索计划摘要，不是新上下文层）。新增 13 张**派生**索引表：`library_index`（D：知识库专用候选索引，含可选 FTS5 词法表 `library_index_fts`——缺 FTS5 只降级不阻断启动）与 12 张 `novel_index_*`（E：角色/事件/伏笔/世界/关系/地点/剧情线，第三梯队仅建结构）。新增作者侧 `GET/PUT /api/novel/library/index`、`POST /api/novel/library/index/rebuild`、`GET/PUT /api/novel/novel_index`、`POST /api/novel/novel_index/rebuild`（写为作者动作，模型侧 403）。D/E 索引**默认关闭**（`library_index_enabled=0` / `novel_index_enabled=0`），关闭时装配路径与 1.11.0 逐字节一致；缓存外部版本串新增资料索引与资产索引的 version/schema 判据。`novel_write_pipeline` 新增可选 `direction` / `direction_source` 参数（仅检索与审计）。见 §13、§21）
 
 **三处互锁**：`server.js` 的常量 / `docs/host-contract.v1.json` / 本文档——任何一处被改动而另两处没跟上，契约测试会报红。
 
@@ -145,14 +146,14 @@
 | 项 | 内容 |
 |---|---|
 | **输入** | 无（宿主内部）；插件**不得**直接打开 `novel.db` |
-| **输出** | 47 张表（见 fixture `db.tables`）。1.0.0 冻结的 25 张（见 fixture `db.frozen_tables`）：works / volumes / plotlines / chapters / categories / terms / characters / character_relations / world_entries / creation_tasks / story_memories / memory_versions / plotline_characters / api_configs / chapter_save_versions / harness_jobs / story_events / writing_redlines / story_event_proposals / story_memory_proposals / chapter_reviews / ai_eval_events / app_settings / app_logs / ai_error_logs；
+| **输出** | 60 张表（见 fixture `db.tables`）。1.0.0 冻结的 25 张（见 fixture `db.frozen_tables`）：works / volumes / plotlines / chapters / categories / terms / characters / character_relations / world_entries / creation_tasks / story_memories / memory_versions / plotline_characters / api_configs / chapter_save_versions / harness_jobs / story_events / writing_redlines / story_event_proposals / story_memory_proposals / chapter_reviews / ai_eval_events / app_settings / app_logs / ai_error_logs；
 1.1.0 附加的 10 张（见 fixture `db.tables_added_in_v1_1`）：story_state_config（作品开关，**既有作品默认 0**）/ story_timeline_entries / story_facts / character_knowledge / story_entities / story_entity_aliases / chapter_contracts / story_state_proposals / story_snapshots / story_validations；
-1.3.0 附加的 2 张（见 fixture `db.tables_added_in_v1_3`）：author_approvals（模型侧写入的一次性审批边界）/ adoption_operations（整次采纳的幂等账本）；1.4.0 附加的 1 张（见 fixture `db.tables_added_in_v1_4`）：projection_outbox（提交后失败的投影可见 / 可重试 / 重启可恢复）；1.5.0 附加的 1 张（见 fixture `db.tables_added_in_v1_5`）：ov_projection_audit（delete / rebuild 的待删除集合与范围证明，可审计）；1.7.0 附加的 3 张（见 fixture `db.tables_added_in_v1_7`）：author_samples / style_profiles / author_intents（作者样文 / 文风档案 / 三级作者意图）；1.9.0 附加的 2 张（见 fixture `db.tables_added_in_v1_9`）：branch_sandboxes（沙盘：章节时点 + 依赖基线 hash + 状态 + 来源）/ branch_candidates（候选：核心行动/冲突/人物选择/节拍/后果/风险/铺垫/意图关系 + 依赖基线 + 来源；采纳记录在 `adopted_json`）；1.10.0 附加的 2 张（见 fixture `db.tables_added_in_v1_10`）：import_rebuild_runs（导入后重建的运行：作品 / 章节源指纹 / 抽取器与 schema 版本 / 模型路由与思考档位 / 状态）/ import_rebuild_batches（批次：章节范围与索引、基线 hash、结果 hash、尝试次数、候选草稿与提案 id、状态）；1.11.0 附加的 1 张（见 fixture `db.tables_added_in_v1_11`）：library_docs（共享资料登记表：uri 唯一；删除默认只标 `marked_missing`，作者确认后才删登记行与记忆库文件） |
+1.3.0 附加的 2 张（见 fixture `db.tables_added_in_v1_3`）：author_approvals（模型侧写入的一次性审批边界）/ adoption_operations（整次采纳的幂等账本）；1.4.0 附加的 1 张（见 fixture `db.tables_added_in_v1_4`）：projection_outbox（提交后失败的投影可见 / 可重试 / 重启可恢复）；1.5.0 附加的 1 张（见 fixture `db.tables_added_in_v1_5`）：ov_projection_audit（delete / rebuild 的待删除集合与范围证明，可审计）；1.7.0 附加的 3 张（见 fixture `db.tables_added_in_v1_7`）：author_samples / style_profiles / author_intents（作者样文 / 文风档案 / 三级作者意图）；1.9.0 附加的 2 张（见 fixture `db.tables_added_in_v1_9`）：branch_sandboxes（沙盘：章节时点 + 依赖基线 hash + 状态 + 来源）/ branch_candidates（候选：核心行动/冲突/人物选择/节拍/后果/风险/铺垫/意图关系 + 依赖基线 + 来源；采纳记录在 `adopted_json`）；1.10.0 附加的 2 张（见 fixture `db.tables_added_in_v1_10`）：import_rebuild_runs（导入后重建的运行：作品 / 章节源指纹 / 抽取器与 schema 版本 / 模型路由与思考档位 / 状态）/ import_rebuild_batches（批次：章节范围与索引、基线 hash、结果 hash、尝试次数、候选草稿与提案 id、状态）；1.11.0 附加的 1 张（见 fixture `db.tables_added_in_v1_11`）：library_docs（共享资料登记表：uri 唯一；删除默认只标 `marked_missing`，作者确认后才删登记行与记忆库文件）；1.12.0 附加的 13 张（见 fixture `db.tables_added_in_v1_12`）：library_index（D：每篇资料一条轻量索引：doc_id/uri/sha256/title/summary/keywords/category/tags/head_text/updated_at/index_version；词法用 FTS5 虚表 `library_index_fts`，单独 try/catch 建、缺 FTS5 只降级不阻断启动）+ novel_index_characters / novel_index_events / novel_index_foreshadows / novel_index_world / novel_index_relations / novel_index_locations / novel_index_threads（E1/E2：按作品的**派生**索引，信息单向来自既有正典表，可幂等重建、绝不反向写入正典）+ novel_index_items / novel_index_chapters / novel_index_style / novel_index_knowledge（E3：本次只建结构与预留接口，不接入装配）+ novel_index_meta（每作品索引版本/指纹；取版本只读一行） |
 | **状态** | `PRAGMA journal_mode = WAL` / `foreign_keys = ON` / `busy_timeout = 5000` |
 | **错误码** | 无（DB 层错误由 API 层转成 4xx/5xx） |
 | **retryable** | 写冲突由 `busy_timeout` 吸收；业务层不重试 |
 | **兼容策略** | **只增不减**：`CREATE TABLE IF NOT EXISTS` + `try ALTER TABLE ... ADD COLUMN`（列已存在即忽略）；**绝不** `DROP TABLE` / `DROP COLUMN` / `RENAME` / 删除用户数据 |
-| **版本** | 1.11.0（累计 47 张表；1.0.0 冻结的 25 张旧表零结构改动，新增表全部是新表） |
+| **版本** | 1.12.0（累计 60 张表；1.0.0 冻结的 25 张旧表零结构改动，新增表全部是新表） |
 | **不变条件** | ① 旧作品/旧章节/旧记忆继续可打开；② 对旧库零 schema 写入、零数据删除（验收实测：`sqlite_master` 指纹 `3cb7e5d9ac4f67b9` 前后一致）；③ 新增表全部是**新表**，不改旧表结构；`story_state_config.enabled` 对既有作品默认 `0`（未开启 = 行为与 1.0.0 完全一致） |
 | **可观测字段** | `sqlite_master`（表/索引/视图/触发器）、关键表行数 |
 | **不可绕过** | 插件不得直接读写 `novel.db`（含 `-wal` / `-shm`）；不得要求宿主"顺手"改字段 |
@@ -169,7 +170,7 @@
 | **错误码** | 与所调端点一致（见各契约）；插件自身的失败必须上报日志而不是静默 |
 | **retryable** | 见 §9（按 HTTP 状态码分类） |
 | **兼容策略** | 工具名与端点映射冻结；**新增**工具允许（必须同步 fixture 与文档） |
-| **版本** | 1.11.0（插件面：工具 26、端点 75；1.11.0 新增门控上下文层 `library`（默认关闭：关闭时该层不存在、不进 excluded、不计入下限）与资料库端点（`GET /api/novel/library/status|search|doc` 只读，模型侧可用；`PUT /api/novel/library/enabled`、`POST /api/novel/library/import|import/confirm`、`DELETE /api/novel/library/doc/:id` 为作者动作，模型侧一律 403）与模型工具 `novel_library`；资料不是本书事实，条目 canon 记 reference、层标题与条目标注一律写明「参考资料」。1.10.0 新增 `GET /api/import/guard` 与导入后重建的五条端点（`POST /api/import/rebuild/plan|record|confirm|cancel`、`GET /api/import/rebuild/status`），其中 **confirm 是作者动作**（模型侧 403）——模型可以规划批次、记录自己的抽取结果，不能把候选确认为正式状态；导入安全判据由 `ai/import/guard.mjs` 单点执行，TXT / Markdown / EPUB 三种既有格式全部保留；同一轮把请求体上限提到 36MB 并在超限时先排空请求体再回 413。1.9.0 新增 `novel_branch` 与沙盘/候选端点；1.4.0 起新增的 `POST /api/novel/adopt`、投影查看/重试/重放/重建/审计端点，1.6.0 的 `PUT /api/novel/editing`，以及 1.7.0 的 `POST/PUT/DELETE /api/novel/style/samples`、`POST /api/novel/style/profile`、`PUT/DELETE /api/novel/author_intent` 均为**作者界面专用**，模型侧调用返回 403；`GET /api/novel/editing*`、`POST /api/novel/editing/scan`、`GET /api/novel/style/*`、`GET /api/novel/author_intent`、`GET /api/novel/state/disclosure`、`GET /api/novel/library/status|search|doc` 只读，模型侧可用；1.9.0 的沙盘开 / 候选提交 / 列表 / 单条 / 比较端点模型侧可用——**采纳、丢弃、取消、重开是作者动作，模型侧一律 403**） |
+| **版本** | 1.12.0（插件面：工具 26、端点 75；1.12.0 给 `novel_write_pipeline` 增加可选 `direction` / `direction_source` 参数（仅用于检索与审计），并给两条 context 端点增加 `direction` / `direction_source` / `library_recall_phase` / `request_id` 可选参数与 `retrieval_stats` / `retrieval_plan` additive 响应字段——工具数与端点数**不变**；1.11.0 新增门控上下文层 `library`（默认关闭：关闭时该层不存在、不进 excluded、不计入下限）与资料库端点（`GET /api/novel/library/status|search|doc` 只读，模型侧可用；`PUT /api/novel/library/enabled`、`POST /api/novel/library/import|import/confirm`、`DELETE /api/novel/library/doc/:id` 为作者动作，模型侧一律 403）与模型工具 `novel_library`；资料不是本书事实，条目 canon 记 reference、层标题与条目标注一律写明「参考资料」。1.10.0 新增 `GET /api/import/guard` 与导入后重建的五条端点（`POST /api/import/rebuild/plan|record|confirm|cancel`、`GET /api/import/rebuild/status`），其中 **confirm 是作者动作**（模型侧 403）——模型可以规划批次、记录自己的抽取结果，不能把候选确认为正式状态；导入安全判据由 `ai/import/guard.mjs` 单点执行，TXT / Markdown / EPUB 三种既有格式全部保留；同一轮把请求体上限提到 36MB 并在超限时先排空请求体再回 413。1.9.0 新增 `novel_branch` 与沙盘/候选端点；1.4.0 起新增的 `POST /api/novel/adopt`、投影查看/重试/重放/重建/审计端点，1.6.0 的 `PUT /api/novel/editing`，以及 1.7.0 的 `POST/PUT/DELETE /api/novel/style/samples`、`POST /api/novel/style/profile`、`PUT/DELETE /api/novel/author_intent` 均为**作者界面专用**，模型侧调用返回 403；`GET /api/novel/editing*`、`POST /api/novel/editing/scan`、`GET /api/novel/style/*`、`GET /api/novel/author_intent`、`GET /api/novel/state/disclosure`、`GET /api/novel/library/status|search|doc` 只读，模型侧可用；1.9.0 的沙盘开 / 候选提交 / 列表 / 单条 / 比较端点模型侧可用——**采纳、丢弃、取消、重开是作者动作，模型侧一律 403**） |
 | **不变条件** | ① 1.0.0 的 15 个 `novel_*` 工具名与语义不变，1.1.0 新增 8 个（合计 23；1.3.0 新增 `novel_approvals`、1.9.0 新增 `novel_branch`、1.11.0 新增 `novel_library` 后现为 26）；② 端点面 = fixture `plugin_adapter.endpoints`（75 条）；③ 每个端点在 `server.js` 里真的存在（契约测试逐条核对） |
 | **可观测字段** | 插件请求可带 `X-Trace-Op` / `X-Trace-Title`，日志 `layer=plugin` |
 | **不可绕过** | 绕过 context budget / 直写全局 settings / 自建 task-trace-recovery / 直写 DB / 绕开策略表调 `/api/ai/*` |
@@ -346,7 +347,7 @@ DELETE /api/novel/library/doc/:id
 | **错误码** | 兼容性失败用 4xx/5xx 明确表达 |
 | **retryable** | 兼容性问题不靠重试解决 |
 | **兼容策略** | ① 接口**附加式**演进（加字段/加端点/加工具，不改语义、不删）；② DB **只增不减**；③ 旧作品可打开；④ 旧 `novel_*` 工具与端点不变；⑤ 契约版本号作为唯一硬信号 |
-| **版本** | `host-contract 1.11.0`；运行时可从 `GET /api/novel/ping` 读到 `host_contract`（1.0.0 → 1.11.0 全为附加式，见 §13） |
+| **版本** | `host-contract 1.12.0`；运行时可从 `GET /api/novel/ping` 读到 `host_contract`（1.0.0 → 1.12.0 全为附加式，见 §13） |
 | **不变条件** | 见 §0 的 6 条质量保护不变条件 |
 | **可观测字段** | `ping.host_contract`；fixture 版本；文档版本（三处互锁） |
 | **不可绕过** | 插件不得假设"宿主没变"而跳过版本检查；也不得因为版本不同就自行分叉实现 |
@@ -357,7 +358,7 @@ DELETE /api/novel/library/doc/:id
 
 | 层次 | 工具 | 覆盖 |
 |---|---|---|
-| **契约测试** | `node .p1-baseline/test-host-contract.mjs`（离线清单 46 条之一；也已接进一键验收） | 代码↔契约漂移、文档↔契约腐烂、边界是否真的在代码里成立、旧库兼容；含**负向对照**（改坏预算/工具名/信封字段必须报红） |
+| **契约测试** | `node .p1-baseline/test-host-contract.mjs`（离线清单 49 条之一；也已接进一键验收） | 代码↔契约漂移、文档↔契约腐烂、边界是否真的在代码里成立、旧库兼容；含**负向对照**（改坏预算/工具名/信封字段必须报红） |
 | **契约夹具** | `docs/host-contract.v1.json` | 由真实代码导出的可机读契约面（层/预算/清单字段/策略/工具面/端点面/日志层级/表清单） |
 | **adapter 测试** | `.p1-baseline/verify-plugin-tools.mjs` + `harness-plugins/novel-writing/test/smoke.mjs` | 26 个工具 ↔ 75 条端点的对账；插件冒烟 39 组 |
 | **迁移/旧库兼容** | `test-host-contract.mjs`（§D）+ `api-test-suite.mjs` | 旧库 schema 指纹与表清单；旧作品/章节/记忆可读可写 |
@@ -395,6 +396,7 @@ DELETE /api/novel/library/doc/:id
 | 1.9.0 | 2026-09-27 | **附加式 + 候选/事实隔离**：新增 2 张表 `branch_sandboxes` / `branch_candidates` 与 9 条端点（沙盘开 / 列表 / 单条 / 取消与重开；候选列表 / 提交 / 单条 / 采纳与丢弃；九维比较）；新增模型工具 `novel_branch`（只提候选与读回：open / submit / list / view / compare；采纳、丢弃、取消、重开不在工具面内，模型侧调用这些端点一律 403）。候选与沙盘都带依赖基线 hash（故事状态 / 正文 / 契约 / 作者意图 / 披露指纹）与来源（`created_by` = author / agent）；仅改写措辞、交换同义表达不算多候选（同批或与既有候选重复 → 409 且**整批不写**）；既有角色的行动理由受该角色**当前可行动**知识约束（`basis_ids` / `basis_keys` / `basis_note`，新角色需显式 `new_character`），未来计划不得写成已发生（422）；基线变化即 `stale`，重新采纳须复核或重新生成。采纳只写章节蓝图与可选契约建议，正文 / 正典事实 / 事件 / 角色知识 / 状态一律不动 | 插件工具 24→25、端点 52→61；旧工具 / 旧端点 / 字段 / 预算 / 层序 / 默认 route 均未变；未使用沙盘的作品装配与生成路径逐字节不变 |
 | 1.10.0 | 2026-09-27 | **附加式 + 不可信输入边界**：R12 新增 2 张表 `import_rebuild_runs` / `import_rebuild_batches` 与 7 条端点（`GET /api/import/guard`；`GET /api/novel/context/contributions`（R05 只读贡献记录）；`POST /api/import/rebuild/plan|record|confirm|cancel`；`GET /api/import/rebuild/status`）。导入安全判据单点定义在 `ai/import/guard.mjs`（大小 / 严格 UTF-8 编码 / 绝对路径与 `..` 穿越 / symlink / 压缩比 / 条目数与深度；零临时目录；畸形与超限安全失败、不留半导入状态）；传输层把请求体上限提到 36MB 并在超限时先排空请求体再回 413。新增「分析并重建创作状态」：分批（≤6 章且 ≤12000 字符）、逐批基线、恢复只复用基线一致的完成批次（否则 stale，不重跑已完成章节）、证据必须能在原文定位（任一项不过整批拒绝，≤3 次重试）、抽取先落候选、**确认是作者动作**（模型侧 403）且按批短事务原子应用（拒绝/失败不留半套）；宿主不做模型调用，全链路离线可验证。TXT / Markdown / EPUB 三种既有格式全部保留 | 插件工具 25 **不变**、端点 61→68；新表 2 张（旧 44 张零结构改动）；旧端点/字段/预算/层序/默认 route 均未变；未使用重建流程的作品生成路径逐字节不变；导入安全与隔离测试见 `.p1-baseline/test-import-guard.mjs` / `.p1-baseline/test-import-rebuild.mjs` |
 | 1.11.0 | 2026-09-28 | **附加式 + 参考资料边界**：共享资料库（跨作品写作参考资料）。新增门控上下文层 `library`（`kind=cond`、`cap=1200`，标题「参考资料（非本书事实）」，排在 `recall` 之后；**默认关闭**，关闭时该层不存在、不进 `excluded`、不计入下限，`library_enabled=0` 的作品 assembled / manifest 与接入前逐字节一致）；新增 1 张登记表 `library_docs`（uri 唯一；删除策略默认只标 `marked_missing`，作者确认后才删行并删记忆库文件）与 7 条端点（`GET /api/novel/library/status`（含索引时间 `ov_indexed_at:library`、分类计数、导入规则）/`search`（登记表 + 形状闸门过滤，未登记条目与 OV 伴随文件不返回）/`doc` 只读；`PUT /api/novel/library/enabled`、`POST /api/novel/library/import`（dry-run）/`import/confirm`、`DELETE /api/novel/library/doc/:id` 为作者动作）与模型工具 `novel_library`。资料不是本书事实：条目只证明「在共享资料根注册表内」、canon 记 `reference` 永不 canon；层标题「参考资料（非本书事实）」+ 条目标注「参考资料｜」；普通召回层与资料层互不混层（跨层条目一律拦下并留 `omitted` 归因）。导入链只读作者显式传入的目录（白名单 `.md`/`.txt`、单文件上限、单批上限、不跟随符号链接、严格 UTF-8、默认 dry-run、不写真实资料库的测试用 stub）。P1 真机实测（3 篇资料 + 真实 OpenViking）：命中预览 → 装配出现资料层；`readContent` 按行取回（前 30 行窗口外的内容不出现）；单条 ≤300 字；OV 生成的 `.abstract.md`/`.overview.md` 伴随文件按保留前缀规则拦下且不挤占 top-4 名额；未开开关的作品零影响；总闸 `NOVELSTUDIO_OV_DISABLED=1` 时整条链消失且不报错 | 插件工具 25→26、端点 68→75；新表 1 张（旧 46 张零结构改动）；旧工具 / 旧端点 / 字段 / 预算 / 层序 / 默认 route 均未变；未开启资料层的作品装配与生成路径逐字节不变；验证见 `.p1-baseline/test-ov-recall-boundary.mjs`（资料根用例）/ `verify-library-identity.mjs` / `verify-library-realmachine.mjs` |
+| 1.12.0 | 2026-09-29 | **附加式 + 方向驱动检索与索引层化**：写作方向（`direction`）作为检索输入进入 `GET /api/novel/context` 与 `GET /api/ai_context`（可选参数 `direction`（≤400 码点）/ `direction_source`（仅审计）/ `library_recall_phase`（default/defer/direction）/ `request_id`；只影响资料召回与索引候选发现，**不改变正典查询、预算与阈值**）；`defer` 不查资料库、不写缓存、不插占位，`library_enabled=0` 时该选项被忽略。新增 additive 响应字段 `retrieval_stats`（**资料召回次数**与**索引查询次数**分开统计，任何消费方不得合并）与 `retrieval_plan`（确定性计划摘要：plan_id/status/匹配标志/资产计数；**不是**新上下文层，不改变 assembled）。新增 13 张派生索引表：`library_index`（+ 可选 FTS5 `library_index_fts`）与 12 张 `novel_index_*`（第一梯队角色/事件/伏笔；第二梯队世界/关系/地点/剧情线仅建结构与查询接口；第三梯队物品/章节/风格/知识仅预留）；新增作者侧 `GET/PUT /api/novel/library/index`、`POST /api/novel/library/index/rebuild`、`GET/PUT /api/novel/novel_index`、`POST /api/novel/novel_index/rebuild`（写为作者动作，模型侧 403，模型侧 GET 只读可用）；资料导入确认增量维护 `library_index`（sha256 未变不更新；索引写失败不阻断导入），删除资料同步删索引行。缓存外部版本串新增 `li/ls/ni/ns`（资料索引与资产索引的 version/schema）；`library_index_enabled=0` 且 `novel_index_enabled=0` 时装配路径与 1.11.0 逐字节一致 | 插件工具 26 **不变**（`novel_write_pipeline` 增加可选参数）、端点 75 **不变**（新增作者侧索引端点不进插件白名单）；新表 13 张（旧 47 张零结构改动）；旧层/旧端点/字段/预算/层序/默认 route 均未变；未开索引开关的作品 assembled / manifest / context_id 与 1.11.0 逐字节一致；验证见 `.p1-baseline/test-direction-retrieval.mjs` / `test-retrieval-plan.mjs` / `test-library-index.mjs` / `frontend-test.mjs`（C1/C3 用例） |
 
 **1.1.0 的"不做"清单（对照质量红线）**
 
@@ -555,3 +557,29 @@ DELETE /api/novel/library/doc/:id
 - 不放宽既有 fail-closed：资料只认注册表 + 形状闸门；`recall` 层与 `library` 层互不混层。
 - `rebuild` / `planRebuild` 对资料根**显式拒绝**（`library_scope`）：全量重建永远不会把共享资料当作品投影删除。
 - 导入目录只读作者显式传入的路径；测试与真机验证都写隔离实例 / OV stub，绝不写作者真实记忆库与 `data/`。
+
+---
+
+## 21. 1.12.0 新增宿主能力：方向驱动检索与索引层化（A–E）
+
+同样是**能力地图**：插件只能通过 §7 的工具/端点使用它们，不得依赖宿主内部文件路径。
+
+| 能力 | 宿主实现 | 可观测入口 |
+|---|---|---|
+| 写作方向 `direction`（规范化/哈希/缓存键/外部版本串的**唯一口径**；≤400 码点；纯检索数据、不解析指令、不改变正典查询） | `ai/direction.mjs`（`normalizeDirection` / `directionHashOf` / `contextCacheKeyOf` / `contextExternalVersionStringOf`） | `GET /api/novel/context?...&direction=` 与 `GET /api/ai_context?...&direction=`；响应 `retrieval_stats.direction` |
+| 资料召回阶段 `library_recall_phase`（`default`=原行为 / `defer`=不查资料库、不写缓存、不插占位 / `direction`=优先用方向构造查询，方向为空安全回退 default） | `openviking-sync.js` 的 `getLibraryRecall` | 响应 `library_recall.status=deferred`；`defer` 时 `retrieval_stats.library_recall.searches=0` |
+| 资料召回专用查询构造（与正典语义召回分离、可分别测试；未传方向时与旧查询逐字节同源） | `openviking-sync.js` 的 `buildLibraryRecallQuery`（`buildRecallParts` 同源） | 资料层文本与 `library_recall.query`（审计，不进模型输入） |
+| **D：知识库专用候选索引**（每篇一条轻量记录；词法候选只做发现与查询扩展，语义阈值 0.40 / top-4 / 300 字 / 1200 字一律不放宽；索引查询超时 ≤1s 降级；写失败不阻断导入） | `ai/library/library-index.mjs` + `db.js`（`library_index` + FTS5 `library_index_fts`，bigram 预分词 + `unicode61`） | `GET /api/novel/library/index`（enabled/version/schema/entries/fts）；`PUT .../index/enabled`、`POST .../index/rebuild`（作者动作，模型侧 403）；`library_recall.index_assist` 审计摘要 |
+| **E：小说资产索引层**（结构化/精确查询先定位后读取；词法=名称/别名；语义仍只走 OpenViking） | `ai/novel-index/store.mjs` + `db.js`（12 张 `novel_index_*`） | `GET /api/novel/novel_index?work_id=`（enabled/version/schema/tiers）；`PUT /api/novel/novel_index`、`POST /api/novel/novel_index/rebuild`（作者动作） |
+| **E4：确定性检索计划**（词典 + 别名表子串匹配，无模型参与；可序列化/可校验；并发 ≤4 且**全部汇总后**才交给装配；计划失败回退既有读取方式） | `ai/novel-index/plan.mjs`（`buildRetrievalPlan` / `validateRetrievalPlan` / `executeRetrievalPlan` / `planAndExecute`） | `buildNovelContext` 的 additive 字段 `retrieval_plan`（plan_id/status/匹配标志/资产计数/耗时；**不是**新上下文层） |
+| 两份计数的结构分离（验收口径：**资料召回次数 ≠ 索引查询次数**，禁止合并成「调用次数」；**索引查询次数 = 本次装配实际发生的次数**：资料召回微缓存命中记 `searches=0`，计划缓存命中记 `cached=1` 且不重复计入 `by_index`） | `ai/retrieval-stats.mjs` + `buildNovelContext` 的累加器 | 响应 `retrieval_stats.library_recall.searches` 与 `retrieval_stats.index_queries.total`（两组独立字段） |
+| 缓存失效判据扩展（集成点①）：外部版本串 = `ov:<索引时间>|li:<资料索引版本>|ls:<资料索引 schema>|ni:<作品索引版本>|ns:<作品索引 schema>`；方向进缓存键的是**哈希** | `server.js` 的 `contextCache.externalVersionOf` + `ai/direction.mjs` | 索引重建 / schema 升级 / 开关变化后同一请求得到新 `context_id`；`frontend-test.mjs` C1/C3 用例 |
+| 装配纪律（集成点②）：计划查询先 `await` 全部汇总、结果只用于「取哪些资产 id」与审计；**不再并行直塞上下文**，也不作为新层进入模型输入 | `server.js` 装配点（`buildNovelContext`）+ `plan.mjs` 注释与结构 | 索引结果不在 `assembled` 中出现（阴性断言）；`retrieval_plan.note` 明示「不改变既有层内容」 |
+| 默认关闭与回退 | `library_index_enabled=0` / `novel_index_enabled=0`（app_settings） | 两个 GET 状态端点；关闭时 `index_queries.total=0` 且 assembled/manifest/context_id 与 1.11.0 逐字节一致（`.p1-baseline/test-direction-retrieval.mjs` 离线基线用例） |
+
+**边界与「不做」（对照质量红线）**
+
+- 不新增方向规划模型、不新增 AI 候选裁决、不新增第二套向量库或付费服务；索引维护零 LLM、零付费请求。
+- 索引只用于候选定位与查询优化：候选清单、`keywords`、`summary`、`tags`、分数解释默认不进入模型输入（`queryCandidates` 不返回正文与关键词）。
+- 方向不改变角色/世界观/事件/伏笔/红线/正典语义召回/审批状态；资料与索引结果永远是 `reference`，不写正典。
+- E1（角色/事件/伏笔）已接入检索计划执行与审计；E2（世界/关系/地点/剧情线）建结构与查询接口；E3（物品/章节/风格/知识）仅预留。**装配层本轮不改写既有层内容**（E5 优先保证「不增加 assembled、不遗漏正典」），「替代全量读取」按梯队后续推进——报告口径以此为准。

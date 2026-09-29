@@ -625,6 +625,8 @@ globalThis.__probe = {
   continuityGuardSummaryHtml,
   streamAIDirectWrite,
   performToolbarAIWrite,
+  loadAIContext,
+  WRITING_DIRECTION_MAX_CHARS, normalizeWritingDirectionText, clipWritingDirectionText, buildWritingDirectionFromBlueprint, savedBlueprintForChapter, directionKeyHashOf,
   newWriteTiming,
   withThinkingHeadroom,
   verifyAIDraft,
@@ -2958,5 +2960,170 @@ check('18 停止后退出录制态', P.trace.on === false);
 check('19 停止后按钮恢复未录制显示', String(doc.getElementById('trace-toggle').textContent).includes('运行追踪'));
 
 P.traceStopStream();
+// --- 21) C1/C3：写作方向（纯函数）与「方向化装配」的前端纪律 ---
+// 为什么单独测：direction 在前端要同时满足三件事——与服务端同口径的规范化/截断、
+// 只从"已保存蓝图"保守提取、以及一次写作任务**最多一次**方向化资料召回（无蓝图时先 defer）。
+// 纯函数部分与服务器 ai/direction.mjs 同口径（服务端侧由 test-direction-retrieval.mjs 验证）；
+// 这里钉住前端镜像不会漂移，以及请求参数真的带上方向/阶段。
+{
+  check('C1a 方向规范化：非字符串一律视为未提供',
+    P.normalizeWritingDirectionText(null) === '' && P.normalizeWritingDirectionText(42) === '' && P.normalizeWritingDirectionText({}) === '');
+  check('C1b 方向规范化：控制字符折叠为空格、连续空白压平、首尾去空',
+    P.normalizeWritingDirectionText('  \u0007第一段\n\n第二段\t  ') === '第一段 第二段');
+  check('C1c 方向规范化：超长按 400 Unicode 码点截断（代理对不撕裂）',
+    P.WRITING_DIRECTION_MAX_CHARS === 400 && Array.from(P.normalizeWritingDirectionText('🀄'.repeat(500))).length === 400);
+  check('C1d 方向规范化：同输入同输出、不同输入可区分（纯函数）',
+    P.normalizeWritingDirectionText('甲 乙') === P.normalizeWritingDirectionText('甲 乙')
+      && P.normalizeWritingDirectionText('甲') !== P.normalizeWritingDirectionText('乙'));
+  const sentenceText = '甲'.repeat(330) + '。' + '乙'.repeat(200);
+  check('C1e 截断尽量落在句子边界（句末标点处收口）',
+    Array.from(P.clipWritingDirectionText(sentenceText, 400)).length === 331 && P.clipWritingDirectionText(sentenceText, 400).endsWith('。'));
+  check('C1f 找不到句子边界时按额度硬截', Array.from(P.clipWritingDirectionText('丙'.repeat(500), 400)).length === 400);
+
+  const bp = { hook: '钩子内容', plot_points: ['情节点一', '情节点二'], conflicts: '冲突内容', scene_goal: '场景目标', references: '参考内容', character_changes: '角色变化' };
+  const dirFromBp = P.buildWritingDirectionFromBlueprint(bp);
+  check('C1g 蓝图→方向按字段优先级拼装（references 最前、hook 最后；数组用；连接）',
+    dirFromBp.startsWith('参考内容') && dirFromBp.includes('场景目标') && dirFromBp.includes('情节点一；情节点二')
+      && dirFromBp.indexOf('冲突内容') < dirFromBp.indexOf('角色变化') && dirFromBp.indexOf('钩子内容') > dirFromBp.indexOf('角色变化'));
+  check('C1h 蓝图→方向是纯文本（不夹带 JSON 结构/换行）', !/[{}]/.test(dirFromBp) && !dirFromBp.includes('\n'));
+  check('C1i 蓝图无有效字段时回退到 fallback；两者都空则为空串',
+    P.buildWritingDirectionFromBlueprint({}, '用户要求') === '用户要求'
+      && P.buildWritingDirectionFromBlueprint({ unknown_field: 'x' }, '') === ''
+      && P.buildWritingDirectionFromBlueprint(null, '') === '');
+  const hugeDir = P.buildWritingDirectionFromBlueprint({ references: '甲'.repeat(500), scene_goal: '不应出现的目标' }, '');
+  check('C1j 蓝图→方向仍受 400 码点硬上限；被截断后不再拼后续字段（不产生半句）',
+    Array.from(hugeDir).length === 400 && !hugeDir.includes('不应出现的目标'));
+  check('C1k 前端方向哈希稳定、可区分（仅用于 in-flight 去重）',
+    /^[0-9a-f]{8}$/.test(P.directionKeyHashOf('甲')) && P.directionKeyHashOf('甲') === P.directionKeyHashOf('甲')
+      && P.directionKeyHashOf('甲') !== P.directionKeyHashOf('乙'));
+
+  const savedChaptersForBp = P.state.chapters;
+  P.state.chapters = [
+    { id: 901, blueprint_json: JSON.stringify({ scene_goal: '目标' }) },
+    { id: 902, blueprint_json: '{坏 JSON' },
+    { id: 903, blueprint_json: JSON.stringify({ other: 'x' }) },
+    { id: 904, blueprint_json: JSON.stringify(['a']) },
+    { id: 905, blueprint_json: '' },
+  ];
+  check('C1l savedBlueprintForChapter 保守判据：可解析且有已知字段才算；坏 JSON/数组/未知字段/空都不算',
+    !!P.savedBlueprintForChapter(901) && P.savedBlueprintForChapter(902) === null && P.savedBlueprintForChapter(903) === null
+      && P.savedBlueprintForChapter(904) === null && P.savedBlueprintForChapter(905) === null && P.savedBlueprintForChapter(0) === null);
+  P.state.chapters = savedChaptersForBp;
+
+  // C3：loadAIContext 的方向/阶段进请求；in-flight 去重按「方向+阶段」分键
+  {
+    const saved = { api: sandbox.api, aiContext: P.state.aiContext, chapterId: P.state.currentChapterId, workId: P.state.workId, work: P.state.work };
+    P.state.currentChapterId = 601; P.state.workId = 2; P.state.work = { id: 2, title: '测试作品' };
+    const seen = [];
+    sandbox.api = async (p) => {
+      seen.push(String(p));
+      if (String(p).startsWith('/ai_context')) return { assembled: '服务端装配文本', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+      return {};
+    };
+    await P.loadAIContext({ direction: '方向甲', directionSource: 'saved_blueprint', libraryRecallPhase: 'direction' });
+    const dirUrl = seen[0] || '';
+    check('C3a 方向化装配：direction / phase / source 全部进请求（中文已编码；用服务端 assembled）',
+      dirUrl.startsWith('/ai_context?') && decodeURIComponent(dirUrl).includes('direction=方向甲')
+        && dirUrl.includes('library_recall_phase=direction') && dirUrl.includes('direction_source=saved_blueprint')
+        && !!P.state.aiContext && P.state.aiContext.assembled === '服务端装配文本',
+      JSON.stringify({ dirUrl, ctx: P.state.aiContext && P.state.aiContext.assembled }));
+    seen.length = 0;
+    await P.loadAIContext({ libraryRecallPhase: 'defer' });
+    const deferUrl = seen[0] || '';
+    check('C3b defer 装配：带 library_recall_phase=defer 且不带 direction',
+      deferUrl.includes('library_recall_phase=defer') && !decodeURIComponent(deferUrl).includes('direction='));
+    seen.length = 0;
+    let release = null;
+    sandbox.api = async (p) => { seen.push(String(p)); await new Promise((r) => { release = r; }); return { assembled: 'x', context_manifest: [] }; };
+    const p1 = P.loadAIContext({ direction: '方向乙', libraryRecallPhase: 'direction' });
+    const p2 = P.loadAIContext({ direction: '方向乙', libraryRecallPhase: 'direction' });
+    await new Promise((r) => setTimeout(r, 0));
+    const inflightCount = seen.length;
+    if (release) release();
+    await Promise.all([p1, p2]);
+    check('C3c 相同方向+相同阶段的并发装配只发一次请求（in-flight 去重）', inflightCount === 1 && seen.length === 1, JSON.stringify(seen));
+    seen.length = 0;
+    const releases = [];
+    sandbox.api = async (p) => { seen.push(String(p)); await new Promise((r) => { releases.push(r); }); return { assembled: 'y', context_manifest: [] }; };
+    const g1 = P.loadAIContext({ direction: '方向丙', libraryRecallPhase: 'direction' });
+    const g2 = P.loadAIContext({ direction: '方向丁', libraryRecallPhase: 'direction' });
+    await new Promise((r) => setTimeout(r, 0));
+    check('C3d 不同方向/阶段各发各的请求（不互相顶掉或误命中）', seen.length === 2, JSON.stringify(seen));
+    releases.forEach((r) => r());
+    await Promise.all([g1, g2]);
+    sandbox.api = saved.api;
+    P.state.aiContext = saved.aiContext; P.state.currentChapterId = saved.chapterId; P.state.workId = saved.workId; P.state.work = saved.work;
+  }
+
+  // C3e：已保存蓝图 → 入口按蓝图方向做唯一一次 direction 装配，不再走 defer（也不产生第二次召回）
+  {
+    const saved = {
+      fetch: sandbox.fetch, api: sandbox.api, toast: sandbox.toast, report: sandbox.reportClientLog,
+      showResult: sandbox.showAIWritingResult, apply: sandbox.applyAIWritingArticle, harness: sandbox.runHarnessJob,
+      decoder: sandbox.TextDecoder, card: sandbox.showAITaskProgress,
+      chapterId: P.state.currentChapterId, workId: P.state.workId, work: P.state.work, chapters: P.state.chapters,
+      aiContext: P.state.aiContext, apiConfigs: P.state.apiConfigs, activeConfigId: P.state.activeConfigId,
+      aiTaskRunning: P.state.aiTaskRunning,
+    };
+    P.state.aiTaskRunning = false; // 干净起点：前面用例可能留着"任务进行中"标志（否则本次写作直接拒绝启动）
+    P.state.currentChapterId = 601;
+    P.state.workId = 2;
+    P.state.work = { id: 2, title: '测试作品' };
+    P.state.apiConfigs = [{ id: 1, api_key: 'sk-test', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 }];
+    P.state.activeConfigId = 1;
+    P.state.chapters = [{ id: 601, title: '第601章', blueprint_json: JSON.stringify({ scene_goal: '主角在雨夜摊牌', conflicts: '旧账被翻出', plot_points: ['对峙', '证据出现'], hook: '门外有人' }) }];
+    containers['#editor-content'] = mkEl('editor-content');
+    containers['#editor-content'].innerHTML = '<p>已有正文</p>';
+    containers['#editor-content'].dataset = { chapterId: '601' };
+    const aiCalls = [];
+    const baseApi = sandbox.api;
+    sandbox.api = async (p, o = {}) => {
+      const s = String(p);
+      if (s.startsWith('/ai_context') || s.startsWith('/novel/context')) {
+        aiCalls.push(s);
+        return { assembled: '服务端装配文本', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+      }
+      return baseApi(p, o);
+    };
+    const toasts = [];
+    sandbox.toast = (m) => { toasts.push(String(m)); };
+    sandbox.reportClientLog = () => {};
+    sandbox.TextDecoder = class { decode(b) { return b ? Buffer.from(b).toString('utf8') : ''; } };
+    sandbox.runHarnessJob = async () => ({ output: '' });
+    let resultOpened = 0;
+    sandbox.showAIWritingResult = async () => { resultOpened += 1; return null; };
+    let applyCalls = 0;
+    sandbox.applyAIWritingArticle = async () => { applyCalls += 1; };
+    const sse = (frames) => {
+      const bytes = Buffer.from(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join(''), 'utf8');
+      let sent = false;
+      return { ok: true, status: 200, body: { getReader: () => ({ read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })) }) }, json: async () => ({}), text: async () => '' };
+    };
+    sandbox.fetch = async (url, opts) => (String(url).includes('/api/ai/write_stream')
+      ? sse([{ delta: '雨夜的正文。' }, { done: true, text: '雨夜的正文。' }])
+      : saved.fetch(url, opts));
+    containers['#modal-root'].innerHTML = '';
+    let writeErr = '';
+    try { await P.performToolbarAIWrite('续写本章'); } catch (e) { writeErr = e.message; }
+    const errModal = String(containers['#modal-root'].innerHTML).includes('AI 写作未完成');
+    check('C3e 已保存蓝图：入口直接做唯一一次 direction 装配（不出现 defer、来源=saved_blueprint）',
+      aiCalls.length === 1 && decodeURIComponent(aiCalls[0]).includes('library_recall_phase=direction')
+        && aiCalls[0].includes('direction_source=saved_blueprint')
+        && !aiCalls.some((u) => u.includes('library_recall_phase=defer')),
+      JSON.stringify({ aiCalls, err: writeErr, toasts: toasts.slice(0, 2) }));
+    check('C3e2 已保存蓝图路径不再自相矛盾地提示"本章蓝图未保存"（它本来就在库里）',
+      !toasts.some((t) => t.includes('本章蓝图未保存')), JSON.stringify(toasts));
+    check('C3f 该路径照常走到结果弹窗（跳过蓝图生成轮不代表流程中断）',
+      resultOpened === 1 && applyCalls === 0 && !errModal && writeErr === '',
+      JSON.stringify({ resultOpened, applyCalls, errModal, writeErr, modal: String(containers['#modal-root'].innerHTML).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 400), toasts }));
+    sandbox.fetch = saved.fetch; sandbox.api = saved.api; sandbox.toast = saved.toast; sandbox.reportClientLog = saved.report;
+    sandbox.showAIWritingResult = saved.showResult; sandbox.applyAIWritingArticle = saved.apply; sandbox.runHarnessJob = saved.harness;
+    sandbox.TextDecoder = saved.decoder; sandbox.showAITaskProgress = saved.card;
+    P.state.currentChapterId = saved.chapterId; P.state.workId = saved.workId; P.state.work = saved.work;
+    P.state.chapters = saved.chapters; P.state.aiContext = saved.aiContext;
+    P.state.apiConfigs = saved.apiConfigs; P.state.activeConfigId = saved.activeConfigId;
+    P.state.aiTaskRunning = saved.aiTaskRunning;
+  }
+}
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);
 process.exit(failures ? 1 : 0);

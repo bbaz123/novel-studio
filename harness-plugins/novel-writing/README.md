@@ -194,6 +194,28 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 - 请求体上限 32MB（EPUB 导入用）；红线正则长度上限 500、豁免词单个上限 100；非法 JSON/非 JSON 响应显式报错。
 - 蓝图/审稿/正文写回等写类端点校验 `work_id` 与章节归属，防止串作品误写。
 
+## 插件 0.16.0 更新：方向驱动检索 + 索引层化（2026-09-29）
+
+- **写作方向作为检索输入**：`novel_write_pipeline` 新增可选参数 `direction`（≤400 码点，与宿主同口径规范化）
+  与 `direction_source`（仅审计）；方向只影响**资料召回与索引候选发现**，不改正典查询、预算与阈值。
+  零新增规划模型调用——方向随既有装配请求携带；宿主不解析其中的工具名 / 路径 / 指令。
+- **`library_recall_phase`**（`default` / `defer` / `direction`）：`defer` 不查资料库、不写召回缓存、不插占位；
+  无方向且未指定阶段时走原有查询与缓存路径（旧调用零变化）。
+- **资料索引 `library_index`**（含可选 FTS5 表）：按 sha256 增量维护（未变不更新），删除资料同步删索引行；
+  索引写失败不阻断导入。索引只用于**定位候选**，不成为新上下文层、不进模型上下文。
+- **小说资产索引 12 张 `novel_index_*`**：第一梯队（角色 / 事件 / 伏笔）可用，第二梯队（世界 / 关系 / 地点 / 剧情线）
+  仅建结构与查询接口，第三梯队（物品 / 章节 / 风格 / 知识）仅预留；默认关闭、可重建，写是作者动作（模型侧 403）。
+- **检索计划只准备输入**：并发查多个索引后**先汇总再装配**——不新增编排层、不绕过唯一装配器，也不把候选清单塞进上下文。
+- **计数口径分开**：`retrieval_stats` 把「资料召回次数」与「索引查询次数」分两组统计，任何消费方不得混算；
+  缓存键同时含**方向 hash** 与**索引 version/schema**（索引内容变化 → 版本前进 → 缓存失效）。
+- **工具面 / 端点不变**：仍是 26 个 `novel_*` 工具与 75 条端点声明；变化只在 `novel_write_pipeline` 的**可选**参数
+  与宿主侧索引端点（作者动作，不进插件白名单）。
+- **兼容与证据**：`library_index_enabled=0` / `novel_index_enabled=0` 时 assembled / manifest / context_id 与 1.11.0
+  逐字节一致（`verify-library-identity.mjs` 4/4、`test-direction-retrieval.mjs` 的 E5 用例）；
+  离线 `test-retrieval-plan.mjs` 65/65 与 `test-direction-retrieval.mjs` 47/47。
+- **保守落地（如实记录）**：检索计划开启**不改变既有层内容**（assembled 逐字节一致），只增加审计字段；
+  「用索引替代全量读取」按梯队后续推进，未声称已达成。
+
 ## 插件 0.15.0 更新：共享资料库 + 工具面 26 / 端点 75（2026-09-28）
 
 - **新增工具 `novel_library`**：检索共享资料库（跨作品写作参考资料）并按 id 读回原文窗口；
@@ -209,7 +231,7 @@ pnpm dsh --profile novel "Reply with the single word: ok"
 
 ## 插件 0.9.0 更新：按 P0–P6 重构后的内核**完全适配** + AI 能力结合（2026-09-18）
 
-> 版本号有两套，别混：**插件版本**在 `plugin.json`（当前 **0.15.0**，三处必须同步——`plugin.json` /
+> 版本号有两套，别混：**插件版本**在 `plugin.json`（当前 **0.16.0**，三处必须同步——`plugin.json` /
 > `package.json` / `novel-tools.mjs` 的 `PLUGIN_VERSION`）；下面各节标题里的 `v0.9.3` / `v0.8.0`
 > 是**工坊本体版本**（根 `package.json`），讲的是服务端能力。
 

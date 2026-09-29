@@ -3,7 +3,7 @@
  * test-migration-idempotent.mjs —— 任务书 §18「新 migration 在空库、旧库副本、重复启动及中途失败场景下数据与 schema 状态正确」的离线对照（零计费）。
  *
  * 钉四件事：
- *   A. 空库首启：契约声明的 47 张表全部建成（含本批次新增的 12 张）；
+ *   A. 空库首启：契约声明的 60 张表全部建成（含各批次新增的 25 张）；
  *   B. 重复启动：同一数据目录再次初始化，schema 指纹与数据行数不变（不重建、不丢行）；
  *   C. 旧库副本：只读打开冻结副本，schema 指纹仍等于契约冻结值（旧作品仍可打开）；
  *   D. 损坏库：无法打开的库必须**响亮失败**（非零退出 + 原文件字节不变），不得被静默当成空库重建。
@@ -54,7 +54,10 @@ const runProbe = (dir, insert) => {
 
 const NEW_TABLES = ['author_approvals', 'adoption_operations', 'projection_outbox', 'ov_projection_audit',
   'author_samples', 'style_profiles', 'author_intents', 'branch_sandboxes', 'branch_candidates',
-  'import_rebuild_runs', 'import_rebuild_batches', 'library_docs'];
+  'import_rebuild_runs', 'import_rebuild_batches', 'library_docs',
+  'library_index', 'novel_index_chapters', 'novel_index_characters', 'novel_index_events', 'novel_index_foreshadows',
+  'novel_index_items', 'novel_index_knowledge', 'novel_index_locations', 'novel_index_meta', 'novel_index_relations',
+  'novel_index_style', 'novel_index_threads', 'novel_index_world'];
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-migration-'));
 let first = null;
@@ -67,7 +70,7 @@ try {
   const missing = declared.filter((t) => !first.tables.includes(t));
   ok('A1 契约声明的 ' + declared.length + ' 张表全部建成', missing.length === 0, '缺：' + missing.join('、'));
   const missingNew = NEW_TABLES.filter((t) => !first.tables.includes(t));
-  ok('A2 本批次新增的 ' + NEW_TABLES.length + ' 张表全部建成', missingNew.length === 0, '缺：' + missingNew.join('、'));
+  ok('A2 各批次新增的 ' + NEW_TABLES.length + ' 张表全部建成', missingNew.length === 0, '缺：' + missingNew.join('、'));
   ok('A3 有 schema 指纹可对账（非空）', /^[0-9a-f]{16}$/.test(first.fingerprint), first.fingerprint);
 
   console.log('【B. 重复启动（同一数据目录再初始化）】');

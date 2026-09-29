@@ -24,6 +24,8 @@ import { createSyncGate } from './ai/sync-gate.mjs';
 import { filterRecallItems, validateRecallItem, planRebuild } from './ai/openviking/recall-meta.mjs';
 import { SHARED_LIBRARY_ROOT } from './ai/library/library-roots.mjs';
 import { LIBRARY_RECALL, libraryHitOf, libraryRecallTextOf } from './ai/library/library-recall.mjs';
+import { normalizeDirection, directionHashOf, normalizeLibraryRecallPhase } from './ai/direction.mjs';
+import * as LibraryIndex from './ai/library/library-index.mjs';
 
 // 协议前缀运行时拼接（避免源码中出现的字面 URI 触发 dsh 的 URI 防护误判）。
 const OV_PROTO = 'viking:' + '//';
@@ -625,7 +627,8 @@ function recallCacheSet(key, payload) {
   }
 }
 
-function buildRecallQuery(workId, chapter) {
+/** 作品/章节级轻量信号（不含方向）：正典召回与资料召回共用同一来源，避免两套字段口径。 */
+function buildRecallParts(workId, chapter) {
   const parts = [];
   const work = lookupRow('works', workId);
   if (work?.title) parts.push(`作品：${work.title}`);
@@ -651,6 +654,32 @@ function buildRecallQuery(workId, chapter) {
   }
   const events = prepare('SELECT summary FROM story_events WHERE work_id = ? ORDER BY id DESC LIMIT 12').all(workId);
   if (events.length) parts.push(`最近事件：${events.map((e) => capText(e.summary, 120)).join('；')}`);
+  return parts.filter(Boolean);
+}
+
+/** 正典语义召回的查询（保持历史行为不变；资料召回不得复用它的方向语义）。 */
+function buildRecallQuery(workId, chapter) {
+  return buildRecallParts(workId, chapter).join('\n').slice(0, 1600);
+}
+
+/**
+ * C5：资料召回专用查询构造（与正典语义召回分离，可分别测试）。
+ *   · 未传 direction：与 buildRecallQuery 同源同输出（逐字节兼容历史路径）；
+ *   · 传 direction：direction 置于最高优先位置，仅保留必要轻量信号
+ *     （作品标题、章节标题、必要摘要），不拼入全部正文/事件/完整蓝图；
+ *   · 总字符上限维持 1600（不因 direction 放宽）。
+ */
+export function buildLibraryRecallQuery(workId, chapter, options = {}) {
+  const direction = normalizeDirection(options.direction);
+  if (!direction) return buildRecallQuery(workId, chapter);
+  const work = lookupRow('works', workId);
+  const parts = [];
+  if (work?.title) parts.push(`作品：${work.title}`);
+  if (chapter) {
+    parts.push(`当前章节：第${chapter.position + 1}节 ${chapter.title}`);
+    if (chapter.summary) parts.push(`章节摘要：${capText(chapter.summary, 120)}`);
+  }
+  parts.push(`写作方向：${direction}`);
   return parts.filter(Boolean).join('\n').slice(0, 1600);
 }
 
@@ -819,24 +848,83 @@ export function libraryEnabled(workId) {
 }
 
 /**
- * 资料库召回：以当前写作场景为查询，从共享资料根检索资料文件，读回前 30 行（P0 实测
- * offset/limit 按行计）并压到每条 300 字。离线静默降级（不阻塞写作），失败/被拦留审计。
+ * 资料库召回：以当前写作场景/写作方向为查询，从共享资料根检索资料文件，读回前 30 行
+ * （P0 实测 offset/limit 按行计）并压到每条 300 字。离线静默降级（不阻塞写作），失败/被拦留审计。
  * 期望有却没拿到时**不插占位层**（与 recall 有意不同：资料是辅助材料，缺了不误导判断；
  * 状态与原因在响应字段与日志里可见）——别按 recall 口径"修"回占位层。
+ *
+ * 本次新增（C2/C4/D4）：
+ *   · `options.libraryRecallPhase`：default | defer | direction。
+ *     defer 时**不查资料库、不写缓存**（专门的装配内部阶段，不得触发搜索）；
+ *   · `options.direction`：方向只用于检索（查询构造 + D 索引候选发现），不解析其中的指令；
+ *   · 微缓存键 = work:chapter:phase:directionHash:资料索引版本（含 schema）——
+ *     方向变化/索引重建/索引 schema 升级都必须不命中旧结果；
+ *   · 计数口径：`stats.searches` 是**真实资料检索次数**（缓存命中记 0），
+ *     `stats.index_queries` 是**索引查询次数**（缓存命中同样记 0——本次没有发生查询），
+ *     两者分开统计（验收时不得混算）。
  */
-export async function getLibraryRecall(workId, chapter) {
+export async function getLibraryRecall(workId, chapter, options = {}) {
+  const phase = normalizeLibraryRecallPhase(options.libraryRecallPhase);
+  const direction = normalizeDirection(options.direction);
+  const baseStats = (status) => ({
+    searches: 0, cached: false, index_assisted: false, index_queries: 0,
+    status, hits: 0, text_chars: 0, timings_ms: 0,
+    direction_used: Boolean(direction), phase,
+  });
+  // 关闭判定必须在 defer 之前：`library_enabled`=0（或离线/总闸关闭）时此选项被忽略，
+  // 结果与旧调用（disabled）逐字节一致——defer 不能反过来改变「资料库未开启」的语义。
   if (OV_DISABLED || !semanticEnabled() || !libraryEnabled(workId)) {
-    return { enabled: false, status: 'disabled', query: '', hits: [] };
+    return { enabled: false, status: 'disabled', query: '', hits: [], stats: baseStats('disabled') };
   }
-  const key = `${workId}:${chapter?.id || 0}`;
+  if (phase === 'defer') {
+    // defer：仅用于「蓝图尚未确定」的内部阶段——不查库、不写缓存、不插占位。
+    return { enabled: true, status: 'deferred', query: '', hits: [], stats: baseStats('deferred') };
+  }
+  const t0 = Date.now();
+  // 集成点①：缓存键必须同时包含 direction hash 与索引版本（含 schema）——
+  // 只盖 TTL 是不够的：索引重建/升级后旧结果必须立刻失效，方向变了绝不能命中旧结果。
+  const versions = LibraryIndex.libraryIndexVersionKey();
+  const key = `${workId}:${chapter?.id || 0}:${phase}:${direction ? directionHashOf(direction) : '-'}:${versions}`;
   const hit = libraryCache.get(key);
-  if (hit && Date.now() - hit.at < LIBRARY_RECALL.ttlMs) return hit.payload;
+  if (hit && Date.now() - hit.at < LIBRARY_RECALL.ttlMs) {
+    // 缓存命中 = 本次装配**没有发生**真实检索 / 索引查询 / 外部等待：计数与耗时按本次归零，
+    // 否则「召回一次 + 缓存命中」会和「召回了两次」在验收表上分不开（集成点③）。
+    // 内容来源（status / hits / text_chars / index_assisted / index_assist）保留自缓存载荷。
+    return {
+      ...hit.payload,
+      stats: { ...hit.payload.stats, searches: 0, index_queries: 0, timings_ms: 0, cached: true },
+    };
+  }
 
-  const query = buildRecallQuery(workId, chapter);
-  if (!query.trim()) return { enabled: true, status: 'empty', query: '', hits: [] };
+  let query = buildLibraryRecallQuery(workId, chapter, { direction });
+  // D4（V1 保守方案）：索引只做候选发现与查询扩展；放行仍由 0.40 语义阈值决定——
+  // 词法分数绝不把低于阈值的项顶进上下文（不实现「用词法分顶替语义分」的融合）。
+  let indexAssist = null;
+  let indexQueries = 0;
+  let lexicalByUri = null;
+  if (direction && LibraryIndex.libraryIndexEnabled()) {
+    const idx = LibraryIndex.queryCandidates({ query: direction, limit: 12 });
+    indexQueries += 1;
+    if (idx.ok && idx.candidates.length) {
+      const terms = LibraryIndex.expansionTermsForHits(idx.candidates);
+      if (terms.length) query = `${query}\n${terms.join(' ')}`.slice(0, 1600);
+      lexicalByUri = new Map(idx.candidates.map((c) => [c.uri, c.lexical_score]));
+      indexAssist = { status: idx.status, candidates: idx.candidates.length, expansion_terms: terms.length, timings_ms: idx.timings_ms };
+    } else {
+      indexAssist = { status: idx.status, candidates: 0, expansion_terms: 0, timings_ms: idx.timings_ms };
+    }
+  }
+  const stats = { ...baseStats('unknown'), index_queries: indexQueries };
+  stats.index_assisted = Boolean(indexAssist);
+  if (!query.trim()) {
+    // 空查询是**正常空结果**，不写微缓存（与原实现一致；§九-11）：
+    // 查询为空意味着当前场景没有可取回的检索输入，缓存它只会制造一段"看似命中"的假历史。
+    return { enabled: true, status: 'empty', query: '', hits: [], index_assist: indexAssist, stats: { ...stats, status: 'empty', timings_ms: Date.now() - t0 } };
+  }
 
   let hits = [];
   try {
+    stats.searches = 1;
     hits = await ovClient.find(query, {
       targetUri: SHARED_LIBRARY_ROOT,
       limit: LIBRARY_RECALL.maxHits + LIBRARY_RECALL.overscan,
@@ -847,7 +935,7 @@ export async function getLibraryRecall(workId, chapter) {
     hits = [];
   }
   if (!hits.length) {
-    const payload = { enabled: true, status: ovClient.connected ? 'no-hits' : 'unavailable', query, hits: [] };
+    const payload = { enabled: true, status: ovClient.connected ? 'no-hits' : 'unavailable', query, hits: [], index_assist: indexAssist, stats: { ...stats, status: ovClient.connected ? 'no-hits' : 'unavailable', timings_ms: Date.now() - t0 } };
     libraryCacheSet(key, payload);
     return payload;
   }
@@ -862,7 +950,18 @@ export async function getLibraryRecall(workId, chapter) {
     if (verdict.ok) candidates.push(h);
     else preDropped.push({ uri: h.uri, code: verdict.code, reason: verdict.reason });
   }
-  const top = candidates.slice(0, LIBRARY_RECALL.maxHits);
+  // 排序（仅索引开启时改变）：语义分优先（阈值已由 OV 卡的 0.40），词法分只作同分/近分的
+  // 稳定二级排序，最后按 uri 稳定收口——避免「分数相同则顺序漂移」。索引关闭时保持原序（基线一致）。
+  const ordered = indexAssist
+    ? [...candidates].sort((a, b) => {
+        const ds = (Number(b.score) || 0) - (Number(a.score) || 0);
+        if (ds !== 0) return ds;
+        const dl = (Number(lexicalByUri?.get(String(b.uri))) || 0) - (Number(lexicalByUri?.get(String(a.uri))) || 0);
+        if (dl !== 0) return dl;
+        return String(a.uri) < String(b.uri) ? -1 : 1;
+      })
+    : candidates;
+  const top = ordered.slice(0, LIBRARY_RECALL.maxHits);
   const reads = await Promise.all(top.map((h) => ovClient.readContent(h.uri, {
     offset: 0, limit: LIBRARY_RECALL.readLines, timeoutMs: 5000
   }).catch(() => ({ ok: false, text: '' }))));
@@ -871,7 +970,13 @@ export async function getLibraryRecall(workId, chapter) {
     const read = reads[i];
     const text = read.ok ? read.text : h.abstract || '';
     if (!text.trim()) return;
-    items.push(libraryHitOf(h, { text, score: h.score }));
+    const item = libraryHitOf(h, { text, score: h.score });
+    // 审计分数：semantic 为放行分数（0-100），lexical 为索引排序提示（0-100），
+    // final 恒等于 semantic——词法分不参与放行，只参与同分排序（口径在报告中说明）。
+    item.semantic_score = item.score;
+    item.lexical_score = lexicalByUri ? Math.round((Number(lexicalByUri.get(String(h.uri))) || 0) * 100) : null;
+    item.final_score = item.score;
+    items.push(item);
   });
 
   // 来源校验（与 recall 共用同一实现，单点规则；候选过滤之后的第二道）：allowLibrary=true 时
@@ -893,12 +998,16 @@ export async function getLibraryRecall(workId, chapter) {
         hits: kept,
         omitted: omittedAll,
         meta_validated: true,
-        text: libraryRecallTextOf(kept)
+        index_assist: indexAssist,
+        text: libraryRecallTextOf(kept),
+        stats: { ...stats, status: 'ok', hits: kept.length, text_chars: libraryRecallTextOf(kept).length, timings_ms: Date.now() - t0 }
       }
     : {
         enabled: true,
         status: omittedAll.length ? 'filtered' : 'no-hits',
-        query, hits: [], omitted: omittedAll, meta_validated: true
+        query, hits: [], omitted: omittedAll, meta_validated: true,
+        index_assist: indexAssist,
+        stats: { ...stats, status: omittedAll.length ? 'filtered' : 'no-hits', timings_ms: Date.now() - t0 }
       };
   libraryCacheSet(key, payload);
   return payload;

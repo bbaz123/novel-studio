@@ -6652,26 +6652,49 @@ function openApiConfigModal(config = null) {
 
 // ---------- AI functions ----------
 // 加载当前章节的 AI 上下文：角色卡、激活的世界观词条、作者注。
-let aiContextInflight = null; // 同一 workId:chapterId 的并发请求复用，避免多次重复装配往返
-async function loadAIContext() {
+// C3/C4：可选 { direction, directionSource, libraryRecallPhase }——
+//   · libraryRecallPhase: default | defer | direction（服务器 ai/direction.mjs 同口径）；
+//   · direction 只影响资料召回与索引候选发现，不改变正典查询；
+//   · 本函数自身不缓存：每次调用都向服务器发起请求（或命中服务器侧带方向/版本判据的装配缓存），
+//     相同阶段+方向的并发请求共用一个 in-flight Promise，不同方向/阶段各有各的键。
+let aiContextInflight = null; // 同一 (workId:chapterId:phase:directionHash) 的并发请求复用
+async function loadAIContext(options = {}) {
   const chapterId = state.currentChapterId;
   const workId = state.workId || state.work?.id || 0;
   if (!chapterId) {
     state.aiContext = null;
     return null;
   }
-  const key = `${workId}:${chapterId}`;
+  const direction = normalizeWritingDirectionText(options.direction || '');
+  const libraryRecallPhase = ['default', 'defer', 'direction'].includes(options.libraryRecallPhase)
+    ? options.libraryRecallPhase
+    : 'default';
+  const directionHash = direction ? directionKeyHashOf(direction) : '';
+  const key = `${workId}:${chapterId}:${libraryRecallPhase}:${directionHash || '-'}`;
   if (aiContextInflight && aiContextInflight.key === key) return aiContextInflight.promise;
   const fresh = () => state.currentChapterId === chapterId && (state.workId || state.work?.id || 0) === workId;
+  // GET 参数一律走 URLSearchParams（direction 可能含中文/空格；上限 400 码点由规范化保证）。
+  const queryOf = (path) => {
+    const qs = new URLSearchParams({ chapter_id: String(chapterId) });
+    if (direction) qs.set('direction', direction);
+    if (libraryRecallPhase !== 'default') qs.set('library_recall_phase', libraryRecallPhase);
+    if (direction && options.directionSource) qs.set('direction_source', String(options.directionSource));
+    return `${path}?${qs.toString()}`;
+  };
   const promise = (async () => {
     try {
-      let ctx = await api(`/ai_context?chapter_id=${chapterId}`);
+      let ctx = await api(queryOf('/ai_context'));
       if (!fresh()) return state.aiContext;
       // P2 契约：提示词正文只应来自服务端 assembled。旧接口若未返回 assembled，
       // 回退到唯一装配器 /novel/context，避免前端再次启用无预算的旧拼装。
       if (ctx && !(typeof ctx.assembled === 'string' && ctx.assembled) && workId) {
         try {
-          const assembledCtx = await api(`/novel/context?work_id=${workId}&chapter_id=${chapterId}&mode=full`);
+          // 同一组方向/阶段参数 → 与 /ai_context 命中**同一份服务器缓存**，不会二次召回（C3）。
+          const qs = new URLSearchParams({ work_id: String(workId), chapter_id: String(chapterId), mode: 'full' });
+          if (direction) qs.set('direction', direction);
+          if (libraryRecallPhase !== 'default') qs.set('library_recall_phase', libraryRecallPhase);
+          if (direction && options.directionSource) qs.set('direction_source', String(options.directionSource));
+          const assembledCtx = await api(`/novel/context?${qs.toString()}`);
           ctx = assembledCtx || ctx;
         } catch (_) { /* 回退失败时保留 /ai_context 的结构化字段供界面预览 */ }
       }
@@ -7357,6 +7380,91 @@ function buildAIWritingProsePrompt(initial, blueprint, targetWords) {
     ``,
     `请直接输出完整正文（不要输出【成文】等前缀，不要解释）。`
   ].join('\n');
+}
+
+// ── C1：写作方向（direction）的确定性提取与规范化 ────────────────────────────
+// 与服务器 ai/direction.mjs 的 normalizeDirection 同口径（浏览器脚本无法 import 模块；
+// 由 frontend-test.mjs 逐用例对照两侧）。硬边界：
+//   · 纯函数：不调用模型、不写库、不产生副作用；相同输入输出完全相同；
+//   · 只输出纯文本（不含 UI 控制字段、不输出完整 JSON）；≤400 个 Unicode 码点；
+//   · 截断尽量落在字段或句子边界；direction 是**检索数据**，不是新批准的设定。
+const WRITING_DIRECTION_MAX_CHARS = 400;
+const WRITING_DIRECTION_FIELD_ORDER = ['references', 'scene_goal', 'conflicts', 'plot_points', 'character_changes', 'hook'];
+
+function normalizeWritingDirectionText(raw) {
+  if (typeof raw !== 'string') return '';
+  let s = raw
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return '';
+  const chars = Array.from(s);
+  if (chars.length > WRITING_DIRECTION_MAX_CHARS) s = chars.slice(0, WRITING_DIRECTION_MAX_CHARS).join('');
+  return s;
+}
+
+// 截断尽量落在句子边界（句末标点）；找不到就在额度处硬截。
+function clipWritingDirectionText(text, maxChars) {
+  const chars = Array.from(String(text || ''));
+  if (chars.length <= maxChars) return chars.join('');
+  let cut = maxChars;
+  for (let i = maxChars - 1; i >= Math.max(0, maxChars - 80); i -= 1) {
+    if (/[。！？!?；;]/.test(chars[i])) { cut = i + 1; break; }
+  }
+  return chars.slice(0, cut).join('');
+}
+
+/**
+ * 从已确认/已保存的章节蓝图提取写作方向（纯文本）。
+ * 优先级：references → scene_goal → conflicts → plot_points → character_changes → hook → fallback。
+ * fallback 为本次用户要求或章节标题；两者都为空时返回空串（调用方走原召回规则）。
+ */
+function buildWritingDirectionFromBlueprint(blueprint, fallback = '') {
+  const b = (blueprint && typeof blueprint === 'object' && !Array.isArray(blueprint)) ? blueprint : {};
+  const pieces = [];
+  let used = 0;
+  for (const key of WRITING_DIRECTION_FIELD_ORDER) {
+    const raw = b[key];
+    if (raw === undefined || raw === null) continue;
+    const text = String(Array.isArray(raw) ? raw.join('；') : raw).replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const budget = WRITING_DIRECTION_MAX_CHARS - used - (pieces.length ? 1 : 0);
+    if (budget <= 0) break;
+    const clipped = clipWritingDirectionText(text, budget);
+    pieces.push(clipped);
+    used += Array.from(clipped).length + (pieces.length > 1 ? 1 : 0);
+    if (Array.from(clipped).length < Array.from(text).length) break; // 已被截断：不再拼后续字段
+  }
+  if (!pieces.length) {
+    const f = normalizeWritingDirectionText(fallback);
+    if (f) pieces.push(f);
+  }
+  return normalizeWritingDirectionText(pieces.join(' '));
+}
+
+// 当前章**已保存**蓝图的保守判据：只认本章 blueprint_json 可解析且至少一个已知字段非空。
+// 不追溯其它章节的蓝图，也不把无法解析的字符串当作方向。
+function savedBlueprintForChapter(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return null;
+  const chapter = (state.chapters || []).find((c) => Number(c.id) === id);
+  if (!chapter || !chapter.blueprint_json) return null;
+  let obj = null;
+  try { obj = JSON.parse(chapter.blueprint_json); } catch (_) { return null; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const hasContent = WRITING_DIRECTION_FIELD_ORDER.some((k) => String(obj[k] || '').trim());
+  return hasContent ? obj : null;
+}
+
+// in-flight 键用的轻量方向哈希（FNV-1a，仅前端去重用；服务器缓存键用 sha256 前 16 位）。
+function directionKeyHashOf(text) {
+  const chars = Array.from(String(text || ''));
+  let h = 2166136261;
+  for (let i = 0; i < chars.length; i += 1) {
+    h ^= chars[i].codePointAt(0);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 // 成文不足目标字数时续写补足。
@@ -9075,7 +9183,20 @@ function aiContextTruncated() {
 async function performToolbarAIWrite(requirement) {
   const editor = $('#editor-content');
   if (!editor) return;
-  await loadAIContext();
+  // C3：装配阶段由「本章是否已有有效蓝图」决定，保证一次写作任务**最多一次真实资料召回**：
+  //   · 已有有效蓝图 → 按它的方向做唯一一次 direction 装配，并跳过蓝图生成（不新增模型调用）；
+  //   · 无蓝图 → 初始 phase=defer（不查资料、不插占位），作者确认蓝图后再做一次 direction 装配；
+  //   · 跳过蓝图/方向为空 → 正文前走一次 default 或确定性 fallback 召回。
+  // 判据保守：只认当前章 blueprint_json 可解析且至少一个已知字段非空（见 savedBlueprintForChapter）。
+  const savedBlueprint = savedBlueprintForChapter(state.currentChapterId);
+  const currentChapterTitle = (state.chapters || []).find((c) => Number(c.id) === Number(state.currentChapterId))?.title || '';
+  const entryDirection = savedBlueprint ? buildWritingDirectionFromBlueprint(savedBlueprint, requirement || currentChapterTitle) : '';
+  if (entryDirection) {
+    if (savedBlueprint) toast('检测到本章已有蓝图：按已保存蓝图的方向写作（资料只召回一次）', 'info');
+    await loadAIContext({ direction: entryDirection, directionSource: 'saved_blueprint', libraryRecallPhase: 'direction' });
+  } else {
+    await loadAIContext({ libraryRecallPhase: 'defer' });
+  }
   const btn = $('[data-action="toolbar-ai-write"]');
   if (btn) btn.disabled = true;
   // 🐞 运行追踪：记录本次写作是被取消还是正常结束，用于收尾时的操作状态。
@@ -9111,7 +9232,18 @@ async function performToolbarAIWrite(requirement) {
     const timing = newWriteTiming();
 
     // 阶段 A：澄清 → 章节蓝图
+    // C3：已有有效蓝图时**跳过蓝图生成**（不新增模型调用、不产生第二次召回），
+    // 直接把已保存蓝图送进下面的「确认 → 成文」流程（作者无需二次确认）。
+    let pendingConfirmedBlueprint = savedBlueprint;
     while (maxTurns-- > 0) {
+      let jobMeta = null;
+      let parsed;
+      let fromSavedBlueprint = false;
+      if (pendingConfirmedBlueprint) {
+        parsed = { blueprint: pendingConfirmedBlueprint };
+        pendingConfirmedBlueprint = null;
+        fromSavedBlueprint = true;
+      } else {
       const lastMsg = history.length ? history[history.length - 1] : null;
       const stageLabel = !history.length
         ? 'AI 写作（1/3 蓝图）· 正在阅读章节与设定，准备提问…'
@@ -9128,9 +9260,8 @@ async function performToolbarAIWrite(requirement) {
       // ⏱ 这一轮蓝图（直连 + 可能的慢通道回退）的墙钟耗时
       const blueprintStartedAt = Date.now();
       // 慢通道那条路的结果（scan / proposals / job_id）——直连时为 null。
-      // ⚠️ 必须在**循环体外**声明：下面 6705/6725 两个降级分支要用它。
+      // ⚠️ jobMeta 在**循环体顶部**声明：下面两个降级分支要用它，且不能随本 else 块消失。
       // 重审抓到过一版把它写成 if 块内的 `const data`，块外引用即 ReferenceError（node --check 查不出来）。
-      let jobMeta = null;
       if (!aiContextTruncated()) {
         // 直连也要出进度卡：否则界面会静默十几秒（用户以为是卡死）。
         // 进度卡自带每秒计时，正好补上"直连没有 stage 推送"这个短板。
@@ -9156,14 +9287,20 @@ async function performToolbarAIWrite(requirement) {
       }
       // ⏱ 记这一轮蓝图：via 是**实际**用到的通道（直连失败回退慢通道时记 harness）
       timing.round('blueprint', Date.now() - blueprintStartedAt, { via: jobMeta ? 'harness' : 'direct' });
-      const parsed = parseAIWritingOutput(raw);
+      parsed = parseAIWritingOutput(raw);
+      }
 
       if (parsed.blueprint) {
-        parsed.blueprint.target_words = targetWords;
-        const confirmed = await showBlueprintConfirm(parsed.blueprint);
+        // 已保存蓝图保留它自己的目标字数；新生成的蓝图沿用本次目标字数（旧行为）。
+        parsed.blueprint.target_words = fromSavedBlueprint ? (Number(savedBlueprint?.target_words) || targetWords) : targetWords;
+        // 已保存蓝图不再弹确认框（它是作者上一轮已确认过的）；方向装配已在入口完成，
+        // 因此这里不会产生第二次资料召回。
+        const confirmed = fromSavedBlueprint ? { ...parsed.blueprint, skip: false } : await showBlueprintConfirm(parsed.blueprint);
         if (confirmed === null) return; // 作者取消
-        let blueprintSaved = false;
-        if (!confirmed.skip && state.currentChapterId) {
+        // 已保存蓝图来自章节的 blueprint_json（数据库里就有），不需要也不应该再提示"未保存"——
+        // 否则界面会自相矛盾："按已保存蓝图写作" + "本章蓝图未保存"。
+        let blueprintSaved = fromSavedBlueprint;
+        if (!fromSavedBlueprint && !confirmed.skip && state.currentChapterId) {
           try {
             await api('/novel/chapter_blueprint', {
               method: 'PUT',
@@ -9182,6 +9319,19 @@ async function performToolbarAIWrite(requirement) {
         }
         const target = Number(confirmed.target_words) || targetWords;
         const blueprintForProse = confirmed.skip ? null : confirmed;
+        // C3：作者刚确认的蓝图 = 本次写作方向。生成正文前执行一次方向相关刷新
+        //（这是本任务的唯一一次真实资料召回；defer 阶段不搜索资料）。
+        // 已保存蓝图路径在入口已按同一方向装配过，这里不重复刷新（避免两次召回）。
+        if (!fromSavedBlueprint) {
+          const confirmedDirection = buildWritingDirectionFromBlueprint(blueprintForProse, requirement || currentChapterTitle);
+          try {
+            if (confirmedDirection) {
+              await loadAIContext({ direction: confirmedDirection, directionSource: confirmed.skip ? 'fallback' : 'confirmed_blueprint', libraryRecallPhase: 'direction' });
+            } else {
+              await loadAIContext({ libraryRecallPhase: 'default' });
+            }
+          } catch (_) { /* 方向刷新失败不阻断写作：使用已取得正典上下文，资料层视为暂时不可用 */ }
+        }
         const prosePrompt = buildAIWritingProsePrompt(initial, blueprintForProse, target);
         // 阶段 B（2/3）：按蓝图成文——质量优先模式：直连流式（快，正文逐字可见）+ flash 质检轮（保质量）。
         // 直连不可用或质检发现硬伤时自动回退 harness 精写内核。

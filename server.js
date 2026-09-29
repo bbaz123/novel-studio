@@ -16,6 +16,16 @@ import { LIBRARY_RECALL } from './ai/library/library-recall.mjs';
 import { LIBRARY_INGEST } from './ai/library/library-doc.mjs';
 import { scanLibraryDir, planLibraryImport, LIBRARY_INGEST_VERSION, LIBRARY_IGNORE_DIRS } from './ai/library/library-ingest.mjs';
 import * as LibraryStore from './ai/library/store.mjs';
+// A/C/D/E 方向驱动检索 + 索引层化（2026-09-29）：
+//   · direction.mjs       —— 方向规范化/哈希/缓存键/外部版本串（四条路径的唯一口径）
+//   · retrieval-stats.mjs —— 「资料召回次数」与「索引查询次数」分开记账（集成点③）
+//   · library-index.mjs   —— D：知识库专用候选索引（词法候选只做发现，不放行）
+//   · novel-index/*       —— E：资产索引 + 确定性检索计划（先汇总、后装配，集成点②）
+import { normalizeDirection, directionHashOf, normalizeLibraryRecallPhase, normalizeDirectionSource, normalizeRequestId, directionAuditOf, contextCacheKeyOf, contextExternalVersionStringOf } from './ai/direction.mjs';
+import { createRetrievalAccumulator, mergeLibraryStats, mergePlanStats, finalizeRetrievalStats } from './ai/retrieval-stats.mjs';
+import * as LibraryIndex from './ai/library/library-index.mjs';
+import * as NovelIndexStore from './ai/novel-index/store.mjs';
+import { planAndExecute as runRetrievalPlan } from './ai/novel-index/plan.mjs';
 import { layerContribution, recallHitContribution, omittedRecallContribution, dshContribution, dshBundleRuleEntries, buildContributionRecord, recordContributions, latestContributions, listContributions, findDuplicateLayer } from './ai/context/contributions.mjs';
 import { editingRuleCatalog, resolveEditingSelection, editingSelectionToSettings, buildEditingRuleBlock } from './ai/editing/rules.mjs';
 import { scanEditing } from './ai/editing/scan.mjs';
@@ -429,10 +439,22 @@ const CONTEXT_CACHE_TTL_MS = Number(process.env.NOVELSTUDIO_CONTEXT_CACHE_TTL_MS
 
 const contextCache = createContextCache({
   ttlMs: CONTEXT_CACHE_TTL_MS,
-  // 外部可观测状态：该作品的记忆库索引时间戳。变化即"输入变了"，缓存必须失效。
+  // 外部可观测状态：影响装配结果、但不在进程内 dataVersion 里的外部状态。
+  //   集成点①（2026-09-29）：除记忆库索引时间戳外，**资料索引与小说资产索引的版本号和
+  //   schema 版本**也必须进入这里——否则「索引重建 / schema 升级后仍命中旧缓存」。
+  //   版本读取都是单行主键查询（不重扫知识库）；新开关默认关闭时版本恒为常量，行为与基线一致。
   // 读不到（表缺失/异常）时退化为空串——即纯进程内版本，不会把功能整体打挂。
   externalVersionOf: (workId) => {
-    try { return getAppSettingDb(`ov_indexed_at:${workId}`, ''); } catch { return ''; }
+    try {
+      const li = LibraryIndex.libraryIndexVersionInfo();
+      return contextExternalVersionStringOf({
+        ovIndexedAt: getAppSettingDb(`ov_indexed_at:${workId}`, ''),
+        libraryIndexVersion: li.version,
+        libraryIndexSchema: li.schema,
+        novelIndexVersion: NovelIndexStore.novelIndexVersion(Number(workId) || 0),
+        novelIndexSchema: NovelIndexStore.NOVEL_INDEX_SCHEMA_VERSION,
+      });
+    } catch { return ''; }
   },
 });
 
@@ -912,7 +934,7 @@ const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 // 三处（本常量 / fixture / 文档）由 .p1-baseline/test-host-contract.mjs 互锁，漂移会报红。
 // 1.0.0 → 1.1.0：附加式扩展（门控层 story_state + 10 张新表 + 17 条状态端点 + 8 个插件工具）。
 // 旧字段语义、预算常量、层顺序与默认生成路径**均未改变**——逐字节基线 50/50 复验过。
-const HOST_CONTRACT_VERSION = '1.11.0';
+const HOST_CONTRACT_VERSION = '1.12.0';
 
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
@@ -2465,9 +2487,62 @@ function newContextRequestId() {
   return `ctx-${Date.now().toString(36)}-${contextRequestSeq.toString(36)}`;
 }
 
+/** 词典字段拆名（别名/关键词）：与 StoryState 的拆分口径一致，按常见中英分隔符切分、有界。 */
+function splitIndexNames(v) {
+  const s = String(v || '');
+  return s ? s.split(/[、,，;；\/|\s]+/).map((x) => x.trim()).filter(Boolean).slice(0, 12) : [];
+}
+
+/**
+ * E4：检索计划用的实体词典（确定性；只用既有正典名称/别名/关键词/剧情线标题，不调用模型）。
+ * 每个来源都有上限，避免大作品把词典撑成新的全量扫描面；抽取端另有 maxEntitiesPerKind 上限。
+ */
+function buildNovelIndexDictionary(workId, allCharacters) {
+  const dict = [];
+  for (const c of (allCharacters || []).slice(0, 200)) {
+    dict.push({ kind: 'character', name: c.name, aliases: splitIndexNames(c.aliases) });
+  }
+  try {
+    const locs = prepare("SELECT id, canonical_name FROM story_entities WHERE work_id = ? AND kind = 'location' AND status = 'active' LIMIT 200").all(workId);
+    const aliasById = new Map();
+    if (locs.length) {
+      const rows = prepare(`SELECT entity_id, alias FROM story_entity_aliases WHERE entity_id IN (${locs.map(() => '?').join(',')})`).all(...locs.map((l) => l.id));
+      for (const a of rows) {
+        if (!a.alias) continue;
+        const list = aliasById.get(a.entity_id) || [];
+        list.push(String(a.alias));
+        aliasById.set(a.entity_id, list);
+      }
+    }
+    for (const l of locs) if (l.canonical_name) dict.push({ kind: 'location', name: l.canonical_name, aliases: aliasById.get(l.id) || [] });
+  } catch (_) { /* 实体表缺失时降级为只用角色/主题词典 */ }
+  try {
+    const topics = [];
+    for (const w of prepare('SELECT title, keywords FROM world_entries WHERE work_id = ? LIMIT 200').all(workId)) {
+      if (w.title) topics.push(String(w.title));
+      topics.push(...splitIndexNames(w.keywords));
+    }
+    for (const p of prepare('SELECT title FROM plotlines WHERE work_id = ? LIMIT 200').all(workId)) if (p.title) topics.push(String(p.title));
+    for (const t of [...new Set(topics)].slice(0, 300)) dict.push({ kind: 'topic', name: t, aliases: [] });
+  } catch (_) { /* 同上 */ }
+  return dict;
+}
+
 async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts = {}) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
+
+  // A/C/D/E：方向与召回阶段只在这里规范化一次（口径见 ai/direction.mjs，前端有镜像实现）。
+  // direction 是**检索数据**：只影响资料召回与 D/E 索引候选发现，不改变正典查询。
+  const direction = normalizeDirection(contextOpts.direction);
+  const libraryRecallPhase = normalizeLibraryRecallPhase(contextOpts.libraryRecallPhase);
+  const directionSource = normalizeDirectionSource(contextOpts.directionSource);
+  // 集成点③：本次装配的检索账本——「资料召回次数」与「索引查询次数」分开累加，收口为 additive 字段。
+  const retrievalAcc = createRetrievalAccumulator({
+    phase: libraryRecallPhase,
+    direction: directionAuditOf(direction, directionSource),
+    requestId: normalizeRequestId(contextOpts.requestId),
+  });
 
   const allChapters = prepare('SELECT id, work_id, volume_id, plotline_id, parent_id, title, summary, author_note, blueprint_json, target_words, context_character_ids, position, created_at, updated_at FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
   const volumes = prepare('SELECT * FROM volumes WHERE work_id = ? ORDER BY position ASC, id ASC').all(workId);
@@ -2663,11 +2738,62 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   let libraryRecall = null;
   if (libraryEnabled(workId)) {
     try {
-      libraryRecall = await getLibraryRecall(workId, chapter || null);
+      // C2/C4：direction 只用于资料召回（及 D 索引候选发现）；defer 阶段不查库、不写缓存。
+      libraryRecall = await getLibraryRecall(workId, chapter || null, { direction, libraryRecallPhase });
     } catch (_) {
       libraryRecall = { enabled: true, status: 'error', query: '', hits: [] };
     }
     libraryRecall = revalidateLibraryForHost(libraryRecall, workId);
+    // 集成点③：资料召回统计单独合并（stats.searches 由 getLibraryRecall 记录）。
+    mergeLibraryStats(retrievalAcc, libraryRecall.stats);
+  }
+
+  // ── E4：确定性检索计划（无模型参与；默认关闭）─────────────────────────────
+  // 纪律（集成点②）：计划的所有索引查询**全部 await 汇总完成之后**，结果才被交给装配使用；
+  // 它只用于「取哪些资产 id」与审计，**不作为一个新层直接塞进上下文**，也不与装配并行。
+  // 默认关闭（novel_index_enabled=0）或没有方向时这一段完全不执行 → 与基线一致。
+  let retrievalPlanMeta = null;
+  if (direction && libraryRecallPhase !== 'defer' && NovelIndexStore.novelIndexEnabled()) {
+    try {
+      NovelIndexStore.ensureWorkIndex(workId);
+      const dictionary = buildNovelIndexDictionary(workId, allCharacters);
+      const chapterSignals = [chapter?.title || '', chapter?.summary || '', blueprintText].filter(Boolean).join('\n');
+      const exec = await runRetrievalPlan({
+        workId,
+        chapterId: chapter?.id || null,
+        direction,
+        chapterSignals,
+        dictionary,
+        index: NovelIndexStore,
+        versions: { schema: NovelIndexStore.NOVEL_INDEX_SCHEMA_VERSION, version: NovelIndexStore.novelIndexVersion(workId) },
+      });
+      mergePlanStats(retrievalAcc, exec.stats);
+      const a = exec.assets || {};
+      retrievalPlanMeta = {
+        plan_id: exec.plan?.plan_id || exec.stats?.plan_id || '',
+        status: exec.status || 'unknown',
+        partial: Boolean(exec.partial),
+        queries: Array.isArray(exec.plan?.queries) ? exec.plan.queries.length : 0,
+        by_index: exec.stats?.by_index || {},
+        matched: a.matched || null,
+        assets_count: {
+          character_ids: (a.character_ids || []).length,
+          event_ids: (a.event_ids || []).length,
+          foreshadow_ids: (a.foreshadow_ids || []).length,
+          world_ids: (a.world_ids || []).length,
+          relation_ids: (a.relation_ids || []).length,
+          location_ids: (a.location_ids || []).length,
+          thread_ids: (a.thread_ids || []).length,
+        },
+        timings_ms: Number(exec.stats?.timings_ms) || 0,
+        cached: Number(exec.stats?.cached) || 0,
+        note: '计划结果只用于候选定位与审计；本版不改变既有层内容（E5：assembled 不增）',
+      };
+    } catch (e) {
+      // 计划失败不阻断写作：索引查询结果本来就不是装配的唯一来源，回退既有读取方式。
+      log({ level: 'warn', layer: 'ai', kind: 'retrieval_plan_failed', message: `检索计划执行失败（work ${workId}）：${e.message}` });
+      retrievalPlanMeta = { plan_id: '', status: 'error', partial: true, queries: 0, by_index: {}, matched: null, assets_count: null, timings_ms: 0, cached: 0, note: '计划失败：已回退既有读取方式' };
+    }
   }
   // 决策 D8-#5：召回层不可用时**不得静默消失**。
   // 旧行为：status !== 'ok' 时 recallLayer = null，该层直接不存在 —— 模型不知道自己本该
@@ -3015,7 +3141,10 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
       status: libraryRecall.status,
       // 被来源校验拦下的条目（code + uri + reason）：为什么这轮没召回资料必须可归因。
       hits: libraryRecall.hits || [],
-      omitted: libraryRecall.omitted || []
+      omitted: libraryRecall.omitted || [],
+      // D4（additive）：资料索引辅助的审计摘要（候选数/扩展词数/耗时/状态）。
+      // 候选清单、keywords、summary 一律不在这里返回，更不会进入模型输入。
+      index_assist: libraryRecall.index_assist || null
     } : { enabled: false, status: 'unknown', hits: [] },
     assembled,
     // P2 新增（additive，旧消费方不受影响）：
@@ -3041,7 +3170,14 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     edit_rules: editRulesMeta,
     // R09：作者意图层元信息（没有数据时为 null，与 story_state/edit_rules 同口径）。
     // conflicts 非空 = 本章/阶段意图可能抵消长期硬约束，界面必须提示作者裁决，而不是自动取舍。
-    author_intent: authorIntentMeta
+    author_intent: authorIntentMeta,
+    // A/C/D/E（additive）：本次装配的检索审计。
+    // ⚠️ 两个计数在结构上就是两组字段（集成点③），任何消费方不得把它们合并成一个「调用次数」：
+    //   retrieval_stats.library_recall.searches = 真实资料召回次数
+    //   retrieval_stats.index_queries.total    = 索引查询次数（含资料索引与资产索引）
+    // retrieval_plan 只记录计划摘要与匹配统计；它不是新的上下文层，不参与 assembled。
+    retrieval_stats: finalizeRetrievalStats(retrievalAcc),
+    retrieval_plan: retrievalPlanMeta
   };
 }
 
@@ -4359,11 +4495,20 @@ async function handleAPI(req, res, pathname, query) {
     const workId = ctx.work.id;
     delete ctx._chapter; // 内部字段不外泄给前端
 
-    // 预算内的分层装配：与 /api/novel/context 共用同一份缓存与实现（契约 I5/I6）
-    const cacheKey = `novel:${workId}:${chapterId}:full`;
+    // C4：方向参数进入两条装配端点（GET 用 URLSearchParams 编码；direction 上限 400 码点）。
+    // 方向只影响资料召回与索引候选发现，不改变正典查询。
+    const direction = normalizeDirection(query.direction);
+    const libraryRecallPhase = normalizeLibraryRecallPhase(query.library_recall_phase);
+    const directionSource = normalizeDirectionSource(query.direction_source);
+    const requestId = normalizeRequestId(query.request_id);
+
+    // 预算内的分层装配：与 /api/novel/context 共用同一份缓存与实现（契约 I5/I6）。
+    // 缓存键含 phase + direction 哈希（无方向且 default 时与旧键逐字节相同）——
+    // 两条端点因此共享同一份缓存，不会各召回一次（C3 约束）。
+    const cacheKey = contextCacheKeyOf({ workId, chapterId, mode: 'full', phase: libraryRecallPhase, directionHash: directionHashOf(direction) });
     let budgeted = cacheGetContext(cacheKey, workId);
     if (budgeted === undefined) {
-      budgeted = await buildNovelContext(workId, chapterId, 'full');
+      budgeted = await buildNovelContext(workId, chapterId, 'full', { direction, directionSource, libraryRecallPhase, requestId });
       if (budgeted) cacheSetContext(cacheKey, budgeted, workId);
     }
 
@@ -4381,6 +4526,9 @@ async function handleAPI(req, res, pathname, query) {
       },
       // 与 /api/novel/context 同源（buildNovelContext 的 additive 字段原样转发）。
       library_recall: budgeted ? budgeted.library_recall : { enabled: false, status: 'unknown', hits: [] },
+      // A/C/D/E（additive）：检索审计与计划摘要（旧消费方可忽略；计数口径见 buildNovelContext）。
+      retrieval_stats: budgeted ? budgeted.retrieval_stats : null,
+      retrieval_plan: budgeted ? budgeted.retrieval_plan : null,
       // 提示词使用的分层文本（前端 aiContextBlock 直接采用它），以及配套的裁剪清单
       assembled: budgeted ? budgeted.assembled : '',
       context_manifest: budgeted ? budgeted.context_manifest : [],
@@ -5674,11 +5822,26 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         if (!text) { failed.push({ rel: it.rel, uri: it.uri, error: '扫描结果缺少正文（目录在计划后变化？请重新 dry-run）' }); continue; }
         const r = await ovClient.write(it.uri, text, { wait: false, timeoutMs: 30000 }).catch((e) => ({ ok: false, error: { message: e.message } }));
         if (!r.ok) { failed.push({ rel: it.rel, uri: it.uri, error: (r.error && r.error.message) || '写入失败' }); continue; }
-        LibraryStore.upsertDoc({
+        const saved = LibraryStore.upsertDoc({
           uri: it.uri, rel: it.rel, category: it.category, slug: it.slug, title: it.title,
           sha256: it.sha256, bytes: it.bytes, chars: it.chars, est_chunks: it.est_chunks,
           source_path: it.source_path, status: 'active', indexed_at: indexedAt,
         });
+        // D3：确认导入时同步维护专用索引（只有 sha256 变化的条目才会走到这里）。
+        // 索引是**派生数据**：写入失败只记日志，不得导致资料导入整体失败（允许后续 rebuild 修复）。
+        try {
+          if (saved && saved.ok && saved.doc) {
+            const up = LibraryIndex.upsertEntry({
+              docId: saved.doc.id, uri: it.uri, sha256: it.sha256,
+              title: it.title, category: it.category, text,
+            });
+            if (!up || up.ok === false) {
+              log({ level: 'warn', layer: 'ai', kind: 'library_index_write_failed', message: `资料索引写入失败（${it.rel}）：${(up && (up.status || up.error)) || 'unknown'}` });
+            }
+          }
+        } catch (e) {
+          log({ level: 'warn', layer: 'ai', kind: 'library_index_write_failed', message: `资料索引写入异常（${it.rel}）：${e.message}` });
+        }
         written.push({ rel: it.rel, uri: it.uri, action: it.action, chars: it.chars });
       }
       if (written.length) setAppSetting('ov_indexed_at:library', indexedAt);
@@ -5708,11 +5871,82 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       const rm = await ovClient.remove(doc.uri, { timeoutMs: 20000 }).catch((e) => ({ ok: false, error: { message: e.message } }));
       if (!rm.ok) return sendError(res, 409, `记忆库删除失败，登记行保留：${(rm.error && rm.error.message) || ''}`);
       LibraryStore.deleteDoc(doc.id);
+      // D3：资料删除同步删除索引记录（失败不阻断删除本身；重建会再次兜底清理）。
+      try { LibraryIndex.removeEntry(doc.id); } catch (e) { log({ level: 'warn', layer: 'ai', kind: 'library_index_write_failed', message: `资料索引删除失败（doc ${doc.id}）：${e.message}` }); }
       contextCache.invalidateAll();
       return sendJSON(res, 200, { ok: true, removed: doc.uri, id: doc.id });
     }
 
+    // D5：资料索引的显式开关与重建（默认关闭；开关/重建是作者动作，模型侧 403）。
+    // 词法候选只用于「候选发现与查询扩展」；语义阈值 0.40 / top-4 / 300 字 / 1200 字一律不放宽。
+    if (action === 'index') {
+      if (method === 'GET') {
+        return sendJSON(res, 200, {
+          ok: true,
+          enabled: LibraryIndex.libraryIndexEnabled(),
+          version: LibraryIndex.libraryIndexVersionInfo(),
+          stats: LibraryIndex.indexStats(),
+          note: '词法索引仅用于候选发现与查询扩展；候选/关键词/摘要不会进入模型上下文。',
+        });
+      }
+      if (agent) return sendError(res, 403, '索引开关/重建是作者动作：不接受 X-Novel-Agent');
+      if (method === 'PUT' && segments[4] === 'enabled') {
+        const body = await readBody(req);
+        const enabled = body.enabled === true || String(body.enabled) === '1';
+        LibraryIndex.setLibraryIndexEnabled(enabled);
+        contextCache.invalidateAll();
+        return sendJSON(res, 200, { ok: true, enabled: LibraryIndex.libraryIndexEnabled(), version: LibraryIndex.libraryIndexVersionInfo() });
+      }
+      if (method === 'POST' && segments[4] === 'rebuild') {
+        const docs = LibraryStore.listDocs({ status: 'active' });
+        const out = LibraryIndex.rebuildFromRegistry(docs, { readText: (d) => LibraryIndex.readSourceText(d.source_path) });
+        contextCache.invalidateAll();
+        return sendJSON(res, 200, { ok: out.ok, ...out, version: LibraryIndex.libraryIndexVersionInfo() });
+      }
+      return sendError(res, 404, '未知的索引操作（可用 GET 状态 / PUT enabled / POST rebuild）');
+    }
+
     return sendError(res, 404, '未知的资料库操作');
+  }
+  // ── E：小说资产索引（Novel Index Layer）的显式开关与重建 ────────────────────
+  // 与资料索引同口径：默认关闭（novel_index_enabled=0）；开关/重建是作者动作，模型侧一律 403。
+  // 索引是派生数据（单向来自正典表）、重建幂等；关闭时装配路径与基线一致。
+  if (resource === 'novel' && segments[2] === 'novel_index') {
+    const agent = isAgentRequest(req);
+    if (method === 'GET') {
+      const workId = Number(query.work_id) || 0;
+      return sendJSON(res, 200, {
+        ok: true,
+        enabled: NovelIndexStore.novelIndexEnabled(),
+        work_id: workId || null,
+        version: workId ? NovelIndexStore.novelIndexVersion(workId) : null,
+        version_key: workId ? NovelIndexStore.novelIndexVersionKey(workId) : null,
+        schema: NovelIndexStore.NOVEL_INDEX_SCHEMA_VERSION,
+        stats: NovelIndexStore.indexQueryStats(),
+        tiers: {
+          wired: ['character', 'event', 'foreshadow'],
+          structure_only: ['world', 'relation', 'location', 'thread'],
+          reserved: ['item', 'chapter', 'style', 'knowledge'],
+        },
+        note: '所有 E 类索引默认关闭；开启后仅执行「先定位后读取」的候选定位与审计，索引结果不作为新层注入。',
+      });
+    }
+    if (agent) return sendError(res, 403, '索引开关/重建是作者动作：不接受 X-Novel-Agent');
+    if (method === 'PUT') {
+      const body = await readBody(req);
+      const enabled = body.enabled === true || String(body.enabled) === '1';
+      NovelIndexStore.setNovelIndexEnabled(enabled);
+      contextCache.invalidateAll();
+      return sendJSON(res, 200, { ok: true, enabled: NovelIndexStore.novelIndexEnabled() });
+    }
+    if (method === 'POST' && segments[3] === 'rebuild') {
+      const workId = Number(query.work_id) || Number(segments[4]) || 0;
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      const out = NovelIndexStore.rebuildWorkIndex(workId);
+      contextCache.invalidateAll();
+      return sendJSON(res, 200, { ok: out.ok, ...out, version_key: NovelIndexStore.novelIndexVersionKey(workId) });
+    }
+    return sendError(res, 404, '未知的小说索引操作（GET 状态 / PUT 开关 / POST rebuild）');
   }
   // ── R09：作者样文 / 文风档案 / 三级作者意图（作者侧写、模型侧读）────────────────
   // 边界：样文与档案是**风格证据**，不是本书事实；模型侧（X-Novel-Agent）不能写样文/档案/意图，
@@ -6146,11 +6380,17 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const chapterId = Number(query.chapter_id) || null;
     const mode = asString(query.mode, 'full');
-    // 装配结果缓存：进程内写操作（touchWork）整体作废；记忆库索引完成由外部状态触发失效。
-    const cacheKey = `novel:${workId}:${chapterId || 0}:${mode}`;
+    // C4：方向参数（可选）。direction 只影响资料召回与索引候选发现；phase 见 ai/direction.mjs。
+    const direction = normalizeDirection(query.direction);
+    const libraryRecallPhase = normalizeLibraryRecallPhase(query.library_recall_phase);
+    const directionSource = normalizeDirectionSource(query.direction_source);
+    const requestId = normalizeRequestId(query.request_id);
+    // 装配结果缓存：进程内写操作（touchWork）整体作废；记忆库/索引完成由外部版本触发失效。
+    // 缓存键含 phase + direction 哈希；无方向且 default 时与旧键逐字节相同（审计兼容）。
+    const cacheKey = contextCacheKeyOf({ workId, chapterId, mode, phase: libraryRecallPhase, directionHash: directionHashOf(direction) });
     let ctx = cacheGetContext(cacheKey, workId);
     if (ctx === undefined) {
-      ctx = await buildNovelContext(workId, chapterId, mode);
+      ctx = await buildNovelContext(workId, chapterId, mode, { direction, directionSource, libraryRecallPhase, requestId });
       if (ctx) cacheSetContext(cacheKey, ctx, workId);
     }
     if (!ctx) return sendError(res, 404, '作品不存在');

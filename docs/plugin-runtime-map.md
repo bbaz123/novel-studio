@@ -2,7 +2,7 @@
 
 > **用途**：让复核者能**照着路径核对**「谁加载谁、实际跑的是哪一份代码」，而不是听叙述（任务书 §19.2）。
 > **采集方式**：本机只读枚举 + 本次实测（2026-09-27 首采，Windows，Node v24.19.0）。
-> **2026-09-28 复核更新**：版本与规模（插件 / 契约 / 工具 / 端点 / 离线清单条数）已按当前仓库状态刷新，
+> **2026-09-28 / 2026-09-29 复核更新**：版本与规模（插件 / 契约 / 工具 / 端点 / 离线清单条数）已按当前仓库状态刷新，
 > 并修正了下方 A/B 双闭环与浏览器 E2E 的状态；**未改写用户的全局 dsh profile**。
 > 关联文档：`docs/host-contract.md` §7（Plugin Adapter contract）、`docs/openviking-call-map.md`（OV 三条链）。
 
@@ -20,8 +20,8 @@
 | 仓库 | `C:\Users\a1941\Desktop\DeepSeek\novel-studio` | 工作目录 |
 | 分支 / HEAD | `refactor/p0-p6`（2026-09-27 采集时为 `be38b17`；两轮改动已于 2026-09-28 提交并推送，当前 HEAD 见仓库） | `git rev-parse HEAD` |
 | 运行时 | Node **v24.19.0**；`package.json` 无 dependencies（`node:sqlite` 内建） | `node -v`、`package.json` |
-| 宿主契约 | **1.11.0**（`server.js` 的 `HOST_CONTRACT_VERSION`；`frozen_at` 2026-09-28；`GET /api/novel/ping` 回报） | `test-host-contract.mjs` 28/28 |
-| 插件 | `harness-plugins/novel-writing` **v0.15.0**：26 个工具 / 75 条端点声明 | `plugin.json` + `verify-plugin-tools.mjs` |
+| 宿主契约 | **1.12.0**（`server.js` 的 `HOST_CONTRACT_VERSION`；`frozen_at` 2026-09-29；`GET /api/novel/ping` 回报） | `test-host-contract.mjs` 28/28 |
+| 插件 | `harness-plugins/novel-writing` **v0.16.0**：26 个工具 / 75 条端点声明 | `plugin.json` + `verify-plugin-tools.mjs` |
 | 故事状态内核 | `ai/story-state/index.mjs` — `STORY_STATE_VERSION = 1.0.0` | 代码 |
 | dsh | **0.1.7-rc.2**；本地仓库 `C:\Users\a1941\Desktop\DeepSeek\deepseek-harness`，预构建入口 `apps/cli/lib/bin.js` | 工具循环探针日志（`预构建产物启动`） |
 | 专用 DSH_HOME | `C:\Users\a1941\.dsh-novel`；profile `novel`；`node_modules/novel-writing` 是 **Junction** → 仓库 `harness-plugins/novel-writing` | 只读 `Get-Item`（LinkType=Junction） |
@@ -61,7 +61,7 @@
 - **真实工具循环（RUNTIME-VERIFIED，零计费）**：`NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1 node .p1-baseline/probe-harness-tool-loop.mjs`
   → 真 spawn dsh，本地假模型端点看到 2 条请求（第 1 条 `tool_turn=true`、工具 `glob`；第 2 条 `tool_results=1`），
   收尾正文等于罐头文本；**7/7 通过**（日志 `.verify-enh/r01-harness-tool-loop-run2.log`）。
-- **插件面 / 契约一致**：`verify-plugin-tools.mjs`（26 工具、75 端点、三处版本 0.15.0 一致）；
+- **插件面 / 契约一致**：`verify-plugin-tools.mjs`（26 工具、75 端点、三处版本 0.16.0 一致）；
   `test-host-contract.mjs` 28/28（含"契约里每条端点在 `server.js` 里都有对应实现"）。
 - **真实 DeepSeek（RUNTIME-VERIFIED，有限预算）**：用户 2026-09-27 授权「预算2元以内」——
   `probe-live-capabilities.mjs` 六类能力 **7/0**（7 次调用 / 2226 tokens ≈¥0.013）＋
@@ -74,12 +74,12 @@
     不能把测试哨兵写进作者正式作品/共享长期记忆来强行验收（判据与证据见 `docs/openviking-call-map.md` §3）。OV-VLM 未验证；
   - 真实浏览器 E2E：**已执行**——2026-09-28 独立重审轮用 Edge headless + CDP（`E2E_DSH=1`）跑 **19/19**
     （含慢链 `AI 写作 → 先审稿再应用 → 按清单修稿 → 合并 → 采纳`）。前端另有 vm + DOM 桩的离线执行验证
-    （`frontend-test.mjs` 263 断言 PASS）——它**不能**替代浏览器 E2E，两者是两层证据。
+    （`frontend-test.mjs` 307 断言 PASS）——它**不能**替代浏览器 E2E，两者是两层证据。
 
 ## 5. 复验命令
 
 ```powershell
-node scripts/ci-offline-checks.mjs                 # 46 条离线检查（零计费）
+node scripts/ci-offline-checks.mjs                 # 49 条离线检查（零计费）
 node .p1-baseline/verify-plugin-tools.mjs          # 工具面 / 版本 / 端点声明
 node .p1-baseline/test-host-contract.mjs           # 宿主契约（含端点存在性）
 $env:NOVELSTUDIO_ALLOW_HARNESS_SPAWN='1'
