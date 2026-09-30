@@ -521,6 +521,14 @@ textarea { resize: vertical; }
 .editor-status .ok { color: var(--success); }
 .editor-status .err { color: var(--danger); }
 
+/* T6：正文编辑区域之外的章末状态面板（不参与正文导出与字数统计） */
+.chapter-state-panel {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px 14px;
+  font-size: 13px;
+}
+.chapter-state-panel .chip { margin-right: 6px; }
+
 .reference-tabs { display: flex; gap: 5px; margin-bottom: 12px; }
 .reference-tabs button {
   flex: 1;

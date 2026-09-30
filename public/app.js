@@ -86,6 +86,26 @@ const state = {
   settingsTab: 'terms',
   aiTab: 'ai',
   aiCreateHomeTab: localStorage.getItem('ns_ai_create_tab') || 'auto',
+  // T6：章末状态面板（编辑器正文下方；真实后端时态状态，不进入正文与字数统计）
+  chapterPanel: null,        // GET /novel/state/panel 的最近一次结果
+  chapterPanelSeq: 0,        // 切章/切页竞态防护：只有最新一次请求可以写 DOM
+  chapterPanelView: 'cast',  // cast=本章出场 | visible=截至本章全部可见角色 | all=全部故事状态
+  chapterPanelFull: null,    // 第三档的完整状态（full=1 时才取，取到后缓存）
+  chapterProposals: null,    // 本章待确认提案组（GET /novel/state/proposal-groups）
+  // T6：影响分析与逐章重建（真实 API；运行中就绪与否由服务端判定）
+  impactRuns: null,
+  impactRun: null,
+  impactRootId: null,
+  repairRuns: null,
+  repairRun: null,
+  repairPoll: null,
+  repairPreview: null,
+  // T7：时态引擎开关 / 存量重建（迁移门禁 + 启用预算告知 + 逐章状态机；后端 API 已就绪）
+  temporalEngine: null,        // GET /novel/state/temporal（config / schema / 可信前缀 / 提交）
+  temporalEngineEnable: null,  // 最近一次"首次启用"返回的 enable_scope（预算 + 待重建范围）
+  backfill: null,              // GET /novel/state/backfill（逐章计划 + 预算 + bootstrap 候选）
+  backfillStep: null,          // 最近一次 step 返回（抽取请求 / 待确认提案摘要；按章记录）
+  backfillRunner: null,        // 离线测试/探针注入点：生产环境不设置（设置后不会真实调用模型）
   currentChapterId: null,
   currentTermId: null,
   currentCharacterId: null,
@@ -146,7 +166,8 @@ const state = {
 // 合并后的侧栏板块：小说设定 / AI创造板块（进入作品后）
 // 初始页（未进入作品）另有顶层视图：works（我的作品）、ai-create（✨ AI 创作）、ai（AI 设置）
 const SETTINGS_VIEWS = ['plot', 'outline', 'terms', 'characters', 'memory'];
-const AI_VIEWS = ['ai-create', 'ai', 'st'];
+// T6：AI 板块拆分为独立页面后，这些 route key 都能直接定位（st 为创作上下文的兼容别名）。
+const AI_VIEWS = ['ai-create', 'ai', 'st', 'rules', 'style', 'story-state', 'branch', 'rebuild'];
 const HOME_AI_VIEWS = ['ai-create', 'ai'];
 
 // 统一跳转：把旧子页面视图映射到对应的板块；未进入作品时按初始页视图分流。
@@ -453,6 +474,39 @@ const HELP_TEXT = {
       + '判断依据是确定性的：事实挂在哪一章、那一章有没有写、effective_from/effective_to 的窗口是否包含当前章、角色知识的"学到于第几章"。'
       + '作者知道不等于角色知道：写某个角色的行动理由时只能用他"已知"的条目；没有任何记录的条目是"未定义"，既不算知道也不算不知道。'
       + '视图每次按当前数据重算（不缓存）：章节重排、回滚、改设定或删事实后，再看就是新的结论。',
+  },
+  impact_analysis: {
+    title: '影响分析（前文修改后的增量失效）',
+    body: '把某一章当作「根变更」，沿依赖图检查它之后**全部**下游章节：显式出场与显式依赖只是解释与排序，'
+      + '不会用来排除隐性因果——即使后文没有出现角色名字，只要它的行动前提依赖旧状态（等待某人回来、某资源仍在、某承诺未失效），也会进入复核。'
+      + '复核结果分四类：保留原文（正文仍成立，只需重建依赖与状态）、需要复核（无法判断，留给作者）、冲突（显式或因果前提失效）、阻塞（前缀被截断，跨不过冲突）。'
+      + '本页只分析、只标记：不会因为检测到冲突就改写后文；逐章重建必须由你另行点击并确认范围。'
+      + '根章节最新正文尚未确认时，报告只做试探性覆盖提示（不调用模型、不建候选）。',
+  },
+  repair_run: {
+    title: '逐章重建（按钮授权）',
+    body: '点「重建受影响章节」后会签发一次性审批并启动运行：按叙事顺序**逐章串行**处理——第 N 章先复核，'
+      + '正文仍成立就保留原文、重建依赖与状态；不成立才生成最小修订候选。候选只进工作线，**正式正文在应用前逐字节不变**。'
+      + '第 N 章的结果会成为第 N+1 章的输入，上一章的新剧情会改变后续章节的正确修复方式，所以不能一次把全部章节批量交给模型。'
+      + '重建第 N 章时只能看到截至第 N 章的状态（不会读取未来章节才成立的死亡、关系、伏笔结果）。'
+      + '运行可暂停、可恢复（预算不重置）、可取消；就绪后仍需你签发一次应用审批，才会把候选原子切换到正式稿（旧稿保留、可撤销）。'
+      + '若运行期间你改了后文或章序，旧运行会转为过期/暂停，不会覆盖你的新编辑。',
+  },
+  temporal_engine: {
+    title: '时态状态引擎（迁移与开关）',
+    body: '长篇小说要能回答"截至第 5 章，王师傅还活着吗"，就不能只保存角色卡上那一个"最新状态"。这个引擎用不可变修订、必须带前置条件的事件、提交清单和章序版本，保存每一章"当时"的故事状态。'
+      + '三个开关分离且默认关闭：① 时态故事状态引擎（权威状态来源）；② 保存后自动分析（开启后保存正文会生成待确认提案，会用到模型）；③ 逐章重建（允许「重建受影响章节」按钮签发运行）。'
+      + '旧作品默认全部关闭：不开启时不会触发任何额外模型调用，上下文装配与旧端点契约逐字节不变；开启时会先告诉你待重建范围与预计模型调用次数（每次抽取一章一次调用）。'
+      + '数据库缺少必要表或索引时不允许开启（服务端直接拒绝，不会吞错误继续跑）；启用同时登记迁移版本，便于核对与回退说明。'
+      + '回退：应用回滚（撤销重建的恢复提交）与数据库版本回退是两件事——都不删除新历史；不要用"把新表删掉"当回滚。',
+  },
+  backfill: {
+    title: '存量重建（逐章按叙事顺序）',
+    body: '给已经在写、或导入进来的作品补建时态状态。按真实叙事顺序逐章走：冻结不可变修订（不改写正文）→ 生成抽取请求 → 作者记录/确认 → 章边界快照与事后依赖 → 可信前缀前进一章。'
+      + '生成抽取请求本身不调用模型：可以复制给 dsh 会话，也可以点「记录本机结果」用当前模型配置跑一次（会产生费用，零计费验收用本机假模型）。'
+      + '旧稿生成时的上下文已经不存在：出处如实记为"事后重建 / 生成上下文未知"，不伪造当时的创作记录；第一章之前的设定只能由你显式确认为"开篇设定"。'
+      + '旧字段（角色卡最新 status、人物关系、已确立事实）只会变成**待确认候选**：默认建议作为开篇设定或转为某章提案，绝不在你确认前自动回填成第 0 章状态——"第 10 章死亡"不会被当作开篇已死亡。'
+      + '确认必须按顺序：跳章确认会被服务端拒绝（上游不可信），补齐前面章节后即可继续；重复确认是幂等的，不会重复推进事件。',
   },
   import_rebuild: {
     title: '导入后重建创作状态',
@@ -983,7 +1037,7 @@ function restoreSession() {
     // 初始页视图（works/ai-create/ai）在作品内没有意义，恢复为总览。
     const savedView = saved.view || 'overview';
     const tabSettings = SETTINGS_VIEWS.includes(saved.settingsTab) ? saved.settingsTab : 'terms';
-    const tabAi = ['ai', 'st'].includes(saved.aiTab) ? saved.aiTab : 'ai';
+    const tabAi = AI_BOARD_TABS.includes(saved.aiTab) ? saved.aiTab : 'ai';
     if (HOME_AI_VIEWS.includes(savedView) || savedView === 'works' || savedView === 'thanks') {
       state.view = 'overview';
       state.settingsTab = tabSettings;
@@ -994,7 +1048,7 @@ function restoreSession() {
       state.aiTab = tabAi;
     } else if (AI_VIEWS.includes(savedView)) {
       state.view = 'ai-board';
-      state.aiTab = savedView === 'st' ? 'st' : 'ai';
+      state.aiTab = AI_BOARD_TABS.includes(savedView) ? savedView : 'ai';
       state.settingsTab = tabSettings;
     } else {
       state.view = savedView;
@@ -2363,21 +2417,31 @@ async function renderSettingsBoard(content, tab) {
 }
 
 // ---------- 合并板块：AI创造板块（进入作品后） ----------
-// AI 创作已迁移到初始页（见 renderAICreateHome / renderAIHome），这里只保留 AI 设置与创作上下文。
+// AI 创作已迁移到初始页（见 renderAICreateHome / renderAIHome）。
+// 2026-09-30（T6）：原先「创作上下文」一页里塞着编辑规则 / 作者样文 / 故事状态 / 剧情分支 /
+// 导入重建五块内容，且打开一次要同时加载五份数据。现在拆成**同级独立页面**：
+// 每页有稳定 route key、独立 load / render / 空态 / 错误态，刷新（sessionStorage）后回到原页；
+// 旧路由键 `st` 保留为「创作上下文」的兼容别名（旧会话、旧链接、旧帮助锚点不失效）。
 const AI_TABS = [
   ['ai', '⚙️ AI 设置'],
-  ['st', '🧩 创作上下文']
+  ['st', '🧩 创作上下文'],
+  ['rules', '📐 编辑规则'],
+  ['style', '🖋️ 作者样文与文风'],
+  ['story-state', '🧭 故事状态与披露'],
+  ['branch', '🌿 剧情分支沙盘'],
+  ['rebuild', '📥 导入后重建']
 ];
+const AI_BOARD_TABS = AI_TABS.map(([key]) => key);
 
 async function renderAIBoard(content, tab) {
-  if (tab === 'ai-create' || !['ai', 'st'].includes(tab)) tab = 'ai';
+  if (!AI_BOARD_TABS.includes(tab)) tab = 'ai';
   state.aiTab = tab;
   state.view = 'ai-board';
   content.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">🤖 AI创造板块</h1>
-        <div class="page-sub">API 设置与创作上下文（角色卡 / 世界观 / 作者注）已合并到这里</div>
+        <div class="page-sub">各页面独立加载：打开一页不会连带读取其余页面</div>
       </div>
     </div>
     <div class="board-tabs">
@@ -2385,8 +2449,16 @@ async function renderAIBoard(content, tab) {
     </div>
     <div id="board-content" class="board-content"></div>`;
   const target = $('#board-content');
-  if (tab === 'ai') await renderAI(target);
-  else await renderST(target);
+  switch (tab) {
+    case 'ai': return renderAI(target);
+    case 'st': return renderST(target);
+    case 'rules': return renderEditRulesPage(target);
+    case 'style': return renderAuthorStylePage(target);
+    case 'story-state': return renderStoryStatePage(target);
+    case 'branch': return renderBranchPage(target);
+    case 'rebuild': return renderRebuildPage(target);
+    default: return renderAI(target);
+  }
 }
 
 // ---------- 初始页 AI 视图（未进入作品） ----------
@@ -2755,6 +2827,7 @@ async function renderWriting(content) {
         <div id="chapter-recovery">${recoveryBarHtml(current)}</div>
         <div id="editor-content" class="editor-content" contenteditable="true" data-chapter-id="${current.id}">${sanitizeEditorHtml(current.content)}</div>
         <div class="editor-status" id="editor-status"><span>已加载</span> · <span id="editor-count">${wordCount(current.content)}</span> 字</div>
+        <div id="chapter-state-panel" class="chapter-state-panel" data-chapter-id="${current.id}" data-boundary="after"><div class="muted">正在读取本章状态…</div></div>
       </div>
       <div class="panel panel-reference">
         <div class="reference-tabs">
@@ -2774,6 +2847,8 @@ async function renderWriting(content) {
   if (current) {
     renderReference('terms');
     bindEditorEvents();
+    // T6：章末状态面板独立异步加载（不阻塞编辑器；迟到响应由 seq 防护拦下）。
+    refreshChapterStatePanel(current.id);
   }
 }
 
@@ -2798,6 +2873,225 @@ function bindEditorEvents() {
       try { state.savedRange = sel.getRangeAt(0).cloneRange(); } catch (_) {}
     }
   });
+}
+
+// ---------- T6：章末状态面板（正文编辑区域之外；不进入正文导出与字数统计） ----------
+// 数据一律读真实后端时态状态（GET /novel/state/panel）；本次不缓存跨章结果。
+// 竞态防护：每次加载带自增 seq，只有最新一次请求允许写 DOM（快速切章不会把 A 章状态画到 B 章）。
+const PANEL_VALIDITY_LABEL = { valid: '已确认（正式稿）', pending: '待确认（候选稿）', stale: '待验证', conflict: '冲突', missing: '无历史绑定', blocked: '被截断', needs_review: '待复核', superseded: '已被新稿取代', no_commit: '尚无提交' };
+const PANEL_ROLE_LABEL = { action: '实际行动', dialogue: '对话', mention: '提及', memory: '回忆', recollection: '回忆', flashback: '回忆' };
+// 提案组状态：分析中 / 未分析 / 失败必须有独立文案，不能都显示成"暂无"。
+const PANEL_PROPOSAL_LABEL = { running: '分析中', pending: '未分析', done: '已分析（待你确认）', failed: '分析失败', not_run: '未运行（无模型）' };
+
+/** 章节标题（面板/影响/重建共用；找不到时回退 #id，绝不猜内容）。 */
+function chapterTitleOfId(id) {
+  const c = state.chapters.find((x) => Number(x.id) === Number(id));
+  return c ? c.title : `#${id}`;
+}
+
+async function refreshChapterStatePanel(chapterId, { boundary = 'after', force = false } = {}) {
+  const panel = typeof document !== 'undefined' ? document.getElementById('chapter-state-panel') : null;
+  if (!panel) return;
+  const cid = Number(chapterId) || Number(panel.dataset.chapterId) || 0;
+  if (!cid) { panel.innerHTML = '<div class="muted">先在左侧选择一个章节。</div>'; return; }
+  const sameTarget = state.chapterPanel && Number(state.chapterPanel.chapter_id) === cid && state.chapterPanel.boundary === boundary;
+  if (force || !sameTarget) {
+    state.chapterPanel = null;
+    state.chapterPanelFull = null;
+    state.chapterProposals = null;
+    state.chapterPanelView = state.chapterPanelView || 'cast';
+  }
+  const seq = ++state.chapterPanelSeq;
+  panel.dataset.chapterId = String(cid);
+  panel.dataset.boundary = boundary;
+  if (!state.chapterPanel) panel.innerHTML = '<div class="muted">正在读取本章状态…</div>';
+  const wantFull = state.chapterPanelView === 'all';
+  try {
+    const view = await api(`/novel/state/panel?work_id=${state.workId}&chapter_id=${cid}&boundary=${boundary}${wantFull ? '&full=1' : ''}`);
+    if (seq !== state.chapterPanelSeq) return; // 迟到的旧响应：丢弃，不画到当前章
+    state.chapterPanel = view;
+    if (wantFull && view && view.full_state) state.chapterPanelFull = view.full_state;
+  } catch (e) {
+    if (seq !== state.chapterPanelSeq) return;
+    state.chapterPanel = { ok: false, enabled: true, error: String((e && e.message) || e), chapter_id: cid, boundary };
+  }
+  try {
+    const groups = await api(`/novel/state/proposal-groups?work_id=${state.workId}&chapter_id=${cid}`);
+    if (seq !== state.chapterPanelSeq) return;
+    state.chapterProposals = groups;
+  } catch (_) {
+    state.chapterProposals = null; // 接口不可用：面板如实少显示这一块，不冒充"没有待确认"
+  }
+  if (seq !== state.chapterPanelSeq) return;
+  panel.innerHTML = chapterPanelHtml();
+}
+
+async function setChapterPanelView(view) {
+  const next = ['cast', 'visible', 'all'].includes(view) ? view : 'cast';
+  const changed = state.chapterPanelView !== next;
+  state.chapterPanelView = next;
+  const panel = typeof document !== 'undefined' ? document.getElementById('chapter-state-panel') : null;
+  if (panel) panel.innerHTML = chapterPanelHtml();
+  if (next === 'all' && !state.chapterPanelFull) {
+    const cid = state.chapterPanel ? Number(state.chapterPanel.chapter_id) : Number(state.currentChapterId) || 0;
+    if (cid) await refreshChapterStatePanel(cid, { boundary: (state.chapterPanel && state.chapterPanel.boundary) || 'after' });
+  } else if (changed && panel) {
+    panel.innerHTML = chapterPanelHtml();
+  }
+}
+
+function panelEvidenceHtml(evidence) {
+  const list = Array.isArray(evidence) ? evidence.filter((x) => x && x.quote) : [];
+  if (!list.length) return '';
+  return `<div class="muted" style="font-size:12px">原文证据：${list.slice(0, 2).map((x) => `“${esc(String(x.quote).slice(0, 60))}”<button class="btn small secondary" data-action="panel-jump" data-quote="${esc(String(x.quote))}" title="在正文里定位这段证据">定位</button>`).join('；')}</div>`;
+}
+
+/** 证据定位：在正文编辑器里选中并滚动到证据引文；找不到就如实提示，不做假跳转。 */
+function jumpToEvidence(quote) {
+  const q = String(quote || '').trim();
+  if (!q) { toast('该证据没有可定位的引文', 'error'); return; }
+  const editor = typeof document !== 'undefined' ? document.getElementById('editor-content') : null;
+  if (!editor || typeof editor.querySelectorAll !== 'function') { toast('当前不在正文编辑视图，无法定位证据', 'error'); return; }
+  let hit = null;
+  for (const node of Array.from(editor.querySelectorAll('p, li, blockquote, div, h2, h3'))) {
+    if (node && node.children && node.children.length) continue;
+    if (String(node.textContent || '').includes(q)) { hit = node; break; }
+  }
+  if (!hit) { toast('当前正文里没有找到这段证据（正文可能已被修改或尚未加载）', 'error'); return; }
+  try {
+    if (typeof window !== 'undefined' && window.getSelection && document.createRange) {
+      const range = document.createRange();
+      range.selectNodeContents(hit);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  } catch (_) { /* 选择失败不阻塞定位 */ }
+  if (typeof hit.scrollIntoView === 'function') hit.scrollIntoView({ block: 'center' });
+}
+
+function chapterStateListHtml(fullState) {
+  const rows = Object.entries(fullState || {}).map(([key, value]) => {
+    let cell = null;
+    try { cell = JSON.parse(key); } catch { cell = null; }
+    const [domain, entityId, predicate, scope, holderId] = Array.isArray(cell) ? cell : ['unknown', key, '', '', null];
+    return { domain: String(domain), entityId: String(entityId), predicate: String(predicate), scope: String(scope), holderId, value };
+  });
+  const byDomain = new Map();
+  for (const r of rows) { if (!byDomain.has(r.domain)) byDomain.set(r.domain, []); byDomain.get(r.domain).push(r); }
+  const show = (v) => typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v);
+  return [...byDomain.entries()].map(([domain, list]) => `
+    <div class="mt-8"><b style="font-size:13px">${esc(domain)}（${list.length}）</b>
+      ${list.slice(0, 40).map((r) => `<div class="muted" style="font-size:12px">${esc(r.entityId)}${r.holderId ? `（持有：${esc(String(r.holderId))}）` : ''} · ${esc(r.predicate)} = ${esc(show(r.value).slice(0, 120))}</div>`).join('')}
+      ${list.length > 40 ? `<div class="muted" style="font-size:12px">…其余 ${list.length - 40} 条（导出/接口可见）</div>` : ''}
+    </div>`).join('') || '<div class="muted">（无状态条目）</div>';
+}
+
+function chapterPanelHtml() {
+  const p = state.chapterPanel;
+  if (!p) return '<div class="muted">正在读取本章状态…</div>';
+  if (p.enabled === false) {
+    return `<div class="muted">该作品未开启时态故事状态引擎：可在「🧭 故事状态与披露」页开启（开启后新保存的章节才会建立历史状态）。</div>`;
+  }
+  if (p.error || p.ok === false) {
+    return `<div class="redline-scan warn">本章状态读取失败：${esc(String(p.error || p.reason || '未知原因'))}。为避免误导，这里不显示推测内容。</div>`;
+  }
+  const boundary = String(p.boundary || 'after');
+  const validity = String(p.binding_validity || 'missing');
+  const label = PANEL_VALIDITY_LABEL[validity] || validity;
+  const trustedText = p.trusted ? `可信前缀：截至第 ${Number(p.verified_through || 0) + 1} 章` : '可信前缀：未建立（本章或前文还有未确认内容）';
+  const chapterNo = (() => { const c = state.chapters.find((x) => Number(x.id) === Number(p.chapter_id)); return c ? c.title : `#${p.chapter_id}`; })();
+  const characters = Array.isArray(p.characters) ? p.characters : [];
+  const inChapter = characters.filter((c) => c.in_chapter);
+  const relations = Array.isArray(p.relations) ? p.relations : [];
+  const plotlines = Array.isArray(p.plotlines) ? p.plotlines : [];
+  const changes = Array.isArray(p.changes) ? p.changes : [];
+  const view = state.chapterPanelView;
+  const rows = view === 'cast' ? inChapter : characters;
+  const charCard = (c) => {
+    const myChanges = changes.filter((x) => String(x.entity_id) === String(c.entity_id));
+    const fmtSide = (v, opType, missing) => {
+      if (missing) return '（此前未登记）';
+      if (v === null || v === undefined) return opType === 'unset' ? '（清除）' : '（空）';
+      return typeof v === 'object' ? JSON.stringify(v) : String(v);
+    };
+    return `<div class="st-character-item">
+      <div class="row"><b>${esc(String(c.entity_id))}</b>
+        ${c.in_chapter ? '<span class="chip">本章出场</span>' : ''}
+        <span class="muted" style="font-size:12px">${esc(String(c.status || ''))}${c.location ? `｜${esc(String(c.location))}` : ''}</span>
+      </div>
+      ${myChanges.map((x) => `<div style="font-size:12px">${esc(fmtSide(x.from, x.type, x.from_missing))} → <b>${esc(fmtSide(x.to, x.type, false))}</b>（${esc(String(x.predicate || ''))}）</div>${panelEvidenceHtml(x.evidence)}`).join('')}
+    </div>`;
+  };
+  const appearanceRows = (p.appearances || []).map((a) => {
+    const role = a.role || a.kind || a.type;
+    const roleLabel = role ? (PANEL_ROLE_LABEL[String(role)] || String(role)) : '出场';
+    return `<div class="st-character-item"><div class="row"><b>${esc(String(a.name || a.entity_id || ''))}</b><span class="chip">${esc(roleLabel)}</span>${a.scene_index !== undefined && a.scene_index !== null ? `<span class="muted" style="font-size:12px">场景 ${esc(String(a.scene_index))}</span>` : ''}</div>${panelEvidenceHtml(a.evidence)}</div>`;
+  }).join('');
+  const relRows = relations.filter((r) => view !== 'cast' || r.related_in_chapter).slice(0, 20)
+    .map((r) => `<div class="muted" style="font-size:12px">${esc(String(r.from))} ↔ ${esc(String(r.to))}：${esc(String(r.label || ''))}${r.description ? `（${esc(String(r.description).slice(0, 60))}）` : ''}</div>`).join('');
+  const plotRows = plotlines.filter((x) => view !== 'cast' || x.touched_in_chapter).slice(0, 20)
+    .map((x) => `<div class="muted" style="font-size:12px">${esc(String(x.entity_id))}：${esc(String(x.state || '（未登记状态）'))}${x.summary ? `｜${esc(String(x.summary).slice(0, 60))}` : ''}</div>`).join('');
+  const proposals = (state.chapterProposals && Array.isArray(state.chapterProposals.proposals)) ? state.chapterProposals.proposals : null;
+  // 服务端 listProposalGroups 只返回 pending 绑定（即"尚未确认"）；这里再排除仍在分析中的组，
+  // 避免确认按钮出现在分析未完成的组上（半成品不得被确认）。
+  const pendingProposals = proposals ? proposals.filter((x) => String(x.status || '') !== 'running') : [];
+  const proposalHtml = proposals === null
+    ? ''
+    : (proposals.length ? `
+      <div class="mt-8">
+        <b style="font-size:13px">本章待确认提案（${proposals.length}）</b>
+        <div class="muted" style="font-size:12px">候选值不会渲染成正式值；确认后才进入正式状态并触发下游复核。</div>
+        ${proposals.map((g) => `<div class="st-character-item"><div class="row"><span class="chip">${esc(PANEL_PROPOSAL_LABEL[String(g.status || 'pending')] || String(g.status || 'pending'))}</span><span class="muted" style="font-size:12px">事件 ${esc(String((g.proposal || {}).events ?? 0))} · 操作 ${esc(String((g.proposal || {}).ops ?? 0))}｜${esc(String(((g.analysis || {}).provider) || '未分析'))}</span></div></div>`).join('')}
+        ${pendingProposals.length ? '<div class="mt-8"><button class="btn small" data-action="panel-confirm-proposals">一次确认本章提案</button></div>' : ''}
+      </div>` : '<div class="muted mt-8" style="font-size:12px">本章没有待确认提案（旧稿已确认或尚未分析）。</div>');
+  const tabs = `<div class="row mt-8" style="gap:6px;flex-wrap:wrap">
+    <button class="btn small ${view === 'cast' ? '' : 'secondary'}" data-action="panel-view" data-view="cast">本章出场（${inChapter.length}）</button>
+    <button class="btn small ${view === 'visible' ? '' : 'secondary'}" data-action="panel-view" data-view="visible">截至本章全部可见角色（${characters.length}）</button>
+    <button class="btn small ${view === 'all' ? '' : 'secondary'}" data-action="panel-view" data-view="all">全部故事状态</button>
+  </div>`;
+  return `
+    <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+      <b>—— 本章状态 ——</b>
+      <span class="chip">${esc(chapterNo)}</span>
+      <span class="chip">${boundary === 'after' ? '章后状态' : '章前状态'}</span>
+      <span class="chip">${esc(label)}</span>
+      ${p.worldline_id ? `<span class="chip">世界线 ${esc(String(p.worldline_id).slice(0, 10))}</span>` : ''}
+      <span class="muted" style="font-size:12px">${esc(trustedText)}${p.commit_id ? `｜提交 ${esc(String(p.commit_id).slice(0, 12))}` : ''}${p.order_version_id ? `｜章序 ${esc(String(p.order_version_id).slice(0, 10))}` : ''}</span>
+    </div>
+    ${p.stop && Number(p.stop.chapter_id) === Number(p.chapter_id) ? `<div class="redline-scan warn mt-8">本章在可信前缀处停止：${esc(String(p.stop.detail || p.stop.reason || ''))}（显示的是此前已确认的状态，不是本章新稿）</div>` : ''}
+    ${tabs}
+    ${view === 'all' ? `<div class="mt-8">${state.chapterPanelFull ? chapterStateListHtml(state.chapterPanelFull) : '<div class="muted">正在读取完整状态…</div>'}</div>` : `
+      ${view === 'cast' && appearanceRows ? `<div class="mt-8"><b style="font-size:13px">出场记录</b>${appearanceRows}</div>` : ''}
+      <div class="mt-8"><b style="font-size:13px">${view === 'cast' ? '出场角色状态' : '截至本章的可见角色'}</b>
+        ${rows.length ? rows.map(charCard).join('') : '<div class="muted">本章没有登记出场角色（可能尚未分析或未确认）。</div>'}
+      </div>
+      ${relRows ? `<div class="mt-8"><b style="font-size:13px">相关人物关系</b>${relRows}</div>` : ''}
+      ${plotRows ? `<div class="mt-8"><b style="font-size:13px">相关剧情线</b>${plotRows}</div>` : ''}
+      ${(p.events || []).length ? `<div class="mt-8"><b style="font-size:13px">本章事件（${(p.events || []).length}）</b>${(p.events || []).slice(0, 10).map((e) => `<div class="muted" style="font-size:12px">${esc(String(e.entity_id))}: ${esc(String((e.value && e.value.summary) || e.predicate || ''))}</div>`).join('')}</div>` : ''}
+    `}
+    ${proposalHtml}
+  `;
+}
+
+/** 本章提案一次确认（原子组；模型不能确认自己的抽取，这里是作者动作）。 */
+async function confirmChapterProposals() {
+  const groups = state.chapterProposals;
+  const list = groups && Array.isArray(groups.proposals) ? groups.proposals : [];
+  if (!list.length) { toast('本章没有待确认提案', 'error'); return; }
+  const chapterId = state.chapterPanel ? Number(state.chapterPanel.chapter_id) : Number(state.currentChapterId) || 0;
+  if (!confirm(`确认本章 ${list.length} 个提案组？确认后事件进入正式状态，并触发下游一致性复核（只分析）。`)) return;
+  try {
+    for (const g of list) {
+      const r = await api(`/novel/state/proposal-groups/${encodeURIComponent(String(g.binding_id))}/apply`, {
+        method: 'POST', body: { work_id: state.workId, chapter_id: chapterId },
+      });
+      if (!r || r.ok !== true) { toast(`确认失败：${(r && r.reason) || '未知原因'}`, 'error'); break; }
+    }
+    toast('已确认：状态与投影一次更新', 'success');
+    await refreshChapterStatePanel(chapterId, { force: true, boundary: (state.chapterPanel && state.chapterPanel.boundary) || 'after' });
+    if (typeof renderReference === 'function') renderReference(state.refTab);
+  } catch (e) { toast(`确认失败：${e.message}`, 'error'); }
 }
 
 function renderReference(tab = 'terms') {
@@ -4008,6 +4302,588 @@ async function refreshDisclosure() {
   await render();
 }
 
+// ---------- T6：影响分析（只分析、只标记）与逐章重建（按钮 + 一次性审批） ----------
+// 影响：GET /api/novel/state/impact 读报告（历史运行可回看）；POST 由作者显式发起 / 刷新。
+// 重建：作者点「重建受影响章节」→ 签发一次性审批 repair_run_start → POST /start → 轮询 GET 进度 →
+//       就绪后签发 repair_run_apply → POST /apply；cancel / resume / revert 同页可用。
+// 纪律：运行就绪 ≠ 已应用（主稿与候选分开显示）；候选预览读只读端点 /state/revision，不猜内容；
+// 没有报告/没有运行就如实显示空态，不画假进度。
+const IMPACT_ENTRY_LABEL = { kept: '保留原文', valid: '通过', needs_review: '需要复核', blocked: '阻塞（前缀被截断）', conflict: '冲突', skipped: '超出范围', tentative: '仅试探（根未确认）', pending: '未检查' };
+const REPAIR_RUN_LABEL = { queued: '排队中', running: '运行中', paused: '已暂停', stale: '基线过期', ready: '待应用', applied: '已应用', failed: '失败', cancelled: '已取消', needs_review: '待复核', reverted: '已撤销' };
+const REPAIR_STEP_LABEL = { queued: '未开始', validating: '复核中', kept: '保留原文', repairing: '修订中', repaired: '已生成修订', blocked: '阻塞', needs_review: '待复核', failed: '失败', cancelled: '已取消', stale: '过期', valid: '有效', conflict: '冲突' };
+
+async function loadImpactRuns(force = false) {
+  if (state.impactRuns && !force) return state.impactRuns;
+  try {
+    const data = await api(`/novel/state/impact?work_id=${state.workId}`);
+    state.impactRuns = Array.isArray(data.runs) ? data.runs : [];
+    const latest = state.impactRuns[0];
+    if (latest && (!state.impactRun || String((state.impactRun.run || {}).id) !== String(latest.id))) {
+      state.impactRootId = Number(latest.root_chapter_id) || state.impactRootId;
+      await loadImpactRun(latest.id);
+    }
+  } catch (_) {
+    state.impactRuns = null; // null = 接口不可用：如实显示，不冒充"没有报告"
+  }
+  return state.impactRuns;
+}
+
+async function loadImpactRun(runId) {
+  try {
+    const view = await api(`/novel/state/impact?work_id=${state.workId}&run_id=${encodeURIComponent(String(runId))}`);
+    state.impactRun = view && view.ok ? view : null;
+  } catch (_) { state.impactRun = null; }
+  return state.impactRun;
+}
+
+/** 作者显式发起 / 刷新影响分析（POST；只分析、只标记，绝不改写后文）。 */
+async function impactAnalyze() {
+  const rootId = Number(($('#impact-root-chapter') || {}).value) || Number(state.impactRootId) || 0;
+  if (!rootId) { toast('先选择一个「根变更」章节', 'error'); return; }
+  state.impactRootId = rootId;
+  try {
+    const result = await api('/novel/state/impact', { method: 'POST', body: { work_id: state.workId, chapter_id: rootId, refresh: true } });
+    if (result && result.report) state.impactRun = { ok: true, run: result.run, report: result.report, steps: [], ready_gate: null };
+    await loadImpactRuns(true);
+    toast(result && result.tentative
+      ? '根章节的最新正文尚未确认：本次只给出试探性覆盖提示（未调用模型、未建候选）'
+      : '影响分析完成：只标记与解释，不会自动改写后文（重建需另行点击）', 'info');
+    await render();
+  } catch (e) { toast(`影响分析失败：${e.message}`, 'error'); }
+}
+
+function impactEntryHtml(entry) {
+  const e = entry || {};
+  const conflicts = [...(e.explicit_conflicts || []), ...(e.implicit_causal || [])];
+  const deps = (e.explicit_dependencies || []).map((d) => d.resource_key || d).filter(Boolean);
+  const casts = e.explicit_appearances || [];
+  // 每条都能展开看原因与证据（默认收起，避免长报告把关键章节挤下去）；摘要行只留状态与章名。
+  const details = [
+    e.reason ? `<div class="muted" style="font-size:12px">原因：${esc(e.reason)}</div>` : '',
+    casts.length ? `<div class="muted" style="font-size:12px">显式出场：${casts.map((x) => esc(String(x))).join('、')}</div>` : '',
+    deps.length ? `<div class="muted" style="font-size:12px">显式依赖：${deps.map((x) => esc(String(x))).join('、')}</div>` : '',
+    conflicts.length ? `<div style="font-size:12px;color:#b45309">冲突证据：${conflicts.map((c) => `${esc(String(c.kind || ''))}｜前提：${esc(String(c.premise || ''))}${c.quote ? `｜原文：“${esc(String(c.quote))}”` : ''}`).join('；')}</div>` : '',
+  ].filter(Boolean).join('');
+  return `<div class="st-character-item">
+    <div class="row"><b>第 ${esc(String(chapterTitleOfId(e.chapter_id)))}</b>
+      <span class="chip">${esc(IMPACT_ENTRY_LABEL[e.status] || String(e.status || '未检查'))}</span>
+      ${e.tentative ? '<span class="chip">试探</span>' : ''}
+      ${e.kept_revision_id ? `<span class="muted" style="font-size:12px">保留原修订 ${esc(String(e.kept_revision_id).slice(0, 12))}</span>` : ''}
+    </div>
+    ${details ? `<details class="mt-4"><summary class="muted" style="font-size:12px;cursor:pointer">展开原因与证据</summary>${details}</details>` : ''}
+  </div>`;
+}
+
+function impactSectionHtml() {
+  const runs = state.impactRuns;
+  const view = state.impactRun;
+  const report = view && view.report ? view.report : null;
+  const rootId = Number(state.impactRootId) || (report && Number(report.root_chapter_id)) || 0;
+  const options = state.chapters.map((c) => `<option value="${c.id}" ${Number(rootId) === Number(c.id) ? 'selected' : ''}>${esc(c.title)}</option>`).join('');
+  const groups = { kept: [], needs_review: [], blocked: [], conflict: [], other: [] };
+  for (const d of (report && report.downstream) || []) {
+    const key = ['kept', 'needs_review', 'blocked', 'conflict'].includes(String(d.status)) ? String(d.status) : 'other';
+    groups[key].push(d);
+  }
+  const totals = (report && report.totals) || {};
+  const groupHtml = (label, list) => list.length
+    ? `<div class="mt-8"><b style="font-size:13px">${label}（${list.length}）</b>${list.map(impactEntryHtml).join('')}</div>`
+    : '';
+  return `
+    <div class="card mb-12" id="impact-card">
+      <div class="card-head">
+        <span class="card-title">影响分析（前文修改后的增量失效）${helpDot('impact_analysis')}</span>
+        <select id="impact-root-chapter" title="选择根变更章节">${options || '<option value="">（没有章节）</option>'}</select>
+        <button class="btn small" data-action="impact-analyze" ${state.chapters.length ? '' : 'disabled'}>分析影响</button>
+      </div>
+      <div class="muted" style="font-size:12px">只分析、只标记：给出显式出场与隐性因果的受影响章节、证据与处理结果，<b>不会</b>自动改写后文。重建必须由你另行点击并确认范围。</div>
+      ${runs === null ? '<div class="muted mt-8">当前服务端不提供影响分析接口（可能是重启前的旧进程）：重启后可用。</div>' : ''}
+      ${report ? `
+        <div class="muted mt-8" style="font-size:12px">根变更：第 ${esc(String(chapterTitleOfId(report.root_chapter_id)))} 章｜覆盖 ${esc(String(totals.downstream ?? 0))} 章（跳过 ${esc(String(totals.skipped_by_coverage ?? 0))}）｜保留 ${esc(String(totals.kept ?? 0))}｜待复核 ${esc(String(totals.needs_review ?? 0))}｜阻塞 ${esc(String(totals.blocked ?? 0))}｜生成修订 ${esc(String(totals.generated_revisions ?? 0))}（本阶段不生成后文修订）｜模型调用 ${esc(String(totals.model_calls ?? 0))}</div>
+        ${report.tentative ? '<div class="redline-scan warn mt-8">根章节的最新正文尚未确认：本报告只做试探性覆盖提示（未调用模型、未写任何候选状态）。</div>' : ''}
+        ${(report.notes || []).map((n) => `<div class="muted" style="font-size:12px">· ${esc(n)}</div>`).join('')}
+        ${groupHtml('需要复核（隐性因果）', groups.needs_review)}
+        ${groupHtml('阻塞（前缀被截断）', groups.blocked)}
+        ${groupHtml('冲突', groups.conflict)}
+        ${groupHtml('保留原文', groups.kept)}
+        ${groups.other.length ? `<div class="muted mt-8" style="font-size:12px">其余 ${groups.other.length} 章：${groups.other.map((d) => esc(String(chapterTitleOfId(d.chapter_id)))).join('、')}</div>` : ''}
+      ` : (runs && runs.length ? `<div class="muted mt-8">已有 ${runs.length} 次历史运行；点「分析影响」刷新当前范围。</div>` : '<div class="muted mt-8">还没有影响分析报告。</div>')}
+    </div>`;
+}
+
+// ---- 逐章重建（T4 运行的真实前端接线） ----
+async function loadRepairRuns(force = false) {
+  if (state.repairRuns && !force) return state.repairRuns;
+  try {
+    const data = await api(`/novel/state/repair?work_id=${state.workId}`);
+    state.repairRuns = Array.isArray(data.runs) ? data.runs : [];
+    const latest = state.repairRuns[0];
+    if (latest && !state.repairRun) await loadRepairRun(latest.id);
+    // 页面重新打开时，若最新运行仍在进行，接回轮询（真实进度，不是本地假进度）。
+    const cur = state.repairRun && state.repairRun.run ? state.repairRun.run : null;
+    if (cur && ['queued', 'running'].includes(String(cur.status))) scheduleRepairPoll(cur.id);
+  } catch (_) {
+    state.repairRuns = null; // 接口不可用：如实显示
+  }
+  return state.repairRuns;
+}
+
+async function loadRepairRun(runId) {
+  try {
+    const view = await api(`/novel/state/repair?work_id=${state.workId}&run_id=${encodeURIComponent(String(runId))}`);
+    state.repairRun = view && view.ok ? view : null;
+  } catch (_) { state.repairRun = null; }
+  const st = state.repairRun && state.repairRun.run ? state.repairRun.run.status : '';
+  if (!['queued', 'running'].includes(st)) stopRepairPoll();
+  return state.repairRun;
+}
+
+function stopRepairPoll() {
+  if (state.repairPoll) { clearTimeout(state.repairPoll); state.repairPoll = null; }
+}
+
+/** 运行期间轮询真实进度（3s）；到终态即停。只更新本页区块，不整页重绘。 */
+function scheduleRepairPoll(runId) {
+  stopRepairPoll();
+  const tick = async () => {
+    state.repairPoll = null;
+    const view = await loadRepairRun(runId);
+    const box = typeof document !== 'undefined' ? document.getElementById('repair-section') : null;
+    if (box) box.innerHTML = repairSectionHtml();
+    const st = view && view.run ? view.run.status : '';
+    if (['queued', 'running'].includes(st)) state.repairPoll = setTimeout(tick, 3000);
+  };
+  state.repairPoll = setTimeout(tick, 3000);
+}
+
+function repairStepHtml(step) {
+  const s = step || {};
+  const st = String(s.status || '');
+  const list = (state.repairRun && Array.isArray(state.repairRun.steps)) ? state.repairRun.steps : [];
+  const idx = list.findIndex((x) => String(x.id) === String(s.id));
+  return `<div class="st-character-item">
+    <div class="row"><b>第 ${esc(String(chapterTitleOfId(s.chapter_id)))}</b>
+      <span class="chip">${esc(REPAIR_STEP_LABEL[st] || st || '未开始')}</span>
+      ${Number(s.attempt) > 1 ? `<span class="muted" style="font-size:12px">尝试 ${esc(String(s.attempt))} 次</span>` : ''}
+      ${s.candidate_revision_id && idx >= 0 ? `<button class="btn small secondary" data-action="repair-preview" data-idx="${esc(String(idx))}">预览候选</button>` : ''}
+    </div>
+    ${s.result && s.result.reason ? `<div class="muted" style="font-size:12px">${esc(String(s.result.reason))}</div>` : ''}
+  </div>`;
+}
+
+function repairPreviewHtml() {
+  const p = state.repairPreview;
+  if (!p) return '';
+  const ops = diffParagraphs(p.oldText || '', p.newText || '');
+  const body = ops.map((op) => {
+    if (op.t === 'same') return `<div class="diff-p">${esc(op.x)}</div>`;
+    if (op.t === 'del') return `<div class="diff-p diff-del">${esc(op.x)}</div>`;
+    return `<div class="diff-p diff-add">${esc(op.x)}</div>`;
+  }).join('');
+  return `<div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`;
+}
+
+function repairSectionHtml() {
+  const runs = state.repairRuns;
+  const view = state.repairRun;
+  const run = view && view.run ? view.run : null;
+  const steps = (view && view.steps) || [];
+  const totals = (run && run.result && run.result.totals) || {};
+  const halt = run && run.result ? run.result.halt : null;
+  const readyGate = (view && view.ready_gate) || null;
+  const rootId = Number(state.impactRootId) || (run && Number(run.root_chapter_id)) || 0;
+  const options = state.chapters.map((c) => `<option value="${c.id}" ${Number(rootId) === Number(c.id) ? 'selected' : ''}>${esc(c.title)}</option>`).join('');
+  const canStart = state.chapters.length > 0;
+  return `
+    <div class="card mb-12" id="repair-card">
+      <div class="card-head">
+        <span class="card-title">逐章重建（按钮授权）${helpDot('repair_run')}</span>
+        <select id="repair-root-chapter" title="重建的根变更章节">${options || '<option value="">（没有章节）</option>'}</select>
+        <button class="btn small" data-action="repair-start" ${canStart ? '' : 'disabled'}>重建受影响章节</button>
+      </div>
+      <div class="muted" style="font-size:12px">按叙事顺序**逐章**复核：仍成立→保留原文并重建依赖；不成立→生成最小修订候选（只进工作线，<b>不覆盖正文</b>）。就绪后仍需你签发一次应用审批，才会原子切换正式稿。</div>
+      ${runs === null ? '<div class="muted mt-8">当前服务端不提供重建接口（可能是重启前的旧进程）：重启后可用。</div>' : ''}
+      ${!run ? (runs && runs.length ? `<div class="muted mt-8">已有 ${runs.length} 次历史运行；从上面点「重建受影响章节」开始新的运行。</div>` : '<div class="muted mt-8">还没有重建运行。</div>') : `
+        <div class="row mt-8">
+          <span class="chip">${esc(REPAIR_RUN_LABEL[run.status] || run.status)}</span>
+          <span class="muted" style="font-size:12px">运行 ${esc(String(run.id).slice(0, 14))}｜根章：第 ${esc(String(chapterTitleOfId(run.root_chapter_id)))} 章｜基线 ${esc(String(run.base_commit_id || '').slice(0, 12))}</span>
+        </div>
+        ${run.status === 'applied' ? '<div class="redline-scan warn mt-8">本运行已应用到正式稿（旧稿保留在历史版本里，可撤销恢复）。</div>' : ''}
+        <div class="muted mt-8" style="font-size:12px">覆盖 ${esc(String(totals.chapters ?? steps.length))} 章｜保留 ${esc(String(totals.kept ?? 0))}｜已生成修订 ${esc(String(totals.repaired ?? 0))}｜待复核 ${esc(String(totals.needs_review ?? 0))}｜阻塞 ${esc(String(totals.blocked ?? 0))}｜模型调用 ${esc(String(totals.model_calls ?? 0))}${totals.tokens ? `｜tokens ${esc(String(totals.tokens))}` : ''}</div>
+        ${halt && halt.reason ? `<div class="redline-scan warn mt-8">已停止：${esc(String(halt.reason))}</div>` : ''}
+        ${readyGate && !readyGate.can_apply && run.status === 'ready' ? `<div class="muted" style="font-size:12px">尚不可应用：${esc((readyGate.reasons || []).join('；'))}</div>` : ''}
+        <div class="row mt-8" style="gap:6px;flex-wrap:wrap">
+          ${['queued', 'running'].includes(run.status) ? `<button class="btn small secondary" data-action="repair-cancel">取消</button>` : ''}
+          ${['paused', 'failed', 'needs_review', 'stale'].includes(run.status) ? `<button class="btn small secondary" data-action="repair-resume">恢复运行</button>` : ''}
+          ${run.status === 'ready' && readyGate && readyGate.can_apply ? `<button class="btn small" data-action="repair-apply">应用候选（需一次性审批）</button>` : ''}
+          ${run.status === 'applied' ? `<button class="btn small secondary" data-action="repair-revert">撤销本轮重建</button>` : ''}
+          <button class="btn small secondary" data-action="repair-refresh">刷新进度</button>
+        </div>
+        ${steps.length ? `<div class="mt-8"><b style="font-size:13px">逐章进度</b>${steps.map(repairStepHtml).join('')}</div>` : ''}
+        <div id="repair-preview" class="mt-8">${repairPreviewHtml()}</div>
+      `}
+    </div>`;
+}
+
+async function repairStart() {
+  const rootId = Number(($('#repair-root-chapter') || {}).value) || Number(state.impactRootId) || 0;
+  if (!rootId) { toast('先选择重建的根章节', 'error'); return; }
+  if (!confirm(`将从「第 ${chapterTitleOfId(rootId)} 章」开始，按叙事顺序逐章复核其后的受影响章节，并生成候选修订（候选不覆盖正文；就绪后仍需你签发一次应用审批）。继续？`)) return;
+  try {
+    const approval = await api('/novel/approvals', { method: 'POST', body: { work_id: state.workId, op: 'repair_run_start', root_chapter_id: rootId, note: '作者界面：按钮式逐章重建' } });
+    const result = await api('/novel/state/repair/start', { method: 'POST', body: { work_id: state.workId, root_chapter_id: rootId, approval_id: approval.id } });
+    if (!result || result.ok !== true) {
+      toast(`重建未启动：${(result && result.reason) || '未知原因'}`, 'error');
+      await loadRepairRuns(true);
+      await render();
+      return;
+    }
+    state.repairRun = { ok: true, run: result.run, steps: result.steps || [], ready_gate: null };
+    state.repairRuns = null;
+    await loadRepairRun(result.run.id);
+    scheduleRepairPoll(result.run.id);
+    toast(result.reused ? '已有同范围的重建运行：已接回进度（审批不重复消费）' : '重建已启动：逐章进行，可随时取消', 'success');
+    await render();
+  } catch (e) { toast(`重建启动失败：${e.message}`, 'error'); }
+}
+
+async function repairAction(action) {
+  const view = state.repairRun;
+  const runId = view && view.run ? view.run.id : '';
+  if (!runId) { toast('没有可操作的运行', 'error'); return; }
+  try {
+    if (action === 'cancel') {
+      const r = await api('/novel/state/repair/cancel', { method: 'POST', body: { work_id: state.workId, run_id: runId } });
+      if (!r || r.ok !== true) { toast(`取消失败：${(r && r.reason) || '未知原因'}`, 'error'); }
+      else toast('已请求取消：断点保留，可稍后恢复', 'info');
+    } else if (action === 'resume') {
+      const r = await api('/novel/state/repair/resume', { method: 'POST', body: { work_id: state.workId, run_id: runId } });
+      if (!r || r.ok !== true) { toast(`恢复失败：${(r && r.reason) || '未知原因'}`, 'error'); }
+      else toast('已恢复：从断点继续', 'success');
+    } else if (action === 'apply') {
+      if (!confirm('应用会把候选修订原子切换到正式正文（旧稿保留在历史版本，可撤销）。继续？')) return;
+      const approval = await api('/novel/approvals', { method: 'POST', body: { work_id: state.workId, op: 'repair_run_apply', run_id: runId, note: '作者界面：应用逐章重建候选' } });
+      const r = await api('/novel/state/repair/apply', { method: 'POST', body: { work_id: state.workId, run_id: runId, approval_id: approval.id } });
+      if (!r || r.ok !== true) { toast(`应用失败：${(r && r.reason) || '未知原因'}`, 'error'); }
+      else toast('已应用：正式正文 / 绑定 / HEAD 一次原子切换', 'success');
+    } else if (action === 'revert') {
+      if (!confirm('撤销会创建恢复提交，把正文恢复到重建前的版本（不会删除历史）。继续？')) return;
+      const r = await api('/novel/state/repair/revert', { method: 'POST', body: { work_id: state.workId, run_id: runId } });
+      if (!r || r.ok !== true) { toast(`撤销失败：${(r && r.reason) || '未知原因'}`, 'error'); }
+      else toast('已撤销：恢复提交已创建', 'success');
+    }
+    state.repairRuns = null;
+    await loadRepairRun(runId);
+    await loadRepairRuns(true);
+    await render();
+  } catch (e) { toast(`操作失败：${e.message}`, 'error'); }
+}
+
+/** 候选预览：读只读端点 /novel/state/revision，与当前正文逐段 diff；不改任何状态。 */
+async function repairPreview(idx) {
+  const view = state.repairRun;
+  const step = view && Array.isArray(view.steps) ? view.steps[Number(idx)] : null;
+  if (!step || !step.candidate_revision_id) { toast('该章没有可预览的候选修订', 'error'); return; }
+  try {
+    const data = await api(`/novel/state/revision?work_id=${state.workId}&revision_id=${encodeURIComponent(String(step.candidate_revision_id))}`);
+    const chapter = state.chapters.find((c) => Number(c.id) === Number(step.chapter_id)) || {};
+    state.repairPreview = {
+      chapter_id: step.chapter_id, revision_id: step.candidate_revision_id,
+      oldText: editorPlainText(chapter.content || ''), newText: editorPlainText((data.revision || {}).content_html || ''),
+    };
+    const box = typeof document !== 'undefined' ? document.getElementById('repair-preview') : null;
+    if (box) box.innerHTML = repairPreviewHtml();
+    else await render();
+  } catch (e) { toast(`候选预览失败：${e.message}`, 'error'); }
+}
+
+async function repairRefresh() {
+  const view = state.repairRun;
+  const runId = view && view.run ? view.run.id : '';
+  if (runId) await loadRepairRun(runId);
+  await loadRepairRuns(true);
+  await render();
+}
+
+// ---------- T7：时态引擎开关（迁移门禁 + 预算告知）与存量重建（逐章按序） ----------
+// 纪律：三个开关分离、旧作品默认关闭；未启用作品不触发额外模型调用、不改变旧上下文。
+// 存量重建复用「冻结修订 → 抽取请求 → 作者确认」状态机：
+//   生成抽取请求不调用模型；记录结果走本机管线（与导入重建同一模式）；确认一章才推进可信前缀。
+//   跳章确认由服务端 409 拒绝——界面如实转述，不自己放宽顺序；重复确认幂等。
+const BACKFILL_STATE_LABEL = {
+  valid: '已确认', pending_confirm: '待确认', analysis_running: '分析中', pending_analysis: '待分析',
+  missing_revision: '未冻结修订', stale: '已过期', needs_review: '待复核', conflict: '冲突', blocked: '阻塞',
+};
+
+async function loadTemporalEngine(force = false) {
+  if (state.temporalEngine && !force) return state.temporalEngine;
+  try {
+    const overview = await api(`/novel/state/temporal?work_id=${state.workId}`);
+    state.temporalEngine = overview && overview.ok === false ? null : overview;
+  } catch (e) {
+    // 接口不可用 ≠ 未开启：保留失败原因，界面如实显示（不冒充"没有此功能"）
+    state.temporalEngine = { ok: false, interface_error: e.message };
+  }
+  return state.temporalEngine;
+}
+
+async function loadBackfill(force = false) {
+  if (state.backfill && !force) return state.backfill;
+  try {
+    // ok:false 也要保留：它带 schema 阻塞原因（缺表/缺索引），界面按它禁用操作并显示原因
+    state.backfill = await api(`/novel/state/backfill?work_id=${state.workId}`);
+  } catch (e) {
+    state.backfill = { ok: false, interface_error: e.message };
+  }
+  return state.backfill;
+}
+
+function backfillPromptText(step) {
+  const p = (step && step.prompt) || {};
+  return [p.system, p.user].filter(Boolean).join('\n\n');
+}
+
+function temporalFlagRow(label, note, flag, enabled, canToggle) {
+  return `<div class="st-character-item">
+    <div class="row"><b>${label}</b>
+      <span class="chip">${enabled ? '已开启' : '未开启'}</span>
+      <span class="muted grow" style="font-size:12px">${note}</span>
+      <button class="btn small ${enabled ? 'secondary' : ''}" data-action="temporal-toggle" data-flag="${flag}" data-value="${enabled ? 'false' : 'true'}" ${canToggle ? '' : 'disabled'}>${enabled ? '关闭' : '开启'}</button>
+    </div>
+  </div>`;
+}
+
+function renderTemporalEngineCard() {
+  const e = state.temporalEngine;
+  if (e === null) {
+    return `<div class="card mb-12" id="temporal-engine-card"><div class="card-head"><span class="card-title">时态状态引擎（迁移与开关）</span></div>
+      <div class="muted">当前服务端不提供时态引擎接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  if (e.interface_error) {
+    return `<div class="card mb-12" id="temporal-engine-card"><div class="card-head"><span class="card-title">时态状态引擎（迁移与开关）</span></div>
+      <div class="redline-scan warn">读取失败：${esc(String(e.interface_error))}（不显示推测内容；可点刷新重试）</div></div>`;
+  }
+  const config = e.config || {};
+  const canEnable = e.schema_ok === true;
+  const trust = e.trust || null;
+  const budget = (state.backfill && state.backfill.ok) ? (state.backfill.budget || {}) : {};
+  const bootstrapPending = (state.backfill && state.backfill.ok && state.backfill.bootstrap) ? Number(state.backfill.bootstrap.pending || 0) : 0;
+  const migration = e.migration || null;
+  const scope = state.temporalEngineEnable;
+  const trustedText = trust
+    ? (Number(trust.trusted_through) >= 0 ? `截至第 ${Number(trust.trusted_through) + 1} 章` : '未建立')
+    : '';
+  return `
+    <div class="card mb-12" id="temporal-engine-card">
+      <div class="card-head">
+        <span class="card-title">时态状态引擎（迁移与开关）${helpDot('temporal_engine')}</span>
+        <button class="btn small secondary" data-action="temporal-refresh">刷新</button>
+      </div>
+      <div class="muted" style="font-size:12px">表与索引${canEnable ? '齐备' : '缺失：' + esc((e.missing_tables || []).join('、'))}${migration ? `｜迁移登记${migration.applied ? '已完成' : '未完成'}（版本 ${esc(String(migration.version || e.version || ''))}）` : ''}${trust ? `｜可信前缀：${esc(trustedText)}（已确认 ${esc(String((trust.totals || {}).valid ?? 0))} 章）` : ''}${e.head_commit_id ? `｜提交 ${esc(String(e.head_commit_id).slice(0, 12))}｜章序 ${esc(String(e.order_version_id || '').slice(0, 10))}｜清单 ${esc(String(e.manifest_size ?? 0))} 章` : ''}</div>
+      ${temporalFlagRow('时态故事状态引擎', '唯一权威状态来源：不可变修订 + 已确认事件 + 提交清单 + 章序版本', 'temporal_enabled', config.enabled === true, canEnable)}
+      ${temporalFlagRow('保存后自动分析', '开启后保存正文会生成待确认提案（用模型）；旧作品默认关闭', 'auto_analysis_enabled', config.auto_analysis === true, config.enabled === true)}
+      ${temporalFlagRow('逐章重建', '允许「重建受影响章节」按钮签发运行；候选不覆盖正文', 'repair_enabled', config.repair === true, config.enabled === true)}
+      ${!config.enabled ? `
+        <div class="redline-scan warn mt-8">旧作品默认不启用：未启用前不触发任何额外模型调用，上下文装配与旧端点契约逐字节不变。</div>
+        ${budget.chapters_total !== undefined ? `<div class="mt-8" style="font-size:12px">启用后的待重建范围：共 ${esc(String(budget.chapters_total))} 章｜需要抽取 ${esc(String(budget.chapters_needing_extraction ?? 0))} 章｜等待确认 ${esc(String(budget.chapters_awaiting_confirm ?? 0))} 章｜预计模型调用 ${esc(String(budget.model_calls_estimated ?? 0))} 次（每次抽取一章一次调用）｜扫描旧字段待确认 ${esc(String(bootstrapPending))} 条</div>` : ''}
+      ` : ''}
+      ${scope ? `<div class="muted mt-8" style="font-size:12px">启用范围（本次启用时告知）：待重建 ${esc(String((scope.pending_rebuild || {}).chapters ?? 0))} 章；即将处理：${(scope.upcoming || []).slice(0, 6).map((c) => `第 ${Number(c.index) + 1} 章`).join('、') || '无'}</div>` : ''}
+      ${!canEnable ? '<div class="redline-scan warn mt-8">缺少必要表/索引：迁移未完成前不允许开启（服务端同样拒绝，不吞错误继续跑）。</div>' : ''}
+    </div>`;
+}
+
+function backfillChapterRowHtml(c) {
+  const st = String(c.state || '');
+  const label = BACKFILL_STATE_LABEL[st] || st;
+  const step = (state.backfillStep && Number(state.backfillStep.chapter_id) === Number(c.chapter_id)) ? state.backfillStep : null;
+  const isNext = Number((state.backfill || {}).next_chapter_id) === Number(c.chapter_id);
+  return `<div class="st-character-item">
+    <div class="row">
+      <b>第 ${Number(c.index) + 1} 章${c.title ? `（${esc(String(c.title))}）` : ''}</b>
+      <span class="chip">${esc(label)}</span>
+      ${isNext ? '<span class="chip">下一章</span>' : ''}
+      <span class="muted" style="font-size:12px">依赖 ${esc(String(c.dependencies ?? 0))}｜章后快照 ${esc(String(c.snapshots_after ?? 0))}${c.revision_id ? `｜修订 ${esc(String(c.revision_id).slice(0, 10))}` : ''}${st === 'missing_revision' ? '｜正文未冻结' : ''}</span>
+      <div class="grow"></div>
+      ${st === 'pending_confirm'
+        ? `<button class="btn small" data-action="backfill-confirm" data-id="${c.chapter_id}">确认本章</button>`
+        : (st === 'valid' ? '' : `<button class="btn small secondary" data-action="backfill-step" data-id="${c.chapter_id}">冻结并生成抽取请求</button>`)}
+    </div>
+    ${step && step.prompt ? `<div class="row mt-8" style="gap:6px;flex-wrap:wrap">
+      <span class="muted" style="font-size:12px">已生成抽取请求（未调用模型）</span>
+      <button class="btn small secondary" data-action="copy-text" data-copy="${esc(backfillPromptText(step))}">复制抽取请求</button>
+      <button class="btn small" data-action="backfill-record" data-id="${c.chapter_id}">记录本机结果（可能产生费用）</button>
+    </div>` : ''}
+    ${step && step.status === 'pending_confirm' ? `<div class="muted" style="font-size:12px">候选已登记（未写正式状态）：事件 ${esc(String((step.proposal || {}).events ?? 0))} · 操作 ${esc(String((step.proposal || {}).ops ?? 0))}；确认后可信前缀才会前进。</div>` : ''}
+    ${step && step.ok === false && step.reason ? `<div class="muted" style="font-size:12px">${esc(String(step.reason))}</div>` : ''}
+  </div>`;
+}
+
+function backfillBootstrapHtml() {
+  const bf = state.backfill;
+  const b = (bf && bf.ok) ? (bf.bootstrap || null) : null;
+  const items = b && Array.isArray(b.items) ? b.items : [];
+  const pending = items.filter((x) => String(x.status) === 'pending');
+  const decided = items.filter((x) => String(x.status) !== 'pending');
+  const show = (v) => (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
+  return `<div class="mt-8">
+    <div class="row">
+      <b style="font-size:13px">开篇设定候选（旧字段扫描）</b>
+      <span class="muted" style="font-size:12px">共 ${items.length}｜待确认 ${pending.length}</span>
+      <div class="grow"></div>
+      <button class="btn small secondary" data-action="backfill-bootstrap-plan">扫描旧字段建立候选</button>
+    </div>
+    <div class="muted" style="font-size:12px">旧字段的「最新值」生效时点未知：不会自动回填。确认才会写入初始状态（或转为某章待确认提案）；拒绝不写任何状态。"第 10 章死亡"不会被当作开篇已死亡。</div>
+    ${pending.map((c) => `<div class="st-character-item">
+      <div class="row"><b>${esc(String(c.entity_id))}</b><span class="chip">${esc(String(c.domain))}</span>
+        <span class="muted" style="font-size:12px">${esc(String(c.predicate))} = ${esc(show(c.value))}${c.source ? `｜来源 ${esc(String(c.source.table))}.${esc(String(c.source.field))}` : ''}${c.detail ? `｜${esc(String(c.detail))}` : ''}</span>
+      </div>
+      ${c.note ? `<div class="muted" style="font-size:12px">${esc(String(c.note))}</div>` : ''}
+      <div class="row mt-8" style="gap:6px;flex-wrap:wrap">
+        <button class="btn small" data-action="backfill-bootstrap-decide" data-id="${esc(String(c.candidate_id))}" data-decision="confirm" data-effective="opening">作为开篇设定</button>
+        <button class="btn small secondary" data-action="backfill-bootstrap-decide" data-id="${esc(String(c.candidate_id))}" data-decision="reject">拒绝</button>
+        <select id="bf-boot-ch-${esc(String(c.candidate_id))}" title="指定生效章节（转为该章待确认提案）">${state.chapters.map((ch) => `<option value="${ch.id}">${esc(ch.title)}</option>`).join('')}</select>
+        <button class="btn small secondary" data-action="backfill-bootstrap-decide" data-id="${esc(String(c.candidate_id))}" data-decision="confirm" data-effective="chapter">转为该章提案</button>
+      </div>
+    </div>`).join('')}
+    ${decided.length ? `<div class="muted mt-8" style="font-size:12px">已决定 ${decided.length} 条（保留为审计记录）：${decided.slice(0, 8).map((c) => `${esc(String(c.entity_id))}（${esc(String(c.status))}）`).join('、')}${decided.length > 8 ? '…' : ''}</div>` : ''}
+  </div>`;
+}
+
+function renderBackfillCard() {
+  const bf = state.backfill;
+  if (bf === null) {
+    return `<div class="card mb-12" id="backfill-card"><div class="card-head"><span class="card-title">存量重建（逐章按叙事顺序）</span></div>
+      <div class="muted">当前服务端不提供存量重建接口（可能是重启前的旧进程）：重启 Novel Studio 后可用。</div></div>`;
+  }
+  if (bf.interface_error) {
+    return `<div class="card mb-12" id="backfill-card"><div class="card-head"><span class="card-title">存量重建（逐章按叙事顺序）</span></div>
+      <div class="redline-scan warn">读取失败：${esc(String(bf.interface_error))}（不显示推测内容；可点刷新重试）</div></div>`;
+  }
+  if (bf.ok === false) {
+    return `<div class="card mb-12" id="backfill-card"><div class="card-head"><span class="card-title">存量重建（逐章按叙事顺序）${helpDot('backfill')}</span></div>
+      <div class="redline-scan warn">迁移未完成：${esc(String(bf.reason || '缺少必要表或索引'))}（不吞错误继续跑；补齐迁移后本卡自动可用）</div></div>`;
+  }
+  const totals = bf.totals || {};
+  const budget = bf.budget || {};
+  const chapters = Array.isArray(bf.chapters) ? bf.chapters : [];
+  const queue = chapters.filter((c) => String(c.state) !== 'valid');
+  const show = queue.slice(0, 12);
+  const nextId = Number(bf.next_chapter_id) || 0;
+  const anchor = chapters.find((c) => Number(c.chapter_id) === nextId) || null;
+  const trustedText = Number(bf.trusted_through) >= 0 ? `截至第 ${Number(bf.trusted_through) + 1} 章` : '未建立';
+  const pendingConfirm = chapters.filter((c) => String(c.state) === 'pending_confirm');
+  return `
+    <div class="card mb-12" id="backfill-card">
+      <div class="card-head">
+        <span class="card-title">存量重建（逐章按叙事顺序）${helpDot('backfill')}</span>
+        <button class="btn small secondary" data-action="backfill-refresh">刷新进度</button>
+      </div>
+      <div class="muted" style="font-size:12px">逐章走：冻结不可变修订（不改写正文）→ 生成抽取请求（不调用模型）→ 记录/确认 → 章边界快照与事后依赖 → 可信前缀前进。跳章确认会被服务端拒绝；重复确认幂等。</div>
+      <div class="muted mt-8" style="font-size:12px">共 ${esc(String(totals.chapters ?? 0))} 章｜已确认 ${esc(String(totals.valid ?? 0))}｜待确认 ${esc(String(totals.pending_confirm ?? 0))}｜待分析 ${esc(String(totals.pending_analysis ?? 0))}｜分析中 ${esc(String(totals.analysis_running ?? 0))}｜未冻结修订 ${esc(String(totals.missing_revision ?? 0))}｜已过期 ${esc(String(totals.stale ?? 0))}｜待复核 ${esc(String(totals.needs_review ?? 0))}｜冲突 ${esc(String(totals.conflict ?? 0))}｜阻塞 ${esc(String(totals.blocked ?? 0))}</div>
+      <div class="muted mt-8" style="font-size:12px">可信前缀：${esc(trustedText)}｜下一章：${anchor ? `第 ${Number(anchor.index) + 1} 章` : '（没有待处理章节）'}｜预计模型调用 ${esc(String(budget.model_calls_estimated ?? 0))} 次（${esc(String(budget.model_calls_note || '每次抽取一章一次调用'))}）｜自动分析默认 ${esc(String(budget.auto_analysis_default || 'off'))}</div>
+      ${show.length ? `<div class="mt-8"><b style="font-size:13px">待处理章节（${queue.length}）</b>${show.map(backfillChapterRowHtml).join('')}</div>` : '<div class="muted mt-8">全部章节已确认：可信前缀覆盖全书。</div>'}
+      ${queue.length > show.length ? `<div class="muted" style="font-size:12px">…其余 ${queue.length - show.length} 章未展开（按叙事顺序处理即可）</div>` : ''}
+      ${pendingConfirm.length ? `<div class="muted mt-8" style="font-size:12px">待确认：${pendingConfirm.slice(0, 8).map((c) => `第 ${Number(c.index) + 1} 章`).join('、')}</div>` : ''}
+      ${backfillBootstrapHtml()}
+    </div>`;
+}
+
+/** 开关切换：只发一个 flag（PUT 支持部分更新）；首次启用时展示服务端返回的 enable_scope。 */
+async function temporalToggle(flag, value) {
+  try {
+    const out = await api('/novel/state/temporal', { method: 'PUT', body: { work_id: state.workId, [flag]: value } });
+    state.temporalEngine = out && out.ok === false ? null : out;
+    if (out && out.enable_scope) state.temporalEngineEnable = out.enable_scope;
+    state.backfill = null; // 开关一变，计划与预算必须重读（服务端现算）
+    if (flag === 'temporal_enabled' && value === true && out && out.enable_scope) {
+      const scope = out.enable_scope;
+      toast(`已启用：待重建 ${(scope.pending_rebuild || {}).chapters ?? 0} 章，预计 ${((scope.budget || {}).model_calls_estimated) ?? 0} 次模型调用（保存后自动分析仍未开启）`, 'success');
+    } else {
+      const name = flag === 'temporal_enabled' ? '时态故事状态引擎' : flag === 'auto_analysis_enabled' ? '保存后自动分析' : '逐章重建';
+      toast(`${name}已${value ? '开启' : '关闭'}`, 'success');
+    }
+    await render();
+  } catch (e) { toast(`切换失败：${e.message}`, 'error'); }
+}
+
+/** 单章一步：无 result = 只冻结并生成抽取请求（不调用模型）；record=true = 本机跑一次并记回候选。 */
+async function backfillStepRun(chapterId, { record = false } = {}) {
+  const ch = state.chapters.find((c) => Number(c.id) === Number(chapterId)) || null;
+  const label = ch ? ch.title : ('#' + chapterId);
+  try {
+    if (!record) {
+      const out = await api('/novel/state/backfill/step', { method: 'POST', body: { work_id: state.workId, chapter_id: chapterId, provider: 'author_ui' } });
+      state.backfillStep = { chapter_id: chapterId, ...out };
+      if (out && out.status === 'awaiting_extraction') toast(`已冻结「${label}」并生成抽取请求（未调用模型）：可复制给 dsh，或点「记录本机结果」`, 'success');
+      else toast(`「${label}」：${(out && (out.note || out.reason || out.status)) || '未产生结果'}`, out && out.ok === false ? 'warn' : 'success');
+      state.backfill = null;
+      await loadBackfill(true);
+      await render();
+      return;
+    }
+    const step = state.backfillStep;
+    if (!step || Number(step.chapter_id) !== Number(chapterId) || !step.prompt) { toast('先为本章生成抽取请求', 'error'); return; }
+    const promptText = backfillPromptText(step);
+    const runner = typeof state.backfillRunner === 'function'
+      ? state.backfillRunner
+      : (({ prompt: p, label: l }) => runPipelineStage(p, { stageLabel: l }));
+    const raw = await runner({ chapter_id: chapterId, label: `存量重建·${label}`, prompt: promptText });
+    let payload = String(raw || '').trim();
+    const fence = payload.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) payload = fence[1].trim();
+    const start = payload.indexOf('{'); const end = payload.lastIndexOf('}');
+    const result = JSON.parse(payload.slice(start, end + 1)); // 解析失败交给 record 的校验口径报错
+    const out = await api('/novel/state/backfill/step', {
+      method: 'POST',
+      body: { work_id: state.workId, chapter_id: chapterId, result, provider: 'author_ui_local', input_hash: (step.prompt && step.prompt.input_hash) || '' },
+    });
+    state.backfillStep = { chapter_id: chapterId, ...out };
+    toast(out && out.status === 'pending_confirm' ? `「${label}」候选已登记（未写正式状态）：请确认本章` : `「${label}」：${(out && (out.reason || out.note || out.status)) || '未产生候选'}`, out && out.status === 'pending_confirm' ? 'success' : 'warn');
+    state.backfill = null;
+    await loadBackfill(true);
+    await render();
+  } catch (e) { toast(`本章处理失败：${e.message}`, 'error'); }
+}
+
+/** 作者确认一章：可信前缀前进一章；上游不可信时服务端 409，界面如实报错。 */
+async function backfillConfirmRun(chapterId) {
+  const ch = state.chapters.find((c) => Number(c.id) === Number(chapterId)) || null;
+  const label = ch ? ch.title : ('#' + chapterId);
+  try {
+    const out = await api('/novel/state/backfill/confirm', { method: 'POST', body: { work_id: state.workId, chapter_id: chapterId } });
+    const through = Number(out && out.trusted_through);
+    toast(`「${label}」已确认：可信前缀前进${Number.isFinite(through) && through >= 0 ? `（截至第 ${through + 1} 章）` : ''}`, 'success');
+    state.backfill = null;
+    state.backfillStep = null;
+    await loadBackfill(true);
+    await render();
+  } catch (e) { toast(`确认失败：${e.message}`, 'error'); }
+}
+
+async function backfillBootstrapPlan() {
+  try {
+    const out = await api('/novel/state/backfill/bootstrap/plan', { method: 'POST', body: { work_id: state.workId } });
+    toast(`旧字段扫描：发现 ${(out && out.found) ?? 0} 条，新建待确认候选 ${(out && out.created) ?? 0} 条${out && Array.isArray(out.deferred) && out.deferred.length ? `；${out.deferred.length} 条待条件满足` : ''}`, 'success');
+    state.backfill = null;
+    await loadBackfill(true);
+    await render();
+  } catch (e) { toast(`扫描失败：${e.message}`, 'error'); }
+}
+
+async function backfillBootstrapDecide(candidateId, decision, effective = 'opening', chapterId = null) {
+  try {
+    const out = await api('/novel/state/backfill/bootstrap/decide', {
+      method: 'POST',
+      body: { work_id: state.workId, candidate_id: candidateId, decision, effective, chapter_id: chapterId },
+    });
+    const decisionLabel = (out && out.decision) || decision;
+    toast(decision === 'reject' ? '已拒绝该候选（不写任何状态）' : `已确认（${esc(String(decisionLabel))}）：以服务端返回为准`, 'success');
+    state.backfill = null;
+    await loadBackfill(true);
+    await render();
+  } catch (e) { toast(`决定失败：${e.message}`, 'error'); }
+}
+
 // ---------- R11：剧情分支沙盘（候选是提案；采纳/丢弃/取消/重开是作者动作） ----------
 // 服务端每次现算依赖基线与 stale；前端不做缓存、不替作者排序（比较只列差异）。
 async function loadBranch(force = false) {
@@ -4482,27 +5358,17 @@ async function rebuildCancel() {
 }
 async function renderST(content) {
   const currentChapter = state.chapters.find((c) => c.id === state.currentChapterId) || null;
-  await loadEditRules();
-  await loadAuthorStyle();
-  await loadStoryState();
-  await loadBranch();
-  await loadRebuild();
   content.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">🧩 创作上下文 ${helpDot('creation_context')}</h1>
-        <div class="page-sub">管理角色卡、世界观词条和作者注；长期记忆已移到“小说设定 → 长期记忆”</div>
+        <div class="page-sub">管理角色卡、世界观词条和作者注（本页只加载这三类素材；长期记忆在“小说设定 → 长期记忆”）</div>
       </div>
     </div>
     <div class="card mb-12">
       <div class="card-head"><span class="card-title">作品作者注 ${helpDot('work_note')}</span><button class="btn small secondary" data-action="ai-gen-work-note" title="AI 起草作品作者注">✨ AI 起草</button><button class="btn small" data-action="save-st-work-note">保存作品作者注</button></div>
       <textarea id="st-work-author-note" rows="3" placeholder="整部作品通用的 AI 提示，支持 {title} {work} {characters} {summary}">${esc(state.work?.author_note || '')}</textarea>
     </div>
-    ${renderEditRulesCard()}
-    ${renderAuthorStyleCard()}
-    ${renderStoryStateCard()}
-    ${renderBranchCard()}
-    ${renderRebuildCard()}
     <div class="card mb-12">
       <div class="card-head"><span class="card-title">章节作者注 ${helpDot('chapter_note')}</span></div>
       ${state.chapters.length ? `
@@ -4554,6 +5420,58 @@ async function renderST(content) {
         `).join('') : '<div class="muted">暂无世界观词条</div>'}
       </div>
     </div>`;
+}
+
+// ---------- T6：五组独立页面（各自独立 load / render / 空态 / 错误态） ----------
+// 独立路由：state.aiTab 即 route key（见 AI_TABS），随会话持久化（刷新后回到原页）；
+// 每页只调用自己的 loader——「创作上下文」不再连带加载这五页（旧行为：打开一次全量加载五份数据）。
+
+function aiSubPageHead(title, helpKey, note) {
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">${title}${helpKey ? ' ' + helpDot(helpKey) : ''}</h1>
+        <div class="page-sub">${esc(note)}</div>
+      </div>
+      <div class="page-actions">
+        <button class="btn secondary" data-action="go-view" data-view="st">← 创作上下文</button>
+      </div>
+    </div>`;
+}
+
+async function renderEditRulesPage(content) {
+  await loadEditRules();
+  content.innerHTML = aiSubPageHead('📐 编辑规则', 'edit_rules', '三档编辑 / 创作能力 / 题材；独立读取、保存与生效预览')
+    + renderEditRulesCard();
+}
+
+async function renderAuthorStylePage(content) {
+  await loadAuthorStyle();
+  content.innerHTML = aiSubPageHead('🖋️ 作者样文与文风档案', 'author_style', '样文 / 文风档案 / 作者意图与版本；样文变化只使风格派生数据失效')
+    + renderAuthorStyleCard();
+}
+
+async function renderStoryStatePage(content) {
+  await loadStoryState();
+  await Promise.all([loadImpactRuns(), loadRepairRuns(), loadTemporalEngine(), loadBackfill()]);
+  content.innerHTML = aiSubPageHead('🧭 故事状态与读者披露', 'disclosure', '时间轴 / 知识视图 / 审批 / 影响与逐章重建；可按章前 / 章后查询')
+    + renderStoryStateCard()
+    + renderTemporalEngineCard()
+    + `<div id="impact-section">${impactSectionHtml()}</div>`
+    + `<div id="repair-section">${repairSectionHtml()}</div>`
+    + renderBackfillCard();
+}
+
+async function renderBranchPage(content) {
+  await loadBranch();
+  content.innerHTML = aiSubPageHead('🌿 剧情分支沙盘', 'branch_sandbox', '规划候选比较与采用蓝图；沙盘候选与正典隔离')
+    + renderBranchCard();
+}
+
+async function renderRebuildPage(content) {
+  await loadRebuild();
+  content.innerHTML = aiSubPageHead('📥 导入后重建创作状态', 'import_rebuild', '导入分析、分批复核与恢复进度；与日常改稿重建共享底层抽取')
+    + renderRebuildCard();
 }
 
 // 小说设定 → 长期记忆 / 故事摘要
@@ -12180,6 +13098,94 @@ async function handleAction(action, actionEl, e) {
       case 'refresh-disclosure':
         await refreshDisclosure();
         break;
+
+      // T6：章末状态面板（三档视图 + 本章提案一次确认）
+      case 'panel-view':
+        await setChapterPanelView(actionEl.dataset.view);
+        break;
+
+      case 'panel-jump':
+        jumpToEvidence(actionEl.dataset.quote);
+        break;
+
+      case 'panel-confirm-proposals':
+        await confirmChapterProposals();
+        break;
+
+      // T6：影响分析（只分析、只标记）
+      case 'impact-analyze':
+        await impactAnalyze();
+        break;
+
+      // T6：逐章重建（按钮授权：start / 进度 / 取消 / 恢复 / 应用 / 撤销 / 候选预览）
+      case 'repair-start':
+        await repairStart();
+        break;
+
+      case 'repair-refresh':
+        await repairRefresh();
+        break;
+
+      case 'repair-cancel':
+        await repairAction('cancel');
+        break;
+
+      case 'repair-resume':
+        await repairAction('resume');
+        break;
+
+      case 'repair-apply':
+        await repairAction('apply');
+        break;
+
+      case 'repair-revert':
+        await repairAction('revert');
+        break;
+
+      case 'repair-preview':
+        await repairPreview(Number(actionEl.dataset.idx));
+        break;
+
+      // T7：时态引擎开关（迁移门禁 / 预算告知）与存量重建（逐章按钮流程）
+      case 'temporal-refresh':
+        state.temporalEngine = null; state.backfill = null;
+        await render();
+        break;
+
+      case 'temporal-toggle':
+        await temporalToggle(actionEl.dataset.flag, actionEl.dataset.value === 'true');
+        break;
+
+      case 'backfill-refresh':
+        state.backfill = null;
+        await render();
+        break;
+
+      case 'backfill-step':
+        await backfillStepRun(Number(actionEl.dataset.id));
+        break;
+
+      case 'backfill-record':
+        await backfillStepRun(Number(actionEl.dataset.id), { record: true });
+        break;
+
+      case 'backfill-confirm':
+        await backfillConfirmRun(Number(actionEl.dataset.id));
+        break;
+
+      case 'backfill-bootstrap-plan':
+        await backfillBootstrapPlan();
+        break;
+
+      case 'backfill-bootstrap-decide': {
+        let chapterId = null;
+        if (actionEl.dataset.decision === 'confirm' && actionEl.dataset.effective === 'chapter') {
+          const sel = document.getElementById(`bf-boot-ch-${actionEl.dataset.id}`);
+          chapterId = Number(sel && sel.value) || null;
+        }
+        await backfillBootstrapDecide(actionEl.dataset.id, actionEl.dataset.decision || 'confirm', actionEl.dataset.effective || 'opening', chapterId);
+        break;
+      }
 
       // R12：导入后分析重建（分批抽取；确认即逐批原子应用）
       case 'rebuild-plan':

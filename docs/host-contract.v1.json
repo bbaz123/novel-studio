@@ -1,7 +1,7 @@
 {
   "$comment": "Host Contract 的可机读契约面（由真实代码导出，不是手抄）。任何字段的变化都必须走主体变更流程：改代码 → 改本文件 → 改 docs/host-contract.md → 跑 .p1-baseline/test-host-contract.mjs。",
-  "host_contract": "1.12.0",
-  "frozen_at": "2026-09-29",
+  "host_contract": "1.19.0",
+  "frozen_at": "2026-09-30",
   "host": {
     "service": "novel-studio",
     "engine": "novel-core",
@@ -12,8 +12,8 @@
   },
   "context": {
     "endpoints": [
-      "GET /api/novel/context?work_id=&chapter_id=&mode=&direction=&library_recall_phase=&direction_source=&request_id=",
-      "GET /api/ai_context?chapter_id=&direction=&library_recall_phase=&direction_source=&request_id="
+      "GET /api/novel/context?work_id=&chapter_id=&mode=&direction=&library_recall_phase=&direction_source=&request_id=&boundary=&commit_id=&worldline_id=&perspective=&pov_character_id=",
+      "GET /api/ai_context?chapter_id=&direction=&library_recall_phase=&direction_source=&request_id=&boundary=&commit_id=&worldline_id=&perspective=&pov_character_id="
     ],
     "modes": [
       "full",
@@ -539,6 +539,7 @@
       "chapter_contracts",
       "chapter_reviews",
       "chapter_save_versions",
+      "chapter_state_snapshots",
       "chapters",
       "character_knowledge",
       "character_relations",
@@ -566,6 +567,12 @@
       "plotline_characters",
       "plotlines",
       "projection_outbox",
+      "story_binding_trust",
+      "story_chapter_bindings",
+      "story_chapter_dependencies",
+      "story_chapter_order_versions",
+      "story_chapter_revisions",
+      "story_commits",
       "story_entities",
       "story_entity_aliases",
       "story_event_proposals",
@@ -573,11 +580,15 @@
       "story_facts",
       "story_memories",
       "story_memory_proposals",
+      "story_repair_runs",
+      "story_repair_steps",
       "story_snapshots",
       "story_state_config",
+      "story_state_events",
       "story_state_proposals",
       "story_timeline_entries",
       "story_validations",
+      "story_worldlines",
       "style_profiles",
       "terms",
       "volumes",
@@ -671,6 +682,19 @@
       "novel_index_style",
       "novel_index_threads",
       "novel_index_world"
+    ],
+    "tables_added_in_v1_13": [
+      "story_chapter_order_versions",
+      "story_worldlines",
+      "story_commits",
+      "story_chapter_revisions",
+      "story_state_events",
+      "chapter_state_snapshots",
+      "story_chapter_bindings",
+      "story_binding_trust",
+      "story_chapter_dependencies",
+      "story_repair_runs",
+      "story_repair_steps"
     ]
   },
   "plugin_adapter": {
@@ -907,6 +931,46 @@
       "version": "1.11.0",
       "frozen_at": "2026-09-28",
       "note": "附加式：共享资料库（跨作品写作参考资料，独立门控层 library，默认关闭）。新增 1 张登记表 library_docs 与 7 条端点（GET /api/novel/library/status|search|doc；PUT /api/novel/library/enabled；POST /api/novel/library/import|import/confirm；DELETE /api/novel/library/doc/:id），新增模型工具 novel_library（检索 + 按 id 读回原文窗口）。资料不是本书事实：条目只证明「在共享资料根注册表内」、canon 记 reference 永不 canon，层标题与条目标注一律写明「参考资料」；普通召回层与资料层互不混层。导入链是新的本地读取面：只读显式传入的目录、白名单 .md/.txt、单文件上限、单批篇数上限、不跟随符号链接、严格 UTF-8、默认 dry-run；导入/删除/开关为作者动作（模型侧 403）。library_enabled=0 的作品 assembled/manifest 与接入前逐字节一致。"
+    },
+    {
+      "version": "1.12.0",
+      "frozen_at": "2026-09-29",
+      "note": "附加式：方向驱动检索与索引层化（A–E）。新增 13 张派生索引表（library_index + novel_index_*），新增可选 direction / direction_source / library_recall_phase / request_id 参数与 retrieval_stats / retrieval_plan 响应字段；作者侧索引端点写为作者动作、模型侧 403。索引默认关闭，关闭时装配路径与 1.11.0 逐字节一致。（本条目为 1.13.0 记账时补录。）"
+    },
+    {
+      "version": "1.13.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：时态故事状态底座（T1–T8 重构，作品级默认关闭）。新增 11 张表（章序版本 / 世界线 / 提交 / 不可变正文修订 / 类型化事件 / 章节边界快照 / 绑定 / 提交级信任覆盖 / 依赖索引 / 分析·修复运行与逐章断点）与 story_state_config 三个开关列 temporal_enabled / auto_analysis_enabled / repair_enabled（ALTER 迁移，默认 0）。唯一权威来源=修订+已认可事件+提交清单；旧字段降级为兼容投影。新增作者侧 /api/novel/state/at|panel|temporal|confirm 端点（不在插件白名单内）。"
+    },
+    {
+      "version": "1.14.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：T2 保存后自动提取与作者批量确认（保存接线）。新增作者侧端点 GET /api/novel/state/proposal-groups（本章统一提案组）、POST /api/novel/state/proposal-groups/:id/apply（作者一次确认，原子组）、POST /api/novel/state/analyze（作者显式触发分析）与 POST /api/novel/state/correct（手工状态改动统一命令化）；所有正文保存入口接入统一修订后处理。提案≠事实：自动分析只挂候选事件，正式状态仍须作者确认。插件工具/端点面不变。"
+    },
+    {
+      "version": "1.15.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：T3 全下游失效与隐性因果复核。根事实确认后把根章之后的全部章节保守送入复核（依赖图只解释不排除）；复核在新工作线状态下执行：正文仍成立→保留原 revision、新增验证来源绑定；不成立→conflict；不能判断→needs_review；跨不过冲突→后文 blocked（仍初筛）。新增作者侧 GET /api/novel/state/impact（运行/报告只读）与 POST /api/novel/state/impact（作者显式复核/刷新；模型侧 403）。本阶段不生成任何后文修订稿（writer 调用严格为 0），运行与逐章断点落 story_repair_runs/story_repair_steps。无新表；插件工具/端点面不变；未开启 temporal_enabled 的作品零写入。"
+    },
+    {
+      "version": "1.16.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：T4 按钮驱动逐章候选重建。作者对根章节签发一次性审批 repair_run_start（绑定根章 / 基线提交 / 范围哈希）后，运行在独立工作线按叙事顺序逐章串行：第 N 章先复核——原文仍成立则保留原 revision 并重建依赖与状态，不成立才生成最小修订候选（候选只入工作线，正式正文不变）；就绪后作者签发 repair_run_apply（绑定候选清单 manifest_hash）原子切换正式正文，旧稿保留 chapter_save_versions 并可 revert 产生恢复提交。含根锁（不得撤销已确认变更）、未来状态隔离（第 N 章只见 ≤N 的状态，防 future-state leakage）、断点恢复（预算不重置）、幂等（重复点击 / 重复应用回同一运行回执）、取消与旧 worker fencing。新增作者侧 GET /api/novel/state/repair（运行 / 步骤 / 服务端重算 ready_gate 只读）与 POST /api/novel/state/repair/{start,resume,cancel,apply,revert}（模型侧 403）；无新表；插件工具 / 端点面不变；未开启 temporal_enabled 的作品零写入。"
+    },
+    {
+      "version": "1.17.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：T5 时态上下文与工具查询全链路。GET /api/novel/context 与 GET /api/ai_context 新增可选参数 boundary（before|after）/ commit_id / worldline_id / perspective（author|character）/ pov_character_id——默认值（无参数）缓存键与响应逐字节同 1.16.0；启用作品按同一时态游标装配（章节检索/召回/事件/关系/剧情线/世界词条/知识披露/角色状态覆盖），响应新增 additive 字段 temporal_context（未启用作品恒 null）。GET /api/novel/events、GET /api/novel/foreshadows 支持可选 chapter_id 时态过滤；POST /api/novel/consistency 与 GET /api/search 在显式给出 chapter_id 时同样按游标过滤（未来章/未归属/本章未确认新稿分别以 future_chapter / unattributed / unconfirmed_index 拦下）；上述四者新增 additive 字段 temporal_filter，未给 chapter_id 时响应形状不变。时态状态版本（temporalVersionOf）进入上下文缓存外部版本串：状态推进（保存/更正/重建/开关）立即失效缓存，不返回陈旧装配。未开启 temporal_enabled 的作品零写入、零行为变化。"
+    },
+    {
+      "version": "1.18.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：T6 独立导航与章末状态面板。前端五组页面拆为独立视图 rules / style / story-state / branch / rebuild（各自独立加载、空态、错误态；刷新与会话恢复回到原页；旧键 st 仍是创作上下文的兼容别名，renderST 不再自动加载其余五组）。新增作者侧只读端点 GET /api/novel/state/revision?work_id=&revision_id=（候选修订预览；归属校验或找不到 404；纯读、不写状态）。章末状态面板位于正文编辑区之外（不进正文导出/复制/字数），读 GET /api/novel/state/panel（新增 worldline_id 与变更项 evidence 证据锚点）与 GET /api/novel/state/proposal-groups，展示章前/章后、世界线、提交、有效性、可信前缀、出场类型、截至本章角色与关系、剧情线与事件、变更前后与证据定位、待确认提案一次确认；影响分析与逐章重建界面对接 GET/POST /api/novel/state/impact 与 /api/novel/state/repair/*（运行态轮询真实进度、未就绪无应用按钮、应用需一次性审批）。无新表；插件工具/端点面不变；未开启 temporal_enabled 的作品零写入、零行为变化。"
+    },
+    {
+      "version": "1.19.0",
+      "frozen_at": "2026-09-30",
+      "note": "附加式：T7 存量重建、迁移门禁与 bootstrap。新增作者侧 GET /api/novel/state/backfill（只读进度：迁移状态、逐章状态机、预算、bootstrap 候选）与 POST /api/novel/state/backfill/step（冻结不可变修订 + 返回抽取请求或登记候选；本处理器不调用模型，模型结果由调用方按批提供）、POST /api/novel/state/backfill/confirm（作者逐章按序确认，可信前缀只在按序确认后前进；重复确认幂等）、POST /api/novel/state/backfill/bootstrap/plan（扫描旧字段最新值建立待确认候选；幂等、不自动回填）、POST /api/novel/state/backfill/bootstrap/decide（作为开篇设定 / 指定章生效 / 拒绝；拒绝不写任何状态）。上述写入口模型侧（X-Novel-Agent）一律 403；确认前不写任何正式状态。章节/作品归属校验失败一律 404。PUT /api/novel/state/temporal 启用改为迁移门禁：缺必要表或索引 → 503 且不改配置，不吞错误继续跑；启用成功即登记迁移版本（app_settings.temporal_migration 1.0.0），响应新增 migration（登记后状态）与首次启用时的 enable_scope（章数 / 预计模型调用 / 待重建范围 / bootstrap 待确认数；旧作品默认不启用自动模型分析）。未开启 temporal_enabled 的作品不触发额外模型调用、旧上下文与端点契约不变；无新表；插件工具/端点面不变。"
     }
   ]
 }

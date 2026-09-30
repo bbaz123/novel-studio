@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { db } from '../../db.js';
 import { sha16, stableStringify } from './hash.mjs';
 
-export const APPROVAL_OPS = ['chapter_save', 'state_proposal_apply', 'proposal_apply', 'state_rollback'];
+export const APPROVAL_OPS = ['chapter_save', 'state_proposal_apply', 'proposal_apply', 'state_rollback', 'temporal_apply', 'temporal_correction', 'repair_run_start', 'repair_run_apply'];
 export const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 const stmtCache = new Map();
@@ -131,6 +131,46 @@ export function checkBinding(op, want, got) {
   }
   if (op === 'state_rollback') {
     return Number(want.snapshot_id) === Number(got.snapshot_id) ? '' : `审批绑定的快照是 #${want.snapshot_id}，本次回滚的是 #${got.snapshot_id}`;
+  }
+  // 时态引擎（T2/T4）：一次性授权精确绑定到提案组 / 修正集 / 重建运行（服务器端计算绑定，模型不能自报）。
+  if (op === 'temporal_apply') {
+    if (want.binding_id && String(want.binding_id) !== String(got.binding_id || '')) {
+      return `审批绑定的提案组是 ${want.binding_id}，本次确认的是 ${got.binding_id || '（缺失）'}`;
+    }
+    if (want.revision_id && String(want.revision_id) !== String(got.revision_id || '')) {
+      return '提案引用的正文修订在审批之后发生了变化（revision 不一致）';
+    }
+    if (want.payload_hash && got.payload_hash && String(want.payload_hash) !== String(got.payload_hash)) {
+      return '提案载荷在审批之后发生了变化（payload hash 不一致），请作者重新确认';
+    }
+    return '';
+  }
+  if (op === 'temporal_correction') {
+    if (want.corrections_hash && got.corrections_hash && String(want.corrections_hash) !== String(got.corrections_hash)) {
+      return '修正内容在审批之后发生了变化（hash 不一致）';
+    }
+    return '';
+  }
+  if (op === 'repair_run_start') {
+    if (want.root_chapter_id && Number(want.root_chapter_id) !== Number(got.root_chapter_id)) {
+      return `审批的根章节是 #${want.root_chapter_id}，本次启动的是 #${got.root_chapter_id}`;
+    }
+    if (want.base_commit_id && String(want.base_commit_id) !== String(got.base_commit_id || '')) {
+      return '审批绑定的基线提交已变化（请重新发起重建授权）';
+    }
+    if (want.scope_hash && got.scope_hash && String(want.scope_hash) !== String(got.scope_hash)) {
+      return '重建目标范围已变化（scope 不一致）';
+    }
+    return '';
+  }
+  if (op === 'repair_run_apply') {
+    if (want.run_id && String(want.run_id) !== String(got.run_id || '')) {
+      return `审批绑定的是重建运行 ${want.run_id}，本次应用的是 ${got.run_id || '（缺失）'}`;
+    }
+    if (want.manifest_hash && got.manifest_hash && String(want.manifest_hash) !== String(got.manifest_hash)) {
+      return '候选清单在审批之后发生了变化（manifest hash 不一致）';
+    }
+    return '';
   }
   return '';
 }

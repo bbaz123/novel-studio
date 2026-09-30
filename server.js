@@ -45,6 +45,9 @@ import * as StoryState from './ai/story-state/index.mjs';
 // 作者审批记录（2026-09-27，R02.2）：把"作者同意"变成服务端可校验的执行边界。
 import * as Approvals from './ai/story-state/approval.mjs';
 import * as ImportRebuild from './ai/import/rebuild.mjs';
+// T3：全下游失效 + 隐性因果复核（只分析，不生成正文；见 ai/repair/analyzer.mjs）。
+import * as TemporalRepair from './ai/repair/analyzer.mjs';
+import * as TemporalRepairRunner from './ai/repair/runner.mjs';
 import * as RebuildStore from './ai/import/rebuild-store.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
 import { sha16, stableStringify } from './ai/story-state/hash.mjs';
@@ -447,19 +450,79 @@ const contextCache = createContextCache({
   externalVersionOf: (workId) => {
     try {
       const li = LibraryIndex.libraryIndexVersionInfo();
-      return contextExternalVersionStringOf({
+      const base = contextExternalVersionStringOf({
         ovIndexedAt: getAppSettingDb(`ov_indexed_at:${workId}`, ''),
         libraryIndexVersion: li.version,
         libraryIndexSchema: li.schema,
         novelIndexVersion: NovelIndexStore.novelIndexVersion(Number(workId) || 0),
         novelIndexSchema: NovelIndexStore.NOVEL_INDEX_SCHEMA_VERSION,
       });
+      // T5：时态状态版本（提交/绑定/事件/修订/信任/依赖/开关）也进外部版本串——
+      // 任一状态推进（正文保存、更正、重建、切换）都会立刻失效上下文缓存，不会读到陈旧状态。
+      let temporal = '';
+      try { temporal = StoryState.Temporal.temporalVersionOf(Number(workId) || 0); } catch (_) { temporal = ''; }
+      return temporal ? `${base}|${temporal}` : base;
     } catch { return ''; }
   },
 });
 
 const cacheGetContext = (key, workId) => contextCache.get(key, workId);
 const cacheSetContext = (key, ctx, workId) => contextCache.set(key, ctx, workId);
+
+// T5：上下文装配的可选时态参数（章前/章后 boundary、commit、worldline、视角 POV）。
+// 归一化后只接受显式合法值；全部默认时返回空串 → 缓存键与旧版逐字节相同（审计兼容）。
+function temporalContextParamsOf(query = {}) {
+  const boundaryRaw = asString(query.boundary, '');
+  const boundary = boundaryRaw === 'before' || boundaryRaw === 'after' ? boundaryRaw : '';
+  const commitId = Number(query.commit_id) > 0 ? Number(query.commit_id) : null;
+  const wlRaw = query.worldline_id === undefined || query.worldline_id === null ? '' : String(query.worldline_id).trim();
+  const worldlineId = wlRaw === '' ? null : (Number.isFinite(Number(wlRaw)) ? Number(wlRaw) : null);
+  const perspective = asString(query.perspective, '') === 'character' ? 'character' : 'author';
+  const povCharacterId = Number(query.pov_character_id) > 0 ? Number(query.pov_character_id) : null;
+  return { boundary, commitId, worldlineId, perspective, povCharacterId };
+}
+function isDefaultTemporalParams(p) {
+  return !p.boundary && !p.commitId && p.worldlineId === null && p.perspective === 'author' && !p.povCharacterId;
+}
+// 未启用时态引擎的作品永不附加后缀（缓存行为与基线一致）；默认参数同样不附加。
+function temporalCacheSuffixOf(workId, params) {
+  let enabled = false;
+  try { enabled = Number(workId) > 0 && StoryState.Temporal.isTemporalEnabled(Number(workId)); } catch (_) { enabled = false; }
+  if (!enabled || isDefaultTemporalParams(params)) return '';
+  return `:tmp:${params.boundary || '-'}:${params.commitId || '-'}:${params.worldlineId === null ? '-' : params.worldlineId}:${params.perspective}:${params.povCharacterId || '-'}`;
+}
+// T5（AC-32）：工具查询的可选时态过滤——仅当作品启用引擎且显式给出 chapter_id 才生效；
+// 未启用/未给 chapter_id 时返回 null，接口保持旧行为（响应不多字段、逐字节兼容）。
+// 默认 boundary=after（“截至该章”含本章）；可用 boundary=before 显式查询章前。
+function temporalToolCursorOf(workId, source = {}) {
+  const chapterId = Number(source.chapter_id) > 0 ? Number(source.chapter_id) : null;
+  if (!workId || !chapterId) return null;
+  let enabled = false;
+  try { enabled = StoryState.Temporal.isTemporalEnabled(Number(workId)); } catch (_) { return null; }
+  if (!enabled) return null;
+  const params = temporalContextParamsOf(source);
+  try {
+    const cursor = StoryState.Temporal.resolveContextCursor({
+      workId: Number(workId), chapterId,
+      mode: asString(source.mode, 'full'),
+      boundary: params.boundary || 'after',
+      commitId: params.commitId,
+      worldlineId: params.worldlineId,
+      perspective: params.perspective,
+      povCharacterId: params.povCharacterId,
+    });
+    if (!cursor || cursor.enabled === false || cursor.ok === false) return null;
+    return cursor;
+  } catch (_) { return null; }
+}
+function temporalToolFilterMetaOf(cursor, hidden) {
+  return {
+    enabled: true, engine: 'temporal',
+    chapter_id: cursor.chapter_id, boundary: cursor.boundary,
+    last_visible_index: cursor.lastVisibleIndex, hidden,
+    trusted: cursor.trusted, verified_through: cursor.verifiedThrough,
+  };
+}
 
 function touchWork(workId) {
   // D8-#7：进程内数据变更 → 整体作废缓存（外部状态那部分由 cache.mjs 自行比对）。
@@ -934,7 +997,32 @@ const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 // 三处（本常量 / fixture / 文档）由 .p1-baseline/test-host-contract.mjs 互锁，漂移会报红。
 // 1.0.0 → 1.1.0：附加式扩展（门控层 story_state + 10 张新表 + 17 条状态端点 + 8 个插件工具）。
 // 旧字段语义、预算常量、层顺序与默认生成路径**均未改变**——逐字节基线 50/50 复验过。
-const HOST_CONTRACT_VERSION = '1.12.0';
+// 1.13.0 → 1.14.0：附加式（T2 保存接线）——新增作者侧 /api/novel/state/proposal-groups（本章统一提案组）、
+// /proposal-groups/:id/apply（作者一次确认，原子）、/api/novel/state/analyze（作者显式分析）与 /state/correct（手工更正命令化）；
+// 插件工具/端点面不变；未开启 temporal_enabled 的作品零写入。
+// 1.14.0 → 1.15.0：附加式（T3 全下游复核）——新增作者侧 GET/POST /api/novel/state/impact
+// （影响报告 / 显式全下游复核；确认根事实后自动触发 analyze 运行，未开启自动分析的作品不触发）；
+// 只分析与标记、不生成正文；插件工具/端点面不变，无新表。
+// 1.15.0 → 1.16.0：附加式（T4 按钮驱动逐章重建）——新增作者侧 GET /api/novel/state/repair 与
+// POST /api/novel/state/repair/{start,resume,cancel,apply,revert}；启动/应用各消费一次性作者审批
+// （repair_run_start / repair_run_apply），候选只进工作线，apply 才原子切换正式正文并可 revert；
+// 插件工具/端点面不变，无新表。
+// 1.16.0 → 1.17.0：附加式（T5 时态上下文全链路）——GET /api/novel/context 与 GET /api/ai_context
+// 新增可选参数 boundary / commit_id / worldline_id / perspective / pov_character_id（默认值与原行为逐字节一致），
+// 响应新增 additive 字段 temporal_context；GET /api/novel/events、GET /api/novel/foreshadows、
+// POST /api/novel/consistency、GET /api/search 在显式给出 chapter_id 时按同一时态游标过滤并附 temporal_filter；
+// 时态状态版本进入上下文缓存外部版本串（状态推进即失效缓存）；未开启 temporal_enabled 的作品零变化。
+// 1.17.0 → 1.18.0：附加式（T6 独立导航与章末状态面板）——新增作者侧只读 GET /api/novel/state/revision
+// （候选修订预览：归属校验、找不到 404、不写任何状态）；前端五组页面拆为独立路由（rules/style/story-state/
+// branch/rebuild，旧键 st 保留兼容别名），章末状态面板位于正文编辑区之外（不进正文导出 / 字数统计），
+// 影响与逐章重建界面全部走真实 API + 一次性作者审批；插件工具/端点面不变，无新表。
+// 1.18.0 → 1.19.0：附加式（T7 存量重建与迁移门禁）——新增作者侧 GET /api/novel/state/backfill（只读进度：
+// 迁移状态 / 逐章状态机 / 预算 / bootstrap 候选）与 POST /api/novel/state/backfill/{step,confirm}、
+// POST /api/novel/state/backfill/bootstrap/{plan,decide}（step 冻结修订并返回抽取请求或登记候选，不调用模型；
+// confirm / bootstrap 是作者动作，模型侧 403；确认前不写任何正式状态）。PUT /api/novel/state/temporal 启用
+// 改为迁移门禁（缺表/缺索引 → 503，不吞错误继续跑），启用即登记迁移版本，响应新增 migration 与首次启用的
+// enable_scope（预算 + 待重建范围）；未开启作品不触发额外模型调用、旧上下文不变；插件工具/端点面不变，无新表。
+const HOST_CONTRACT_VERSION = '1.19.0';
 
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
@@ -1749,7 +1837,8 @@ function namesOfCharacter(c) {
 // 评分制选择出场角色：返回 { sceneCharacters（按得分降序，含兜底）, scores: Map }。
 // opts：{ plotlineId, corpus, extraTexts, recentSummaries }
 function selectSceneCharacters(workId, opts = {}) {
-  const all = prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
+  // T5：允许调用方传入「已按游标过滤」的角色行（启用时态引擎时默认只带已登记角色）。
+  const all = Array.isArray(opts.characters) ? opts.characters : prepare('SELECT * FROM characters WHERE work_id = ? ORDER BY name ASC').all(workId);
   const scores = new Map();
   const add = (id, pts) => scores.set(id, (scores.get(id) || 0) + pts);
   const hitsOf = (c, text) => namesOfCharacter(c).reduce((sum, nm) => sum + countNameHits(nm, text), 0);
@@ -2565,6 +2654,35 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     chapter = { ...chapter, content: full?.content || '' };
   }
 
+  // ── T5：统一时态游标（唯一权威状态来源；未启用作品 cursor=null，走原路径）────────
+  // 写新章只用章前；续写用已采纳前缀（stateAt 在 pending 处停止）；重写时本章旧稿只作
+  // 「待修订材料」。同一 cursor 同时约束：角色当前值/关系/剧情线/事件/伏笔/知识/披露/
+  // 作者计划/记忆/召回 —— 任一来源都不得夹带未来章节或未确认的内容。
+  const temporalEnabled = StoryState.Temporal.isTemporalEnabled(workId);
+  let cursor = null;
+  if (temporalEnabled) {
+    cursor = StoryState.Temporal.resolveContextCursor({
+      workId,
+      chapterId: chapter ? chapter.id : null,
+      mode,
+      boundary: contextOpts.boundary,
+      commitId: contextOpts.commitId,
+      worldlineId: contextOpts.worldlineId,
+      perspective: contextOpts.perspective,
+      povCharacterId: contextOpts.povCharacterId,
+      hasContent: !!(chapter && String(chapter.content || '').trim()),
+    });
+    if (cursor && cursor.ok === false) {
+      log({ level: 'warn', layer: 'ai', kind: 'temporal_cursor_blocked', message: `时态游标不可用（work ${workId}）：${cursor.reason || ''}`, context: { work_id: workId, chapter_id: chapter ? chapter.id : null } });
+    }
+    if (cursor && cursor.degraded) {
+      log({ level: 'error', layer: 'ai', kind: 'temporal_cursor_degraded', message: `时态游标降级（work ${workId}）：${cursor.reason || ''}`, context: { work_id: workId, chapter_id: chapter ? chapter.id : null } });
+    }
+  }
+  const cursorUsable = !!(cursor && cursor.enabled && cursor.ok !== false);
+  const cursorNote = cursorUsable ? StoryState.Temporal.cursorNoteOf(cursor) : '';
+  const withCursorNote = (note) => (cursorUsable ? `${note ? `${note}｜` : ''}${cursorNote}` : note);
+
   const corpus = [
     work.title, work.description,
     chapter?.title || '', chapter?.summary || '', plainTextHead(chapter?.content || '', 3000),
@@ -2575,16 +2693,34 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   // 兜底改为“最近出场优先”而非“按名字前 8”；角色卡逐卡构建、核心字段保底（见 buildCharacterCards）。
   let blueprint = null;
   try { blueprint = JSON.parse(chapter?.blueprint_json || '{}'); } catch (_) { blueprint = null; }
-  const allEvents = listStoryEvents(workId, 200);
+  const allEventsRaw = listStoryEvents(workId, 200);
+  // T5：事件账本按 cursor 过滤 —— 未来章 / 无章节归属的旧事件不进历史事实层。
+  const eventsFiltered = cursorUsable
+    ? StoryState.Temporal.filterRowsByCursor(allEventsRaw, cursor, { chapterIdOf: (e) => e.chapter_id, label: 'story_event' })
+    : { kept: allEventsRaw, dropped: [], hidden: 0 };
+  const allEvents = eventsFiltered.kept;
   const recentSummaries = [
     ...allChapters.slice(Math.max(0, chapterIndex - 3), chapterIndex).map((c) => c.summary || ''),
     chapter?.summary || ''
   ];
   const forcedIds = String(chapter?.context_character_ids || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  // 出场阵容（AC-37）：启用游标时默认只带「已登记 / 本章材料提及 / 作者强制」的角色；
+  // 未来才登记的名字与状态默认不注入。
+  const castPlanCorpus = [
+    chapter?.title || '', chapter?.summary || '', chapter?.author_note || '',
+    JSON.stringify(blueprint || {}), chapter?.content ? plainTextHead(chapter.content, 800) : ''
+  ].join(' ').toLowerCase();
+  const castSource = cursorUsable
+    ? StoryState.Temporal.sceneCastOf(cursor, allCharacters, {
+        forceIds: forcedIds,
+        isMentioned: (c) => namesOfCharacter(c).some((nm) => countNameHits(nm, castPlanCorpus) > 0),
+      })
+    : { kept: allCharacters, dropped: [], hidden: 0 };
   const { sceneCharacters } = selectSceneCharacters(workId, {
     plotlineId: chapter?.plotline_id || null,
     corpus,
     forceIds: forcedIds,
+    characters: castSource.kept,
     extraTexts: [
       chapter?.author_note || '', work.author_note || '',
       JSON.stringify(blueprint || {}),
@@ -2592,9 +2728,24 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     ],
     recentSummaries
   });
-  const charCardsText = buildCharacterCards(sceneCharacters, entityCapOfId('characters'));
+  // 角色当前值：启用游标时由时态状态覆盖（未登记 = 空，不回落旧字段的“最新值”）。
+  const charOverlay = cursorUsable ? StoryState.Temporal.characterOverlayOf(cursor) : null;
+  const sceneCharactersShown = charOverlay
+    ? sceneCharacters.map((c) => {
+        const st = charOverlay.get(String(c.name));
+        if (!st) return { ...c, status: '' };
+        const parts = [];
+        if (st.status) parts.push(st.status);
+        else if (st.alive === true) parts.push('存活');
+        else if (st.alive === false) parts.push('已故');
+        if (st.condition && st.condition !== st.status) parts.push(st.condition);
+        if (st.location && st.location !== st.status) parts.push(st.location);
+        return { ...c, status: parts.join(' / ') };
+      })
+    : sceneCharacters;
+  const charCardsText = buildCharacterCards(sceneCharactersShown, entityCapOfId('characters'));
 
-  // 人物关系（仅出场角色之间）
+  // 人物关系（仅出场角色之间）：启用游标时改用「截至本章」的时态关系（旧字段只是最新值投影）。
   const sceneIdList = sceneCharacters.map((c) => c.id);
   const relations = sceneIdList.length > 1
     ? prepare(`
@@ -2602,9 +2753,17 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
         from_character_id IN (${sceneIdList.map(() => '?').join(',')}) AND to_character_id IN (${sceneIdList.map(() => '?').join(',')})
       `).all(workId, ...sceneIdList, ...sceneIdList)
     : [];
-  const relationsText = relations.length
-    ? relations.map((r) => `${nameById.get(r.from_character_id) || '?'} —${r.relation || '关系'}→ ${nameById.get(r.to_character_id) || '?'}${r.description ? `（${r.description.slice(0, 160)}）` : ''}`).join('\n')
-    : '';
+  const temporalRelations = cursorUsable
+    ? StoryState.Temporal.relationsForNames(cursor, sceneIdList.map((id) => nameById.get(id))).rows
+    : null;
+  const relationsText = temporalRelations
+    ? temporalRelations.map((r) => `${r.from} —${r.relation || '关系'}→ ${r.to}${r.description ? `（${r.description.slice(0, 160)}）` : ''}`).join('\n')
+    : (relations.length
+        ? relations.map((r) => `${nameById.get(r.from_character_id) || '?'} —${r.relation || '关系'}→ ${nameById.get(r.to_character_id) || '?'}${r.description ? `（${r.description.slice(0, 160)}）` : ''}`).join('\n')
+        : '');
+  const relationsForResponse = temporalRelations
+    ? temporalRelations.map((r) => ({ from: r.from, to: r.to, relation: r.relation, description: r.description }))
+    : relations.map((r) => ({ from: nameById.get(r.from_character_id) || null, to: nameById.get(r.to_character_id) || null, relation: r.relation, description: r.description }));
 
   // 世界观词条：固定(pinned)优先 + 关键词命中，按 priority 降序限量截断（与 UI 预览共用 pickWorldEntries）。
   const worldEntries = pickWorldEntries(workId, corpus);
@@ -2615,10 +2774,22 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   const termEntries = pickTerms(workId, corpus);
   const termEntriesText = termEntries.map((t) => `【${t.title}】${String(t.content || '').slice(0, 300)}`).join('\n');
 
+  const worldNote = cursorUsable ? withCursorNote('设定资料（作品级，非历史事实）') : '';
+  const termsNote = cursorUsable ? withCursorNote('设定资料（作品级，非历史事实）') : '';
+
   // 大纲层：卷 + 剧情线 + 章节标题/摘要（长作品只给前 30 + 最近 40，中间省略计数）
   const outlineLines = [];
   for (const v of volumes) outlineLines.push(`【卷】${v.title}${v.summary ? `：${v.summary.slice(0, 200)}` : ''}`);
-  for (const p of plotlines) outlineLines.push(`【${p.kind === 'side' ? '支线' : '主线'}】${p.title}${p.summary ? `：${p.summary.slice(0, 200)}` : ''}`);
+  const temporalPlotlines = cursorUsable ? StoryState.Temporal.plotlineStatesOf(cursor) : null;
+  for (const p of plotlines) {
+    if (temporalPlotlines) {
+      // T5（剧情线）：启用游标时只采用截至本章的时态状态；旧 summary 是“最新值”，不得当历史。
+      const st = temporalPlotlines.get(String(p.title)) || temporalPlotlines.get(String(p.id)) || null;
+      outlineLines.push(`【${p.kind === 'side' ? '支线' : '主线'}】${p.title}${st ? `：${String(st.state || '状态未登记').slice(0, 60)}${st.summary ? `｜${st.summary.slice(0, 160)}` : ''}` : '：（截至本章时态状态未登记；旧摘要不采用）'}`);
+    } else {
+      outlineLines.push(`【${p.kind === 'side' ? '支线' : '主线'}】${p.title}${p.summary ? `：${p.summary.slice(0, 200)}` : ''}`);
+    }
+  }
   const total = allChapters.length;
   const skip = total > 70 ? total - 40 : -1;
   const shown = allChapters.filter((c, i) => skip < 0 || i < 30 || i >= skip || c.id === chapter?.id);
@@ -2626,6 +2797,7 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   // 说明句放在章节列表**之前**：层是按 cap 从头部截断的（见长期记忆层的同源教训），
   // 挂在末尾必然先被 2800 字预算切掉，模型永远看不见这条规则。
   if (chapterIndex >= 0) outlineLines.push('（大纲中标注【未来章·禁止写入】的条目仅用于避免矛盾，不得提前写入正文）');
+  if (cursorUsable) outlineLines.push(`（时态游标：截至第${cursor.index + 1}节${cursor.boundary === 'before' ? '章前' : '章后'}｜已发生章节为事实；带【未来章·禁止写入】的条目是后续计划，不得当作已发生事实）`);
   for (const c of shown) {
     const marker = c.id === chapter?.id ? '★' : '';
     const future = chapterIndex >= 0 && allChapters.indexOf(c) > chapterIndex;
@@ -2640,6 +2812,8 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   const memoryRow = getStoryMemoryRow(workId);
   const storyMemory = memoryRow?.summary || '';
   const memoryRowId = memoryRow ? memoryRow.id : null;
+  // T5：没有章节归属的全书摘要不进历史事实层（可在界面只读查看，或经存量重建后使用）。
+  const memoryPolicy = StoryState.Temporal.memoryLayerPolicyOf(cursor);
   const events = allEvents.slice(0, 30);
   const eventsText = events.length
     ? events.map((e, i) => `${events.length - i}. [${e.kind}] ${e.summary.slice(0, 200)}`).join('\n')
@@ -2675,6 +2849,10 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     storyTail = prevTailText || (chapter ? plainTextTail(chapter.content || '', 800) : '');
     if (prevTailText && prevChapter) storyTailSource = { id: prevChapter.id, which: '上一章尾部（兜底）' };
     else if (storyTail && chapter) storyTailSource = { id: chapter.id, which: '本章已写部分（兜底）' };
+  }
+  // T5：重写（full）时本章旧稿只作「待修订材料」，不冒充新世界线的既发生事实。
+  if (cursorUsable && mode === 'full' && storyTailSource && chapter && storyTailSource.id === chapter.id) {
+    storyTailSource = { id: chapter.id, which: '本章旧稿（待修订材料：不得作为新世界线事实）' };
   }
 
   const redlines = listRedlines(workId);
@@ -2730,6 +2908,13 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   // R04：宿主对召回结果**再校验**一次（不信任生产方已过滤——服务端过滤不是唯一防线）。
   // 跨书 / 未来章节 / 候选内容 / 布局不明的条目在这里同样进不来；被拦下的写 warning 日志。
   semanticRecall = revalidateRecallForHost(semanticRecall, workId, chapter || null);
+  // T5：召回遵守同一 cursor —— 未来章节、以及「本章有未确认新正文」时的旧索引内容不得回灌。
+  let recallCursorDropped = 0;
+  if (cursorUsable) {
+    const recallCursorFilter = StoryState.Temporal.filterRecallPayloadForCursor(semanticRecall, cursor);
+    semanticRecall = recallCursorFilter.payload;
+    recallCursorDropped = recallCursorFilter.dropped.length;
+  }
   // ── 门控层：共享资料库（library）─────────────────────────────────────────
   // 作品显式打开 library_enabled:<workId> 才构造（与 story_state/edit_rules 同口径：
   // 未开启的作品连调用都不会发生 → assembled/manifest 逐字节不变）。
@@ -2878,7 +3063,17 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   }
   let storyStateLayer = null;
   let storyStateMeta = null;
-  if (chapter) {
+  if (cursorUsable) {
+    // T5：启用作品上 story_state 层改由 temporal provider 提供（章前/章后同一 cursor）；
+    // 旧内核不再重复注入同一字段（权威来源唯一）。
+    const builtTemporalState = StoryState.Temporal.buildTemporalStoryStateLayer({ cursor });
+    if (builtTemporalState.text) {
+      storyStateLayer = L('story_state', builtTemporalState.text, {
+        note: withCursorNote(`时态状态引擎（角色 ${builtTemporalState.meta.counts.characters}｜关系 ${builtTemporalState.meta.counts.relations}｜剧情线 ${builtTemporalState.meta.counts.plotlines}｜伏笔 ${builtTemporalState.meta.counts.foreshadows}）`),
+      });
+    }
+    storyStateMeta = builtTemporalState.meta;
+  } else if (chapter) {
     try {
       const comp = StoryState.compositionOf(workId, chapter.id);
       if (comp) {
@@ -2933,33 +3128,40 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
 
   const layers = [
     L('work', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, { sourceIds: [work.id] }),
-    L('outline', outlineText, { sourceIds: shownChapterIds }),
-    L('memory', memoryBody, { sourceIds: memoryRowId ? [memoryRowId] : null, note: storyMemory ? `${storyMemory.length} 字` : '无记忆' }),
+    L('outline', outlineText, { sourceIds: shownChapterIds, note: cursorUsable ? cursorNote : '' }),
+    memoryPolicy.included
+      ? L('memory', memoryBody, { sourceIds: memoryRowId ? [memoryRowId] : null, note: storyMemory ? `${storyMemory.length} 字` : '无记忆' })
+      : null,
     recallLayer
       ? L('recall', recallLayer.text, {
           sourceIds: (semanticRecall.hits || []).map((h) => h.uri).filter(Boolean),
           scores: recallScores,
-          note: 'score 口径 = 相关度百分比（0-100）',
+          note: cursorUsable ? withCursorNote('score 口径 = 相关度百分比（0-100）') : 'score 口径 = 相关度百分比（0-100）',
         })
-      : (recallGapText ? L('recall', recallGapText, { note: `缺口占位：${recallGap}` }) : null),
+      : (recallGapText ? L('recall', recallGapText, { note: cursorUsable ? withCursorNote(`缺口占位：${recallGap}`) : `缺口占位：${recallGap}` }) : null),
     (libraryRecall && libraryRecall.status === 'ok' && libraryRecall.text)
       ? L('library', libraryRecall.text, {
           sourceIds: (libraryRecall.hits || []).map((h) => h.uri).filter(Boolean),
           scores: libraryScores,
-          note: '资料非本书事实；score 口径 = 相关度百分比（0-100）',
+          note: cursorUsable ? withCursorNote('资料非本书事实；score 口径 = 相关度百分比（0-100）') : '资料非本书事实；score 口径 = 相关度百分比（0-100）',
         })
       : null,
-    L('events', eventsText, { sourceIds: events.map((e) => e.id) }),
-    L('foreshadows', foreshadowText, { sourceIds: openForeshadows.map((e) => e.id) }),
+    L('events', eventsText, { sourceIds: events.map((e) => e.id), note: cursorUsable ? withCursorNote(`事件账本（${events.length} 条）`) : '' }),
+    L('foreshadows', foreshadowText, { sourceIds: openForeshadows.map((e) => e.id), note: cursorUsable ? withCursorNote(`未闭合伏笔（${openForeshadows.length} 条）`) : '' }),
     ...(isSettingsMode ? [] : [
-      L('scene', sceneBody, { sourceIds: chapter ? [chapter.id] : null }),
-      L('blueprint', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', { sourceIds: chapter && blueprintText ? [chapter.id] : null }),
+      L('scene', sceneBody, { sourceIds: chapter ? [chapter.id] : null, note: cursorUsable ? cursorNote : '' }),
+      L('blueprint', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', { sourceIds: chapter && blueprintText ? [chapter.id] : null, note: cursorUsable ? cursorNote : '' }),
       L('story_tail', storyTail, { sourceIds: storyTailSource ? [storyTailSource.id] : null, note: storyTailSource ? `${storyTailSource.which}（${storyTail.length} 字）` : '' }),
     ]),
-    L('characters', charCardsText, { sourceIds: sceneIdList }),
-    relationsText ? L('relations', relationsText, { sourceIds: relations.map((r) => r.id) }) : null,
-    L('world', worldEntriesText, { sourceIds: worldEntries.map((w) => w.id) }),
-    termEntriesText ? L('terms', termEntriesText, { sourceIds: termEntries.map((t) => t.id) }) : null,
+    L('characters', charCardsText, {
+      sourceIds: sceneIdList,
+      note: cursorUsable
+        ? withCursorNote(`已登记/本章材料提及/作者强制（未登记角色不注入：${castSource.hidden} 个）`)
+        : '',
+    }),
+    relationsText ? L('relations', relationsText, { sourceIds: temporalRelations ? null : relations.map((r) => r.id), note: cursorUsable ? withCursorNote(`截至本章的人物关系（${(temporalRelations || relations).length} 条）`) : '' }) : null,
+    L('world', worldEntriesText, { sourceIds: worldEntries.map((w) => w.id), note: worldNote }),
+    termEntriesText ? L('terms', termEntriesText, { sourceIds: termEntries.map((t) => t.id), note: termsNote }) : null,
     // 门控层：未开启的作品这里是 null，被 filter(Boolean) 直接滤掉——层数、顺序、预算都不变。
     storyStateLayer,
     // R07 门控层：编辑规则（默认关闭，见上方 editRulesLayer 的构建）
@@ -3118,11 +3320,11 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     needs_compression: needsCompression,
     events,
     open_foreshadows: openForeshadows.map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id, resolves_event_id: e.resolves_event_id })),
-    scene_characters: sceneCharacters.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status, aliases: c.aliases || '', forced: forcedIds.includes(c.id) })),
+    scene_characters: sceneCharactersShown.map((c) => ({ id: c.id, name: c.name, identity: c.identity, status: c.status, aliases: c.aliases || '', forced: forcedIds.includes(c.id) })),
     scene_character_ids: sceneIdList,
     world_entries: worldEntries.map((w) => ({ id: w.id, title: w.title, pinned: Number(w.is_pinned) === 1, priority: Number(w.priority ?? 50), keywords: w.keywords, content_preview: String(w.content || '').slice(0, 600) })),
     terms: termEntries.map((t) => ({ id: t.id, title: t.title, category_id: t.category_id, tags: t.tags, content_preview: String(t.content || '').slice(0, 300) })),
-    relations: relations.map((r) => ({ from: nameById.get(r.from_character_id) || null, to: nameById.get(r.to_character_id) || null, relation: r.relation, description: r.description })),
+    relations: relationsForResponse,
     redlines: redlines.map((r) => ({ kind: r.kind, pattern: r.pattern, note: r.note })),
     style_contract: styleContract,
     semantic_recall: semanticRecall ? {
@@ -3166,6 +3368,24 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     // 门控字段（additive）：作品未打开「确定性故事状态」开关时恒为 null，
     // 既有消费方读到的 JSON 与接入前一致（多一个 null 字段，语义无变化）。
     story_state: storyStateMeta,
+    // T5（additive）：本次装配的时态游标与来源过滤审计（未启用作品恒为 null）。
+    temporal_context: cursorUsable ? {
+      enabled: true, engine: 'temporal',
+      cursor: {
+        work_id: workId, chapter_id: chapter ? chapter.id : null, boundary: cursor.boundary,
+        commit_id: cursor.commitId, order_version_id: cursor.orderVersionId, worldline_id: cursor.worldlineId,
+        perspective: cursor.perspective, pov_character_id: cursor.povCharacterId,
+        index: cursor.index, last_visible_index: cursor.lastVisibleIndex, pending_on_boundary: cursor.pendingOnBoundary,
+      },
+      scope: { trusted: cursor.trusted, verified_through: cursor.verifiedThrough, validity: cursor.validity, stop: cursor.stop, state_content_hash: cursor.stateContentHash },
+      filtered: {
+        events_hidden: eventsFiltered.hidden,
+        cast_hidden: castSource.hidden,
+        relations_from_temporal: temporalRelations ? temporalRelations.length : 0,
+        recall_future_hidden: recallCursorDropped,
+      },
+      memory_layer: { included: memoryPolicy.included, reason: memoryPolicy.reason, chars: storyMemory.length },
+    } : (temporalEnabled ? { enabled: true, ok: false, reason: cursor ? cursor.reason || '' : '游标不可用' } : null),
     // R07：编辑规则层元信息（关闭时为 null，与 story_state 同口径）。R05 贡献记录里另有 layer:edit_rules 条目。
     edit_rules: editRulesMeta,
     // R09：作者意图层元信息（没有数据时为 null，与 story_state/edit_rules 同口径）。
@@ -3419,13 +3639,16 @@ function importWorkFromChapters(title, chapters, description = '') {
   try {
     const workId = insertRow('works', { title: title.trim() || '导入的作品', description });
     chapters.forEach((ch, i) => {
-      insertRow('chapters', {
+      const html = textToHtml(ch.content);
+      const chapterId = insertRow('chapters', {
         work_id: workId,
         title: String(ch.title || `第 ${i + 1} 章`).slice(0, 80),
         summary: '',
-        content: textToHtml(ch.content),
+        content: html,
         position: i
       });
+      // T2（W6）：导入的每一章都记录不可变修订（origin=import），供状态引擎按章重建。
+      afterTemporalContentSave(workId, chapterId, html, 'import');
     });
     db.exec('COMMIT');
     return workId;
@@ -3564,6 +3787,7 @@ function installDemo(force) {
       insertRow('plotline_characters', { work_id: workId, plotline_id: pId, character_id: cId, status: asString(pc.status), notes: asString(pc.notes) });
     });
     (data.chapters || []).forEach((ch, i) => {
+      const html = textToHtml(ch.content);
       const id = insertRow('chapters', {
         work_id: workId,
         volume_id: idMap.volume.get(ch.volume) ?? null,
@@ -3571,9 +3795,11 @@ function installDemo(force) {
         parent_id: null,
         title: asString(ch.title, `第${i + 1}节`),
         summary: asString(ch.summary),
-        content: textToHtml(ch.content),
+        content: html,
         position: i
       });
+      // T2（W7）：示例作品与导入同口径（origin=demo）。
+      afterTemporalContentSave(workId, id, html, 'demo');
       idMap.chapter.set(ch.title, id);
     });
     // 长期记忆与事件账本一并纳入同一事务（tx:true），任一步失败整体回滚，
@@ -3691,7 +3917,14 @@ async function generateNovelFromPrompt(prompt, config) {
     data = extractJSON(ai?.choices?.[0]?.message?.content || '');
   }
 
-  return createNovelFromData(data);
+  return createNovelFromData(data, {
+    kind: 'recorded', source: 'novel_generate_prompt', provider: 'api_config',
+    model: String((config && config.model) || ''),
+    context_version: 'novel-generate-v1', context_hash: sha16(prompt.trim()),
+    read_set: ['author_prompt'], retrieved: [],
+    contract: { system_prompt: 'NOVEL_GENERATION_SYSTEM_PROMPT' },
+    at: new Date().toISOString(),
+  });
 }
 
 // 把 AI 产出的简介整理成适合卡片展示的短摘要（D4：避免整篇 Markdown 存入 description）。
@@ -3709,7 +3942,7 @@ function shortDescription(text = '') {
 }
 
 // 把 AI 返回的小说设定 JSON 写入数据库。
-function createNovelFromData(data) {
+function createNovelFromData(data, generation = null) {
   const title = asString(data.title, '未命名作品');
   const description = shortDescription(asString(data.description, ''));
 
@@ -3792,16 +4025,20 @@ function createNovelFromData(data) {
       const titleText = asString(ch.title, `第${i + 1}章`);
       const volRef = resolveRef(ch.volume, volumeNames, volumeIdByName);
       const plRef = resolveRef(ch.plotline, plotlineNames, plotlineIdByName);
-      insertRow('chapters', {
+      const contentText = asString(ch.content);
+      const chapterId = insertRow('chapters', {
         work_id: workId,
         volume_id: volRef,
         plotline_id: plRef,
         parent_id: null,
         title: titleText,
         summary: asString(ch.summary),
-        content: asString(ch.content),
+        content: contentText,
         position: i
       });
+      // T2（W8）：AI 生成整本的章节落库同样记录修订（origin=ai_generate）。
+      // T3：同时记录不可变 generation provenance（当初给模型的提示词哈希/通道/契约）。
+      afterTemporalContentSave(workId, chapterId, contentText, 'ai_generate', generation);
     });
 
     // 人物关系
@@ -3858,7 +4095,14 @@ async function generateNovelFromHarness(prompt, model, onChunk, signal, reasonin
     { timeout: LONG_AI_TIMEOUT_MS, model: model || undefined, reasoningEffort: reasoningEffort || undefined, signal },
     typeof onChunk === 'function' ? onChunk : undefined);
   const data = extractJSON(output);
-  return createNovelFromData(data);
+  return createNovelFromData(data, {
+    kind: 'recorded', source: 'harness_novel_generate', provider: 'dsh_harness',
+    model: String(model || ''),
+    context_version: 'novel-generate-v1', context_hash: sha16(task),
+    read_set: ['author_prompt', 'harness_task'], retrieved: [],
+    contract: { system_prompt: 'NOVEL_GENERATION_SYSTEM_PROMPT' },
+    at: new Date().toISOString(),
+  });
 }
 
 // ---------- Harness 任务队列（D1：AI 任务进度） ----------
@@ -4186,6 +4430,175 @@ function memoryAutoCompressEnabled() {
   try { return getAppSettingDb(MEMORY_AUTO_COMPRESS_KEY, '0') === '1'; } catch { return false; }
 }
 
+// ── T2：时态故事状态 · 保存后处理与自动分析调度 ─────────────────────────────
+// 所有正文写入口在**写入的同一个事务里**调用 afterTemporalContentSave：
+//   · 内容真的变化 → 不可变 revision + pending 保存提案（旧提案被取代）；
+//   · 未开启 temporal_enabled 的作品立即返回 enabled:false，零写入；
+//   · 模型调用不在保存请求里发生：这里只把分析排进后台（防抖 + 同章去重），保存不等待模型。
+const TEMPORAL_ANALYSIS_DEBOUNCE_MS = 800;
+const temporalAnalysisQueue = new Map();
+
+/** 后台分析用的默认 API 配置：第一条带 api_key 的 api_configs（没有 → null，如实记 not_run）。 */
+function temporalAnalysisConfig() {
+  try {
+    return prepare("SELECT * FROM api_configs WHERE api_key IS NOT NULL AND api_key <> '' ORDER BY id ASC LIMIT 1").get() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** 组装注入给 analyzeChapter 的模型适配器（真实生产通道 = 既有 callAI；测试可注入本地 stub）。 */
+function temporalAnalysisGenerate() {
+  const config = temporalAnalysisConfig();
+  if (!config) return null;
+  const generate = async ({ system, user, model }) => {
+    const data = await callAI(
+      { ...config, model: model || config.model },
+      [{ role: 'system', content: system }, { role: 'user', content: user }],
+      { temperature: 0.2, max_tokens: 4096 }
+    );
+    return data?.choices?.[0]?.message?.content ?? '';
+  };
+  generate.provider = 'api_config';
+  generate.model = String(config.model || '');
+  return generate;
+}
+
+/** 保存后处理（所有正文写入口统一调用；异常向上抛，与正文写入同事务回滚）。 */
+function afterTemporalContentSave(workId, chapterId, contentHtml, originKind, generation = null) {
+  const w = Number(workId) || 0;
+  const c = Number(chapterId) || 0;
+  if (!w || !c) return null;
+  const result = StoryState.Temporal.recordContentSave({
+    workId: w, chapterId: c, contentHtml,
+    // generation：当初实际给模型的生成来源（有则记录，没有就是 unknown——不伪造）。
+    origin: { kind: String(originKind || 'save'), ...(generation ? { extra: { generation } } : {}) },
+  });
+  if (result && result.enabled && result.recorded) scheduleTemporalAnalysis(w, c);
+  return result;
+}
+
+/** 保存后自动分析：防抖 + 同章去重；不阻塞保存请求。 */
+function scheduleTemporalAnalysis(workId, chapterId, { delayMs = TEMPORAL_ANALYSIS_DEBOUNCE_MS } = {}) {
+  const w = Number(workId) || 0;
+  const c = Number(chapterId) || 0;
+  if (!w || !c) return null;
+  const key = `${w}:${c}`;
+  if (temporalAnalysisQueue.has(key)) return temporalAnalysisQueue.get(key);
+  const timer = setTimeout(() => {
+    temporalAnalysisQueue.delete(key);
+    runTemporalAnalysis(w, c).then((result) => {
+      // 分析期间又保存了新稿 → 新提案还停在 pending：再排一次（内容已变，必须分析新修订）。
+      try {
+        const target = StoryState.Temporal.analysisTarget({ workId: w, chapterId: c });
+        if (target && target.enabled && target.status === 'pending' && !(result && result.status === 'done')) {
+          scheduleTemporalAnalysis(w, c, { delayMs: 1500 });
+        }
+      } catch { /* 调度重试失败不影响已落库结果 */ }
+    }).catch((e) => {
+      log({ level: 'warn', layer: 'ai', kind: 'temporal_analysis_failed', message: `保存后自动分析失败：${(e && e.message) || e}`, context: { work_id: w, chapter_id: c } });
+    });
+  }, Math.max(0, Number(delayMs) || 0));
+  if (typeof timer.unref === 'function') timer.unref();
+  temporalAnalysisQueue.set(key, timer);
+  return timer;
+}
+
+/** 立即执行一次本章分析（后台调度与 POST /api/novel/state/analyze 共用）。 */
+async function runTemporalAnalysis(workId, chapterId, { force = false } = {}) {
+  const generate = temporalAnalysisGenerate();
+  const result = await StoryState.Temporal.analyzeChapter({
+    workId, chapterId,
+    generate,
+    provider: generate ? 'api_config' : 'none',
+    model: generate ? String(generate.model || '') : '',
+    force,
+  });
+  notifyChange('story_state', { workId: Number(workId), id: Number(chapterId) });
+  return result;
+}
+
+// ── T3：全下游失效复核（只分析与标记；不得生成后文修订稿）────────────────────
+const TEMPORAL_IMPACT_DEBOUNCE_MS = 1200;
+const temporalImpactQueue = new Map();
+
+/** 立即执行一次全下游复核（确认后自动触发与作者显式入口共用）。 */
+async function runTemporalImpact(workId, chapterId, { refresh = false } = {}) {
+  const generate = temporalAnalysisGenerate();
+  const result = await TemporalRepair.runImpactAnalysis({
+    workId, rootChapterId: chapterId, generate,
+    provider: generate ? 'api_config' : 'none',
+    model: generate ? String(generate.model || '') : '',
+    refresh,
+  });
+  if (result && result.ok && !result.reused) notifyChange('story_state', { workId: Number(workId), id: Number(chapterId) });
+  return result;
+}
+
+/** 确认根事实后的下游复核：防抖 + 同章去重；未开启自动分析的作品不自动消耗模型。 */
+function scheduleTemporalImpact(workId, chapterId, { delayMs = TEMPORAL_IMPACT_DEBOUNCE_MS } = {}) {
+  const w = Number(workId) || 0;
+  const c = Number(chapterId) || 0;
+  if (!w || !c) return null;
+  try {
+    if (!StoryState.Temporal.isTemporalEnabled(w)) return null;
+    // 与「保存后自动提取」共用同一开关：关闭自动模型分析的作品不因确认而自动发起复核。
+    if (!StoryState.Temporal.getTemporalConfig(w).auto_analysis) return null;
+  } catch { return null; }
+  const key = `${w}:${c}`;
+  if (temporalImpactQueue.has(key)) return temporalImpactQueue.get(key);
+  const timer = setTimeout(() => {
+    temporalImpactQueue.delete(key);
+    runTemporalImpact(w, c).catch((e) => {
+      log({ level: 'warn', layer: 'ai', kind: 'temporal_impact_failed', message: `确认后的下游复核失败：${(e && e.message) || e}`, context: { work_id: w, chapter_id: c } });
+    });
+  }, Math.max(0, Number(delayMs) || 0));
+  if (typeof timer.unref === 'function') timer.unref();
+  temporalImpactQueue.set(key, timer);
+  return timer;
+}
+
+/**
+ * AC-44 旧入口互锁：时态引擎已开启的作品，角色状态 / 人物关系 / 剧情线状态的直接修改
+ * 必须携带 chapter_id（生效位置），统一转换为 author_correction 命令；否则拒绝。
+ * 未开启作品（默认）直接放行——旧语义完全不变。
+ */
+function temporalLegacyStateWrite(resource, old, body) {
+  const workId = Number(old && old.work_id) || 0;
+  if (!workId || !StoryState.Temporal.isTemporalEnabled(workId)) return null;
+  const changed = (field) => body[field] !== undefined && String(body[field] ?? '') !== String(old[field] ?? '');
+  let corrections = [];
+  if (resource === 'characters') {
+    if (!changed('status')) return null;
+    corrections = [{ kind: 'character', entity_id: String(old.name || ''), predicate: 'status', value: body.status }];
+  } else if (resource === 'relations') {
+    if (!changed('relation') && !changed('description')) return null;
+    const rows = prepare('SELECT id, name FROM characters WHERE id IN (?, ?)').all(old.from_character_id, old.to_character_id);
+    const nameOf = (cid) => String((rows.find((r) => Number(r.id) === Number(cid)) || {}).name || '');
+    const from = nameOf(old.from_character_id);
+    const to = nameOf(old.to_character_id);
+    if (!from || !to) return { blocked: true, message: '关系状态更正失败：找不到关系两端的角色名' };
+    corrections = [{
+      kind: 'relation', from, to,
+      label: body.relation !== undefined ? String(body.relation) : String(old.relation || ''),
+      ...(body.description !== undefined ? { description: String(body.description) } : {}),
+    }];
+  } else if (resource === 'plotlines') {
+    if (!changed('summary')) return null;
+    corrections = [{ kind: 'plotline', entity_id: String(old.title || ''), predicate: 'summary', value: body.summary }];
+  } else {
+    return null;
+  }
+  const chapterId = Number(body.chapter_id) || 0;
+  if (!chapterId) {
+    return { blocked: true, message: '该作品已开启时态故事状态：状态类字段不能直接改旧字段；请携带 chapter_id 指明生效位置（统一更正命令）' };
+  }
+  const result = StoryState.Temporal.correctAuthorState({ workId, chapterId, corrections, note: '旧入口统一命令化（AC-44）' });
+  if (!result || result.ok !== true) {
+    return { blocked: true, message: `状态更正未生效：${(result && (result.reason || result.decision)) || '未知原因'}` };
+  }
+  return { applied: true, binding_id: result.binding_id };
+}
 function maybeAutoCompressMemory(workId) {
   if (!memoryAutoCompressEnabled()) return null;
   const wid = Number(workId);
@@ -4337,7 +4750,76 @@ async function handleAPI(req, res, pathname, query) {
     const base = timed('server', '关键词检索（search）', () => search(query.q || '', workId), SLOW_REQUEST_MS);
     // 关键词检索 + OpenViking 语义检索合并返回（novel_lookup 与全局搜索共用）。
     const semantic = await timedAsync('sync', 'OpenViking 语义检索（semanticSearchMerge）', () => semanticSearchMerge(query.q || '', workId), 1000);
-    return sendJSON(res, 200, { ...base, semantic });
+    // T5（AC-32）：可选 chapter_id —— 启用作品上把检索结果同样收进「截至该章」的时态边界：
+    // 章节桶按章序过滤；角色/剧情线/关系桶改用「截至本章」的时态登记与状态；语义命中按 URI 里的章节号过滤。
+    const cursor = workId ? temporalToolCursorOf(workId, query) : null;
+    if (!cursor) return sendJSON(res, 200, { ...base, semantic });
+    let chaptersHidden = 0;
+    const chaptersKept = [];
+    for (const c of base.chapters || []) {
+      const idx = cursor.orderIndexById.get(String(c.id));
+      if (idx === undefined || cursor.lastVisibleIndex < 0 || idx > cursor.lastVisibleIndex) chaptersHidden += 1;
+      else chaptersKept.push(c);
+    }
+    const knownNames = StoryState.Temporal.knownCharacterNamesOf(cursor);
+    const overlay = StoryState.Temporal.characterOverlayOf(cursor);
+    let charsHidden = 0;
+    const charsKept = [];
+    for (const c of base.characters || []) {
+      if (!knownNames.has(String(c.name))) { charsHidden += 1; continue; }
+      const st = overlay.get(String(c.name));
+      const parts = st ? [
+        st.status || (st.alive === true ? '存活' : st.alive === false ? '已故' : ''),
+        st.condition, st.location,
+      ].filter(Boolean) : [];
+      charsKept.push({ ...c, status: parts.join(' / '), status_source: 'temporal' });
+    }
+    const plotStates = StoryState.Temporal.plotlineStatesOf(cursor);
+    let plotlinesHidden = 0;
+    const plotlinesKept = [];
+    for (const p of base.plotlines || []) {
+      const st = plotStates.get(String(p.id));
+      if (!st) { plotlinesHidden += 1; continue; }
+      plotlinesKept.push({ ...p, summary: '', state: String(st.state || ''), summary_source: 'temporal' });
+    }
+    const relTemporal = StoryState.Temporal.relationsForNames(cursor, [...knownNames]);
+    const relByKey = new Map(relTemporal.rows.map((r) => [`${r.from}|${r.to}`, r]));
+    let relationsHidden = 0;
+    const relationsKept = [];
+    for (const r of base.relations || []) {
+      const key = `${r.from_name}|${r.to_name}`;
+      const t = relByKey.get(key);
+      if (!t) { relationsHidden += 1; continue; }
+      relationsKept.push({ ...r, relation: t.relation || r.relation, description: t.description, description_source: 'temporal' });
+    }
+    // 语义命中：URI 形如 <workDir>/chapters/<id>.md —— 按章序过滤未来章与未确认索引残留。
+    let semanticHidden = 0;
+    let semanticOut = semantic;
+    if (semantic && Array.isArray(semantic.hits) && semantic.hits.length) {
+      const kept = [];
+      for (const hit of semantic.hits) {
+        const m = String(hit.uri || '').match(/\/chapters\/(\d+)\.md$/);
+        if (!m) { kept.push(hit); continue; }
+        const idx = cursor.orderIndexById.get(String(m[1]));
+        const future = idx === undefined || cursor.lastVisibleIndex < 0 || idx > cursor.lastVisibleIndex;
+        const stale = cursor.pendingOnBoundary && String(m[1]) === String(cursor.chapter_id);
+        if (future || stale) { semanticHidden += 1; continue; }
+        kept.push(hit);
+      }
+      if (semanticHidden) semanticOut = { ...semantic, hits: kept, temporal_filtered: { kind: 'search', dropped: semanticHidden } };
+    }
+    return sendJSON(res, 200, {
+      ...base,
+      chapters: chaptersKept, characters: charsKept, plotlines: plotlinesKept, relations: relationsKept,
+      semantic: semanticOut,
+      temporal_filter: {
+        ...temporalToolFilterMetaOf(cursor, chaptersHidden + charsHidden + plotlinesHidden + relationsHidden),
+        chapters_hidden: chaptersHidden, characters_hidden: charsHidden,
+        plotlines_hidden: plotlinesHidden, relations_hidden: relationsHidden,
+        semantic_hidden: semanticHidden,
+        note: 'terms/world_entries 为作品级设定（无章节归属），未按章过滤',
+      },
+    });
   }
 
   if (resource === 'stats' && method === 'GET') {
@@ -4505,10 +4987,20 @@ async function handleAPI(req, res, pathname, query) {
     // 预算内的分层装配：与 /api/novel/context 共用同一份缓存与实现（契约 I5/I6）。
     // 缓存键含 phase + direction 哈希（无方向且 default 时与旧键逐字节相同）——
     // 两条端点因此共享同一份缓存，不会各召回一次（C3 约束）。
-    const cacheKey = contextCacheKeyOf({ workId, chapterId, mode: 'full', phase: libraryRecallPhase, directionHash: directionHashOf(direction) });
+    // T5：与 /api/novel/context 完全相同的时态参数与缓存后缀规则（两条端点共享缓存，不串线/不串视角）。
+    const temporalParams = temporalContextParamsOf(query);
+    const cacheKey = contextCacheKeyOf({ workId, chapterId, mode: 'full', phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
+      + temporalCacheSuffixOf(workId, temporalParams);
     let budgeted = cacheGetContext(cacheKey, workId);
     if (budgeted === undefined) {
-      budgeted = await buildNovelContext(workId, chapterId, 'full', { direction, directionSource, libraryRecallPhase, requestId });
+      budgeted = await buildNovelContext(workId, chapterId, 'full', {
+        direction, directionSource, libraryRecallPhase, requestId,
+        boundary: temporalParams.boundary || undefined,
+        commitId: temporalParams.commitId || undefined,
+        worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
+        perspective: temporalParams.perspective,
+        povCharacterId: temporalParams.povCharacterId || undefined,
+      });
       if (budgeted) cacheSetContext(cacheKey, budgeted, workId);
     }
 
@@ -4958,6 +5450,400 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
 
   if (sub !== 'state') return false;
 
+  // ── 时态故事状态（T1–T8）：总览 / 历史查询 / 章节面板 / 作者确认 ─────────────
+  // 这里是重构新增的**唯一权威状态来源**（不可变修订 + 已认可事件 + 提交清单 + 章序版本）。
+  // 三条纪律：① 写操作拒绝模型通道（X-Novel-Agent → 403）；② 未开启 temporal_enabled 的作品
+  // 立即返回 enabled:false 且不写一行；③ 历史查询必须指明「截至哪一章」，禁止用最新状态冒充历史。
+  if (leaf === 'temporal') {
+    const temporal = StoryState.Temporal;
+    if (method === 'GET') {
+      const workId = workIdOf(query.work_id);
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      return sendJSON(res, 200, temporal.temporalOverview(workId, { commitLimit: Math.min(Number(query.limit) || 10, 50) }));
+    }
+    if (method === 'PUT') {
+      if (isAgentRequest(req)) return sendError(res, 403, '时态状态开关是作者决定：不接受 X-Novel-Agent（模型不能自行开启/关闭状态引擎）');
+      const body = await readBody(req);
+      const workId = workIdOf(body.work_id);
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      const flag = (v) => v === undefined ? undefined : (v === true || v === 1 || v === '1');
+      // 迁移门禁：表 **或索引** 缺失一律拒绝开启（不吞错误继续跑）。
+      const migration = temporal.migrationStatus();
+      if (flag(body.temporal_enabled) === true && !migration.ok) {
+        return sendError(res, 503, '时态故事状态引擎缺少必要表/索引：'
+          + migration.missing_tables.concat(migration.missing_indexes).join(', ') + '（迁移未完成前不允许开启）');
+      }
+      const beforeConfig = temporal.getTemporalConfig(workId);
+      temporal.setTemporalConfig(workId, {
+        temporal_enabled: flag(body.temporal_enabled),
+        auto_analysis_enabled: flag(body.auto_analysis_enabled),
+        repair_enabled: flag(body.repair_enabled),
+      }, asString(body.note, ''));
+      // 启用即登记迁移版本（仅在 schema 齐备时写入；不齐备时 recordMigration 会响亮失败）。
+      // 响应里给**登记后**的状态：applied=true 才代表这次启用已经完成迁移登记。
+      const migrationApplied = migration.ok ? temporal.recordMigration({ note: `enable:${workId}` }) : migration;
+      touchWork(workId);
+      notifyChange('novel_context', { workId, id: workId });
+      const overview = temporal.temporalOverview(workId);
+      // 启用时告知预算与待重建范围（旧作品默认不启用自动模型分析）。
+      const enableScope = (overview.config && overview.config.enabled && !beforeConfig.enabled)
+        ? temporal.enableScope({ workId }) : null;
+      return sendJSON(res, 200, { ok: true, ...overview, migration: migrationApplied, enable_scope: enableScope });
+    }
+    return sendError(res, 405, 'temporal 只支持 GET / PUT');
+  }
+  if (method === 'GET' && leaf === 'at') {
+    const workId = workIdOf(query.work_id);
+    const chapterId = Number(query.chapter_id) || 0;
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id（历史查询必须指明截至哪一章）');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    const view = StoryState.Temporal.stateAtChapter({
+      workId, chapterId,
+      boundary: query.boundary === 'before' ? 'before' : 'after',
+      commitId: query.commit_id ? String(query.commit_id) : null,
+      worldlineId: query.worldline_id ? Number(query.worldline_id) : null,
+    });
+    return sendJSON(res, 200, { work_id: workId, chapter_id: chapterId, boundary: query.boundary === 'before' ? 'before' : 'after', ...view });
+  }
+  if (method === 'GET' && leaf === 'panel') {
+    const workId = workIdOf(query.work_id);
+    const chapterId = Number(query.chapter_id) || 0;
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    const view = StoryState.Temporal.chapterPanel({
+      workId, chapterId,
+      boundary: query.boundary === 'before' ? 'before' : 'after',
+      includeFull: query.full === '1' || query.include_full === '1',
+    });
+    return sendJSON(res, 200, view);
+  }
+  // T6：候选修订只读预览（作者界面的候选预览 / 正文 diff 用；只读，不写一行）。
+  // 归属校验：修订必须属于该作品；跨作品 / 不存在一律 404。引擎未开启的作品也可以读
+  // （历史修订是既有事实，读它不推进任何状态）。
+  if (method === 'GET' && leaf === 'revision') {
+    const workId = workIdOf(query.work_id);
+    const revisionId = String(query.revision_id || query.id || '');
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!revisionId) return sendError(res, 400, '缺少 revision_id');
+    const row = prepare('SELECT * FROM story_chapter_revisions WHERE id = ?').get(revisionId);
+    if (!row || Number(row.work_id) !== workId) return sendError(res, 404, '修订不存在或不属于该作品');
+    return sendJSON(res, 200, {
+      ok: true, work_id: workId,
+      revision: {
+        id: row.id, chapter_id: row.chapter_id, content_html: row.content_html,
+        text_hash: row.text_hash, created_at: row.created_at,
+        origin: (() => { try { return JSON.parse(row.origin_json); } catch { return {}; } })(),
+      },
+    });
+  }
+  // ── T7：存量重建（逐章按序）与 bootstrap 候选 ──────────────────────────────
+  // 分工：step 只冻结修订 + 记候选（抽取结果由调用方按批提供，本处理器不调用模型）；
+  //       confirm / bootstrap 决定是**作者**动作（模型侧 403），确认前不写任何正式状态。
+  if (leaf === 'backfill') {
+    const temporal = StoryState.Temporal;
+    // GET /api/novel/state/backfill?work_id → 进度（计划 + 预算 + 候选）
+    if (method === 'GET' && !leaf2) {
+      const workId = workIdOf(query.work_id);
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      const status = temporal.backfillStatus({ workId });
+      if (status.ok === false) return sendJSON(res, 200, { ...status, work_id: workId });
+      return sendJSON(res, 200, { ok: true, ...status, limit_applied: Math.min(Number(query.limit) || 0, 500) });
+    }
+    // POST /api/novel/state/backfill/step { work_id, chapter_id, result?, provider?, model? }
+    if (method === 'POST' && leaf2 === 'step') {
+      const body = await readBody(req);
+      const workId = workIdOf(body.work_id);
+      const chapterId = Number(body.chapter_id) || 0;
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+      const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+      if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+      const out = temporal.backfillStep({
+        workId, chapterId,
+        result: body.result === undefined ? null : body.result,
+        provider: asString(body.provider, 'author_ui'),
+        model: asString(body.model, ''),
+        inputHash: asString(body.input_hash, ''),
+      });
+      return sendJSON(res, out.ok ? 200 : 409, { work_id: workId, chapter_id: chapterId, ...out });
+    }
+    // POST /api/novel/state/backfill/confirm { work_id, chapter_id } → 作者逐章确认
+    if (method === 'POST' && leaf2 === 'confirm') {
+      if (isAgentRequest(req)) return sendError(res, 403, '存量重建的确认只能由作者发起：模型侧不能确认自己的抽取');
+      const body = await readBody(req);
+      const workId = workIdOf(body.work_id);
+      const chapterId = Number(body.chapter_id) || 0;
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+      const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+      if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+      const out = temporal.confirmBackfillChapter({
+        workId, chapterId,
+        bindingId: asString(body.binding_id, '') || null,
+        note: asString(body.note, ''),
+      });
+      return sendJSON(res, out.ok ? 200 : 409, { work_id: workId, chapter_id: chapterId, ...out });
+    }
+    // POST /api/novel/state/backfill/bootstrap/plan → 扫描旧字段建立（幂等）待确认候选
+    if (method === 'POST' && leaf2 === 'bootstrap' && segments[5] === 'plan') {
+      if (isAgentRequest(req)) return sendError(res, 403, 'bootstrap 候选的登记只能由作者发起');
+      const body = await readBody(req);
+      const workId = workIdOf(body.work_id);
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      const out = temporal.planBootstrapCandidates({ workId });
+      return sendJSON(res, out.ok ? 201 : 409, { work_id: workId, ...out });
+    }
+    // POST /api/novel/state/backfill/bootstrap/decide { work_id, candidate_id, decision, effective, chapter_id? }
+    if (method === 'POST' && leaf2 === 'bootstrap' && segments[5] === 'decide') {
+      if (isAgentRequest(req)) return sendError(res, 403, 'bootstrap 候选的决定只能由作者发起（模型不能把旧字段升级为正史）');
+      const body = await readBody(req);
+      const workId = workIdOf(body.work_id);
+      const candidateId = asString(body.candidate_id, '');
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!candidateId) return sendError(res, 400, '缺少 candidate_id');
+      const out = temporal.decideBootstrapCandidate({
+        workId, candidateId,
+        decision: asString(body.decision, 'confirm') === 'reject' ? 'reject' : 'confirm',
+        effective: asString(body.effective, 'opening') === 'chapter' ? 'chapter' : 'opening',
+        chapterId: Number(body.chapter_id) || null,
+        note: asString(body.note, ''),
+      });
+      return sendJSON(res, out.ok ? 200 : 409, { work_id: workId, ...out });
+    }
+    return sendError(res, 405, 'backfill 只支持 GET / 以及 POST step|confirm|bootstrap/plan|bootstrap/decide');
+  }
+  if (method === 'POST' && leaf === 'confirm') {
+    if (isAgentRequest(req)) return sendError(res, 403, '状态确认只能由作者发起：模型侧不能确认自己的抽取（该请求带 X-Novel-Agent 标记）');
+    const body = await readBody(req);
+    const workId = workIdOf(body.work_id);
+    const chapterId = Number(body.chapter_id) || 0;
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    const events = Array.isArray(body.events) ? body.events : [];
+    if (!events.length) return sendError(res, 400, 'events 不能为空（确认清单必须带具体操作）');
+    const result = StoryState.Temporal.applyChapterEvents({
+      workId, chapterId, events,
+      source: asString(body.source, '') || 'author_confirm',
+      author: 'author',
+      expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
+      contentHtml: body.content_html === undefined ? null : body.content_html,
+    });
+    if (result.ok) {
+      touchWork(workId);
+      notifyChange('events', { workId, id: chapterId });
+      // T3：新事实确认后自动触发全下游复核（只分析；未开启自动分析的作品不触发）。
+      scheduleTemporalImpact(workId, chapterId);
+    }
+    return sendJSON(res, 200, result);
+  }
+
+  // ── 保存提案：列表 / 作者一次确认 / 显式分析 / 手工更正（T2）────────────────
+  // 边界：这些入口全部是作者动作；X-Novel-Agent（模型通道）一律 403，模型不能确认自己的抽取。
+  // 命名刻意与旧内核的 /state/proposals（确定性事实提案）区分：这是时态引擎的**保存提案组**。
+  if (method === 'GET' && leaf === 'proposal-groups') {
+    const workId = workIdOf(query.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+    const chapterId = query.chapter_id ? Number(query.chapter_id) : null;
+    if (chapterId) {
+      const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+      if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    }
+    return sendJSON(res, 200, StoryState.Temporal.listProposalGroups({
+      workId, chapterId, limit: Math.min(Number(query.limit) || 20, 100),
+    }));
+  }
+  if (method === 'POST' && leaf === 'proposal-groups' && leaf2 && segments[5] === 'apply') {
+    if (isAgentRequest(req)) return sendError(res, 403, '确认提案只能由作者发起：模型侧不能确认自己的抽取（该请求带 X-Novel-Agent 标记）');
+    const body = await readBody(req);
+    const workId = workIdOf(body.work_id);
+    const chapterId = Number(body.chapter_id) || 0;
+    const bindingId = String(leaf2 || '');
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    if (!bindingId || bindingId === 'undefined') return sendError(res, 400, '缺少提案组 id');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    // AC-45：提案组要么整体确认，要么拒绝；不接受客户端提交事件子集，避免原子组被拆开。
+    if (Array.isArray(body.events) || Array.isArray(body.event_ids)) {
+      return sendError(res, 400, '提案组必须整体确认：不接受 events / event_ids 子集（原子组不能拆开采纳）');
+    }
+    const result = StoryState.Temporal.confirmBinding({
+      workId, chapterId, bindingId,
+      author: 'author',
+      approvalId: body.approval_id ? String(body.approval_id) : null,
+      expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
+    });
+    if (result.ok) {
+      touchWork(workId);
+      notifyChange('story_state', { workId, id: chapterId });
+      notifyChange('events', { workId, id: chapterId });
+      // T3：作者确认后自动触发全下游复核（只分析；未开启自动分析的作品不触发）。
+      scheduleTemporalImpact(workId, chapterId);
+    }
+    return sendJSON(res, 200, result);
+  }
+  if (method === 'POST' && leaf === 'analyze') {
+    if (isAgentRequest(req)) return sendError(res, 403, '状态分析由作者发起：模型侧不能自行触发抽取（该请求带 X-Novel-Agent 标记）');
+    const body = await readBody(req);
+    const workId = workIdOf(body.work_id);
+    const chapterId = Number(body.chapter_id) || 0;
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    const result = await runTemporalAnalysis(workId, chapterId, { force: true });
+    if (result && result.ok) notifyChange('story_state', { workId, id: chapterId });
+    return sendJSON(res, 200, result);
+  }
+  // T3：全下游影响分析与逐章复核（只分析；GET 读报告，POST 由作者显式发起/刷新）。
+  if (leaf === 'impact') {
+    const workId = workIdOf(method === 'GET' ? query.work_id : undefined);
+    if (method === 'GET') {
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      if (query.run_id) {
+        const view = TemporalRepair.impactRunView({ workId, runId: String(query.run_id) });
+        if (!view.ok) return sendError(res, 404, view.reason || '运行不存在');
+        return sendJSON(res, 200, view);
+      }
+      return sendJSON(res, 200, { ok: true, work_id: workId, runs: TemporalRepair.listImpactRuns({ workId, limit: Math.min(Number(query.limit) || 10, 50) }) });
+    }
+    if (method === 'POST') {
+      if (isAgentRequest(req)) return sendError(res, 403, '影响分析由作者发起：模型侧不能自行触发复核（该请求带 X-Novel-Agent 标记）');
+      const body = await readBody(req);
+      const postWorkId = workIdOf(body.work_id);
+      const chapterId = Number(body.chapter_id) || Number(body.root_chapter_id) || 0;
+      if (!postWorkId) return sendError(res, 400, '缺少 work_id');
+      if (!chapterId) return sendError(res, 400, '缺少 chapter_id（根章节）');
+      const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+      if (!ch || Number(ch.work_id) !== postWorkId) return sendError(res, 404, '章节不存在或不属于该作品');
+      const result = await runTemporalImpact(postWorkId, chapterId, { refresh: body.refresh === true || body.refresh === 1 });
+      return sendJSON(res, 200, result);
+    }
+    return sendError(res, 405, 'impact 只支持 GET / POST');
+  }
+  // T4：按钮驱动的逐章候选重建（启动/查看/恢复/取消/应用/撤销）。
+  // 边界：全部是作者动作（模型侧 403）；候选只进 repair 工作线，只有 apply 才原子切换正式正文。
+  if (leaf === 'repair') {
+    const runHooks = { saveChapterVersion, enqueueProjectionInTx };
+    if (method === 'GET') {
+      const workId = workIdOf(query.work_id);
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      if (query.run_id) {
+        const view = TemporalRepairRunner.repairRunView({ workId, runId: String(query.run_id) });
+        if (!view.ok) return sendError(res, 404, view.reason || '运行不存在');
+        return sendJSON(res, 200, view);
+      }
+      return sendJSON(res, 200, TemporalRepairRunner.listRepairRuns({ workId, limit: Math.min(Number(query.limit) || 10, 50) }));
+    }
+    if (method === 'POST') {
+      if (isAgentRequest(req)) return sendError(res, 403, '逐章重建只能由作者发起：模型侧不能自行启动/应用重建（该请求带 X-Novel-Agent 标记）');
+      const action = String(segments[4] || '').toLowerCase();
+      const body = await readBody(req);
+      const workId = workIdOf(body.work_id);
+      if (!workId) return sendError(res, 400, '缺少 work_id');
+      if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
+      if (action === 'start') {
+        const rootChapterId = Number(body.root_chapter_id) || 0;
+        if (!rootChapterId) return sendError(res, 400, '缺少 root_chapter_id（根章节）');
+        const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(rootChapterId);
+        if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '根章节不存在或不属于该作品');
+        const generate = temporalAnalysisGenerate();
+        const result = await TemporalRepairRunner.startRepairRun({
+          workId, rootChapterId, approvalId: body.approval_id ? String(body.approval_id) : '',
+          chapterIds: Array.isArray(body.chapter_ids) ? body.chapter_ids : null,
+          generate, provider: generate ? 'api_config' : 'none', model: generate ? String(generate.model || '') : '',
+          policy: body.policy && typeof body.policy === 'object' ? body.policy : {},
+          owner: `repair:${Date.now()}`, hooks: runHooks,
+        });
+        if (result.ok && !result.reused) {
+          touchWork(workId);
+          notifyChange('story_state', { workId, id: rootChapterId });
+        }
+        return sendJSON(res, result.ok ? 200 : (result.decision === 'rejected' ? 403 : 409), result);
+      }
+      if (action === 'resume') {
+        const runId = asString(body.run_id, '');
+        if (!runId) return sendError(res, 400, '缺少 run_id');
+        const generate = temporalAnalysisGenerate();
+        const result = await TemporalRepairRunner.resumeRepairRun({
+          workId, runId, generate, provider: generate ? 'api_config' : 'none', model: generate ? String(generate.model || '') : '',
+          hooks: runHooks,
+          extendCalls: Number(body.extend_calls) || 0, extendTokens: Number(body.extend_tokens) || 0, extendSeconds: Number(body.extend_seconds) || 0,
+        });
+        if (result.ok) notifyChange('story_state', { workId, id: runId });
+        return sendJSON(res, result.ok ? 200 : 409, result);
+      }
+      if (action === 'cancel') {
+        const runId = asString(body.run_id, '');
+        if (!runId) return sendError(res, 400, '缺少 run_id');
+        const result = TemporalRepairRunner.cancelRepairRun({ workId, runId, by: 'author' });
+        if (result.ok) notifyChange('story_state', { workId, id: runId });
+        return sendJSON(res, result.ok ? 200 : 409, result);
+      }
+      if (action === 'apply') {
+        const runId = asString(body.run_id, '');
+        if (!runId) return sendError(res, 400, '缺少 run_id');
+        const result = TemporalRepairRunner.applyRepairRun({
+          workId, runId, approvalId: body.approval_id ? String(body.approval_id) : '', by: 'author', hooks: runHooks,
+        });
+        if (result.ok) {
+          touchWork(workId);
+          notifyChange('story_state', { workId, id: runId });
+          notifyChange('chapters', { workId, id: null });
+        }
+        const status = result.ok ? 200 : (result.rejected === 'cas_conflict' || result.rejected === 'stale' ? 409 : 403);
+        return sendJSON(res, status, result);
+      }
+      if (action === 'revert') {
+        const runId = asString(body.run_id, '');
+        if (!runId) return sendError(res, 400, '缺少 run_id');
+        const result = TemporalRepairRunner.revertRepairRun({ workId, runId, by: 'author', hooks: runHooks });
+        if (result.ok) {
+          touchWork(workId);
+          notifyChange('story_state', { workId, id: runId });
+          notifyChange('chapters', { workId, id: null });
+        }
+        return sendJSON(res, result.ok ? 200 : (result.rejected === 'cas_conflict' ? 409 : 400), result);
+      }
+      return sendError(res, 404, '未知的 repair 动作（start / resume / cancel / apply / revert）');
+    }
+    return sendError(res, 405, 'repair 只支持 GET / POST');
+  }
+  if (method === 'POST' && leaf === 'correct') {
+    if (isAgentRequest(req)) return sendError(res, 403, '手工更正只能由作者发起：模型侧必须走提案/审批通道');
+    const body = await readBody(req);
+    const workId = workIdOf(body.work_id);
+    const chapterId = Number(body.chapter_id) || 0;
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id（更正必须指明生效位置）');
+    const corrections = Array.isArray(body.corrections) ? body.corrections : [];
+    if (!corrections.length) return sendError(res, 400, 'corrections 不能为空');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
+    const result = StoryState.Temporal.correctAuthorState({ workId, chapterId, corrections, note: asString(body.note, ''), approvalId: body.approval_id ? String(body.approval_id) : null });
+    if (result.ok) {
+      touchWork(workId);
+      notifyChange('story_state', { workId, id: chapterId });
+      notifyChange('events', { workId, id: chapterId });
+      // T3：作者更正也是事实变动：同样自动触发全下游复核（只分析）。
+      scheduleTemporalImpact(workId, chapterId);
+    }
+    return sendJSON(res, 200, result);
+  }
+
   // ── 只读：状态明细 ────────────────────────────────────────────────────────
   if (method === 'GET' && leaf === 'timeline') {
     const workId = workIdOf(query.work_id);
@@ -5355,7 +6241,7 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       if (!prepare('SELECT id FROM works WHERE id = ?').get(workId)) return sendError(res, 404, '作品不存在');
       const op = asString(body.op, '');
       if (!Approvals.APPROVAL_OPS.includes(op)) return sendError(res, 400, `op 必须是 ${Approvals.APPROVAL_OPS.join(' / ')}`);
-      const chapterId = Number(body.chapter_id) || null;
+      let chapterId = Number(body.chapter_id) || null;
       const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter((n) => n > 0) : [];
       if ((op === 'chapter_save' || op === 'state_proposal_apply' || op === 'proposal_apply') && !chapterId && op === 'chapter_save') {
         return sendError(res, 400, 'chapter_save 审批需要 chapter_id');
@@ -5402,6 +6288,47 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         if (Number(snap.work_id) !== workId) return sendError(res, 400, '快照不属于该作品');
         baselineHash = String(snap.state_hash || '');
         binding.snapshot_id = snapshotId;
+      }
+      // 时态引擎（T2/T4）：一次性作者授权精确绑定到「某个提案组 / 某组更正 / 某次重建运行」；
+      // 基线与绑定一律由服务端从真实存储计算，客户端自报无效。
+      if (op === 'temporal_apply') {
+        const bindingId = asString(body.binding_id, '');
+        if (!bindingId) return sendError(res, 400, 'temporal_apply 审批需要 binding_id（要授权的提案组）');
+        const info = StoryState.Temporal.proposalPayloadHash({ workId, chapterId, bindingId });
+        if (!info.ok) return sendError(res, 404, info.reason || '提案组不存在');
+        if (!chapterId) chapterId = info.chapter_id;
+        baselineHash = String(info.payload_hash || '');
+        binding.binding_id = info.binding_id;
+        binding.revision_id = info.revision_id;
+        binding.payload_hash = info.payload_hash;
+      }
+      if (op === 'temporal_correction') {
+        const corrections = Array.isArray(body.corrections) ? body.corrections : [];
+        if (!chapterId) return sendError(res, 400, 'temporal_correction 审批需要 chapter_id（更正生效位置）');
+        if (!corrections.length) return sendError(res, 400, 'temporal_correction 审批需要 corrections');
+        baselineHash = StoryState.Temporal.correctionsHashOf(corrections);
+        binding.chapter_id = chapterId;
+        binding.corrections_hash = baselineHash;
+      }
+      if (op === 'repair_run_start') {
+        const rootChapterId = Number(body.root_chapter_id) || 0;
+        if (!rootChapterId) return sendError(res, 400, 'repair_run_start 审批需要 root_chapter_id（根章节）');
+        const info = TemporalRepairRunner.repairStartBinding({ workId, rootChapterId, chapterIds: Array.isArray(body.chapter_ids) ? body.chapter_ids : null });
+        if (!info.ok) return sendError(res, 400, info.reason || '无法计算重建范围');
+        baselineHash = String(info.baseline_hash || '');
+        binding.root_chapter_id = info.binding.root_chapter_id;
+        binding.base_commit_id = info.binding.base_commit_id;
+        binding.scope_hash = info.binding.scope_hash;
+      }
+      if (op === 'repair_run_apply') {
+        const runId = asString(body.run_id, '');
+        if (!runId) return sendError(res, 400, 'repair_run_apply 审批需要 run_id');
+        const info = TemporalRepairRunner.repairApplyBinding({ workId, runId });
+        if (!info.ok) return sendError(res, 404, info.reason || '重建运行不存在');
+        if (!info.ready) return sendError(res, 409, `重建运行尚未就绪（${info.run_status}）：请先完成候选重建`);
+        baselineHash = String(info.baseline_hash || '');
+        binding.run_id = String(info.run_id);
+        binding.manifest_hash = String(info.manifest_hash || '');
       }
       const row = Approvals.createApproval({
         workId, chapterId, op, baselineHash, binding,
@@ -5540,6 +6467,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           const v = saveChapterVersion(chapterId, freshChapter.title, freshChapter.summary, freshChapter.content);
           prepare('UPDATE chapters SET title = ?, summary = ?, content = ?, updated_at = ? WHERE id = ?')
             .run(title, summary, content, now(), chapterId);
+          // T2（W4）：整次采纳的正文与状态提案在同一事务里，修订记录也必须在其中。
+          afterTemporalContentSave(workId, chapterId, content, 'adopt');
           contentVersionId = Number(v.id);
           contentHashAfter = Approvals.chapterBaselineHash(content);
         }
@@ -6387,10 +7316,20 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const requestId = normalizeRequestId(query.request_id);
     // 装配结果缓存：进程内写操作（touchWork）整体作废；记忆库/索引完成由外部版本触发失效。
     // 缓存键含 phase + direction 哈希；无方向且 default 时与旧键逐字节相同（审计兼容）。
-    const cacheKey = contextCacheKeyOf({ workId, chapterId, mode, phase: libraryRecallPhase, directionHash: directionHashOf(direction) });
+    // T5：可选时态参数（boundary/commit/worldline/perspective/pov）——默认参数时缓存键与旧版逐字节相同。
+    const temporalParams = temporalContextParamsOf(query);
+    const cacheKey = contextCacheKeyOf({ workId, chapterId, mode, phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
+      + temporalCacheSuffixOf(workId, temporalParams);
     let ctx = cacheGetContext(cacheKey, workId);
     if (ctx === undefined) {
-      ctx = await buildNovelContext(workId, chapterId, mode, { direction, directionSource, libraryRecallPhase, requestId });
+      ctx = await buildNovelContext(workId, chapterId, mode, {
+        direction, directionSource, libraryRecallPhase, requestId,
+        boundary: temporalParams.boundary || undefined,
+        commitId: temporalParams.commitId || undefined,
+        worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
+        perspective: temporalParams.perspective,
+        povCharacterId: temporalParams.povCharacterId || undefined,
+      });
       if (ctx) cacheSetContext(cacheKey, ctx, workId);
     }
     if (!ctx) return sendError(res, 404, '作品不存在');
@@ -6659,7 +7598,17 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   if (resource === 'novel' && segments[2] === 'events' && method === 'GET') {
     const workId = Number(query.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
-    return sendJSON(res, 200, { work_id: workId, events: listStoryEvents(workId, Number(query.limit) || 40) });
+    const limit = Number(query.limit) || 40;
+    // T5（AC-32）：可选 chapter_id —— 启用作品上按「截至该章」的时态游标过滤（未来章事件不下发）。
+    const cursor = temporalToolCursorOf(workId, query);
+    if (cursor) {
+      const filtered = StoryState.Temporal.filterRowsByCursor(listStoryEvents(workId, 500), cursor, { chapterIdOf: (e) => e.chapter_id, label: 'story_event' });
+      return sendJSON(res, 200, {
+        work_id: workId, events: filtered.kept.slice(0, limit),
+        temporal_filter: temporalToolFilterMetaOf(cursor, filtered.hidden),
+      });
+    }
+    return sendJSON(res, 200, { work_id: workId, events: listStoryEvents(workId, limit) });
   }
   if (resource === 'novel' && segments[2] === 'events' && method === 'POST') {
     const body = await readBody(req);
@@ -6697,8 +7646,16 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const status = asString(query.status, 'open');
     const all = listStoryEvents(workId, 500).filter((e) => e.kind === 'foreshadow');
-    const rows = status === 'all' ? all : all.filter((e) => e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped');
-    return sendJSON(res, 200, { ok: true, work_id: workId, status, foreshadows: rows });
+    // T5（AC-32）：可选 chapter_id —— 启用作品上同样按「截至该章」过滤（未来章伏笔不下发）。
+    const cursor = temporalToolCursorOf(workId, query);
+    const filtered = cursor
+      ? StoryState.Temporal.filterRowsByCursor(all, cursor, { chapterIdOf: (e) => e.chapter_id, label: 'foreshadow' })
+      : { kept: all, dropped: [], hidden: 0 };
+    const rows = status === 'all' ? filtered.kept : filtered.kept.filter((e) => e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped');
+    return sendJSON(res, 200, {
+      ok: true, work_id: workId, status, foreshadows: rows,
+      ...(cursor ? { temporal_filter: temporalToolFilterMetaOf(cursor, filtered.hidden) } : {}),
+    });
   }
   if (resource === 'novel' && segments[2] === 'foreshadows' && segments[3] && segments[4] === 'status' && method === 'POST') {
     const body = await readBody(req);
@@ -6780,7 +7737,13 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!work) return sendError(res, 404, '作品不存在');
     const text = asString(body.text, '');
     // 确定性装配核对清单：AI 逐项对照 text 判断，报告冲突即可。
-    const allEvents = listStoryEvents(workId, 500);
+    // T5（AC-32）：可选 chapter_id —— 启用作品上按「截至该章」过滤（未来章事件/伏笔不进核对清单）。
+    const cursor = temporalToolCursorOf(workId, body);
+    const allEventsRaw = listStoryEvents(workId, 500);
+    const eventsFiltered = cursor
+      ? StoryState.Temporal.filterRowsByCursor(allEventsRaw, cursor, { chapterIdOf: (e) => e.chapter_id, label: 'story_event' })
+      : { kept: allEventsRaw, dropped: [], hidden: 0 };
+    const allEvents = eventsFiltered.kept;
     const openForeshadows = allEvents
       .filter((e) => e.kind === 'foreshadow' && e.foreshadow_status !== 'resolved' && e.foreshadow_status !== 'dropped')
       .map((e) => ({ id: e.id, summary: e.summary, chapter_id: e.chapter_id }));
@@ -6788,14 +7751,35 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     // 出场角色按名字/别名整词命中；每个角色附上与它相关的最近事件，
     // 供 AI 判断“角色卡当前状态是否已被最近事件改变”（状态过时检测的依据）。
     const allCharRows = prepare('SELECT * FROM characters WHERE work_id = ?').all(workId);
+    const charOverlayForCheck = cursor ? StoryState.Temporal.characterOverlayOf(cursor) : null;
     const presentCharacters = allCharRows
       .filter((c) => c.name && namesOfCharacter(c).some((nm) => countNameHits(nm, text) > 0))
-      .map((c) => ({
-        id: c.id, name: c.name, identity: c.identity, status: c.status,
-        related_events: recentEvents.filter((e) => namesOfCharacter(c).some((nm) => countNameHits(nm, e.summary) > 0)).slice(0, 5)
-      }));
+      .map((c) => {
+        // T5：启用游标时改为「截至本章」的时态状态——未登记 = 空（不回落可能来自未来章的旧最新值）。
+        let status = c.status;
+        if (charOverlayForCheck) {
+          const st = charOverlayForCheck.get(String(c.name));
+          if (!st) status = '';
+          else {
+            const parts = [];
+            if (st.status) parts.push(st.status);
+            else if (st.alive === true) parts.push('存活');
+            else if (st.alive === false) parts.push('已故');
+            if (st.condition && st.condition !== st.status) parts.push(st.condition);
+            if (st.location && st.location !== st.status) parts.push(st.location);
+            status = parts.join(' / ');
+          }
+        }
+        return {
+          id: c.id, name: c.name, identity: c.identity, status,
+          ...(charOverlayForCheck ? { status_source: 'temporal' } : {}),
+          related_events: recentEvents.filter((e) => namesOfCharacter(c).some((nm) => countNameHits(nm, e.summary) > 0)).slice(0, 5)
+        };
+      });
     const scan = scanAgainstRedlines(listRedlines(workId), text);
     const memory = getStoryMemory(workId);
+    // T5：没有章节归属的全书摘要不进「历史事实层」（核对清单即事实层）——仅启用时态的作品上生效。
+    const memoryForChecklist = cursor ? '' : memory;
     // 2026-09-21：新增两项，供 novel_consistency 做“本章边界 / 系统人格 / 未登记命名实体”自检。
     // registered_names 让模型能自己发现“我造了个设定库里没有的名字”，比事后靠人去抓早一步——
     // 第 5 章实测：工坊 AI 新造了郑涛（C级·铁骨）、裂背獴、裂缝事件统计，设定库里一个都没有。
@@ -6804,17 +7788,22 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       world_entries: prepare('SELECT title FROM world_entries WHERE work_id = ?').all(workId).map((w) => w.title).filter(Boolean),
       terms: prepare('SELECT title FROM terms WHERE work_id = ?').all(workId).map((t) => t.title).filter(Boolean),
     };
+    const checklist = {
+      open_foreshadows: openForeshadows,
+      present_characters: presentCharacters,
+      recent_events: recentEvents,
+      story_memory: memoryForChecklist,
+      style_positive: asString(work?.style_positive, ''),
+      registered_names: registeredNames,
+      style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) }
+    };
+    if (cursor) {
+      checklist.story_memory_note = '启用时态引擎：无章节归属的全书摘要不进核对清单（可只读查看，或经存量重建后再用）';
+    }
     return sendJSON(res, 200, {
       ok: true, work_id: workId,
-      checklist: {
-        open_foreshadows: openForeshadows,
-        present_characters: presentCharacters,
-        recent_events: recentEvents,
-        story_memory: memory,
-        style_positive: asString(work?.style_positive, ''),
-        registered_names: registeredNames,
-        style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) }
-      }
+      checklist,
+      ...(cursor ? { temporal_filter: temporalToolFilterMetaOf(cursor, eventsFiltered.hidden) } : {}),
     });
   }
   // 章节蓝图保存（写作前规划 → 落库 → 随上下文带入 → 一致性核对锚点）。
@@ -6979,6 +7968,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         const v = saveChapterVersion(chapterId, chapter.title, chapter.summary, chapter.content);
         prepare('UPDATE chapters SET title = ?, summary = ?, content = ?, updated_at = ? WHERE id = ?')
           .run(title, summary, content, now(), chapterId);
+        // T2（W3）：AI 写回 / 审稿合并 / 草稿取回 / 批量生成写回 —— 与正文同一事务记录修订。
+        afterTemporalContentSave(chapter.work_id, chapterId, content, 'agent_write_back');
         return v;
       });
     } catch (e) {
@@ -7282,6 +8273,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           version.content || '',
           chapter.id
         );
+        // T2（W5）：恢复历史版本同样是正文事实变化。
+        afterTemporalContentSave(chapter.work_id, chapter.id, version.content || '', 'restore');
         db.exec('COMMIT');
       } catch (e) {
         db.exec('ROLLBACK');
@@ -7399,6 +8392,11 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         if (body.work_id) touchWork(body.work_id);
         if (resource === 'works') touchWork(newId);
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(newId);
+        // T2（W9）：通用 CRUD 新建章节也可能**带正文**（前端「创作工作台成果」流程即如此）。
+        // 与其它入口同一后处理：内容非空才建 revision + pending 提案（origin=chapter_create）。
+        if (resource === 'chapters' && typeof body.content === 'string' && body.content.trim()) {
+          afterTemporalContentSave((row && row.work_id) || Number(body.work_id) || 0, newId, body.content, 'chapter_create');
+        }
         // OpenViking 增量同步：新建作品触发全量建索引，其余资源防抖后重写对应文件。
         if (resource === 'works') {
           syncWorkFull(newId).then(() => {}).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `新作品同步失败（work ${newId}）：${e.message}` }));
@@ -7420,6 +8418,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
             return sendError(res, 409, '内容已在其他窗口被修改，请刷新后重试');
           }
         }
+        if (old) {
+          const lock = temporalLegacyStateWrite(resource, old, body);
+          if (lock && lock.blocked) return sendError(res, 409, lock.message);
+        }
         const changes = updateRow(resource, id, body);
         if (changes === 0) return sendError(res, 404, 'Not found');
         // P5 埋点：章节正文落盘是「AI 草稿 → 作者最终正文」的测量点（见函数注释）。
@@ -7429,6 +8431,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           // D8-#3：记忆自动压缩的触发点（**默认关闭**，见 maybeAutoCompressMemory）。
           // 放在正文落盘之后：此时长期记忆的输入（本章正文）才是最新的。
           if (old?.work_id) maybeAutoCompressMemory(old.work_id);
+        }
+        // T2（W1/W2）：编辑器自动保存 / 手动保存都经过这里；正文变化才记录修订并排队分析。
+        if (resource === 'chapters' && old?.work_id && typeof body.content === 'string' && body.content !== old.content) {
+          afterTemporalContentSave(old.work_id, Number(id), body.content, 'editor_save');
         }
         if (old?.work_id) touchWork(old.work_id);
         if (body.work_id) touchWork(body.work_id);

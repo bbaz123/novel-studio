@@ -257,6 +257,10 @@ run('Host Contract 契约测试（含负向对照）', process.execPath, ['.p1-b
 run('故事状态端到端（开关/提案/陈旧/回滚/预检/校验）', process.execPath,
   ['.p1-baseline/test-story-state-api.mjs', '--base', BASE],
   { requires: () => hasBase, skipReason: '需要活实例（该测试自建作品并自清理，零计费）' });
+// T1–T8 时态故事状态重构：新增零依赖总入口（领域/存储/历史查询；清单为空或子测试失败时非零退出）。
+run('时态故事状态重构（reducer/历史/完整性，零计费）', process.execPath,
+  ['scripts/test-temporal-refactor.mjs'],
+  { requires: () => fs.existsSync('scripts/test-temporal-refactor.mjs'), skipReason: '测试入口不存在' });
 // 编码类缺陷定点检查（2026-09-18 扩了两处覆盖）：
 //   A 非法 UTF-8（git 按字节存，不会报错）；B **含非 ASCII 的 .ps1 必须带 BOM**
 //   ——PS 5.1 把无 BOM 文件按 ANSI 读，中文会吞掉后续 ASCII 字节，脚本静默变成语法错误。

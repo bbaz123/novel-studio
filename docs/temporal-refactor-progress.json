@@ -1,0 +1,412 @@
+{
+  "task": "novel-studio-temporal-refactor",
+  "base_commit": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+  "current_stage": "T8",
+  "stages": {
+    "T0": "DONE",
+    "T1": "DONE",
+    "T2": "DONE",
+    "T3": "DONE",
+    "T4": "DONE",
+    "T5": "DONE",
+    "T6": "DONE",
+    "T7": "DONE",
+    "T8": "DONE"
+  },
+  "completed_acceptance_ids": [
+    "AC-01",
+    "AC-02",
+    "AC-03",
+    "AC-09",
+    "AC-10",
+    "AC-11",
+    "AC-12",
+    "AC-30",
+    "AC-31",
+    "AC-37",
+    "AC-13",
+    "AC-22",
+    "AC-25",
+    "AC-28",
+    "AC-29",
+    "AC-42",
+    "AC-43",
+    "AC-44",
+    "AC-45",
+    "AC-04",
+    "AC-05",
+    "AC-06",
+    "AC-07",
+    "AC-08",
+    "AC-14",
+    "AC-15",
+    "AC-16",
+    "AC-17",
+    "AC-18",
+    "AC-19",
+    "AC-20",
+    "AC-21",
+    "AC-23",
+    "AC-24",
+    "AC-26",
+    "AC-27",
+    "AC-32",
+    "AC-33",
+    "AC-34",
+    "AC-35",
+    "AC-36",
+    "AC-38",
+    "AC-39",
+    "AC-40",
+    "AC-41",
+    "AC-46",
+    "AC-47",
+    "AC-48"
+  ],
+  "baseline_failures": [],
+  "new_failures": [],
+  "env_precondition_failures": [
+    {
+      "check": "verify-all/「连续性预检在真实作品上成立」（.p1-baseline/verify-continuity-guard-on-real-data.mjs，work#18）",
+      "status": "NOT_VERIFIED（环境前置不满足）",
+      "evidence": "只读副本复跑 EXIT=1：命中 4 / 漏报 1 / 误报 0；唯一漏报＝第五章 system_frequency（chapter id=123，正文 11 字符空占位 <p><br></p>，updated_at=2026-09-25T05:57:38Z）→ 判据所需正文命中必然无法出现",
+      "attribution": "非本任务引入：ai/continuity-guard*.mjs 与该验证脚本自基线 git diff 为空；空占位早于任务基线（2026-09-30 开始）与 09-30 18:11 真实库事件",
+      "action": "不改真实库凑通过；如实披露于 docs/temporal-refactor-acceptance.md §7 与 progress.md T8 段"
+    }
+  ],
+  "test_runs": [
+    {
+      "command": "node scripts/test-temporal-refactor.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir (tests/temporal/harness.mjs + 自托管隔离实例 + 本机假模型)",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 8 / FAIL 0 suites (01:8 02:6 03:8 05:8 06:66 07:50 08:27 09:18)"
+    },
+    {
+      "command": "node scripts/ci-isolated-run.mjs --port 3757 -- node tests/temporal/04-http.test.mjs --base http://127.0.0.1:3757",
+      "cwd": "novel-studio",
+      "isolation": "isolated-instance-temp-data-dir",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 30 / FAIL 0 / SKIP 0"
+    },
+    {
+      "command": "node scripts/ci-offline-checks.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0"
+    },
+    {
+      "command": "node .p1-baseline/test-host-contract.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline + old-db copy",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 28 / FAIL 0 / SKIP 0 (contract 1.15.0)"
+    },
+    {
+      "command": "node .p1-baseline/test-approval-boundary.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0"
+    },
+    {
+      "command": "node .p1-baseline/verify-phase-map.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS (TT claims 51 files, docs/phase-map.md regenerated)"
+    },
+    {
+      "command": "node .p1-baseline/test-migration-idempotent.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp db",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 13 / FAIL 0"
+    },
+    {
+      "command": "node tests/temporal/06-http-save-entries.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 66 / FAIL 0"
+    },
+    {
+      "command": "node tests/temporal/07-proposal-binding.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0 (B4 tamper test self-hosted only)"
+    },
+    {
+      "command": "node tests/temporal/08-impact-analysis.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "in-process real services + temp isolated DB + deterministic fake provider",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 27 / FAIL 0"
+    },
+    {
+      "command": "node tests/temporal/09-impact-http.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 18 / FAIL 0"
+    },
+    {
+      "command": "node tests/temporal/10-repair-runner.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "in-process real services + temp isolated DB + deterministic fake provider",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 15 / FAIL 0 (4 main + 11 injections: cancel/rollback/approval-failure/fencing/resume/user-edit/3-attempts/fingerprint)"
+    },
+    {
+      "command": "node tests/temporal/11-repair-http.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 37 / FAIL 0 (stable across 3 consecutive runs)"
+    },
+    {
+      "command": "node scripts/test-temporal-refactor.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir + self-hosted isolated instances + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 10 / FAIL 0 suites (01:8 02:6 03:8 05:8 06:66 07:50 08:27 09:18 10:15 11:37)"
+    },
+    {
+      "command": "node .p1-baseline/test-host-contract.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline + old-db copy",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 28 / FAIL 0 / SKIP 0 (contract 1.16.0)"
+    },
+    {
+      "command": "node .p1-baseline/verify-phase-map.mjs (after --write)",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS (docs/phase-map.md regenerated; ai/repair/runner.mjs claimed by TT)"
+    },
+    {
+      "command": "node tests/temporal/12-context-temporal.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + temp data dir (zero billing)",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 62 / FAIL 0"
+    },
+    {
+      "command": "node tests/temporal/13-context-cache.test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + temp data dir + local OV stub (zero billing)",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 17 / FAIL 0"
+    },
+    {
+      "command": "node scripts/test-temporal-refactor.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir + self-hosted isolated instances + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 12 / FAIL 0 suites (01:8 02:6 03:8 05:8 06:66 07:50 08:27 09:18 10:15 11:37 12:62 13:17)"
+    },
+    {
+      "command": "node .p1-baseline/test-host-contract.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline + old-db copy",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 28 / FAIL 0 / SKIP 0 (contract 1.17.0)"
+    },
+    {
+      "command": "node scripts/ci-isolated-run.mjs --port 3757 -- node tests/temporal/04-http.test.mjs --base http://127.0.0.1:3757",
+      "cwd": "novel-studio",
+      "isolation": "isolated-instance-temp-data-dir",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 30 / FAIL 0 / SKIP 0"
+    },
+    {
+      "command": "node scripts/ci-offline-checks.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0"
+    },
+    {
+      "command": "node .p1-baseline/test-approval-boundary.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0"
+    },
+    {
+      "command": "node .p1-baseline/verify-phase-map.mjs (after --write)",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS (TT claims 57 files; docs/phase-map.md regenerated; context-provider.mjs claimed by TT)"
+    }
+    ,{
+      "command": "node frontend-test.mjs",
+      "cwd": "novel-studio",
+      "isolation": "vm + DOM stub + fetch mock（零真实库 / 零计费）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 346 / FAIL 0（含 T6-1..T6-18、T7-1..T7-11；T7 新增 16 条）"
+    }
+    ,{
+      "command": "node scripts/test-temporal-refactor.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir + self-hosted isolated instances + local fake model",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 14 / FAIL 0 suites（01:8 02:6 03:8 05:8 06:66 07:50 08:27 09:18 10:15 11:41 12:62 13:17 14:8 15:30）",
+      "note": "首跑 06 因瞬时端口占用失败一次；06 单独复跑（66/0）与整套复跑均全绿"
+    }
+    ,{
+      "command": "node tests/temporal/15-backfill-http.test.mjs（经由总入口与单独运行）",
+      "cwd": "novel-studio",
+      "isolation": "self-hosted isolated instance + temp data dir（零计费）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 30 / FAIL 0（H1–H6：未开启零接管 / enable_scope / step 不改正文 / 候选→确认 / 跳章与模型侧 403 / bootstrap 候选）"
+    }
+    ,{
+      "command": "node scripts/ci-isolated-run.mjs --port 3757 -- node tests/temporal/04-http.test.mjs --base http://127.0.0.1:3757",
+      "cwd": "novel-studio",
+      "isolation": "isolated-instance-temp-data-dir",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 30 / FAIL 0 / SKIP 0"
+    }
+    ,{
+      "command": "node scripts/ci-offline-checks.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0（含前端执行验证 vm + DOM 桩）"
+    }
+    ,{
+      "command": "node .p1-baseline/test-approval-boundary.mjs",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 50 / FAIL 0"
+    }
+    ,{
+      "command": "node .p1-baseline/verify-phase-map.mjs",
+      "cwd": "novel-studio",
+      "isolation": "offline",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS（TT 认领；docs/phase-map.md 与阶段数据一致）"
+    }
+    ,{
+      "command": "node scripts/test-temporal-refactor.mjs（T8 全量，含 16 号）",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir + 自托管隔离实例 + 本机假模型（零计费）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 15/15 子套件（01:8 02:6 03:8 05:8 06:66 07:50 08:27 09:18 10:15 11:41 12:62 13:17 14:8 15:30 16:33；EXIT=0）"
+    }
+    ,{
+      "command": "node tests/temporal/16-log-hygiene.test.mjs（单跑）",
+      "cwd": "novel-studio",
+      "isolation": "自托管隔离实例 + temp data dir（哨兵扫描日志/追踪本体）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS 33 / FAIL 0（AC-46；EXIT=0）"
+    }
+    ,{
+      "command": "node scripts/perf-temporal-baseline.mjs --size 100/500/1000",
+      "cwd": "novel-studio",
+      "isolation": "mkdtemp 合成数据 + 进程内生产后端函数（零模型调用）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS（EXIT=0）：100→确认 16.75ms/章、末章 26.34ms、墙钟 2.3s；500→174.9ms/章、271.2ms、92.3s；1000→1042.2ms/章（超线性）、793ms、1055.3s；库 ≤93.82MiB、RSS ≤285.1MB"
+    }
+    ,{
+      "command": "node scripts/ci-isolated-run.mjs --port 3739 -- node .p1-baseline/verify-all.mjs --live-db <真实库只读副本>",
+      "cwd": "novel-studio",
+      "isolation": "自托管隔离实例 + 真实库只读副本（不写真实库）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "EXIT=1：PASS 49 / FAIL 1 / SKIP 6。唯一 FAIL＝「连续性预检在真实作品上成立」环境前置不满足（guard 源码零 diff，非本任务改动）；6 SKIP 为脚本口径外部前置缺失，详见 env_precondition_failures"
+    }
+    ,{
+      "command": "node frontend-test.mjs / ci-offline-checks / test-approval-boundary / test-host-contract / check-utf8 / verify-phase-map（T8 复跑）",
+      "cwd": "novel-studio",
+      "isolation": "offline / temp-data-dir / old-db copy",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "全部 EXIT=0：346/0、50/0、50/0、28（契约 1.19.0）、UTF-8 通过、phase-map 354 改动全归属"
+    }
+    ,{
+      "command": "node scripts/perf-temporal-baseline.mjs --size 100/500/1000（后续优化复跑，2026-09-30 22:25–22:27）",
+      "cwd": "novel-studio",
+      "isolation": "mkdtemp 合成数据 + 进程内生产后端函数（零模型调用）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "PASS（EXIT=0）：确认 3.62/17.91/32.75ms/章（优化前 16.75/174.9/1042.2，加速型超线性已消除）；末章查询 2.52/12.56/23.37ms（13/17/21 SQL；优化前 709/3509/7009）；墙钟 0.76/14.66/54.02s（优化前 2.30/92.33/1055.31s）；500 章复跑 18.30ms/章（±2%）"
+    }
+    ,{
+      "command": "黄金等价对照：golden.mjs --size 120 导出 ↔ golden-before.json（内容寻址 ID/哈希逐字节）",
+      "cwd": "novel-studio",
+      "isolation": "mkdtemp 合成数据（零模型）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "连续 6 次（check1–check6）identical: true —— 优化未改变 ID/哈希/清单内容"
+    }
+    ,{
+      "command": "node scripts/test-temporal-refactor.mjs + frontend-test + ci-offline-checks + test-approval-boundary + test-host-contract + check-utf8 + verify-phase-map（优化后复跑）",
+      "cwd": "novel-studio",
+      "isolation": "temp-data-dir + self-hosted isolated instances + local fake model（零计费）",
+      "code_baseline": "7d61390ccf0c52048c1a2df92c23701a684656a9",
+      "result": "全部 EXIT=0：15/15 子套件（01:8 02:6 03:8 05:8 06:66 07:50 08:27 09:18 10:15 11:41 12:62 13:17 14:8 15:30 16:33）、346/0、50/0、50/0、28（契约 1.19.0）、UTF-8 通过、phase-map 一致"
+    }
+  ],
+  "changed_files": [
+    "ai/story-state/temporal/",
+    "tests/temporal/",
+    "scripts/test-temporal-refactor.mjs",
+    "docs/temporal-refactor-audit.md",
+    "docs/temporal-state-contract.md",
+    "docs/temporal-refactor-progress.md",
+    "docs/temporal-refactor-progress.json",
+    "db.js",
+    "ai/story-state/index.mjs",
+    "server.js",
+    "docs/host-contract.v1.json",
+    "docs/host-contract.md",
+    "docs/README.md",
+    "docs/plugin-runtime-map.md",
+    "scripts/ci-offline-checks.mjs",
+    ".p1-baseline/verify-all.mjs",
+    ".p1-baseline/verify-phase-map.mjs",
+    "docs/phase-map.md",
+    "ai/story-state/temporal/compat.mjs",
+    "tests/temporal/07-proposal-binding.test.mjs",
+    "tests/temporal/http-harness.mjs",
+    "ai/story-state/approval.mjs",
+    "ai/story-state/temporal/analysis.mjs",
+    "ai/repair/",
+    "tests/temporal/08-impact-analysis.test.mjs",
+    "tests/temporal/09-impact-http.test.mjs"
+    ,"ai/story-state/temporal/context-provider.mjs"
+    ,"tests/temporal/12-context-temporal.test.mjs"
+    ,"tests/temporal/13-context-cache.test.mjs"
+    ,"public/app.js"
+    ,"public/styles.css"
+    ,"frontend-test.mjs"
+    ,"ai/story-state/temporal/migration.mjs"
+    ,"ai/story-state/temporal/extraction.mjs"
+    ,"ai/story-state/temporal/worldline-store.mjs"
+    ,"ai/story-state/temporal/history.mjs"
+    ,"tests/temporal/14-backfill-migration.test.mjs"
+    ,"tests/temporal/15-backfill-http.test.mjs"
+    ,"tests/temporal/16-log-hygiene.test.mjs"
+    ,"scripts/perf-temporal-baseline.mjs"
+    ,"docs/temporal-refactor-acceptance.md"
+  ],
+  "next_action": "交付：输出 T0–T8 + 后续优化最终报告（Frozen Write Allowlist / Touched Files / 真实 data/ 声明 / package.json 未改 / SKIPPED·NOT VERIFIED 清单）。已完成：AC-01–48 映射（docs/temporal-refactor-acceptance.md）+ 性能基线 + 16 号日志卫生 + verify-all 49/1/6（唯一 FAIL 为环境前置）；确认路径超线性已优化（1000 章 1042.2→32.75ms/章，黄金等价 6 次 identical；残余见 docs/temporal-refactor-progress.md「后续优化记录」）；真实库测试残留已清理（备份 data/backup-pre-temporal-cleanup-20260930215404.db，逐行对照 IDENTICAL）",
+  "real_data_incident": {
+    "found_at": "2026-09-30（只读拷贝审计 data/novel.db；mtime 18:13:26）",
+    "what": "前序会话的测试运行打到真实库：works 47「smoke」/48「dbg2」为当日新建；work 9「雾都缝匠」被加 chapters 199/200 且 temporal_enabled=1；story_commits/revisions 等出现该时段测试行",
+    "confirmed": "work 9 既有章节正文未变化（逐行对照一致）",
+    "action": "不擅自删除/修复用户真实库；本会话（T6/T7）全部测试走 NOVELSTUDIO_DATA_DIR 临时目录与自托管隔离实例，未再触碰真实库；建议用户自行删除 works 47/48 与 work 9 的 chapters 199/200（如确认为测试残留）"
+  },
+  "blockers": [],
+  "scope_blocked": [
+    {
+      "target": "harness-plugins/novel-writing/novel-tools.mjs",
+      "reason": "负清单文件（harness-plugins/** 本次不动）。novel_events 查询 /api/novel/events 时不传 chapter_id（chapter_id 仅用于本地过滤）；novel_foreshadows 无 chapter_id 参数。服务端时态过滤仅在显式给出 chapter_id 时生效，插件层无法自动携带游标。",
+      "impact": "不阻塞 T5 主体（服务器装配、四个工具端点、缓存与契约均已实现并验证）；仅模型侧『插件自动携带章上下文』路径缺失。",
+      "status": "已记录；需用户明确批准解除 harness-plugins/** 负清单后再做最小修改。"
+    }
+  ]
+}

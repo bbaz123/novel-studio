@@ -26,9 +26,14 @@ db.exec('PRAGMA busy_timeout = 5000;');
 // 2026-09-27 实测缺陷——旧提案采纳路径（settleProposals → addStoryEvent/saveStoryMemory）
 // 因为内层再次 BEGIN，整条作者「采纳」通道 100% 报 "cannot start a transaction within a transaction"。
 let txDepth = 0;
-export function inTransaction() { return txDepth > 0; }
+// 也认 SQLite 自身的自动提交状态：宿主里仍有若干历史路径直接用 db.exec('BEGIN')，
+// 不是 withTransaction 开的。若不认它们，内层再 BEGIN 会报 "cannot start a transaction
+// within a transaction"（2026-09-30 T2 保存接线实测）。isTransaction 在旧 Node 上不存在，
+// 因此用 === true 判定，属性缺失时语义与从前完全一致。
+const rawTransactionOpen = () => db.isTransaction === true;
+export function inTransaction() { return txDepth > 0 || rawTransactionOpen(); }
 export function withTransaction(fn) {
-  const outer = txDepth === 0;
+  const outer = txDepth === 0 && !rawTransactionOpen();
   const savepoint = `sp_${txDepth}`;
   db.exec(outer ? 'BEGIN' : `SAVEPOINT ${savepoint}`);
   txDepth += 1;
@@ -337,6 +342,13 @@ CREATE TABLE IF NOT EXISTS chapter_reviews (
 CREATE TABLE IF NOT EXISTS story_state_config (
   work_id INTEGER PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
   enabled INTEGER NOT NULL DEFAULT 0,
+  -- 时态故事状态引擎（2026-09-30）：默认全关；关闭时上下文/端点/默认生成路径与接入前一致。
+  -- temporal_enabled    版本化状态底座（修订/事件/提交/历史查询）
+  -- auto_analysis_enabled 保存后自动提取（需要已配置模型；无模型标 not_run）
+  -- repair_enabled      作者按钮驱动的逐章候选重建
+  temporal_enabled INTEGER NOT NULL DEFAULT 0,
+  auto_analysis_enabled INTEGER NOT NULL DEFAULT 0,
+  repair_enabled INTEGER NOT NULL DEFAULT 0,
   schema_version INTEGER NOT NULL DEFAULT 1,
   note TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -511,6 +523,201 @@ CREATE TABLE IF NOT EXISTS story_validations (
   result_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+
+-- 作者审批记录（2026-09-27，R02.2）：把"作者同意"从工具描述里的口头纪律变成**服务端可校验
+-- ══════════════════════════════════════════════════════════════════════════════
+-- 时态故事状态引擎（temporal，2026-09-30，全部**附加式**；Host Contract 1.13.0）
+--
+-- 为什么是附加式：这些表支撑「不可变正文修订 / 类型化事件 / 提交谱系 / 世界线 /
+-- 章章节边界快照 / 依赖 / 分析·修复运行」。**作品默认不启用**（story_state_config.
+-- temporal_enabled=0）：未启用作品的上下文、端点与默认生成路径与接入前一致。
+--
+-- 与既有表的关系：不改 story_snapshots（它是**操作回滚**快照，不是章节历史）、
+-- 不改 story_facts / story_state_proposals / author_approvals / projection_outbox 的语义；
+-- 时态引擎启用后，角色卡当前值等旧字段降级为**兼容投影**，不再直写。
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- 不可变章序版本：稳定章节 ID 的叙事顺序（卷→根章节→场景由服务层计算，此表只固化结果）。
+CREATE TABLE IF NOT EXISTS story_chapter_order_versions (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  order_json TEXT NOT NULL CHECK(json_valid(order_json)),
+  order_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_order_work ON story_chapter_order_versions(work_id, created_at DESC);
+
+-- 世界线：main（正式线）与 repair（重建工作线）；候选只存在于 repair 线。
+CREATE TABLE IF NOT EXISTS story_worldlines (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('main','repair','sandbox')),
+  base_commit_id TEXT,
+  head_commit_id TEXT,
+  generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
+  status TEXT NOT NULL CHECK(status IN ('open','merged','archived')),
+  label TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_temporal_one_main ON story_worldlines(work_id) WHERE kind='main' AND status='open';
+
+-- 不可变提交：manifest 为「稳定章节 ID → binding ID」的选中清单；历史查询沿清单解析。
+CREATE TABLE IF NOT EXISTS story_commits (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  worldline_id TEXT NOT NULL,
+  parent_commit_id TEXT,
+  order_version_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL CHECK(json_valid(manifest_json)),
+  manifest_hash TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_commit_work ON story_commits(work_id, created_at DESC);
+
+-- 不可变正文修订：机器需要的版本（用户可见版本历史仍在 chapter_save_versions）。
+CREATE TABLE IF NOT EXISTS story_chapter_revisions (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  content_html TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  text_hash TEXT NOT NULL,
+  normalizer_version TEXT NOT NULL,
+  origin_json TEXT NOT NULL CHECK(json_valid(origin_json)),
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_revision_chapter ON story_chapter_revisions(work_id, chapter_id, created_at DESC);
+
+-- 类型化状态事件：ops 只能走白名单域与前置条件；证据锚点带段落/字符区间与叙述类型。
+CREATE TABLE IF NOT EXISTS story_state_events (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  cursor_json TEXT NOT NULL CHECK(json_valid(cursor_json)),
+  story_time_json TEXT NOT NULL DEFAULT 'null' CHECK(json_valid(story_time_json)),
+  ops_json TEXT NOT NULL CHECK(json_valid(ops_json)),
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+  schema_version TEXT NOT NULL,
+  event_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_events_revision ON story_state_events(work_id, revision_id);
+
+-- 章节边界快照：章前/章后 cursor 的可重建状态镜像（含两种哈希）。
+CREATE TABLE IF NOT EXISTS chapter_state_snapshots (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  order_version_id TEXT NOT NULL,
+  cursor_json TEXT NOT NULL CHECK(json_valid(cursor_json)),
+  state_json TEXT NOT NULL CHECK(json_valid(state_json)),
+  state_content_hash TEXT NOT NULL,
+  lineage_hash TEXT NOT NULL,
+  algorithm_version TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_snapshot_work ON chapter_state_snapshots(work_id, created_at DESC);
+
+-- 正文修订 ↔ 事件集 ↔ 状态的绑定：pending = 待作者确认的本章提案组；valid = 已认可。
+CREATE TABLE IF NOT EXISTS story_chapter_bindings (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL,
+  event_ids_json TEXT NOT NULL CHECK(json_valid(event_ids_json)),
+  input_snapshot_id TEXT,
+  output_snapshot_id TEXT,
+  contract_ref_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(contract_ref_json)),
+  appearances_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(appearances_json)),
+  validation_json TEXT NOT NULL CHECK(json_valid(validation_json)),
+  validity TEXT NOT NULL CHECK(validity IN ('pending','valid','stale','conflict','needs_review','blocked','waived','rejected','superseded')),
+  story_time_json TEXT NOT NULL DEFAULT 'null' CHECK(json_valid(story_time_json)),
+  created_at TEXT NOT NULL,
+  UNIQUE(work_id, id),
+  CHECK(validity <> 'valid' OR output_snapshot_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_binding_chapter ON story_chapter_bindings(work_id, chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_temporal_binding_validity ON story_chapter_bindings(work_id, validity);
+
+-- 提交级信任覆盖：binding.validity 描述"这一行"的状态（pending=待确认，superseded=已被替代），
+-- 但同一 binding 在**旧提交**里可能仍然可信。上游变化后，新提交用覆盖行声明「该章节在本提交中
+-- 尚未重新验证」，而不是把全局 binding 翻成 stale——否则旧提交回放会被破坏（AC-02 要求原历史
+-- 仍显示存活）。查历史时：有效结论 = 覆盖行（若有）∪ binding.validity。
+CREATE TABLE IF NOT EXISTS story_binding_trust (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  commit_id TEXT NOT NULL,
+  binding_id TEXT NOT NULL,
+  validity TEXT NOT NULL CHECK(validity IN ('pending','valid','stale','conflict','needs_review','blocked','waived','rejected','superseded')),
+  detail_json TEXT NOT NULL CHECK(json_valid(detail_json)),
+  created_at TEXT NOT NULL,
+  UNIQUE(commit_id, binding_id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_trust_commit ON story_binding_trust(commit_id, binding_id);
+
+-- 依赖索引：显式出场/因果前提/衔接/摘要/契约等；用于解释与排序，**不得**用于排除隐性影响。
+CREATE TABLE IF NOT EXISTS story_chapter_dependencies (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  binding_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('fact','chapter','goal','causal','context','summary','contract','unknown','event','relation','plotline','knowledge','disclosure')),
+  resource_key TEXT NOT NULL,
+  expected_hash TEXT,
+  dependency_json TEXT NOT NULL CHECK(json_valid(dependency_json)),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_dependency_resource ON story_chapter_dependencies(work_id, resource_key);
+CREATE INDEX IF NOT EXISTS idx_temporal_dependency_binding ON story_chapter_dependencies(binding_id);
+
+-- 分析 / 修复运行：mode=analyze 只分析（不生成修订稿）；mode=repair 是作者按钮授权的逐章重建。
+CREATE TABLE IF NOT EXISTS story_repair_runs (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL CHECK(mode IN ('analyze','repair')),
+  root_chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  base_commit_id TEXT NOT NULL,
+  working_worldline_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('queued','running','paused','stale','ready','applied','failed','cancelled','needs_review','reverted')),
+  baseline_json TEXT NOT NULL CHECK(json_valid(baseline_json)),
+  policy_json TEXT NOT NULL CHECK(json_valid(policy_json)),
+  authorization_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(authorization_json)),
+  coverage_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(coverage_json)),
+  result_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(result_json)),
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  fencing_token INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(work_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_repair_work ON story_repair_runs(work_id, created_at DESC);
+
+-- 逐章断点：分析为 stale 标记；修复为每章验证/修订/保留/阻塞的持久状态机。
+CREATE TABLE IF NOT EXISTS story_repair_steps (
+  id TEXT PRIMARY KEY,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  step_key TEXT NOT NULL,
+  input_fingerprint TEXT NOT NULL DEFAULT '',
+  attempt INTEGER NOT NULL DEFAULT 1 CHECK(attempt > 0),
+  status TEXT NOT NULL CHECK(status IN ('queued','validating','kept','repairing','repaired','blocked','needs_review','failed','cancelled','stale','valid','conflict')),
+  candidate_revision_id TEXT,
+  candidate_binding_id TEXT,
+  result_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(result_json)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_step_run ON story_repair_steps(run_id, chapter_id);
 
 -- 作者审批记录（2026-09-27，R02.2）：把"作者同意"从工具描述里的口头纪律变成**服务端可校验
 -- 的执行边界**。模型侧写入（带 X-Novel-Agent 标记的请求）必须引用一条仍有效、未消费、
@@ -994,6 +1201,10 @@ const MIGRATIONS = [
   // 沙盘来源（author / agent）：与候选的 created_by 同义，便于区分「谁开的那一轮沙盘」。
   // 默认空串 → 之前开的沙盘按未知来源处理，语义不变。
   `ALTER TABLE branch_sandboxes ADD COLUMN created_by TEXT NOT NULL DEFAULT ''`,
+  // 时态故事状态引擎（2026-09-30）：三个开关列附加式补进旧库；默认 0 → 旧作品行为不变。
+  `ALTER TABLE story_state_config ADD COLUMN temporal_enabled INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE story_state_config ADD COLUMN auto_analysis_enabled INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE story_state_config ADD COLUMN repair_enabled INTEGER NOT NULL DEFAULT 0`,
 ];
 for (const sql of MIGRATIONS) {
   try { db.exec(sql); } catch (e) {

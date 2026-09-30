@@ -238,3 +238,7 @@ export function validateOf(comp, draft, { stateChanges = [], styleHits = [] } = 
 }
 
 export const STORY_STATE_VERSION = '1.0.0';
+
+// 时态故事状态引擎（temporal，2026-09-30）：命名空间导出，避免与内核既有名字冲突；
+// T1 起由 server.js 在作品开关打开时使用（见 ai/story-state/temporal/service.mjs）。
+export * as Temporal from './temporal/index.mjs';

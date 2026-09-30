@@ -20,7 +20,7 @@
 | 仓库 | `C:\Users\a1941\Desktop\DeepSeek\novel-studio` | 工作目录 |
 | 分支 / HEAD | `refactor/p0-p6`（2026-09-27 采集时为 `be38b17`；两轮改动已于 2026-09-28 提交并推送，当前 HEAD 见仓库） | `git rev-parse HEAD` |
 | 运行时 | Node **v24.19.0**；`package.json` 无 dependencies（`node:sqlite` 内建） | `node -v`、`package.json` |
-| 宿主契约 | **1.12.0**（`server.js` 的 `HOST_CONTRACT_VERSION`；`frozen_at` 2026-09-29；`GET /api/novel/ping` 回报） | `test-host-contract.mjs` 28/28 |
+| 宿主契约 | **1.19.0**（`server.js` 的 `HOST_CONTRACT_VERSION`；`frozen_at` 2026-09-30；`GET /api/novel/ping` 回报） | `test-host-contract.mjs` 28/28 |
 | 插件 | `harness-plugins/novel-writing` **v0.16.0**：26 个工具 / 75 条端点声明 | `plugin.json` + `verify-plugin-tools.mjs` |
 | 故事状态内核 | `ai/story-state/index.mjs` — `STORY_STATE_VERSION = 1.0.0` | 代码 |
 | dsh | **0.1.7-rc.2**；本地仓库 `C:\Users\a1941\Desktop\DeepSeek\deepseek-harness`，预构建入口 `apps/cli/lib/bin.js` | 工具循环探针日志（`预构建产物启动`） |

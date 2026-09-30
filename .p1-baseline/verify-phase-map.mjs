@@ -986,6 +986,39 @@ export const PHASES = [
       + ' ⑤ CONTRIBUTING.md 增英文段，原中文段整段保留、仅降一级标题。'
       + ' 仓库级 Description 与 Topics 经 GitHub API 写入，属**仓库设置而非文件**，不进 git（与 W / W2 同例）。',
   },
+  {
+    id: 'TT',
+    title: '时态故事状态重构（T0–T8：版本化状态底座、保存接线、影响分析、逐章重建、上下文与界面）',
+    files: [
+      // 新增模块（目录级：整个目录都是本阶段新建，不与其他阶段共享）
+      'ai/story-state/temporal/',
+      'ai/repair/',
+      'tests/temporal/',
+      'scripts/test-temporal-refactor.mjs',
+      // T8 专用性能基线（AC-48；合成数据、临时目录、零计费）与验收映射文档。
+      'scripts/perf-temporal-baseline.mjs',
+      'docs/temporal-refactor-acceptance.md',
+      // 文档
+      'docs/temporal-refactor-audit.md', 'docs/temporal-state-contract.md',
+      'docs/temporal-refactor-progress.md', 'docs/temporal-refactor-progress.json',
+      // 既有文件（全部改在生产路径上；与旧阶段共享同一文件 → 只能整体回滚）
+      'db.js', 'server.js',
+      'ai/story-state/index.mjs', 'ai/story-state/approval.mjs',
+      'public/app.js', 'public/styles.css', 'frontend-test.mjs',
+      'docs/host-contract.v1.json', 'docs/host-contract.md', 'docs/README.md', 'docs/plugin-runtime-map.md',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-all.mjs', '.p1-baseline/verify-phase-map.mjs', '.p1-baseline/test-host-contract.mjs',
+    ],
+    evidence: [
+      'docs/temporal-refactor-audit.md', 'docs/temporal-refactor-progress.md',
+      'scripts/test-temporal-refactor.mjs', 'tests/temporal/01-pure.test.mjs',
+    ],
+    rollback: 'shared',
+    note: 'T0–T8 的时态状态重构：新增 11 张表与三个作品级开关（默认 0，未启用作品零影响），'
+      + '唯一权威来源 = 不可变正文修订 + 已认可事件 + 提交清单 + 章序版本；旧字段降级为兼容投影。'
+      + 'db.js / server.js / public/app.js 与 P2–P5、R、Z 系列共享同一文件，且新模块被生产代码 import，'
+      + '按文件粒度只能整体回滚；回滚前必须先关闭 temporal_enabled（关闭即回到旧路径，不删历史）。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

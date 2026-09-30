@@ -115,6 +115,7 @@ const doc = {
   querySelector: (sel) => containers[sel] || registered.get(sel) || null,
   querySelectorAll: () => [],
   createElement: (tag) => new El(tag),
+  createDocumentFragment: () => new El('#fragment'),
   addEventListener: (type, fn) => { const list = docListeners.get(type) || []; list.push(fn); docListeners.set(type, list); },
   removeEventListener: () => {},
   body: new El('body'),
@@ -259,6 +260,115 @@ function libraryStatusJson(workId) {
 }
 
 const directCalls = []; // /api/ai/write 的请求体（用于断言"空回复重试"真的换了参数）
+// T6 桩：时态状态面板 / 提案组 / 影响分析 / 逐章重建。读接口回读桩状态；写操作改桩状态，
+// 断言"请求真的发出去了、界面用的是服务端回来的数据"，而不是本地状态自说自话。
+const temporalStub = {
+  panelCalls: [],
+  panel: {
+    ok: true, work_id: 1, chapter_id: 7, boundary: 'after',
+    commit_id: 'commit-abcdef123456', worldline_id: 'worldline-main-0001', order_version_id: 'order-000000000001',
+    binding_id: 'bind-ch7', binding_validity: 'valid', stored_binding_validity: 'valid',
+    state_scope: 'through_chapter', trusted: true, verified_through: 6, validity: 'valid', stop: null,
+    state_content_hash: 'statehash12345678',
+    appearances: [{ name: '林昭', role: 'action', scene_index: 0, evidence: [{ quote: '林昭推开钟楼的门' }] }],
+    characters: [
+      { entity_id: '林昭', status: '存活', location: '青云镇', in_chapter: true },
+      { entity_id: '王师傅', status: '存活', location: '青云镇', in_chapter: false }
+    ],
+    relations: [{ from: '林昭', to: '王师傅', label: '师徒', related_in_chapter: true }],
+    plotlines: [{ entity_id: '黑风谷任务', state: '进行中', touched_in_chapter: true }],
+    events: [{ entity_id: 'evt-ch7', predicate: 'battle', value: { summary: '林昭潜入钟楼' } }],
+    changes: [{ event_id: 'evt-ch7', type: 'set', domain: 'character', entity_id: '林昭', predicate: 'status', scope: 'canon', holder_id: null, from: '受伤', from_missing: false, to: '存活', evidence: [{ quote: '伤口已经结痂' }] }],
+    counts: { appearances: 1, characters: 2, relations: 1, plotlines: 1, events: 1, changes: 1 },
+    policy: { source: 'test', note: '面板只读真实时态状态' }
+  },
+  panelFullState: {
+    '["character","林昭","status","canon",null]': '存活',
+    '["plotline","黑风谷任务","state","canon",null]': '进行中'
+  },
+  proposalsJson: () => ({
+    ok: true, enabled: true, work_id: 1, chapter_id: 7,
+    proposals: [{
+      binding_id: 'bind-prop-1', chapter_id: 7, revision_id: 'rev-9', created_at: '2026-09-30T01:00:00',
+      status: 'done', analysis: { status: 'done', provider: 'api_config' },
+      proposal: { events: 1, ops: 2, by_domain: { character: 2 } }, event_ids: ['evt-ch7'], pending_context: null
+    }]
+  }),
+  appliedProposals: [],
+  impactReport: {
+    run_id: 'run-impact-1', mode: 'analyze', root_chapter_id: 7, tentative: false, coverage: 'all',
+    changes: [{ cell: '["character","王师傅","status","canon",null]', to: '战死' }],
+    downstream: [
+      { chapter_id: 8, status: 'needs_review', reason: '依赖前提：王师傅仍然活着', explicit_appearances: ['王师傅'], explicit_dependencies: [{ resource_key: '王师傅的护身符' }], implicit_causal: [{ kind: 'premise_change', premise: '王师傅仍然活着', quote: '他还在等王师傅回信' }], tentative: false },
+      { chapter_id: 9, status: 'kept', reason: '正文在新世界状态下仍成立', kept_revision_id: 'rev-9', explicit_appearances: [], explicit_dependencies: [], implicit_causal: [] }
+    ],
+    totals: { downstream: 2, kept: 1, needs_review: 1, blocked: 0, skipped_by_coverage: 0, model_calls: 1, generated_revisions: 0 },
+    writer_calls: 0, notes: ['只分析、只标记；未生成后文修订']
+  },
+  impactRuns: [{
+    id: 'run-impact-1', work_id: 1, mode: 'analyze', root_chapter_id: 7, base_commit_id: 'commit-abcdef123456',
+    working_worldline_id: null, status: 'done', baseline: {}, policy: {}, authorization: {}, coverage: { coverage: 'all' },
+    result: null, idempotency_key: 'impact|1|7', lease_owner: null, lease_expires_at: null, fencing_token: 0,
+    created_at: '2026-09-30T01:05:00', updated_at: '2026-09-30T01:05:10'
+  }],
+  impactPosts: [],
+  repairRun: null,
+  repairSteps: [],
+  repairCandidate: null,
+  repairGate: { can_apply: false, reasons: ['运行状态为 running'] },
+  repairStarts: [],
+  repairActions: [],
+  approvals: []
+};
+temporalStub.impactRuns[0].result = temporalStub.impactReport;
+
+// T7 桩：时态引擎开关 / 存量重建 / bootstrap 候选（读回桩状态；写操作改桩状态）。
+// 断言目标：界面读的是服务端返回的真实字段；开关分离；逐章流程真实 POST；不伪造历史。
+temporalStub.temporalPuts = [];
+temporalStub.stepPosts = [];
+temporalStub.confirmPosts = [];
+temporalStub.bootstrapPosts = [];
+temporalStub.temporalFail = false;
+temporalStub.temporalBroken = false;
+temporalStub.engineDefault = () => ({
+  ok: true, work_id: 1, version: 1, schema_ok: true, missing_tables: [],
+  config: { work_id: 1, enabled: false, auto_analysis: false, repair: false, story_state_enabled: false },
+  head_commit_id: null, order_version_id: null, manifest_size: 0, trust: null, commits: []
+});
+temporalStub.temporal = temporalStub.engineDefault();
+temporalStub.backfillDefault = () => ({
+  ok: true, work_id: 1,
+  migration: { ok: true, applied: false, version: '1.0.0', recorded_version: '', recorded_at: '', missing_tables: [], missing_indexes: [], note: '' },
+  config: { work_id: 1, enabled: false, auto_analysis: false, repair: false, story_state_enabled: false },
+  totals: { chapters: 3, valid: 1, pending_confirm: 0, pending_analysis: 1, analysis_running: 0, missing_revision: 1, stale: 0, needs_review: 0, conflict: 0, blocked: 0 },
+  next_chapter_id: 8, trusted_through: 0,
+  chapters: [
+    { index: 0, chapter_id: 7, title: '第一章', state: 'valid', revision_id: 'rev-7', revision_text_hash: 'h7', binding_id: 'bind-7', binding_validity: 'valid', analysis_status: 'done', dependencies: 1, snapshots_after: 1, provenance: {} },
+    { index: 1, chapter_id: 8, title: '第二章', state: 'pending_analysis', revision_id: 'rev-8', revision_text_hash: 'h8', binding_id: 'bind-8', binding_validity: 'pending', analysis_status: '', dependencies: 0, snapshots_after: 0, provenance: {} },
+    { index: 2, chapter_id: 9, title: '第三章', state: 'missing_revision', revision_id: null, revision_text_hash: '', binding_id: null, binding_validity: null, analysis_status: '', dependencies: 0, snapshots_after: 0, provenance: {} }
+  ],
+  bootstrap: {
+    total: 1, pending: 1,
+    items: [{
+      candidate_key: 'bst_x', candidate_id: 'bind-boot-1', work_id: 1, chapter_id: 7, status: 'pending', validity: 'pending',
+      domain: 'character', entity_id: '王师傅', predicate: 'status', value: '存活', detail: '',
+      source: { table: 'characters', key: '9', field: 'status' }, suggested_effective: null,
+      note: '角色卡最新 status：生效时点未知（可能是中途状态），不得当作开篇状态', decided_at: null, event_ids: ['evt-boot-1']
+    }]
+  },
+  budget: {
+    chapters_total: 3, chapters_needing_extraction: 2, chapters_awaiting_confirm: 0, model_calls_estimated: 2,
+    model_calls_note: '每次抽取一章一次调用；作者可用本机 fake / 离线结果替代（零计费）。保存路径本身不调用模型。', auto_analysis_default: 'off'
+  }
+});
+temporalStub.backfill = temporalStub.backfillDefault();
+temporalStub.backfillStepOut = {
+  ok: true, enabled: true, work_id: 1, chapter_id: 8, index: 1, status: 'awaiting_extraction',
+  revision_id: 'rev-8', binding_id: 'bind-8', input_trusted: true, refreshed: true,
+  prompt: { system: '你是长篇小说的"状态记账员"。只输出 JSON。', user: '章节：8（第二章）\n章前状态（权威来源）：...\n请输出 JSON。', input_hash: 'ih-8' },
+  provenance: { manuscript: 'frozen', generation_context: 'unknown', support: 'reconstructed', note: '事后重建' }
+};
+
 const fetchStub = async (url, opts = {}) => {
   requests.push({ url: String(url), method: (opts.method || 'GET').toUpperCase(), headers: opts.headers || {}, body: opts.body });
   const u = String(url);
@@ -521,6 +631,156 @@ const fetchStub = async (url, opts = {}) => {
     } else { json = { error: '未知的资料库操作' }; status = 404; }
   }
   else if (u.includes('/api/novel/scan')) json = { ok: true, total: 1, hits: [{ kind: 'phrase', pattern: '嘴角勾起', note: '', count: 1, sample: '他嘴角勾起一抹笑' }] };
+  // T6：章末状态面板 / 提案组 / 影响分析 / 逐章重建 / 候选修订（读回桩状态；写操作改桩状态）
+  else if (u.includes('/api/novel/state/panel')) {
+    const chapterId = Number((u.match(/chapter_id=(\d+)/) || [])[1] || 7);
+    const boundary = (u.match(/boundary=(\w+)/) || [])[1] || 'after';
+    const full = /[?&]full=1/.test(u);
+    temporalStub.panelCalls.push({ chapterId, boundary, full });
+    const delay = (temporalStub.panelDelays && temporalStub.panelDelays[chapterId]) || 0;
+    if (delay) await new Promise((r) => setTimeout(r, delay));
+    // 按章给不同状态：第 7 章王师傅存活（未出场），第 8 章战死——面板必须按章显示，不得把未来状态泄漏到过去。
+    const rows = chapterId >= 8
+      ? [{ entity_id: '林昭', status: '存活', location: '青云镇', in_chapter: true }, { entity_id: '王师傅', status: '战死', location: '黑风谷', in_chapter: true }]
+      : temporalStub.panel.characters;
+    json = Object.assign({}, temporalStub.panel, {
+      chapter_id: chapterId, boundary,
+      characters: rows,
+      full_state: full ? temporalStub.panelFullState : undefined
+    });
+  }
+  else if (u.includes('/api/novel/state/proposal-groups')) {
+    if ((opts.method || 'GET').toUpperCase() === 'POST') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.appliedProposals.push(body);
+      json = { ok: true, enabled: true, work_id: 1, chapter_id: body.chapter_id, decision: 'valid', binding_id: decodeURIComponent((u.match(/proposal-groups\/([^/]+)\/apply/) || [])[1] || ''), event_ids: ['evt-ch7'] };
+    } else {
+      json = temporalStub.proposalsJson();
+    }
+  }
+  else if (u.includes('/api/novel/state/impact')) {
+    if ((opts.method || 'GET').toUpperCase() === 'POST') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.impactPosts.push(body);
+      json = { ok: true, enabled: true, tentative: false, run: temporalStub.impactRuns[0], report: temporalStub.impactReport };
+    } else if (/run_id=/.test(u)) {
+      json = { ok: true, enabled: true, run: temporalStub.impactRuns[0], steps: [], report: temporalStub.impactReport, coverage: 'all', policy: {}, baseline: {} };
+    } else {
+      json = { ok: true, work_id: 1, runs: temporalStub.impactRuns };
+    }
+  }
+  else if (u.includes('/api/novel/state/repair')) {
+    const method = (opts.method || 'GET').toUpperCase();
+    const action = (u.match(/repair\/(\w+)/) || [])[1] || '';
+    if (method === 'POST' && action === 'start') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.repairStarts.push(body);
+      temporalStub.repairRun = {
+        id: 'run-repair-1', work_id: 1, mode: 'repair', root_chapter_id: Number(body.root_chapter_id) || 7,
+        base_commit_id: 'commit-abcdef123456', working_worldline_id: null, status: 'running',
+        baseline: {}, policy: {}, authorization: {}, coverage: { coverage: 'all' },
+        result: { totals: { chapters: 2, kept: 1, repaired: 0, needs_review: 0, blocked: 0, model_calls: 1, tokens: 120 }, halt: null },
+        idempotency_key: 'repair|1|7', lease_owner: 'test', lease_expires_at: null, fencing_token: 1,
+        created_at: '2026-09-30T02:00:00', updated_at: '2026-09-30T02:00:00'
+      };
+      temporalStub.repairSteps = [
+        { id: 'step-1', work_id: 1, run_id: 'run-repair-1', chapter_id: 8, step_key: 'ch8', input_fingerprint: 'fp-1', attempt: 1, status: 'queued', candidate_revision_id: null, candidate_binding_id: null, result: {}, created_at: '2026-09-30T02:00:00', updated_at: '2026-09-30T02:00:00' },
+        { id: 'step-2', work_id: 1, run_id: 'run-repair-1', chapter_id: 9, step_key: 'ch9', input_fingerprint: 'fp-2', attempt: 1, status: 'queued', candidate_revision_id: null, candidate_binding_id: null, result: {}, created_at: '2026-09-30T02:00:00', updated_at: '2026-09-30T02:00:00' }
+      ];
+      temporalStub.repairCandidate = null;
+      temporalStub.repairGate = { can_apply: false, reasons: ['运行状态为 running'] };
+      json = { ok: true, enabled: true, reused: false, run: temporalStub.repairRun, steps: temporalStub.repairSteps };
+    } else if (method === 'POST') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.repairActions.push({ action, body });
+      if (action === 'apply') {
+        temporalStub.repairRun = { ...temporalStub.repairRun, status: 'applied' };
+        json = { ok: true, enabled: true, applied: true, run_id: body.run_id, commit_id: 'commit-applied-1' };
+      } else if (action === 'cancel') {
+        temporalStub.repairRun = { ...temporalStub.repairRun, status: 'paused' };
+        json = { ok: true, enabled: true, run: temporalStub.repairRun };
+      } else if (action === 'revert') {
+        temporalStub.repairRun = { ...temporalStub.repairRun, status: 'reverted' };
+        json = { ok: true, enabled: true, run: temporalStub.repairRun };
+      } else {
+        json = { ok: true, enabled: true, run: temporalStub.repairRun };
+      }
+    } else if (/run_id=/.test(u) && temporalStub.repairRun) {
+      json = { ok: true, enabled: true, work_id: 1, run: temporalStub.repairRun, steps: temporalStub.repairSteps, candidate: temporalStub.repairCandidate, ready_gate: temporalStub.repairGate };
+    } else {
+      json = { ok: true, work_id: 1, runs: temporalStub.repairRun ? [temporalStub.repairRun] : [] };
+    }
+  }
+  // T7：时态引擎开关（GET 总览 / PUT 分离开关 + enable_scope）与存量重建（step / confirm / bootstrap）
+  else if (u.includes('/api/novel/state/temporal')) {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (temporalStub.temporalFail) { json = { error: 'temporal boom' }; status = 500; }
+    else if (temporalStub.temporalBroken) { json = { ...temporalStub.temporal, schema_ok: false, missing_tables: ['story_commits'] }; }
+    else if (method === 'PUT') {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.temporalPuts.push(body);
+      const config = { ...temporalStub.temporal.config };
+      if (body.temporal_enabled !== undefined) config.enabled = !!body.temporal_enabled;
+      if (body.auto_analysis_enabled !== undefined) config.auto_analysis = !!body.auto_analysis_enabled;
+      if (body.repair_enabled !== undefined) config.repair = !!body.repair_enabled;
+      temporalStub.temporal = { ...temporalStub.temporal, config, schema_ok: true, missing_tables: [] };
+      const enableScope = (config.enabled && body.temporal_enabled === true)
+        ? {
+          ok: true, work_id: 1,
+          pending_rebuild: { chapters: 2 },
+          upcoming: [{ chapter_id: 8, index: 1, state: 'pending_analysis' }, { chapter_id: 9, index: 2, state: 'missing_revision' }],
+          bootstrap_pending: 1,
+          budget: { chapters_total: 3, chapters_needing_extraction: 2, chapters_awaiting_confirm: 0, model_calls_estimated: 2, auto_analysis_default: 'off' },
+          notes: ['旧作品默认不启用自动模型分析：auto_analysis_enabled 仍为 0 时，保存只登记修订与待确认提案。']
+        }
+        : null;
+      json = {
+        ...temporalStub.temporal,
+        migration: { ok: true, applied: true, version: '1.0.0', recorded_version: '1.0.0', recorded_at: '2026-09-30T04:00:00', missing_tables: [], missing_indexes: [], note: '' },
+        enable_scope: enableScope
+      };
+    } else {
+      json = temporalStub.temporal;
+    }
+  }
+  else if (u.includes('/api/novel/state/backfill')) {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method === 'POST' && u.includes('/bootstrap/plan')) {
+      temporalStub.bootstrapPosts.push({ action: 'plan' });
+      json = { ok: true, enabled: true, work_id: 1, anchor_chapter_id: 7, found: 1, created: 0, deferred: [], skipped: [], candidates: temporalStub.backfill.bootstrap.items, note: '候选只是待确认记录（pending 绑定 + 未确认事件）：确认前不进入任何章的历史状态。' };
+    } else if (method === 'POST' && u.includes('/bootstrap/decide')) {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.bootstrapPosts.push({ action: 'decide', body });
+      const next = { ...temporalStub.backfill };
+      next.bootstrap = { total: 1, pending: 0, items: temporalStub.backfill.bootstrap.items.map((c) => ({ ...c, status: body.decision === 'reject' ? 'rejected' : 'confirmed' })) };
+      temporalStub.backfill = next;
+      json = { ok: true, enabled: true, work_id: 1, decision: body.decision === 'reject' ? 'rejected' : 'valid', candidate: temporalStub.backfill.bootstrap.items[0], note: body.decision === 'reject' ? '已拒绝：没有写入任何状态。' : '已确认' };
+    } else if (method === 'POST' && /\/backfill\/step/.test(u)) {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.stepPosts.push(body);
+      if (body.result) {
+        json = { ok: true, enabled: true, work_id: 1, chapter_id: body.chapter_id, index: 1, status: 'pending_confirm', binding_id: 'bind-8', revision_id: 'rev-8', proposal: { events: 1, ops: 1 }, issues: [], note: '候选已登记（未写入任何正式状态）：请作者确认本章后可信前缀才会前进。' };
+      } else {
+        json = { ...temporalStub.backfillStepOut, chapter_id: body.chapter_id };
+      }
+    } else if (method === 'POST' && /\/backfill\/confirm/.test(u)) {
+      const body = JSON.parse(String(opts.body || '{}'));
+      temporalStub.confirmPosts.push(body);
+      if (Number(body.chapter_id) !== 8) { json = { error: '本章没有待确认提案（先跑 backfill step 记录抽取结果）' }; status = 409; }
+      else json = { ok: true, enabled: true, work_id: 1, chapter_id: body.chapter_id, decision: 'valid', binding_id: 'bind-8', trusted_through: 1, note: '本章已按序确认：可信前缀前进；如正文仍成立则无需改写。' };
+    } else {
+      json = temporalStub.backfill;
+    }
+  }
+  else if (u.includes('/api/novel/state/revision')) {
+    const revisionId = decodeURIComponent((u.match(/revision_id=([^&]+)/) || [])[1] || '');
+    json = { ok: true, work_id: 1, revision: { id: revisionId, chapter_id: 8, content_html: '<p>新的正文第一段。</p><p>新的正文第二段。</p>', text_hash: 'hash-rev-cand-1', created_at: '2026-09-30T02:00:00', origin: 'repair' } };
+  }
+  else if (u.includes('/api/novel/approvals')) {
+    const body = JSON.parse(String(opts.body || '{}'));
+    temporalStub.approvals.push(body);
+    json = { ok: true, id: 'appr-' + temporalStub.approvals.length, status: 'active', op: body.op, work_id: body.work_id, binding_json: {}, baseline_hash: 'basehash00000000', expires_at: '2026-09-30T03:00:00' };
+  }
   else if (u.includes('/api/debug/state')) json = { ok: true, state: { recording: false }, config: {} };
   else if (u.includes('/api/debug/start')) json = { ok: true, recording: true, session_id: 'test-session' };
   else if (u.includes('/api/debug/stop')) json = { ok: true, recording: false, summary: { ops: 1, nodes: 3, prompt_tokens: 10, completion_tokens: 5 } };
@@ -596,8 +856,8 @@ const sandbox = {
   AbortSignal: { timeout: () => ({}) },
   TextDecoder: class { decode() { return ''; } }, TextEncoder: class {},
   EventSource: class { constructor() {} close() {} },
-  DOMParser: class { parseFromString() { return { body: new El('body') }; } },
-  Node: { ELEMENT_NODE: 1 }, Element: El, HTMLElement: El,
+  DOMParser: class { parseFromString() { return { body: Object.assign(new El('body'), { childNodes: [] }) }; } },
+  Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 }, Element: El, HTMLElement: El,
   crypto: { randomUUID: () => 'uuid-' + Math.random().toString(36).slice(2, 10) },
   structuredClone: (x) => JSON.parse(JSON.stringify(x)),
   getComputedStyle: () => ({ getPropertyValue: () => '' }),
@@ -637,6 +897,9 @@ globalThis.__probe = {
   loadStoryState, renderStoryStateCard, toggleStoryState, refreshDisclosure, disclosureListHtml,
   loadBranch, renderBranchCard, branchCandidateHtml, branchPromptText, branchTemplate, openBranchSandboxModal, branchCreateSandbox, openBranchSubmitModal, branchSubmitCandidates, branchView, branchCompareAll, branchAdopt, branchDiscard, branchCancel, branchReopen, openBranchConfirm,
   loadRebuild, renderRebuildCard, rebuildBatchById, rebuildPromptForBatch, rebuildPlan, rebuildExtractBatch, rebuildConfirm, rebuildCancel,
+  chapterTitleOfId, refreshChapterStatePanel, setChapterPanelView, chapterPanelHtml, chapterStateListHtml, confirmChapterProposals, jumpToEvidence,
+  impactSectionHtml, impactAnalyze, loadImpactRuns, loadImpactRun, repairSectionHtml, repairStart, repairAction, repairPreview, loadRepairRuns, loadRepairRun, stopRepairPoll, AI_BOARD_TABS,
+  renderStoryStatePage, loadTemporalEngine, loadBackfill, renderTemporalEngineCard, renderBackfillCard, temporalToggle, backfillStepRun, backfillConfirmRun, backfillBootstrapPlan, backfillBootstrapDecide, backfillPromptText, BACKFILL_STATE_LABEL,
   loadLibrary, renderLibrary, renderLibraryDocCard, libraryDocRow, libraryHitRow, libraryPlanHtml, libraryImportResultHtml, libraryStatusChip, librarySkipLabel, LIBRARY_SKIP_LABEL,
   libraryRefresh, librarySearchRun, librarySetCategory, libraryViewDoc, libraryToggleEnabled, libraryPreviewImport, libraryConfirmImport, libraryMarkMissing, libraryDeleteDoc, libraryRenderSafely, handleAction,
   longTextEngine, longTextLimits, longTextPlanFor, longTextRunTask, longTextStatusHtml, longTextContextBlock,
@@ -890,11 +1153,11 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
   P.state.currentChapterId = null;
   // AI 板块的子容器：renderAIBoard 把 renderST 的输出写进 #board-content（桩里必须先登记）。
   containers['#board-content'] = mkEl('board-content');
-  P.goView('st');
+  P.goView('rules'); // T6：编辑规则已拆为独立页面（不再是创作上下文的一部分）
   await P.render();
   const stHtml = String(containers['#content'].innerHTML);
   const stHtmlFull = stHtml + String(containers['#board-content'].innerHTML);
-  check('58h 创作上下文页渲染出编辑规则卡（开关 / 档位 / 题材 / 能力 / 扫描 / 保存）',
+  check('58h 编辑规则独立页渲染出编辑规则卡（开关 / 档位 / 题材 / 能力 / 扫描 / 保存）',
     stHtmlFull.includes('id="edit-rules-enabled"') && stHtmlFull.includes('name="edit-tier"') && stHtmlFull.includes('id="edit-genre"')
       && stHtmlFull.includes('class="edit-ability"') && stHtmlFull.includes('data-action="scan-edit-rules"') && stHtmlFull.includes('data-action="save-edit-rules"'),
     stHtmlFull.includes('编辑规则') ? 'has-card' : 'no-card');
@@ -940,10 +1203,10 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
   P.state.currentChapterId = 7;
   P.state.authorStyle = null;
   containers['#board-content'] = mkEl('board-content');
-  P.goView('st');
+  P.goView('style'); // T6：作者样文 / 文风档案已拆为独立页面
   await P.render();
   const r09Html = String(containers['#content'].innerHTML) + String(containers['#board-content'].innerHTML);
-  check('R09-1 创作上下文页渲染出作者样文卡（添加 / 启用开关 / 编辑 / 删除 / 样文行）',
+  check('R09-1 作者样文独立页渲染出作者样文卡（添加 / 启用开关 / 编辑 / 删除 / 样文行）',
     r09Html.includes('data-action="new-author-sample"') && r09Html.includes('data-action="toggle-author-sample"')
       && r09Html.includes('data-action="edit-author-sample"') && r09Html.includes('data-action="delete-author-sample"')
       && r09Html.includes('我的旧作片段'),
@@ -1028,10 +1291,10 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
   P.state.authorStyle = null;
   P.state.storyState = null;
   containers['#board-content'] = mkEl('board-content');
-  P.goView('st');
+  P.goView('story-state'); // T6：故事状态与披露已拆为独立页面（含影响 / 逐章重建）
   await P.render();
   const r10Html = String(containers['#content'].innerHTML) + String(containers['#board-content'].innerHTML);
-  check('R10-1 创作上下文页渲染出故事状态卡（开关 / 计数 / 状态哈希 / 重算入口）',
+  check('R10-1 故事状态独立页渲染出故事状态卡（开关 / 计数 / 状态哈希 / 重算入口）',
     r10Html.includes('data-action="toggle-story-state"') && r10Html.includes('data-action="refresh-disclosure"')
       && r10Html.includes('状态哈希') && r10Html.includes('abcdef012345'),
     r10Html.includes('故事状态') ? 'has-card' : 'no-card');
@@ -1081,10 +1344,10 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
   P.state.authorStyle = null;
   P.state.editRules = null;
   containers['#board-content'] = mkEl('board-content');
-  P.goView('st');
+  P.goView('branch'); // T6：剧情分支沙盘已拆为独立页面
   await P.render();
   const r11 = String(containers['#content'].innerHTML) + String(containers['#board-content'].innerHTML);
-  check('R11-1 沙盘卡渲染出沙盘进度与候选（核心行动/冲突/计数/来源）',
+  check('R11-1 剧情分支独立页渲染出沙盘进度与候选（核心行动/冲突/计数/来源）',
     r11.includes('data-action="branch-open-sandbox"') && r11.includes('data-action="branch-submit"')
       && r11.includes('沙盘 #21') && r11.includes('候选 2/3') && r11.includes('还差 1 个')
       && r11.includes('林昭潜入潮汐钟楼夺取钥匙') && r11.includes('人物选择 1') && r11.includes('模型提交'),
@@ -3125,5 +3388,411 @@ P.traceStopStream();
     P.state.aiTaskRunning = saved.aiTaskRunning;
   }
 }
+// --- T6：五组独立导航（真实点击 + 每页只加载自己的数据）+ 章末状态面板 + 影响 / 逐章重建接线 ---
+{
+  const savedT6 = {
+    workId: P.state.workId, work: P.state.work, loadedWorkId: P.state.loadedWorkId,
+    chapters: P.state.chapters, volumes: P.state.volumes, characters: P.state.characters,
+    worldEntries: P.state.worldEntries, currentChapterId: P.state.currentChapterId,
+    view: P.state.view, aiTab: P.state.aiTab, storyState: P.state.storyState,
+    editRules: P.state.editRules, authorStyle: P.state.authorStyle, branch: P.state.branch,
+    rebuild: P.state.rebuild, rebuildLoaded: P.state.rebuildLoaded,
+    chapterPanel: P.state.chapterPanel, chapterProposals: P.state.chapterProposals,
+    chapterPanelView: P.state.chapterPanelView, chapterPanelFull: P.state.chapterPanelFull,
+    impactRuns: P.state.impactRuns, impactRun: P.state.impactRun, impactRootId: P.state.impactRootId,
+    repairRuns: P.state.repairRuns, repairRun: P.state.repairRun, repairPreview: P.state.repairPreview
+  };
+  const resetTemporalCaches = () => {
+    P.state.editRules = null; P.state.authorStyle = null; P.state.storyState = null; P.state.branch = null;
+    P.state.rebuild = null; P.state.rebuildLoaded = false;
+    P.state.impactRuns = null; P.state.impactRun = null;
+    P.state.repairRuns = null; P.state.repairRun = null; P.state.repairPreview = null;
+    P.state.chapterPanel = null; P.state.chapterProposals = null; P.state.chapterPanelView = 'cast';
+  };
+  P.state.workId = 1;
+  P.state.loadedWorkId = 1;
+  P.state.work = { title: 'T6 测试书', author_note: '作者注' };
+  P.state.volumes = [];
+  P.state.chapters = [
+    { id: 7, title: '第一章', content: '<p>旧正文第一段。</p>' },
+    { id: 8, title: '第二章', content: '<p>旧正文二段。</p><p>旧正文三段。</p>' }
+  ];
+  P.state.characters = [{ id: 9, name: '林昭' }]; // 注意：角色表里没有任何 status 字段
+  P.state.worldEntries = [];
+  P.state.currentChapterId = 7;
+  resetTemporalCaches();
+  containers['#board-content'] = mkEl('board-content');
+
+  // (1) 真实点击七个 tab（board-tab 是界面上的真实动作入口）：每一页只加载自己的数据
+  const tabChecks = [
+    { key: 'rules', must: ['/api/novel/editing'] },
+    { key: 'style', must: ['/api/novel/style/samples', '/api/novel/style/profile', '/api/novel/author_intent'] },
+    { key: 'story-state', must: ['/api/novel/story_state', '/api/novel/state/disclosure', '/api/novel/state/impact', '/api/novel/state/repair'] },
+    { key: 'branch', must: ['/api/novel/branch/sandboxes'] },
+    { key: 'rebuild', must: ['/api/import/rebuild/status'] }
+  ];
+  const otherPages = {
+    rules: ['/api/novel/style/', '/api/novel/story_state', '/api/novel/branch/', '/api/import/rebuild/status'],
+    style: ['/api/novel/editing', '/api/novel/story_state', '/api/novel/branch/', '/api/import/rebuild/status'],
+    'story-state': ['/api/novel/editing', '/api/novel/style/', '/api/novel/branch/', '/api/import/rebuild/status'],
+    branch: ['/api/novel/editing', '/api/novel/style/', '/api/novel/story_state', '/api/import/rebuild/status'],
+    rebuild: ['/api/novel/editing', '/api/novel/style/', '/api/novel/story_state', '/api/novel/branch/']
+  };
+  let isolationOk = true;
+  const isolationDetail = [];
+  for (const t of tabChecks) {
+    resetTemporalCaches();
+    const before = requests.length;
+    await P.handleAction('board-tab', { dataset: { action: 'board-tab', board: 'ai', tab: t.key } }, {});
+    const urls = requests.slice(before).map((r) => r.url);
+    const missMust = t.must.filter((m) => !urls.some((u) => u.includes(m)));
+    const leaked = (otherPages[t.key] || []).filter((m) => urls.some((u) => u.includes(m)));
+    if (missMust.length || leaked.length) isolationOk = false;
+    const pageHtml = String(containers['#board-content'].innerHTML);
+    isolationDetail.push(`${t.key}:miss=${missMust.join(',') || '-'};leak=${leaked.join(',') || '-'}`);
+    if (t.key === 'rules') {
+      check('T6-1 编辑规则页独立渲染（三档 / 能力 / 扫描 / 保存）', pageHtml.includes('name="edit-tier"') && pageHtml.includes('data-action="scan-edit-rules"') && pageHtml.includes('data-action="save-edit-rules"'));
+    }
+    if (t.key === 'rebuild') check('T6-2 导入后重建页独立渲染（有真实内容，不是空壳）', pageHtml.length > 200);
+  }
+  check('T6-3 五组独立页面各自只发自己的请求（切一页不连带读取其余四页）', isolationOk, isolationDetail.join(' | '));
+
+  // (1b) 旧路由键 st 仍是兼容别名，且不再连带加载五组
+  resetTemporalCaches();
+  {
+    const before = requests.length;
+    await P.handleAction('board-tab', { dataset: { action: 'board-tab', board: 'ai', tab: 'st' } }, {});
+    const urls = requests.slice(before).map((r) => r.url);
+    const html = String(containers['#board-content'].innerHTML);
+    check('T6-4 旧键 st 兼容：创作上下文仍可用，且不再自动加载编辑规则/样文/故事状态/沙盘/重建',
+      P.state.aiTab === 'st' && html.includes('🧩 创作上下文')
+        && !urls.some((u) => ['/api/novel/editing', '/api/novel/style/', '/api/novel/story_state', '/api/novel/branch/', '/api/import/rebuild/status'].some((m) => u.includes(m))),
+      urls.slice(0, 4).join(' | '));
+  }
+
+  // (2) 章末状态面板：读真实后端时态状态（角色表里没有 status，面板显示的只能是后端投影）
+  registered.set('#chapter-state-panel', mkEl('chapter-state-panel'));
+  registered.set('#repair-section', mkEl('repair-section'));
+  P.state.currentChapterId = 7;
+  P.state.chapterPanel = null; P.state.chapterProposals = null; P.state.chapterPanelView = 'cast';
+  temporalStub.panelCalls = [];
+  P.goView('writing');
+  await P.render();
+  await new Promise((r) => setTimeout(r, 80));
+  const panelEl = registered.get('#chapter-state-panel');
+  const panelHtml7 = String(panelEl.innerHTML);
+  const writingHtml = String(containers['#content'].innerHTML);
+  check('T6-5 面板两次读取都带 work_id/chapter_id（章节面板 + 本章提案组）',
+    requests.some((r) => r.url.includes('/api/novel/state/panel') && r.url.includes('work_id=1') && r.url.includes('chapter_id=7'))
+      && requests.some((r) => r.url.includes('/api/novel/state/proposal-groups') && r.url.includes('chapter_id=7')));
+  check('T6-6 面板渲染后端时态字段：出场角色 / 截至本章状态 / 状态变化 / 关系 / 剧情线 / 事件',
+    panelHtml7.includes('林昭') && panelHtml7.includes('本章出场') && panelHtml7.includes('存活')
+      && panelHtml7.includes('受伤') && panelHtml7.includes('师徒')
+      && panelHtml7.includes('黑风谷任务') && panelHtml7.includes('林昭潜入钟楼'),
+    panelHtml7.slice(0, 120));
+  check('T6-7 过去章节不显示未来状态（第 7 章不出现第 8 章才发生的战死）', !panelHtml7.includes('战死'));
+  check('T6-6b 面板表头含章节 / 章前章后 / 世界线 / 提交 / 有效性 / 可信前缀',
+    panelHtml7.includes('第一章') && panelHtml7.includes('章后状态') && panelHtml7.includes('世界线')
+      && panelHtml7.includes('提交 commit-abcde') && panelHtml7.includes('已确认（正式稿）') && panelHtml7.includes('可信前缀'));
+  check('T6-6c 状态变化带原文证据与「定位」入口（不是只有结论）',
+    panelHtml7.includes('原文证据') && panelHtml7.includes('伤口已经结痂') && panelHtml7.includes('data-action="panel-jump"'));
+  {
+    let jumped = false;
+    const fakeNode = { children: [], textContent: '他伤口已经结痂，动作却更快了。', scrollIntoView: () => { jumped = true; } };
+    const fakeEditor = mkEl('editor-content');
+    fakeEditor.querySelectorAll = () => [fakeNode];
+    registered.set('#editor-content', fakeEditor);
+    await P.handleAction('panel-jump', { dataset: { action: 'panel-jump', quote: '伤口已经结痂' } }, {});
+    check('T6-6d 证据「定位」在正文里找到引文后滚动到该段（不是只有按钮没有行为）', jumped === true);
+    fakeEditor.querySelectorAll = () => []; // 编辑器在，但正文里没有这段引文（比如正文已被改过）
+    await P.handleAction('panel-jump', { dataset: { action: 'panel-jump', quote: '正文里不存在的引文' } }, {});
+    const lastToast = containers['#toast-root'].children[containers['#toast-root'].children.length - 1];
+    check('T6-6e 找不到证据时给出诚实提示（不假装跳转成功）',
+      String((lastToast && lastToast.textContent) || '').includes('没有找到这段证据'), String((lastToast && lastToast.textContent) || ''));
+    registered.delete('#editor-content');
+  }
+  check('T6-8 面板在正文编辑区之外（editor-content / editor-status 之后），不进入正文字数与导出',
+    writingHtml.indexOf('id="chapter-state-panel"') > writingHtml.indexOf('id="editor-content"')
+      && writingHtml.indexOf('id="chapter-state-panel"') > writingHtml.indexOf('id="editor-status"'));
+
+  // (2b) 三档视图：切到「全部故事状态」会带 full=1 重新取数，并渲染完整状态条目
+  temporalStub.panelCalls.length = 0;
+  await P.setChapterPanelView('all');
+  const allHtml = String(panelEl.innerHTML);
+  check('T6-9 「全部故事状态」档带 full=1 重新取数，并渲染完整状态条目（域 + 值）',
+    temporalStub.panelCalls.some((c) => c.full === true) && allHtml.includes('全部故事状态')
+      && allHtml.includes('存活') && allHtml.includes('进行中'), JSON.stringify(temporalStub.panelCalls));
+  await P.setChapterPanelView('cast');
+
+  // (2c) 本章提案一次确认：真实 POST 到 proposal-groups/:id/apply（原子组，模型侧不能确认）
+  temporalStub.appliedProposals.length = 0;
+  await P.confirmChapterProposals();
+  check('T6-10 一次确认本章提案 = POST /novel/state/proposal-groups/:id/apply（无事件子集，整体确认）',
+    temporalStub.appliedProposals.length === 1
+      && requests.some((r) => r.method === 'POST' && r.url.includes('/api/novel/state/proposal-groups/bind-prop-1/apply')
+        && JSON.parse(String(r.body)).events === undefined && JSON.parse(String(r.body)).chapter_id === 7));
+
+  // (2d) 切章：面板请求目标章，且第 8 章显示第 8 章的状态（战死）
+  temporalStub.panelCalls.length = 0;
+  P.state.currentChapterId = 8;
+  await P.render();
+  await new Promise((r) => setTimeout(r, 80));
+  const panelHtml8 = String(panelEl.innerHTML);
+  check('T6-11 切章后面板请求本章（chapter_id=8）并显示该章状态（战死），不沿用上一章',
+    temporalStub.panelCalls.some((c) => c.chapterId === 8) && panelHtml8.includes('战死') && panelHtml8.includes('第二章'),
+    JSON.stringify(temporalStub.panelCalls));
+  // (2e) 迟到响应：先发的慢请求（第 7 章）不得把状态画到已切到的第 8 章
+  {
+    temporalStub.panelDelays = { 7: 120, 8: 10 };
+    P.state.currentChapterId = 7; P.state.chapterPanel = null; P.state.chapterProposals = null;
+    const slow = P.refreshChapterStatePanel(7);
+    await new Promise((r) => setTimeout(r, 5));
+    P.state.currentChapterId = 8;
+    await P.refreshChapterStatePanel(8);
+    await slow;
+    await new Promise((r) => setTimeout(r, 150));
+    const raced = String(panelEl.innerHTML);
+    check('T6-11b 迟到响应被请求序号拦下：慢的第 7 章响应不覆盖已切换到的第 8 章面板',
+      raced.includes('第二章') && raced.includes('战死') && !raced.includes('第一章'), raced.slice(0, 90));
+    temporalStub.panelDelays = null;
+    P.state.currentChapterId = 7; P.state.chapterPanel = null; P.state.chapterProposals = null;
+  }
+
+  // (3) 影响分析（只分析、只标记；隐性因果，不是角色名搜索）
+  P.state.currentChapterId = 7;
+  resetTemporalCaches();
+  P.goView('story-state');
+  await P.render();
+  const statePage1 = String(containers['#board-content'].innerHTML);
+  check('T6-12 影响区展示后端报告：需要复核 / 保留原文 / 隐性因果证据（前提 + 原文引文 + 资源依赖）',
+    statePage1.includes('需要复核') && statePage1.includes('保留原文')
+      && statePage1.includes('前提：王师傅仍然活着') && statePage1.includes('他还在等王师傅回信')
+      && statePage1.includes('王师傅的护身符') && statePage1.includes('<details') && statePage1.includes('展开原因与证据'));
+  temporalStub.impactPosts.length = 0;
+  await P.impactAnalyze();
+  check('T6-13 「分析影响」真实 POST（refresh=true）；分析阶段不产生任何正文写请求',
+    temporalStub.impactPosts.length === 1 && temporalStub.impactPosts[0].chapter_id === 7 && temporalStub.impactPosts[0].refresh === true
+      && !requests.some((r) => ['PUT', 'PATCH'].includes(r.method) && r.url.includes('/api/chapters/')));
+
+  // (4) 逐章重建：按钮 → 一次性审批 → 启动；运行中不出现「应用」；就绪后才可应用；预览读只读端点
+  temporalStub.repairRun = null; temporalStub.repairSteps = []; temporalStub.repairCandidate = null;
+  temporalStub.repairGate = { can_apply: false, reasons: ['运行状态为 running'] };
+  temporalStub.repairStarts.length = 0; temporalStub.repairActions.length = 0; temporalStub.approvals.length = 0;
+  P.state.repairRuns = null; P.state.repairRun = null;
+  await P.render();
+  await P.repairStart();
+  P.stopRepairPoll();
+  check('T6-14 重建必须先签发一次性审批：POST /novel/approvals(op=repair_run_start) → POST /repair/start(带 approval_id)',
+    temporalStub.approvals.length === 1 && temporalStub.approvals[0].op === 'repair_run_start' && temporalStub.approvals[0].root_chapter_id === 7
+      && temporalStub.repairStarts.length === 1 && temporalStub.repairStarts[0].approval_id === 'appr-1'
+      && temporalStub.repairStarts[0].root_chapter_id === 7 && temporalStub.repairStarts[0].work_id === 1);
+  const runningHtml = P.repairSectionHtml();
+  check('T6-15 运行中按章显示逐章进度；未就绪不出现「应用候选」按钮（只出现取消）',
+    runningHtml.includes('逐章进度') && runningHtml.includes('第一章') && runningHtml.includes('第二章')
+      && !runningHtml.includes('data-action="repair-apply"') && runningHtml.includes('data-action="repair-cancel"'));
+
+  // 就绪 + 有候选：应用按钮出现；预览走只读 revision 端点做真实 diff
+  temporalStub.repairRun = { ...temporalStub.repairRun, status: 'ready', result: { totals: { chapters: 2, kept: 1, repaired: 1, needs_review: 0, blocked: 0, model_calls: 2 }, halt: null } };
+  temporalStub.repairSteps = temporalStub.repairSteps.map((s) => (s.chapter_id === 8
+    ? { ...s, status: 'repaired', candidate_revision_id: 'rev-cand-1', candidate_binding_id: 'bind-cand-1', result: { reason: '按新前提最小修订' } }
+    : { ...s, status: 'kept', result: { reason: '正文仍成立，保留原文' } }));
+  temporalStub.repairCandidate = { head_commit_id: 'commit-cand-1', manifest_hash: 'manifest-hash-1' };
+  temporalStub.repairGate = { can_apply: true, reasons: [] };
+  await P.loadRepairRun('run-repair-1');
+  await P.render();
+  const readyHtml = P.repairSectionHtml();
+  check('T6-16 就绪后出现「应用候选（需一次性审批）」按钮；保留章与修订章分开显示，候选预览按钮只挂在有候选的章',
+    readyHtml.includes('data-action="repair-apply"') && readyHtml.includes('data-action="repair-preview"')
+      && readyHtml.includes('保留原文') && readyHtml.includes('按新前提最小修订'));
+  await P.repairPreview(0);
+  check('T6-17 候选预览读只读 /novel/state/revision（不是本地编造），并与当前正文逐段 diff',
+    requests.some((r) => r.method === 'GET' && r.url.includes('/api/novel/state/revision') && r.url.includes('revision_id=rev-cand-1'))
+      && String(containers['#board-content'].innerHTML).includes('新的正文第一段'));
+  temporalStub.approvals.length = 0;
+  await P.repairAction('apply');
+  check('T6-18 应用候选：签发 repair_run_apply 一次性审批 → POST /repair/apply（带 approval_id，正文切换由服务端原子完成）',
+    temporalStub.approvals.length === 1 && temporalStub.approvals[0].op === 'repair_run_apply' && temporalStub.approvals[0].run_id === 'run-repair-1'
+      && temporalStub.repairActions.some((a) => a.action === 'apply' && a.body.approval_id === 'appr-1' && a.body.run_id === 'run-repair-1'));
+
+  P.stopRepairPoll();
+  delete containers['#board-content'];
+  registered.delete('#chapter-state-panel');
+  registered.delete('#repair-section');
+  Object.assign(P.state, savedT6);
+  temporalStub.panelCalls = [];
+  temporalStub.appliedProposals = [];
+  temporalStub.impactPosts = [];
+  temporalStub.repairRun = null; temporalStub.repairSteps = []; temporalStub.repairCandidate = null;
+  temporalStub.repairGate = { can_apply: false, reasons: [] };
+  temporalStub.repairStarts = []; temporalStub.repairActions = []; temporalStub.approvals = [];
+}
+
+// --- T7：时态引擎开关（迁移门禁 / 预算告知）与存量重建（逐章按钮流程 + bootstrap 候选）---
+{
+  const savedT7 = {
+    workId: P.state.workId, work: P.state.work, loadedWorkId: P.state.loadedWorkId,
+    chapters: P.state.chapters, volumes: P.state.volumes, characters: P.state.characters,
+    currentChapterId: P.state.currentChapterId, view: P.state.view, aiTab: P.state.aiTab,
+    temporalEngine: P.state.temporalEngine, temporalEngineEnable: P.state.temporalEngineEnable,
+    backfill: P.state.backfill, backfillStep: P.state.backfillStep, backfillRunner: P.state.backfillRunner,
+    chapterPanel: P.state.chapterPanel
+  };
+  P.state.workId = 1; P.state.loadedWorkId = 1;
+  P.state.work = { title: 'T7 测试书' };
+  P.state.volumes = [];
+  P.state.chapters = [
+    { id: 7, title: '第一章', content: '<p>旧正文第一段。</p>' },
+    { id: 8, title: '第二章', content: '<p>旧正文二段。</p>' },
+    { id: 9, title: '第三章', content: '<p>旧正文三段。</p>' }
+  ];
+  P.state.characters = [{ id: 9, name: '王师傅' }];
+  P.state.currentChapterId = 7;
+  P.state.temporalEngine = null; P.state.temporalEngineEnable = null;
+  P.state.backfill = null; P.state.backfillStep = null; P.state.backfillRunner = null;
+  temporalStub.temporal = temporalStub.engineDefault();
+  temporalStub.backfill = temporalStub.backfillDefault();
+  temporalStub.temporalPuts.length = 0; temporalStub.stepPosts.length = 0;
+  temporalStub.confirmPosts.length = 0; temporalStub.bootstrapPosts.length = 0;
+  temporalStub.temporalFail = false; temporalStub.temporalBroken = false;
+  containers['#board-content'] = mkEl('board-content');
+
+  const lastToastText = () => {
+    const box = containers['#toast-root'];
+    const last = box && box.children[box.children.length - 1];
+    return String((last && last.textContent) || '');
+  };
+
+  // (1) 打开页面：引擎卡 + 存量重建卡都读真实后端字段
+  const before7 = requests.length;
+  P.goView('story-state');
+  await P.render();
+  await new Promise((r) => setTimeout(r, 40));
+  const t7page = String(containers['#board-content'].innerHTML);
+  const t7urls = requests.slice(before7).map((r) => r.url);
+  check('T7-1 故事状态页渲染引擎卡与存量重建卡（真实迁移 / 预算 / 逐章状态字段，不是占位文案）',
+    t7page.includes('时态状态引擎（迁移与开关）') && t7page.includes('旧作品默认不启用')
+      && t7page.includes('启用后的待重建范围：共 3 章') && t7page.includes('预计模型调用 2 次')
+      && t7page.includes('扫描旧字段待确认 1 条')
+      && t7page.includes('存量重建（逐章按叙事顺序）') && t7page.includes('可信前缀：截至第 1 章')
+      && t7page.includes('待处理章节（2）') && t7page.includes('未冻结修订'),
+    t7page.slice(0, 140));
+  check('T7-1b 页面真实请求 /novel/state/temporal 与 /novel/state/backfill（都带 work_id）',
+    t7urls.some((u) => u.includes('/api/novel/state/temporal') && u.includes('work_id=1'))
+      && t7urls.some((u) => u.includes('/api/novel/state/backfill') && u.includes('work_id=1')),
+    t7urls.slice(0, 6).join(' | '));
+  check('T7-2 三个开关分离：引擎 / 自动分析 / 逐章重建各自独立按钮，自动分析与重建在引擎未开启时不可点',
+    t7page.includes('data-flag="temporal_enabled"') && t7page.includes('data-flag="auto_analysis_enabled"') && t7page.includes('data-flag="repair_enabled"')
+      && /data-flag="auto_analysis_enabled"[^>]*disabled/.test(t7page) && /data-flag="repair_enabled"[^>]*disabled/.test(t7page));
+
+  // (2) 首次启用：只带一个 flag；enable_scope 展示预算与待重建范围
+  await P.temporalToggle('temporal_enabled', true);
+  const afterEnableHtml = String(containers['#board-content'].innerHTML);
+  check('T7-3 首次启用只 PUT temporal_enabled=true（不连带开启其它开关），并展示服务端 enable_scope（待重建 2 章 / 预计 2 次调用）',
+    temporalStub.temporalPuts.length === 1 && temporalStub.temporalPuts[0].temporal_enabled === true && temporalStub.temporalPuts[0].work_id === 1
+      && temporalStub.temporalPuts[0].auto_analysis_enabled === undefined && temporalStub.temporalPuts[0].repair_enabled === undefined
+      && afterEnableHtml.includes('启用范围（本次启用时告知）：待重建 2 章')
+      && lastToastText().includes('已启用') && lastToastText().includes('预计 2 次模型调用'),
+    JSON.stringify(temporalStub.temporalPuts) + ' | ' + lastToastText());
+
+  // (3) 自动分析（独立开关）与逐章重建（独立开关）各自 PUT 自己
+  await P.temporalToggle('auto_analysis_enabled', true);
+  await P.temporalToggle('repair_enabled', true);
+  check('T7-4 自动分析 / 逐章重建是独立开关：各自单独 PUT 自己的 flag（不重发引擎开关）',
+    temporalStub.temporalPuts.length === 3
+      && temporalStub.temporalPuts[1].auto_analysis_enabled === true && temporalStub.temporalPuts[1].temporal_enabled === undefined
+      && temporalStub.temporalPuts[2].repair_enabled === true && temporalStub.temporalPuts[2].temporal_enabled === undefined,
+    JSON.stringify(temporalStub.temporalPuts));
+
+  // (4) 迁移门禁：缺表时禁止开启（按钮禁用 + 明确警示）
+  temporalStub.temporalBroken = true; P.state.temporalEngine = null;
+  await P.render();
+  const brokenHtml = String(containers['#board-content'].innerHTML);
+  check('T7-5 迁移缺表/缺索引时禁止开启（按钮禁用 + 明确警示，不吞错误继续跑）',
+    brokenHtml.includes('缺失：story_commits') && brokenHtml.includes('迁移未完成前不允许开启')
+      && /data-flag="temporal_enabled"[^>]*disabled/.test(brokenHtml));
+  temporalStub.temporalBroken = false; P.state.temporalEngine = temporalStub.temporal = temporalStub.engineDefault();
+
+  // (5) 逐章：冻结并生成抽取请求（真实 POST，不带 result；不调用模型、不写正文）
+  temporalStub.stepPosts.length = 0;
+  const beforeStep = requests.length;
+  await P.backfillStepRun(8);
+  const stepHtml = String(containers['#board-content'].innerHTML);
+  check('T7-6 「冻结并生成抽取请求」真实 POST step（无 result、不调用模型），界面给出「复制抽取请求」与「记录本机结果」入口',
+    temporalStub.stepPosts.length === 1 && temporalStub.stepPosts[0].chapter_id === 8 && temporalStub.stepPosts[0].result === undefined
+      && stepHtml.includes('已生成抽取请求（未调用模型）') && stepHtml.includes('复制抽取请求')
+      && stepHtml.includes('data-action="backfill-record"') && stepHtml.includes('data-action="copy-text"'),
+    JSON.stringify(temporalStub.stepPosts) + ' | ' + stepHtml.slice(0, 120));
+  check('T7-6b 生成抽取请求不产生任何正文写入（没有 chapters 的 PUT/PATCH）',
+    !requests.slice(beforeStep).some((r) => ['PUT', 'PATCH'].includes(r.method) && r.url.includes('/api/chapters/')));
+
+  // (6) 记录本机结果：注入 runner 走本机管线 → 解析 JSON → POST step（带 result）→ 候选登记
+  let t7ranPrompt = '';
+  P.state.backfillRunner = async ({ prompt }) => {
+    t7ranPrompt = prompt;
+    return '```json\n{"events":[{"ops":[{"type":"set","cell":{"domain":"character","entityId":"王师傅","predicate":"status","scope":"canon","holderId":null},"expected":{"kind":"missing"},"value":"存活"}],"evidence":[{"quote":"他在等回信","narrative":"present"}]}]}\n```';
+  };
+  temporalStub.stepPosts.length = 0;
+  const beforeRecord = requests.length;
+  await P.backfillStepRun(8, { record: true });
+  check('T7-7 「记录本机结果」走本机管线（生产等价 runPipelineStage）：解析 JSON 后 POST step（带 result）→ 候选 pending_confirm，未写正式状态',
+    temporalStub.stepPosts.length === 1 && !!temporalStub.stepPosts[0].result && t7ranPrompt.includes('状态记账员')
+      && String(containers['#board-content'].innerHTML).includes('候选已登记（未写正式状态）')
+      && !requests.slice(beforeRecord).some((r) => r.method === 'POST' && r.url.includes('/novel/state/proposal-groups')),
+    t7ranPrompt.slice(0, 80));
+  P.state.backfillRunner = null;
+
+  // (7) 确认本章：作者动作、真实 POST；跳章被服务端拒绝时如实报错
+  temporalStub.confirmPosts.length = 0;
+  await P.backfillConfirmRun(8);
+  check('T7-8 「确认本章」真实 POST confirm（作者动作）；可信前缀提示来自服务端返回',
+    temporalStub.confirmPosts.length === 1 && temporalStub.confirmPosts[0].chapter_id === 8
+      && lastToastText().includes('可信前缀前进'), lastToastText());
+  await P.backfillConfirmRun(9);
+  check('T7-8b 跳章确认被服务端 409 拒绝时如实报错（不假装成功）', lastToastText().includes('确认失败'), lastToastText());
+
+  // (8) bootstrap：扫描旧字段建立候选；决定（开篇 / 拒绝 / 转本章）都真实 POST decide
+  temporalStub.bootstrapPosts.length = 0;
+  temporalStub.backfill = temporalStub.backfillDefault();
+  P.state.backfill = null;
+  await P.backfillBootstrapPlan();
+  const bootHtml = String(containers['#board-content'].innerHTML);
+  check('T7-9 「扫描旧字段建立候选」真实 POST bootstrap/plan；候选列表显示来源与值，并提供 开篇/拒绝/转章节 三种决定',
+    temporalStub.bootstrapPosts.some((x) => x.action === 'plan')
+      && bootHtml.includes('开篇设定候选（旧字段扫描）') && bootHtml.includes('王师傅')
+      && bootHtml.includes('characters.status') && bootHtml.includes('作为开篇设定')
+      && bootHtml.includes('data-effective="chapter"') && bootHtml.includes('转为该章提案'),
+    JSON.stringify(temporalStub.bootstrapPosts));
+  temporalStub.bootstrapPosts.length = 0;
+  await P.backfillBootstrapDecide('bind-boot-1', 'reject');
+  check('T7-9b 「拒绝」真实 POST decide(decision=reject)：不写任何状态（以服务端返回为准）',
+    temporalStub.bootstrapPosts.length === 1 && temporalStub.bootstrapPosts[0].body.decision === 'reject'
+      && temporalStub.bootstrapPosts[0].body.candidate_id === 'bind-boot-1');
+  temporalStub.bootstrapPosts.length = 0;
+  await P.backfillBootstrapDecide('bind-boot-1', 'confirm', 'chapter', 8);
+  check('T7-9c 「转为该章提案」带 effective=chapter + 作者指定 chapter_id（生效章由作者决定）',
+    temporalStub.bootstrapPosts.length === 1 && temporalStub.bootstrapPosts[0].body.effective === 'chapter'
+      && temporalStub.bootstrapPosts[0].body.chapter_id === 8 && temporalStub.bootstrapPosts[0].body.decision === 'confirm');
+
+  // (9) 接口失败不伪装：显示真实失败原因（不冒充"没有此功能"、不显示推测内容）
+  temporalStub.temporalFail = true; P.state.temporalEngine = null;
+  await P.render();
+  check('T7-10 引擎接口失败时显示读取失败与原因（不冒充"未开启"，也不显示推测内容）',
+    String(containers['#board-content'].innerHTML).includes('读取失败：temporal boom'));
+  temporalStub.temporalFail = false; P.state.temporalEngine = null;
+
+  // (10) 章末面板空态指向本页开关（跨页闭环）
+  P.state.chapterPanel = { enabled: false };
+  check('T7-11 章末面板未启用空态指向「🧭 故事状态与披露」页开启（与 T7 开关卡闭环）',
+    P.chapterPanelHtml().includes('可在「🧭 故事状态与披露」页开启'));
+
+  delete containers['#board-content'];
+  Object.assign(P.state, savedT7);
+  temporalStub.temporal = temporalStub.engineDefault();
+  temporalStub.backfill = temporalStub.backfillDefault();
+  temporalStub.temporalPuts.length = 0; temporalStub.stepPosts.length = 0;
+  temporalStub.confirmPosts.length = 0; temporalStub.bootstrapPosts.length = 0;
+  temporalStub.temporalFail = false; temporalStub.temporalBroken = false;
+}
+
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);
 process.exit(failures ? 1 : 0);
