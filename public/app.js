@@ -59,6 +59,10 @@ function policyEffort(mode) {
 const state = {
   aiPolicy: null, // GET /api/ai/policy 的策略快照（P4）：模型档位与档位→强度表的唯一来源
   works: [],
+  // 作品库卡片的轻量派生信息（章节数、最近章节、字数）。不写回服务端，
+  // 作品数据刷新时清空，避免把旧作品的恢复位置误显示到新卡片上。
+  workMeta: new Map(),
+  worksQuery: '',
   workId: null,
   work: null,
   loadedWorkId: null,
@@ -114,6 +118,11 @@ const state = {
   searchTimer: null,
   editorSaveTimer: null,
   editorSaveSnapshot: null, // F-01：自动保存的内容快照，切章/切视图时 flushSave 直接落盘
+  editorSaveInFlight: new Map(), // 发送中的章节保存请求；导航时等待，避免只清定时器却丢回包
+  editorConflictSnapshot: null, // 409 时保留本地稿，先让作者处理冲突，不静默覆盖
+  editorSaveFailedSnapshot: null,
+  editorComposing: false,
+  imeComposing: false,
   aiTaskRunning: false, // F-43：harness 任务互斥锁
   demoStatusLoaded: false, // F-30：示例状态缓存，避免每次渲染都请求 /demo/status
   demoStatus: null,
@@ -124,6 +133,7 @@ const state = {
   //                    而取消只能靠 ✕ / 取消按钮——误触一次就丢掉提问/结果，代价不对称）
   modalBaseline: null,
   modalProtected: false,
+  modalReturnFocus: null,
   pendingAIApply: null,
   pendingAIInstruction: null,
   pendingAIQuestion: null,
@@ -160,7 +170,10 @@ const state = {
   chapterDraft: null,
   chapterReview: null,
   chapterJobs: [],
-  recoveryForChapter: null
+  recoveryForChapter: null,
+  commandPalette: { open: false, query: '', items: [], active: 0, seq: 0, visibleItems: [], returnFocus: null, status: 'idle', error: '' },
+  lastRenderedRoute: null,
+  sidebarCollapsed: (() => { try { const saved = localStorage.getItem('ns_sidebar_collapsed'); return saved === '1' || (saved === null && typeof window !== 'undefined' && window.innerWidth <= 720); } catch (_) { return typeof window !== 'undefined' && window.innerWidth <= 720; } })()
 };
 
 // 合并后的侧栏板块：小说设定 / AI创造板块（进入作品后）
@@ -172,7 +185,6 @@ const HOME_AI_VIEWS = ['ai-create', 'ai'];
 
 // 统一跳转：把旧子页面视图映射到对应的板块；未进入作品时按初始页视图分流。
 function goView(view) {
-  flushSave(); // F-01：离开写作视图前先落盘，避免 800ms 定时器在编辑器被替换后丢字
   if (SETTINGS_VIEWS.includes(view)) {
     state.settingsTab = view;
     state.view = 'settings';
@@ -656,6 +668,7 @@ function enhanceModalGenFill() {
 
 function openModal({ title, body, footer = '', large = false, protectedBackdrop = false } = {}) {
   const root = $('#modal-root');
+  state.modalReturnFocus = document.activeElement;
   root.innerHTML = `
     <div class="modal-backdrop" data-modal-backdrop>
       <div class="modal ${large ? 'large' : ''}">
@@ -672,6 +685,8 @@ function openModal({ title, body, footer = '', large = false, protectedBackdrop 
   state.modalBaseline = JSON.stringify(collectModalData(root));
   state.modalProtected = protectedBackdrop === true;
   enhanceModalGenFill();
+  const first = root.querySelector('[data-close-modal], input, textarea, select, button');
+  if (first && typeof first.focus === 'function') setTimeout(() => first.focus(), 0);
 }
 
 /**
@@ -719,7 +734,10 @@ function closeModal() {
   // 弹窗关闭闸的状态同理：必须在同一处清空，否则下一个弹窗会继承上一个的快照/保护位。
   state.modalBaseline = null;
   state.modalProtected = false;
+  const returnFocus = state.modalReturnFocus;
+  state.modalReturnFocus = null;
   $('#modal-root').innerHTML = '';
+  if (returnFocus && typeof returnFocus.focus === 'function' && document.contains(returnFocus)) returnFocus.focus();
 }
 
 function collectModalData(modalEl) {
@@ -828,12 +846,57 @@ function setSidebar(show) {
   const sidebar = $('#sidebar');
   // F-13：侧栏折叠改用 .collapsed（margin-left 动画），不再用 .hidden（display:none 会吞掉动画）。
   sidebar.classList.remove('hidden');
-  sidebar.classList.toggle('collapsed', !show);
+  if (show) {
+    // render() 会被大量交互调用，不能每次重置作者刚刚折叠的侧栏。
+  sidebar.classList.toggle('collapsed', !!state.sidebarCollapsed);
+  } else {
+    state.sidebarCollapsed = true;
+    sidebar.classList.add('collapsed');
+  }
   updateSidebarToggleIcon();
+  const backdrop = $('#sidebar-backdrop');
+  if (backdrop) backdrop.classList.toggle('visible', show && !state.sidebarCollapsed && window.innerWidth <= 720);
+}
+
+function setEditorComposition(composing) {
+  state.editorComposing = !!composing;
+  state.imeComposing = !!composing;
+  if (composing) {
+    clearTimeout(state.editorSaveTimer);
+    state.editorSaveTimer = null;
+  } else if (state.editorSaveSnapshot) {
+    scheduleSave();
+  }
 }
 
 function setTopbarTitle(text) {
   $('#topbar-title').textContent = text;
+  const context = $('#topbar-context');
+  if (!context) return;
+  const chapter = state.currentChapterId ? state.chapters.find((c) => Number(c.id) === Number(state.currentChapterId)) : null;
+  const work = state.work && state.work.title ? state.work.title : '';
+  const parts = [work, chapter && chapter.title].filter(Boolean);
+  context.textContent = parts.length ? parts.join('  /  ') : '';
+}
+
+// 主题只改变呈现，不触发作品数据刷新或编辑器重建；偏好是轻量 UI 状态。
+function applyTheme(theme, { persist = true } = {}) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  if (persist) {
+    try { localStorage.setItem('ns_theme', next); } catch (_) { /* 存储不可用时仅本次会话生效 */ }
+  }
+  const button = $('#theme-toggle');
+  if (button) {
+    button.textContent = next === 'dark' ? '☼ 浅色' : '☾ 深色';
+    button.title = next === 'dark' ? '切换到浅色主题' : '切换到深色主题';
+    button.setAttribute('aria-label', button.title);
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  applyTheme(current === 'dark' ? 'light' : 'dark');
 }
 
 function updateSidebarTitle() {
@@ -846,12 +909,65 @@ function updateSidebarTitle() {
 async function loadWorks(force = false) {
   if (force || !state.works.length) {
     state.works = await api('/works');
+    if (force) state.workMeta.clear();
   }
   return state.works;
 }
 
+// 作品库使用现有 /chapters 与 /stats 接口做轻量派生，不修改后端返回契约。
+// 失败时保留卡片本身可用，避免统计接口故障阻断“继续写作”。
+async function loadWorkMeta(workId, { force = false } = {}) {
+  const id = Number(workId) || 0;
+  if (!id) return null;
+  if (!force && state.workMeta.has(id)) return state.workMeta.get(id);
+  try {
+    // /stats 只提供计数，且 total_chapters 是计划值而非完成度；章节列表已经
+    // 包含作品卡需要的真实数量与最近编辑信息，避免为每张卡再发一条请求。
+    const chapters = await api(`/chapters?work_id=${id}`);
+    const rows = Array.isArray(chapters) ? chapters : [];
+    const recent = [...rows].sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))[0] || null;
+    const meta = {
+      chapters: rows.length,
+      words: rows.reduce((sum, chapter) => sum + chapterWordCount(chapter), 0),
+      recentTitle: recent?.title || '',
+      recentId: recent?.id || null,
+      recentUpdatedAt: recent?.updated_at || recent?.created_at || '',
+      status: 'ok'
+    };
+    state.workMeta.set(id, meta);
+    return meta;
+  } catch (_) {
+    const meta = { chapters: null, words: null, recentTitle: '', recentId: null, recentUpdatedAt: '', status: 'error' };
+    state.workMeta.set(id, meta);
+    return meta;
+  }
+}
+
+function formatWorkTime(ts) {
+  if (!ts) return '尚未编辑';
+  try {
+    const d = new Date(ts);
+    if (!Number.isFinite(d.getTime())) return String(ts).replace('T', ' ').slice(0, 16);
+    const now = Date.now();
+    const delta = Math.max(0, now - d.getTime());
+    if (delta < 60 * 60 * 1000) return `${Math.max(1, Math.floor(delta / 60000))} 分钟前`;
+    if (delta < 24 * 60 * 60 * 1000) return `${Math.floor(delta / 3600000)} 小时前`;
+    if (delta < 7 * 24 * 60 * 60 * 1000) return `${Math.floor(delta / 86400000)} 天前`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  } catch (_) { return String(ts || '').replace('T', ' ').slice(0, 16) || '尚未编辑'; }
+}
+
+function workStatusLabel(work, meta) {
+  if (meta?.status === 'error') return { label: '信息暂不可用', cls: 'quiet' };
+  const count = Number(meta?.chapters);
+  if (!Number.isFinite(count)) return { label: '信息暂不可用', cls: 'quiet' };
+  if (!(Number(meta?.words) > 0)) return { label: '尚未动笔', cls: 'quiet' };
+  return { label: '已有正文', cls: 'active' };
+}
+
 async function loadWorkData(force = false) {
-  flushSave(); // F-01：加载数据前先落盘当前编辑器，覆盖切视图/切作品的路径（幂等，无待保存快照时为空操作）
+  // 读取新页面前等待当前章节的保存请求；调用方在改变 route 前也会执行同一闸门。
+  if (!(await flushSave())) throw new Error('本地内容尚未保存，请先处理保存冲突');
   if (!state.workId) return;
   if (!force && state.loadedWorkId === state.workId) return;
   const workId = state.workId;
@@ -882,6 +998,17 @@ async function loadWorkData(force = false) {
   if (!state.activeConfigId && apiConfigs.length) state.activeConfigId = apiConfigs[0].id;
 }
 
+// 所有会替换编辑器或作品上下文的入口共用这一闸门。失败时保留当前正文与光标，
+// 不让一次点击把未保存稿带到另一个作品/章节。
+async function ensureSavedBeforeNavigation() {
+  const ok = await flushSave();
+  if (!ok) {
+    toast('当前章节未能保存，已保留原页面；请处理保存冲突后再离开', 'error');
+    return false;
+  }
+  return true;
+}
+
 // ---------- render dispatch ----------
 function updateNavVisibility() {
   $$('#sidebar-nav button[data-view]').forEach((b) => {
@@ -895,6 +1022,11 @@ function updateNavVisibility() {
     } else {
       b.classList.toggle('hidden', !state.workId);
     }
+  });
+  $$('.nav-section-label').forEach((label) => {
+    const section = label.dataset.navSection;
+    const visible = section === 'global' ? !state.workId : section === 'workspace' ? !!state.workId : true;
+    label.classList.toggle('hidden', !visible);
   });
 }
 
@@ -1179,7 +1311,15 @@ function renderLogs(content) {
 }
 
 async function render() {
+  // 最后一道替换 DOM 的保护：包括旧的内部 render() 调用。失败时恢复路由，
+  // 页面与内存指向同一章，保留原编辑节点（以及原生撤销栈）。
+  if (!(await flushSave())) {
+    if (state.lastRenderedRoute) Object.assign(state, state.lastRenderedRoute);
+    return false;
+  }
+  document.body.classList.remove('writing-focus-active');
   await renderView();
+  state.lastRenderedRoute = Object.fromEntries(['workId', 'work', 'loadedWorkId', 'view', 'settingsTab', 'aiTab', 'currentChapterId'].map((key) => [key, state[key]]));
   persistSession();
   // 编辑器在 DOM 里时才刷新「生成稿 / 上次审稿」条（异步，不阻塞渲染）。
   const editor = typeof document !== 'undefined' ? document.getElementById('editor-content') : null;
@@ -1205,8 +1345,10 @@ function recoveryBarHtml(current) {
   const draftOk = d && Number(d.chapter_id) === Number(current.id);
   const reviewOk = r && Number(r.chapter_id) === Number(current.id);
   const jobs = Array.isArray(state.chapterJobs) ? state.chapterJobs : [];
-  if (!draftOk && !reviewOk && !jobs.length) return '';
+  const saveFailed = state.editorSaveFailedSnapshot && Number(state.editorSaveFailedSnapshot.id) === Number(current.id);
+  if (!draftOk && !reviewOk && !jobs.length && !saveFailed) return '';
   const items = [];
+  if (saveFailed) items.push(`<span class="recovery-item">⚠ 正文保存失败：${esc(state.editorSaveFailedSnapshot.message || '请重试')} <button class="btn small" data-action="manual-save-chapter">重试保存</button></span>`);
   // 长任务：刷新/重启后仍要看得出「还在跑」还是「跑完了没应用」。
   for (const j of jobs.slice(0, 4)) {
     const st = jobStatusLabel(j);
@@ -2189,13 +2331,26 @@ async function renderWorks() {
   // F-41：demo.work_id 可能是字符串，比较前 Number() 归一化，避免类型不一致导致示例书重复出现。
   const demoWorkId = demoExists && demo.work_id ? Number(demo.work_id) : null;
   const visibleWorks = demoWorkId ? works.filter((w) => w.id !== demoWorkId) : works;
+  // 作品卡需要真实字数时才读章节正文；限制并发，避免作品库打开瞬间把所有长章节
+  // 一起搬进内存。每张卡仍独立失败，不阻断其它作品。
+  const queue = [...visibleWorks];
+  const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+    while (queue.length) await loadWorkMeta(queue.shift().id).catch(() => null);
+  });
+  await Promise.all(workers);
+  const sortedWorks = [...visibleWorks].sort((a, b) => {
+    const aTime = String(a.updated_at || a.created_at || '');
+    const bTime = String(b.updated_at || b.created_at || '');
+    return bTime.localeCompare(aTime);
+  });
   content.innerHTML = `
     <div class="page-head">
       <div>
         <h1 class="page-title">我的作品</h1>
-        <div class="page-sub">管理你的所有小说项目</div>
+        <div class="page-sub">最近编辑的作品排在前面，快速回到最近编辑章节继续写作</div>
       </div>
       <div class="page-actions">
+        <input id="works-filter" class="works-filter" type="search" placeholder="筛选作品…" value="${esc(state.worksQuery)}" aria-label="筛选作品">
         <button class="btn secondary" data-action="import-work">📥 导入作品</button>
         <button class="btn" data-action="new-work">＋ 新建作品</button>
       </div>
@@ -2204,21 +2359,36 @@ async function renderWorks() {
     ${visibleWorks.length ? '' : demoWorkId
       ? '<div class="empty">还没有你自己的作品：《雾都缝匠》是下方示例数据，可直接打开体验；点击右上角“新建作品”或在左侧「✨ AI 创作」用 AI 一键生成，开始你自己的创作。</div>'
       : '<div class="empty">还没有作品：可点击右上角“新建作品”手动创建，或在左侧「✨ AI 创作」用 AI 一键生成，也可导入下方示例小说体验。</div>'}
-    <div class="grid cols-3">
-      ${visibleWorks.map((w) => `
-        <div class="card work-card">
-          <div class="work-card-main" data-action="open-work" data-id="${w.id}">
-            <div class="card-title">${esc(w.title)}</div>
-            <div class="desc">${esc(w.description || '暂无简介')}</div>
-            <div class="muted" style="font-size:12px;margin-top:8px">更新于 ${esc((w.updated_at || '').replace('T', ' ').slice(0, 16))}</div>
+    ${sortedWorks.length ? `<div class="works-grid">
+      ${sortedWorks.map((w, index) => {
+        const meta = state.workMeta.get(Number(w.id)) || {};
+        const status = workStatusLabel(w, meta);
+        return `
+        <article class="card work-card work-card-rich" data-work-search="${esc(`${w.title || ''} ${w.description || ''}`.toLowerCase())}"${state.worksQuery && !`${w.title || ''} ${w.description || ''}`.toLowerCase().includes(state.worksQuery.trim().toLowerCase()) ? ' hidden' : ''}>
+          <div class="work-spine" aria-hidden="true"><span>${String(index + 1).padStart(2, '0')}</span></div>
+          <div class="work-card-content">
+            <div class="work-card-topline">
+              <span class="work-status ${esc(status.cls)}">${esc(status.label)}</span>
+              <span class="muted work-updated">${esc(formatWorkTime(w.updated_at || w.created_at))}</span>
+            </div>
+            <button class="work-card-main" data-action="open-work" data-id="${w.id}" aria-label="打开《${esc(w.title)}》">
+              <h2 class="work-card-title">${esc(w.title)}</h2>
+              <div class="desc">${esc(w.description || '暂无简介')}</div>
+            </button>
+            <div class="work-meta-row">
+              <span>章节 <b>${Number.isFinite(Number(meta.chapters)) ? esc(meta.chapters) : '—'}</b></span>
+              <span>字数 <b>${Number.isFinite(Number(meta.words)) ? esc(Number(meta.words).toLocaleString()) : '—'}</b></span>
+            </div>
+            <div class="work-recent"><span class="muted">最近编辑章节</span><b>${esc(meta.recentTitle || (meta.status === 'error' ? '信息暂不可用' : '尚未开始写作'))}</b></div>
+            <div class="work-card-actions">
+              <button class="btn" data-action="continue-work" data-id="${w.id}">${meta.recentId ? '继续写作' : '打开作品'}</button>
+              <button class="btn small secondary" data-action="edit-work" data-id="${w.id}">编辑</button>
+              <button class="btn small danger" data-action="delete-work" data-id="${w.id}">删除</button>
+            </div>
           </div>
-          <div class="work-card-actions">
-            <button class="btn small secondary" data-action="edit-work" data-id="${w.id}">编辑</button>
-            <button class="btn small danger" data-action="delete-work" data-id="${w.id}">删除</button>
-          </div>
-        </div>
-      `).join('')}
-    </div>
+        </article>`;
+      }).join('')}
+    </div>` : ''}
     <div class="card mt-12">
       <div class="card-head">
         <span class="card-title">🧪 示例小说</span>
@@ -2750,6 +2920,7 @@ async function renderWriting(content) {
   const volumes = state.volumes;
   if (!state.currentChapterId && chapters.length) state.currentChapterId = chapters[0].id;
   const current = state.currentChapterId ? chapters.find((c) => c.id === state.currentChapterId) : null;
+  setTopbarTitle(state.work ? state.work.title : '作品');
   // F-27：预构建索引，避免每个卷/未分卷节点都全量 filter chapters（O(N²)→O(N)）。
   const { rootsOfVolume } = buildChapterIndex();
   const rootsOfVolumeFn = (vid) => rootsOfVolume.get(vid) || [];
@@ -2777,10 +2948,10 @@ async function renderWriting(content) {
     </ul>`;
 
   content.innerHTML = `
-    <div class="page-head">
+    <div class="writing-head page-head">
       <div>
-        <h1 class="page-title">正文写作</h1>
-        <div class="page-sub">选择章节，专注写作；可随时切换单栏 / 两栏 / 三栏</div>
+        <div class="writing-breadcrumb"><span>写作台</span><span aria-hidden="true">/</span><b>${esc(current ? current.title : '未选择章节')}</b></div>
+        <div class="page-sub">正文保存与故事状态分开显示；参考资料按需展开</div>
       </div>
       <div class="page-actions">
         <div class="row" style="gap:4px">
@@ -2788,6 +2959,7 @@ async function renderWriting(content) {
           <button class="btn small ${state.editorLayout === 'two' ? '' : 'secondary'}" data-action="set-layout" data-layout="two">两栏</button>
           <button class="btn small ${state.editorLayout === 'three' ? '' : 'secondary'}" data-action="set-layout" data-layout="three">三栏</button>
         </div>
+        <button class="btn small secondary" data-action="focus-mode">专注模式</button>
         <button class="btn secondary" data-action="go-view" data-view="outline">大纲</button>
         <button class="btn" data-action="new-chapter">＋ 新章节</button>
       </div>
@@ -2830,15 +3002,18 @@ async function renderWriting(content) {
         <div id="chapter-state-panel" class="chapter-state-panel" data-chapter-id="${current.id}" data-boundary="after"><div class="muted">正在读取本章状态…</div></div>
       </div>
       <div class="panel panel-reference">
-        <div class="reference-tabs">
+        <div class="reference-tabs reference-groups">
+          <button class="active" data-action="ref-tab" data-tab="terms">参考</button>
+          <button data-action="ref-tab" data-tab="context"${helpTitle('context_preview')}>上下文</button>
+          <button data-action="ref-tab" data-tab="ai">AI 工具</button>
+          <span class="grow"></span>
+          <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
+        </div>
+        <div class="reference-subtabs" aria-label="参考类别">
           <button class="active" data-action="ref-tab" data-tab="terms">设定</button>
           <button data-action="ref-tab" data-tab="characters">角色</button>
           <button data-action="ref-tab" data-tab="foreshadows"${helpTitle('event_ledger')}>伏笔</button>
           <button data-action="ref-tab" data-tab="redlines"${helpTitle('redline')}>红线</button>
-          <button data-action="ref-tab" data-tab="context"${helpTitle('context_preview')}>上下文</button>
-          <button data-action="ref-tab" data-tab="ai">AI</button>
-          <span class="grow"></span>
-          <button class="btn small secondary" data-action="ref-preview-toggle" title="展开/收起设定词条的内容预览">${state.refPreview ? '收起预览' : '展开预览'}</button>
         </div>
         <div class="reference-list" id="reference-list"></div>
       </div>
@@ -2855,6 +3030,16 @@ async function renderWriting(content) {
 function bindEditorEvents() {
   const editor = $('#editor-content');
   if (!editor) return;
+  const beginComposition = () => setEditorComposition(true);
+  const endComposition = () => setEditorComposition(false);
+  editor.addEventListener('compositionstart', beginComposition);
+  editor.addEventListener('compositionend', endComposition);
+  const title = $('#editor-title');
+  if (title) {
+    title.addEventListener('input', scheduleSave);
+    title.addEventListener('compositionstart', beginComposition);
+    title.addEventListener('compositionend', endComposition);
+  }
   editor.addEventListener('input', () => {
     const count = wordCount(editor.innerText || '');
     const el = $('#editor-count');
@@ -3098,7 +3283,9 @@ function renderReference(tab = 'terms') {
   const list = $('#reference-list');
   if (!list) return;
   state.refTab = tab;
-  $$('.reference-tabs button[data-action="ref-tab"]').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.reference-tabs button[data-action="ref-tab"], .reference-subtabs button[data-action="ref-tab"]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
   if (tab === 'terms') {
     // 专项 A：词条默认折叠为标题（一行一条），需要预览时点右上角「展开预览」
     list.innerHTML = `
@@ -3202,26 +3389,40 @@ function scheduleSave() {
     content: editor ? editor.innerHTML : '',
     title: title ? title.value : ''
   };
-  state.editorSaveTimer = setTimeout(() => {
+  if (!state.editorComposing) state.editorSaveTimer = setTimeout(() => {
     state.editorSaveTimer = null;
     const snap = state.editorSaveSnapshot;
     state.editorSaveSnapshot = null;
-    if (snap) saveChapterSnapshot(snap);
+    if (snap && !state.editorConflictSnapshot) saveChapterSnapshot(snap);
+    else if (snap) state.editorSaveSnapshot = snap;
   }, 800);
   const status = $('#editor-status');
-  if (status) status.innerHTML = '<span>编辑中...</span>';
+  if (status) {
+    const count = editor ? wordCount(editor.innerText || '') : 0;
+    status.innerHTML = `<span>编辑中...</span> · <span id="editor-count">${count}</span> 字`;
+  }
 }
 
 // F-01：立即落盘——清掉待执行的定时器并把最新快照同步保存（幂等：无待保存快照时为空操作）。
 // 在所有「切换章节 / 离开写作视图 / 切换作品 / 手动·批量保存前」路径调用，确保 800ms 内切章不丢字。
-function flushSave() {
-  if (!state.editorSaveTimer) return Promise.resolve(true);
+async function flushSave() {
+  if (state.editorComposing || state.editorConflictSnapshot) return false;
   clearTimeout(state.editorSaveTimer);
   state.editorSaveTimer = null;
-  const snap = state.editorSaveSnapshot;
-  state.editorSaveSnapshot = null;
-  if (!snap) return Promise.resolve(true);
-  return saveChapterSnapshot(snap);
+  // 等待时作者仍可能输入。循环处理最新快照，而不是把旧请求成功当作最新稿成功。
+  while (state.editorSaveSnapshot || state.editorSaveInFlight.size) {
+    if (state.editorComposing || state.editorConflictSnapshot) return false;
+    const snap = state.editorSaveSnapshot;
+    state.editorSaveSnapshot = null;
+    const results = await Promise.all([
+      ...(snap ? [saveChapterSnapshot(snap)] : []),
+      ...state.editorSaveInFlight.values()
+    ]);
+    if (!results.every(Boolean)) return false;
+    clearTimeout(state.editorSaveTimer);
+    state.editorSaveTimer = null;
+  }
+  return !state.editorSaveFailedSnapshot && !state.editorConflictSnapshot;
 }
 
 // 参考面板「伏笔」页签：未闭合/已回收/已废弃分组，可跳转章节、标记状态。
@@ -3369,24 +3570,33 @@ async function saveChapterSnapshot({ id, content, title }) {
     summary: chapter?.summary || ''
   };
   if (chapter?.updated_at) body._if_updated_at = chapter.updated_at;
-  try {
+  const request = (async () => {
+   try {
     const updated = await api(`/chapters/${id}`, { method: 'PUT', body });
     const idx = state.chapters.findIndex((c) => c.id === id);
     if (idx >= 0) state.chapters[idx] = updated;
+    if (state.workId) state.workMeta.delete(Number(state.workId));
+    state.editorSaveFailedSnapshot = null;
     const status = $('#editor-status');
     if (status) status.innerHTML = '<span class="ok">✔ 已自动保存</span> · <span>' + wordCount(content) + '</span> 字';
     return true;
   } catch (e) {
     if (e.status === 409) {
-      // F-08：内容已在其它窗口被修改，丢弃本次写入并重新加载最新数据。
-      toast('内容已在其他窗口被修改，已重新加载', 'error');
-      try { await loadWorkData(true); } catch (_) { /* 刷新失败时保留现状 */ }
+      // UI-2：冲突时保留本地快照；自动刷新服务端内容会静默抹掉作者刚输入的文字。
+      state.editorConflictSnapshot = { id, content, title, serverUpdatedAt: chapter?.updated_at || null };
+      toast('检测到其他窗口的修改，本地内容已保留，请先处理冲突', 'error');
+      const status = $('#editor-status');
+      if (status) status.innerHTML = '<span class="err">保存冲突：本地内容已保留</span>';
       return false;
     }
     const status = $('#editor-status');
     if (status) status.innerHTML = `<span class="err">保存失败：${esc(e.message)}</span>`;
+    state.editorSaveFailedSnapshot = { id, content, title, message: e.message || '保存失败' };
     return false;
-  }
+   }
+  })();
+  state.editorSaveInFlight.set(Number(id), request);
+  try { return await request; } finally { if (state.editorSaveInFlight.get(Number(id)) === request) state.editorSaveInFlight.delete(Number(id)); }
 }
 
 async function saveCurrentChapter() {
@@ -5550,11 +5760,11 @@ async function openProposalConfirm() {
     return;
   }
   openModal({
-    title: '📥 待确认入账提案',
+    title: '📥 待审核提案（候选）',
     body: list.length
-      ? `<div class="muted mb-8">以下内容是 AI 生成任务中提交的事件/记忆，确认后才会写入作品账本：</div>
+      ? `<div class="muted mb-8">以下内容仍是候选，不会自动修改正文或故事状态。请核对来源、时间和影响后再采纳：</div>
          <div class="proposal-box">${list.map(proposalItemHtml).join('')}</div>`
-      : '<div class="muted">当前没有待确认的提案。AI 写作完成后的收尾入账会先出现在这里。</div>',
+      : '<div class="muted">当前没有待审核提案。AI 写作完成后的收尾入账会先以候选状态出现在这里。</div>',
     footer: list.length
       ? `<button class="btn secondary" data-close-modal>稍后处理</button>
          <button class="btn secondary" data-action="proposal-reject-selected">忽略所选</button>
@@ -8686,14 +8896,20 @@ function proposalItemHtml(p) {
   const icon = p.type === 'memory' ? '🧠' : (p.kind === 'foreshadow' ? '🎯' : '📌');
   const kindLabel = p.type === 'memory' ? '长期记忆' : (p.kind === 'foreshadow' ? '伏笔' : '事件');
   const text = p.type === 'memory' ? (p.summary || p.delta || '') : p.summary || '';
+  const source = p.type === 'memory' ? '记忆提案' : '事件提案';
+  const impact = p.note || (p.type === 'memory' ? '会更新长期记忆摘要' : '会写入事件账本');
+  const created = p.created_at ? formatWorkTime(p.created_at) : '时间未知';
   return `<label class="proposal-item"><input type="checkbox" data-proposal-id="${Number(p.id)}" checked>
-    <span>${icon} ${kindLabel}：${esc(String(text).slice(0, 120))}</span></label>`;
+    <span class="proposal-item-copy"><span><b>${icon} ${kindLabel}</b> <span class="chip">待确认</span></span>
+      <span>${esc(String(text).slice(0, 180))}</span>
+      <small class="muted">来源：${esc(source)} · 创建于 ${esc(created)} · 影响：${esc(impact)}</small>
+    </span></label>`;
 }
 
 function proposalsSummaryHtml(proposals) {
   if (!Array.isArray(proposals) || !proposals.length) return '';
   return `<div class="proposal-box">
-    <div class="proposal-head">📥 AI 提交了 ${proposals.length} 条入账提案（尚未写入作品账本，随正文采纳一起生效）：</div>
+    <div class="proposal-head">📥 候选提案 · ${proposals.length} 条（尚未写入作品账本，需你逐条确认）：</div>
     ${proposals.map(proposalItemHtml).join('')}
     <div class="muted mt-4">取消勾选可暂时保留，稍后在「小说设定 → 长期记忆」页处理。</div>
   </div>`;
@@ -8843,6 +9059,7 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
     openModal({
       title: 'AI 写作结果',
       body: `
+        <div class="ai-candidate-banner"><span class="chip">Candidate · 待确认</span><span class="muted">这份内容只是一版候选草稿，不会自动写入正文或故事状态。</span></div>
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
         ${articleLengthHint(article, targetWords)}
         ${redlineScanSummaryHtml(scan)}
@@ -10506,7 +10723,7 @@ async function batchGenerateChapters(count) {
   // F-01：批量生成前先落盘当前编辑器，避免长时间任务结束时丢失未保存内容。
   // ⚠️ 必须 await：紧接着要查"哪些章节还是空的"（server 侧判据是 content IS NULL OR content=''），
   // 正在写、还没落盘的新章会被判成空章 → 被选成生成目标，然后你的未保存内容被覆盖。
-  await flushSave();
+  if (!(await ensureSavedBeforeNavigation())) return;
   let empty;
   try {
     empty = await api(`/novel/empty_chapters?work_id=${state.workId}`);
@@ -11902,6 +12119,7 @@ async function handleAction(action, actionEl, e) {
   try {
     switch (action) {
       case 'back-works':
+        if (!(await ensureSavedBeforeNavigation())) break;
         state.workId = null;
         state.loadedWorkId = null;
         state.work = null;
@@ -11909,12 +12127,32 @@ async function handleAction(action, actionEl, e) {
         await render();
         break;
 
+      case 'toggle-theme':
+        toggleTheme();
+        break;
+
+      case 'open-command-palette':
+        openCommandPalette();
+        break;
+
+      case 'focus-mode': {
+        const layout = $('#writing-layout');
+        if (!layout) break;
+        const active = layout.classList.toggle('focus-mode');
+        document.body.classList.toggle('writing-focus-active', active);
+        actionEl.textContent = active ? '退出专注' : '专注模式';
+        actionEl.setAttribute('aria-pressed', String(active));
+        break;
+      }
+
       case 'go-view':
+        if (!(await ensureSavedBeforeNavigation())) break;
         goView(actionEl.dataset.view);
         await render();
         break;
 
       case 'board-tab': {
+        if (!(await ensureSavedBeforeNavigation())) break;
         const tab = actionEl.dataset.tab;
         const board = actionEl.dataset.board;
         if (board === 'settings') {
@@ -11980,10 +12218,23 @@ async function handleAction(action, actionEl, e) {
       }
 
       case 'open-work': {
+        if (!(await ensureSavedBeforeNavigation())) break;
         state.workId = Number(actionEl.dataset.id);
         state.loadedWorkId = null;
         state.view = 'overview';
         state.currentChapterId = null;
+        await render();
+        break;
+      }
+
+      case 'continue-work': {
+        if (!(await ensureSavedBeforeNavigation())) break;
+        const workId = Number(actionEl.dataset.id);
+        state.workId = workId;
+        state.loadedWorkId = null;
+        state.currentChapterId = Number(state.workMeta.get(workId)?.recentId) || null;
+        state.view = 'writing';
+        // 只使用已从服务端读到的真实最近章节；没有章节时进入写作台的空状态。
         await render();
         break;
       }
@@ -12208,7 +12459,7 @@ async function handleAction(action, actionEl, e) {
       }
 
       case 'open-chapter': {
-        await flushSave(); // F-01：切章前先落盘（await：随后 render 会重新拉取章节，避免读到旧正文/旧字数）
+        if (!(await ensureSavedBeforeNavigation())) break;
         state.currentChapterId = Number(actionEl.dataset.id);
         state.view = 'writing';
         await render();
@@ -12216,6 +12467,9 @@ async function handleAction(action, actionEl, e) {
       }
 
       case 'set-layout': {
+        // 布局切换会重绘写作台，先保存正文；selection/undo 属于编辑器 DOM，
+        // 在此处只切布局，不把布局状态误当成正文变更。
+        if (!(await ensureSavedBeforeNavigation())) break;
         state.editorLayout = actionEl.dataset.layout;
         localStorage.setItem('ns_editor_layout', state.editorLayout);
         await render();
@@ -13582,6 +13836,164 @@ function highlightTerms(text, q) {
   return safe.replace(re, '<mark class="search-hit">$1</mark>');
 }
 
+// ---------- Command Palette ----------
+// 命令面板只复用现有 goView()/search API，不引入新的业务入口或后端接口。
+// 搜索结果始终是候选导航；AI、正文和 Story State 都不会因打开面板而自动执行。
+const PALETTE_COMMANDS = [
+  { kind: 'command', id: 'works', icon: '📚', title: '我的作品', hint: '返回作品库', run: () => { state.workId = null; state.loadedWorkId = null; state.work = null; state.view = 'works'; return render(); } },
+  { kind: 'command', id: 'writing', icon: '✍', title: '写作台', hint: '打开当前作品的正文编辑器', run: () => { if (!state.workId) { toast('请先打开一部作品', 'error'); return; } state.view = 'writing'; return render(); } },
+  { kind: 'command', id: 'overview', icon: '▦', title: '作品总览', hint: '查看统计与最近更新', run: () => { if (!state.workId) { toast('请先打开一部作品', 'error'); return; } state.view = 'overview'; return render(); } },
+  { kind: 'command', id: 'outline', icon: '☷', title: '大纲', hint: '卷、章节与剧情结构', run: () => { if (!state.workId) { toast('请先打开一部作品', 'error'); return; } goView('outline'); return render(); } },
+  { kind: 'command', id: 'terms', icon: '◇', title: '设定词条', hint: '管理世界设定与资料', run: () => { if (!state.workId) { toast('请先打开一部作品', 'error'); return; } goView('terms'); return render(); } },
+  { kind: 'command', id: 'characters', icon: '♙', title: '角色档案', hint: '人物、关系与状态', run: () => { if (!state.workId) { toast('请先打开一部作品', 'error'); return; } goView('characters'); return render(); } },
+  { kind: 'command', id: 'story-state', icon: '◈', title: '故事状态', hint: '查看经过确认的故事事实', run: () => { if (!state.workId) { toast('请先打开一部作品', 'error'); return; } goView('story-state'); return render(); } },
+  { kind: 'command', id: 'ai', icon: '✦', title: '提案与 AI 工具', hint: '打开长期记忆与待确认提案', run: async () => { if (!state.workId) { state.view = 'ai'; return render(); } if (!(await ensureSavedBeforeNavigation())) return; goView('memory'); return render(); } },
+  { kind: 'command', id: 'theme', icon: '☾', title: '切换主题', hint: '在浅色与深色之间切换', run: () => toggleTheme() },
+  { kind: 'command', id: 'global-search', icon: '⌕', title: '全局搜索', hint: '搜索章节、人物、设定与世界观', run: () => { const input = $('#global-search'); if (input) { input.focus(); input.select(); } } }
+];
+
+function paletteQuery() {
+  return String(state.commandPalette.query || '').trim().toLowerCase();
+}
+
+function paletteMatches(item, q) {
+  if (!q) return true;
+  const haystack = `${item.title || ''} ${item.hint || ''} ${item.snippet || ''}`.toLowerCase();
+  return q.split(/\s+/).filter(Boolean).every((part) => haystack.includes(part));
+}
+
+function paletteResultItems(data, q) {
+  const rows = [];
+  const add = (type, icon, items, titleOf, hintOf) => (items || []).slice(0, 8).forEach((x) => rows.push({
+    kind: 'result', type, icon, id: x.id, workId: x.work_id || state.workId || null,
+    title: titleOf(x), hint: hintOf(x), snippet: x.snippet || x.summary || x.content || x.identity || ''
+  }));
+  add('chapter', '§', data?.chapters, (x) => x.title, (x) => x.snippet || stripHtml(x.summary || x.content || '').slice(0, 80));
+  add('character', '♙', data?.characters, (x) => x.name, (x) => x.identity || '角色档案');
+  add('term', '◇', data?.terms, (x) => x.title, (x) => x.snippet || stripHtml(x.content || '').slice(0, 80));
+  add('world_entry', '⌂', data?.world_entries, (x) => x.title, (x) => x.snippet || stripHtml(x.content || '').slice(0, 80));
+  add('plotline', '↝', data?.plotlines, (x) => plotlineDisplayTitle(x), (x) => x.snippet || x.summary || '剧情线');
+  return rows.filter((x) => !q || paletteMatches(x, q)).slice(0, 24);
+}
+
+function paletteCommandItems(q) {
+  return PALETTE_COMMANDS.filter((x) => paletteMatches(x, q));
+}
+
+function renderCommandPalette() {
+  const root = $('#command-palette-root');
+  if (!root) return;
+  if (!state.commandPalette.open) { root.innerHTML = ''; return; }
+  const q = paletteQuery();
+  const commands = paletteCommandItems(q);
+  const items = [...commands, ...(state.commandPalette.items || [])];
+  state.commandPalette.visibleItems = items;
+  if (state.commandPalette.active >= items.length) state.commandPalette.active = Math.max(0, items.length - 1);
+  let list = $('#command-palette-list');
+  if (!list) {
+    root.innerHTML = `<div class="command-palette-backdrop" data-palette-backdrop>
+      <section class="command-palette" role="dialog" aria-modal="true" aria-label="命令面板">
+        <div class="command-palette-head"><span class="command-palette-mark">⌘</span><input id="command-palette-input" type="search" autocomplete="off" placeholder="搜索命令、章节、人物、设定…" aria-controls="command-palette-list"><kbd>Esc</kbd></div>
+        <div class="command-palette-status muted" id="command-palette-status" aria-live="polite"></div>
+        <div class="command-palette-list" id="command-palette-list" role="listbox"></div>
+        <div class="command-palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd>选择</span><span><kbd>Enter</kbd>打开</span><span><kbd>Esc</kbd>关闭</span></div>
+      </section></div>`;
+    list = $('#command-palette-list');
+    const input = $('#command-palette-input');
+    if (input) {
+      input.value = state.commandPalette.query;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+  if (list) list.innerHTML = items.length ? items.map((item, i) => `<button class="command-item ${i === state.commandPalette.active ? 'active' : ''}" data-palette-index="${i}" role="option" aria-selected="${i === state.commandPalette.active}"><span class="command-item-icon">${esc(item.icon || '⌕')}</span><span class="command-item-copy"><b>${highlightTerms(item.title, q)}</b><small>${highlightTerms(item.hint || '', q)}</small></span><span class="command-item-key">${item.kind === 'result' ? '结果' : ''}</span></button>`).join('') : '<div class="command-empty">没有匹配内容</div>';
+  const status = $('#command-palette-status');
+  if (status) status.textContent = state.commandPalette.status === 'loading'
+    ? '正在搜索…'
+    : state.commandPalette.status === 'error'
+      ? state.commandPalette.error
+      : (q ? '搜索范围：章节、人物、设定、世界观、剧情线；Story State 请从命令进入' : '输入关键词搜索作品内容或命令');
+}
+
+function closeCommandPalette() {
+  const returnFocus = state.commandPalette.returnFocus;
+  state.commandPalette.open = false;
+  state.commandPalette.query = '';
+  state.commandPalette.items = [];
+  state.commandPalette.active = 0;
+  state.commandPalette.visibleItems = [];
+  state.commandPalette.status = 'idle';
+  state.commandPalette.error = '';
+  state.commandPalette.returnFocus = null;
+  renderCommandPalette();
+  if (returnFocus && typeof returnFocus.focus === 'function' && document.contains(returnFocus)) returnFocus.focus();
+}
+
+function openCommandPalette(initial = '') {
+  if (state.commandPalette.open) return;
+  state.commandPalette.open = true;
+  state.commandPalette.query = String(initial || '');
+  state.commandPalette.items = [];
+  state.commandPalette.active = 0;
+  state.commandPalette.status = 'idle';
+  state.commandPalette.error = '';
+  state.commandPalette.returnFocus = document.activeElement;
+  renderCommandPalette();
+  refreshCommandPaletteResults();
+}
+
+let paletteSearchTimer = null;
+async function refreshCommandPaletteResults() {
+  const q = String(state.commandPalette.query || '').trim();
+  const seq = ++state.commandPalette.seq;
+  if (!q) { state.commandPalette.items = []; state.commandPalette.status = 'idle'; renderCommandPalette(); return; }
+  clearTimeout(paletteSearchTimer);
+  paletteSearchTimer = setTimeout(() => refreshCommandPaletteResultsNow(q, seq), 180);
+}
+
+async function refreshCommandPaletteResultsNow(q, seq) {
+  if (!state.commandPalette.open || seq !== state.commandPalette.seq) return;
+  state.commandPalette.status = 'loading';
+  state.commandPalette.error = '';
+  renderCommandPalette();
+  try {
+    const data = await api(`/search?q=${encodeURIComponent(q)}${state.workId ? `&work_id=${state.workId}` : ''}`);
+    if (!state.commandPalette.open || seq !== state.commandPalette.seq) return;
+    state.commandPalette.items = paletteResultItems(data, q);
+    state.commandPalette.status = 'idle';
+    state.commandPalette.active = Math.min(state.commandPalette.active, Math.max(0, paletteCommandItems(q).length + state.commandPalette.items.length - 1));
+    renderCommandPalette();
+  } catch (e) {
+    if (seq === state.commandPalette.seq) { state.commandPalette.items = []; state.commandPalette.status = 'error'; state.commandPalette.error = `搜索失败：${e.message || '请稍后重试'}`; renderCommandPalette(); }
+  }
+}
+
+async function executePaletteItem(item) {
+  if (!item) return;
+  if (!(await ensureSavedBeforeNavigation())) return;
+  closeCommandPalette();
+  if (item.kind === 'command') return item.run();
+  return navigateSearchResult(item.type, item.id, item.workId);
+}
+
+async function navigateSearchResult(type, id, workId) {
+  if (!(await ensureSavedBeforeNavigation())) return;
+  const numericId = Number(id);
+  const targetWork = Number(workId) || null;
+  const crossing = targetWork && targetWork !== state.workId;
+  if (crossing) {
+    state.workId = targetWork; state.loadedWorkId = null; state.currentChapterId = null;
+    state.currentPlotlineId = null; state.currentTermId = null; state.currentCharacterId = null;
+  }
+  if (type === 'term') { goView('terms'); state.currentTermId = numericId; }
+  else if (type === 'chapter') { state.currentChapterId = numericId; state.view = 'writing'; }
+  else if (type === 'character') { goView('characters'); state.currentCharacterId = numericId; }
+  else if (type === 'plotline') { goView('plot'); state.currentPlotlineId = numericId; }
+  else if (type === 'world_entry') goView('st');
+  await render();
+  if (crossing) toast('已进入对应作品并定位到搜索结果', 'success');
+}
+
 // F-09：全局搜索请求序号——仅最新一次请求的结果允许写 DOM，避免慢响应覆盖新结果。
 let searchSeq = 0;
 
@@ -13622,12 +14034,13 @@ document.addEventListener('change', async (e) => {
     return;
   }
   if (e.target.id === 'st-chapter-select') {
+    if (!(await ensureSavedBeforeNavigation())) return;
     state.currentChapterId = Number(e.target.value);
-    render();
+    await render();
   }
   // D15：单栏布局下的章节切换器
   if (e.target.id === 'chapter-switcher') {
-    await flushSave(); // F-01：切章前先落盘（await 的理由同上：随后要重新拉取渲染）
+    if (!(await ensureSavedBeforeNavigation())) return;
     state.currentChapterId = Number(e.target.value);
     await render();
     persistSession();
@@ -13657,6 +14070,12 @@ document.addEventListener('change', async (e) => {
 });
 
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'works-filter') {
+    state.worksQuery = String(e.target.value || '');
+    const q = state.worksQuery.trim().toLowerCase();
+    $$('.work-card[data-work-search]').forEach((card) => { card.hidden = !!q && !String(card.dataset.workSearch || '').includes(q); });
+    return;
+  }
   if (e.target.id === 'global-search') {
     debouncedSearch();
   }
@@ -13709,42 +14128,27 @@ document.addEventListener('click', async (e) => {
   const workId = Number(go.dataset.workId) || null;
   $('#global-search').value = '';
   $('#search-results').hidden = true;
-  const crossing = workId && workId !== state.workId;
-  if (crossing) {
-    // 跨作品跳转：先进入目标作品
-    state.workId = workId;
-    state.loadedWorkId = null;
-    state.currentChapterId = null;
-    state.currentPlotlineId = null;
-    state.currentTermId = null;
-    state.currentCharacterId = null;
+  await navigateSearchResult(type, id, workId);
+});
+
+// 命令面板交互使用委托，面板重绘不会丢失焦点或键盘导航。
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'command-palette-input') return;
+  state.commandPalette.query = e.target.value;
+  state.commandPalette.active = 0;
+  renderCommandPalette();
+  refreshCommandPaletteResults();
+});
+
+document.addEventListener('click', async (e) => {
+  if (e.target.closest('[data-palette-backdrop]') && !e.target.closest('.command-palette')) {
+    closeCommandPalette();
+    return;
   }
-  if (type === 'term') {
-    goView('terms');
-    state.currentTermId = id;
-    await render();
-  } else if (type === 'chapter') {
-    state.currentChapterId = id;
-    state.view = 'writing';
-    await render();
-  } else if (type === 'character') {
-    goView('characters');
-    state.currentCharacterId = id;
-    await render();
-  } else if (type === 'plotline') {
-    goView('plot');
-    state.currentPlotlineId = id;
-    await render();
-  } else if (type === 'world_entry') {
-    // 世界观词条位于「AI创造板块 → 设定」标签页。
-    // 注意这里必须用 goView('st')（'st' 在 AI_VIEWS 里，goView 会顺带把 aiTab 设成 'st'
-    // 并把 view 切到 'ai-board'，未进入作品时还会回退到 AI 创作）。
-    // 早先写的是 goView('ai-board')——它不在任何映射表里，只是靠 goView 的通用 fallback
-    // 碰巧把 view 设对；在「未进入作品」的场景下会切到一个无作品可渲染的板块。
-    goView('st');
-    await render();
-  }
-  if (crossing) toast('已进入对应作品并定位到搜索结果', 'success');
+  const row = e.target.closest('[data-palette-index]');
+  if (!row || !state.commandPalette.open) return;
+  const item = (state.commandPalette.visibleItems || [])[Number(row.dataset.paletteIndex)];
+  await executePaletteItem(item);
 });
 
 // tooltip
@@ -13813,7 +14217,18 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('#sidebar-toggle')) {
     const sidebar = $('#sidebar');
     sidebar.classList.remove('hidden'); // F-13：折叠改用 .collapsed，避免 .hidden 的 display:none 吞掉动画
-    sidebar.classList.toggle('collapsed');
+    state.sidebarCollapsed = !sidebar.classList.contains('collapsed');
+    sidebar.classList.toggle('collapsed', state.sidebarCollapsed);
+    try { localStorage.setItem('ns_sidebar_collapsed', state.sidebarCollapsed ? '1' : '0'); } catch (_) {}
+    updateSidebarToggleIcon();
+    const backdrop = $('#sidebar-backdrop');
+    if (backdrop) backdrop.classList.toggle('visible', !state.sidebarCollapsed && window.innerWidth <= 720);
+  }
+  if (e.target.closest('#sidebar-backdrop')) {
+    state.sidebarCollapsed = true;
+    $('#sidebar')?.classList.add('collapsed');
+    $('#sidebar-backdrop')?.classList.remove('visible');
+    try { localStorage.setItem('ns_sidebar_collapsed', '1'); } catch (_) {}
     updateSidebarToggleIcon();
   }
 });
@@ -13822,20 +14237,81 @@ document.addEventListener('click', (e) => {
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('#sidebar-nav button[data-view]');
   if (!btn) return;
+  if (!(await ensureSavedBeforeNavigation())) return;
   state.view = btn.dataset.view;
   await render();
 });
 
 // keyboard: hide search on Escape
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
+  const imeActive = !!(e.isComposing || state.imeComposing);
+  if ((state.commandPalette.open || $('#modal-root').innerHTML) && e.key === 'Tab' && !imeActive) {
+    const container = state.commandPalette.open ? $('.command-palette') : $('.modal');
+    const selector = state.commandPalette.open
+      ? 'button, input, [tabindex]:not([tabindex="-1"])'
+      : 'button, input, textarea, select, a[href], [tabindex]:not([tabindex="-1"])';
+    const focusables = container ? $$(selector, container).filter((el) => !el.disabled && el.offsetParent !== null) : [];
+    if (focusables.length) {
+      const index = focusables.indexOf(document.activeElement);
+      const next = focusables[(index + (e.shiftKey ? -1 : 1) + focusables.length) % focusables.length];
+      e.preventDefault();
+      next.focus();
+    }
+    return;
+  }
+  // 浏览器快捷键只在非输入法组合状态下接管；中文候选确认的 Enter 不应触发保存或导航。
+  if (!imeActive && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    const editor = $('#editor-content');
+    if (editor) {
+      e.preventDefault();
+      manualSaveChapter();
+      return;
+    }
+  }
+  if (!imeActive && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (state.commandPalette.open) closeCommandPalette();
+    else openCommandPalette();
+    return;
+  }
+  if (state.commandPalette.open && !imeActive) {
+    const target = e.target && e.target.id === 'command-palette-input';
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const items = state.commandPalette.visibleItems || [];
+      if (items.length) {
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        state.commandPalette.active = (state.commandPalette.active + delta + items.length) % items.length;
+        renderCommandPalette();
+      }
+      return;
+    }
+    if (e.key === 'Enter' && target) {
+      e.preventDefault();
+      executePaletteItem((state.commandPalette.visibleItems || [])[state.commandPalette.active]);
+      return;
+    }
+  }
+  if (e.key === 'Escape' && !imeActive) {
+    if (!imeActive && window.innerWidth <= 720 && !state.commandPalette.open && !$('#modal-root').innerHTML && !state.sidebarCollapsed) {
+      state.sidebarCollapsed = true;
+      $('#sidebar')?.classList.add('collapsed');
+      $('#sidebar-backdrop')?.classList.remove('visible');
+      updateSidebarToggleIcon();
+      return;
+    }
+    if (state.commandPalette.open) {
+      e.preventDefault();
+      closeCommandPalette();
+      return;
+    }
     const box = $('#search-results');
     if (box) box.hidden = true;
     if ($('#modal-root').innerHTML) closeModal();
   }
   // P4：资料检索框的回车 = 点「检索」（输入框随重绘换新元素，用 document 委托）
   // （isComposing：中文输入法候选确认的回车不算检索）
-  if (e.key === 'Enter' && !e.isComposing && e.target && e.target.id === 'library-q') {
+  if (e.key === 'Enter' && !imeActive && e.target && e.target.id === 'library-q') {
     e.preventDefault();
     librarySearchRun();
   }
@@ -13851,6 +14327,19 @@ function updateSidebarToggleIcon() {
   // N-11：「◀」形似返回按钮，新人误以为能回到作品列表；加 title 说明实际行为。
   icon.title = collapsed ? '展开侧栏' : '收起侧栏（返回作品列表请点左上角图标）';
 }
+
+window.addEventListener('resize', () => {
+  const backdrop = $('#sidebar-backdrop');
+  if (!backdrop) return;
+  backdrop.classList.toggle('visible', !state.sidebarCollapsed && window.innerWidth <= 720);
+});
+
+window.addEventListener('beforeunload', (e) => {
+  if (state.editorSaveSnapshot || state.editorSaveInFlight.size || state.editorConflictSnapshot || state.editorSaveFailedSnapshot) {
+    e.preventDefault();
+    e.returnValue = '当前章节还有未保存内容';
+  }
+});
 
 async function init() {
   // P4：先取 AI 策略快照（模型档位 / 档位→强度表），让后续所有 AI 调用按同一份策略解析。
@@ -13869,8 +14358,11 @@ async function init() {
   });
   const topbarRight = $('#topbar-right');
   if (topbarRight) {
-    topbarRight.innerHTML = `<button class="btn small trace-btn" id="trace-toggle" data-action="trace-toggle" title="开始记录：你接下来的每一次操作跑了哪些代码、花了多久、调了什么 AI">🐞 运行追踪</button>
-      <button class="btn small danger" data-action="shutdown-server" title="关闭 Novel Studio 服务（关闭后本页面将失效）">⏻ 关闭服务</button>`;
+    topbarRight.innerHTML = `<button class="btn small secondary" data-action="open-command-palette" title="打开命令面板（Ctrl/Cmd+K）">⌘ K</button>
+      <button class="btn small secondary" id="theme-toggle" data-action="toggle-theme" aria-label="切换主题"></button>
+      <button class="btn small trace-btn" id="trace-toggle" data-action="trace-toggle" title="开始记录：你接下来的每一次操作跑了哪些代码、花了多久、调了什么 AI">⌁ 追踪</button>
+      <button class="btn small danger" data-action="shutdown-server" title="关闭 Novel Studio 服务（关闭后本页面将失效）">关闭服务</button>`;
+    applyTheme(document.documentElement.dataset.theme || 'light', { persist: false });
   }
   updateSidebarToggleIcon();
   // 🐞 运行追踪：刷新后若后端仍在录制则自动接上；否则只更新按钮显示。

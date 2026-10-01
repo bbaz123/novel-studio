@@ -4,6 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Novel Studio · 小说创作工坊</title>
+  <script>
+    (() => {
+      try {
+        const saved = localStorage.getItem('ns_theme');
+        const mode = saved === 'light' || saved === 'dark' ? saved
+          : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.dataset.theme = mode;
+      } catch (_) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -15,18 +27,22 @@
         <div class="sidebar-title" id="sidebar-title">Novel Studio</div>
       </div>
       <nav class="sidebar-nav" id="sidebar-nav">
-        <button data-view="works" title="管理你的所有小说项目（初始页默认显示）">📚 我的作品</button>
-        <button data-view="ai-create" title="没进作品时可用：AI 自动创建整本小说 / 创作工作台 / 任务历史 / AI 设置">✨ AI 创作</button>
-        <button data-view="thanks" title="没进作品时可用：本工坊实际用到的开源组件、设计参考来源与许可核验记录">🙏 借鉴与致谢</button>
-        <button data-view="overview" title="当前作品的数据统计：章节、设定词条、角色、剧情线">📊 总览</button>
-        <button data-view="writing" title="写正文的地方：左侧选章节，右侧写内容（自动保存）；切三栏可看参考面板">✍️ 正文写作</button>
-        <button data-view="settings" title="设定集中管理：剧情线（按线索看）/ 大纲（按卷章看）/ 设定库 / 角色 / 长期记忆">📘 小说设定</button>
-        <button data-view="ai-board" title="只看 AI 相关设置：AI 设置（模型 API、记忆库、创作内核）/ 创作上下文（角色卡、世界观、作者注）">🤖 AI创造板块</button>
-        <button data-view="library" title="跨作品共享的写作参考资料（方法 / 素材 / 范例）：先扫描预览、确认后才写入；资料不是本书事实，作品里还要单独打开开关">📎 资料库</button>
-        <button data-view="trace" title="排查问题用：把每次操作跑了哪些代码、花了多久、调了什么 AI 录成可回看的调用链。正常写作可以无视">🐞 运行追踪</button>
-        <button data-view="logs" title="排查问题用：错误、慢操作、进程异常的记录。正常写作可以无视">🧾 日志</button>
+        <div class="nav-section-label" data-nav-section="global">工作台</div>
+        <button data-view="works" data-nav-section="global" title="管理你的所有小说项目（初始页默认显示）">📚 <span>我的作品</span></button>
+        <button data-view="ai-create" data-nav-section="global" title="没进作品时可用：AI 自动创建整本小说 / 创作工作台 / 任务历史 / AI 设置">✨ <span>AI 创作</span></button>
+        <button data-view="library" data-nav-section="global" title="跨作品共享的写作参考资料（方法 / 素材 / 范例）：先扫描预览、确认后才写入；资料不是本书事实，作品里还要单独打开开关">📎 <span>共享资料</span></button>
+        <div class="nav-section-label" data-nav-section="workspace">作品空间</div>
+        <button data-view="overview" data-nav-section="workspace" title="当前作品的数据统计：章节、设定词条、角色、剧情线">▦ <span>作品总览</span></button>
+        <button data-view="writing" data-nav-section="workspace" title="写正文的地方：左侧选章节，右侧写内容（自动保存）；切三栏可看参考面板">✍ <span>写作台</span></button>
+        <button data-view="settings" data-nav-section="workspace" title="设定集中管理：剧情线（按线索看）/ 大纲（按卷章看）/ 设定库 / 角色 / 长期记忆">▤ <span>故事设计</span></button>
+        <button data-view="ai-board" data-nav-section="workspace" title="故事状态、创作上下文、编辑规则、文风、分支和导入重建">◈ <span>故事状态与工具</span></button>
+        <div class="nav-section-label" data-nav-section="support">辅助与诊断</div>
+        <button data-view="thanks" data-nav-section="support" title="本工坊实际用到的开源组件、设计参考来源与许可核验记录">✦ <span>借鉴与致谢</span></button>
+        <button data-view="trace" data-nav-section="support" title="排查问题用：把每次操作跑了哪些代码、花了多久、调了什么 AI 录成可回看的调用链。正常写作可以无视">⌁ <span>运行追踪</span></button>
+        <button data-view="logs" data-nav-section="support" title="排查问题用：错误、慢操作、进程异常的记录。正常写作可以无视">≡ <span>日志</span></button>
       </nav>
     </aside>
+    <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
     <div class="main">
       <header class="topbar">
         <div class="topbar-left">
@@ -34,15 +50,17 @@
           <span class="topbar-title" id="topbar-title">Novel Studio</span>
         </div>
         <div class="search-box">
-          <input type="search" id="global-search" placeholder="全局搜索设定 / 大纲 / 正文 / 角色..." autocomplete="off">
+          <input type="search" id="global-search" placeholder="搜索章节 / 设定 / 角色…  Ctrl K 打开命令面板" autocomplete="off" aria-label="全局搜索">
           <div class="search-results" id="search-results" hidden></div>
         </div>
-        <div class="topbar-right" id="topbar-right"></div>
+        <div class="topbar-context" id="topbar-context" aria-live="polite"></div>
+        <div class="topbar-right" id="topbar-right"><button class="btn small secondary" data-action="open-command-palette" title="打开命令面板（Ctrl/Cmd+K）">⌘ K</button></div>
       </header>
       <main id="content" class="content"></main>
     </div>
   </div>
   <div id="modal-root"></div>
+  <div id="command-palette-root"></div>
   <div id="toast-root"></div>
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="ai-task-progress" class="ai-task-progress" hidden></div>
