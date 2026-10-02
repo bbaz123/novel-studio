@@ -2,9 +2,9 @@
 
 # Novel Studio
 
-**A local-first AI writing studio for long-form fiction.**
+**A local-first AI writing studio that keeps a long novel consistent.**
 
-Turns setting drift, lost foreshadowing, contradictory character state and AI-flavoured prose into **deterministic, inspectable gates** — instead of hoping a longer prompt will hold.
+Writing software + an AI writing assistant for **long-form fiction and Chinese web novels (网文)** — with a **foreshadowing tracker, character-state checks and a story bible** wired into every draft.
 
 [![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -15,15 +15,51 @@ Turns setting drift, lost foreshadowing, contradictory character state and AI-fl
 
 [**English**](README.md) · [简体中文](README.zh-CN.md)
 
-> 📌 Version **v1.0.0** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.0.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.0.0).
-
 <img src="assets/screenshot-writing.png" alt="Novel Studio writing desk: chapter tree on the left, rich-text editor in the middle, live story-reference panel on the right" width="100%">
 
 </div>
 
-Novel Studio is **novel writing software and an AI writing assistant for long-form fiction** — Chinese web novels (网文) and everything else. It is self-hosted and privacy-first: a Node.js service on your own machine, storing everything in one SQLite file, with **zero npm dependencies** — no `npm install`, no account, no cloud, no subscription. Use it fully **offline with no AI at all**, or connect an LLM for drafting, worldbuilding and consistency checking.
+> 📌 Version **v1.0.0** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.0.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.0.0).
+
+<details>
+<summary><b>Contents</b></summary>
+
+- [⭐ Features](#-features)
+- [🎯 Why](#-why)
+- [🧭 Where it fits](#-where-it-fits)
+- [🚀 Quick Start](#-quick-start)
+- [📦 Installation](#-installation)
+- [💻 Usage](#-usage)
+- [🖼 Screenshots](#-screenshots)
+- [🏗 Architecture](#-architecture)
+- [⚙️ Configuration](#️-configuration)
+- [🔒 Privacy & Data](#-privacy--data)
+- [🗺 Roadmap](#-roadmap)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+- [🙏 Acknowledgements](#-acknowledgements)
+- [📝 Changelog](#-changelog)
+
+</details>
+
+**Long fiction does not break at chapter 3 — it breaks at chapter 40.** A character is 「李队」 in ch. 12 and 「李队长」 in ch. 40; someone who died in ch. 3 walks back on stage; a thread you planted is never paid off. Chat tools write good paragraphs and lose the plot, and a longer prompt does not fix it.
+
+Novel Studio turns those failures into **deterministic, inspectable gates** instead of hoping the prompt holds. It is self-hosted and privacy-first: a Node.js service on your own machine, your whole library in one SQLite file, and **zero npm dependencies** — no `npm install`, no account, no cloud, no subscription.
 
 > **Runs fully offline, with no AI at all.** Manual writing, worldbuilding, outlining and export work out of the box and cost nothing. An LLM (DeepSeek or any OpenAI-compatible endpoint) is optional and only used for the features you switch on.
+
+**Who it's for**
+
+- **Web-novel and serial fiction authors** writing 100+ chapters who keep losing track of settings, character state and unpaid foreshadowing
+- **Writers who want an AI assistant without handing over the manuscript** — everything stays in a local file you own
+- **Developers and researchers** who want to script a writing pipeline: the UI is a thin client over a documented local HTTP API ([75 endpoints](harness-plugins/novel-writing/plugin.json))
+
+**Who it's not for**
+
+- **Not a SaaS** — no account, no cloud sync, no team collaboration, no subscription: it is an offline-capable app you own
+- **Not a one-click book machine** — AI output is a draft or a proposal you approve, not an autopilot
+- **Not a model vendor** — it ships no model and sells no tokens; bring your own API key and pay your own provider
+- **Not an agent framework** — it is an application. The [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) integration is optional and used only for the heavy creation pipeline
 
 ---
 
@@ -73,12 +109,18 @@ Chat-based tools write good paragraphs and lose the plot. Novel Studio targets t
 | You cannot tell what the model actually saw, or where the money went | Guess, or read logs | **Inspectable**: `context_id`, per-layer provenance and per-call token accounting in the UI |
 | Data and API keys live on someone else's server | The default for most tools | **Listens on `127.0.0.1` only**; everything is one SQLite file on your disk |
 
-**What it deliberately is not**
+## 🧭 Where it fits
 
-- **Not a SaaS** — no account, no cloud sync, no team collaboration, and no subscription: it is an offline-capable app you own
-- **Not a one-click book machine** — AI output is a draft or a proposal you approve, not an autopilot
-- **Not a model vendor** — it ships no model and sells no tokens; you bring your own API key and pay your own provider
-- **Not an agent framework** — it is an application. The DeepSeek Harness integration is optional and used only for the heavy creation pipeline
+Choosing writing software is not a binary. These are the alternatives people actually evaluate, and where each one wins — Novel Studio is not trying to replace them all.
+
+| If you want… | Reach for | Where Novel Studio differs |
+| --- | --- | --- |
+| A finished manuscript, professionally edited | [Sudowrite](https://www.sudowrite.com/), [Novelcrafter](https://www.novelcrafter.com/) | Those are hosted SaaS with stronger prose tooling; Novel Studio is self-hosted, free, and optimises for **continuity across 100+ chapters** rather than sentence-level polish |
+| An offline, plain-text writing environment | [Obsidian](https://obsidian.md/) + Longform, [novelWriter](https://novelwriter.io/), [Manuskript](https://www.theologeek.ch/manuskript/) | Those are excellent file-based editors with no AI and no story state; Novel Studio keeps a **queryable story state** (character state, event ledger, foreshadowing) and can drive a model from it |
+| A local LLM chat front-end | [SillyTavern](https://github.com/SillyTavern/SillyTavern), [KoboldAI](https://github.com/LostRuins/koboldcpp), [Open WebUI](https://github.com/open-webui/open-webui) | Those are conversation-first and deliberately stateless between scenes; Novel Studio is **manuscript-first**, with the model reading an assembled, budget-trimmed context |
+| To build your own writing tool | Any Node.js HTTP client | Novel Studio's UI is a thin client over a local API — you can script the same kernel directly |
+
+**The honest trade-off:** Novel Studio will not write a better *sentence* than a hosted AI writing service, and it will not give you a polished outline the way a human editor will. What it does that those tools do not is refuse to let setting drift, dead characters and unpaid foreshadowing pass silently — and it does that on your machine, for free.
 
 ## 🚀 Quick Start
 
@@ -94,7 +136,7 @@ Then open **<http://localhost:3737>**.
 
 On Windows you can instead **double-click `start-novel-studio.cmd`** — it opens the service window and launches your browser for you.
 
-First run, about three minutes:
+First run — four things, about three minutes:
 
 1. Click **✨ 一键导入示例小说《雾都缝匠》** (*Import demo novel*) on the home screen, then **打开** (*Open*) — this gives you a fully populated project so every screen makes sense immediately.
 2. Browse **总览** (overview) → **正文写作** (writing) → **小说设定** (settings).
@@ -173,7 +215,7 @@ curl 'http://localhost:3737/api/novel/context?work_id=1'
 **Verification.** Everything below is zero-cost and never calls a real model:
 
 ```bash
-# Offline suite (49 checks, no live instance, does not touch your data) — this is what CI runs
+# Offline suite (50 checks, no live instance, does not touch your data) — this is what CI runs
 node scripts/ci-offline-checks.mjs
 
 # Live-instance regression against a throwaway instance (temp data dir, OpenViking disabled)

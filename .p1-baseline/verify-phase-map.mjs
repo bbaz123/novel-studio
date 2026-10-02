@@ -1019,6 +1019,65 @@ export const PHASES = [
       + 'db.js / server.js / public/app.js 与 P2–P5、R、Z 系列共享同一文件，且新模块被生产代码 import，'
       + '按文件粒度只能整体回滚；回滚前必须先关闭 temporal_enabled（关闭即回到旧路径，不删历史）。',
   },
+  {
+    id: 'V1',
+    title: '2026-10-02 轮：v1.0.0 审计修复轮的取证材料与新增离线门禁（文档 + 测试，不含产品代码）',
+    files: [
+      '.audit-2026/A1-ai-pipeline.md', '.audit-2026/A2-state-data.md', '.audit-2026/A3-frontend-security.md',
+      '.audit-2026/api-run.txt',
+      '.p1-baseline/test-api-key-mask.mjs', '.p1-baseline/test-context-shrink-cap.mjs',
+      '.p1-baseline/test-host-guard.mjs', '.p1-baseline/test-memory-segments.mjs',
+      '缺点及修复报告.md', '缺陷修复报告-20261002.md', '缺陷修复报告.md',
+    ],
+    evidence: [
+      '缺陷修复报告-20261002.md',
+      '.audit-2026/A1-ai-pipeline.md',
+      '.p1-baseline/test-api-key-mask.mjs', '.p1-baseline/test-host-guard.mjs',
+    ],
+    rollback: 'independent',
+    note: '这一组是**取证材料 + 新增离线门禁**，本身不含产品代码，整批删掉后工坊行为逐字节不变，故可独立回滚。'
+      + ' ⚠️ 但它**记录的那些被修缺陷不在这组文件里**：P1-01/03/04/06/07/08 改的是 server.js / public/app.js /'
+      + ' ai/ 与 9 个既有门禁脚本，那些文件由 P2–P6 / R / TT / Z 系列共同拥有，按文件粒度只能整体回滚。'
+      + ' 也就是说，回滚这一组只回滚「证据与新增检查」，**不会**回滚报告里描述的那些修复。'
+      + ' 四个新增门禁都是自托管隔离实例（临时数据目录 + 本机假模型端点），零计费；'
+      + ' `.audit-2026/api-run.txt` 是修复前的原始输出（190 PASS / 1 FAIL，那条 FAIL 就是报告里的 B4 请求体上限漂移），'
+      + ' 保留原样作为对照证据。',
+  },
+  {
+    id: 'G2',
+    title: '2026-10-02 轮：第二次 GitHub 展示面 / 增长优化（Description + Topics + 中英 README 首屏 + 文档索引与贡献者入口）',
+    files: [
+      // —— 文档索引与贡献者入口（本轮新增的内容）——
+      'CONTRIBUTING.md',
+      'docs/README.md',
+      // —— 中英 README（与 X / W / W2 / Z2 / L / Z6 / G1 / TT 共享同一文件）——
+      'README.md',
+      'README.zh-CN.md',
+      // 阶段映射生成器自身：本阶段新增 G2 条目（与 TT 等共享同一文件）。
+      '.p1-baseline/verify-phase-map.mjs',
+    ],
+    evidence: [
+      'README.md', 'README.zh-CN.md', 'CONTRIBUTING.md', 'docs/README.md',
+    ],
+    rollback: 'shared',
+    note: '**展示面 / 增长轮，不触碰任何生产路径**（0 处 import 变化、0 处运行时行为变化）——'
+      + ' 但 README.md / README.zh-CN.md / CONTRIBUTING.md / docs/README.md 与 G1 / X / W / W2 / Z2 / L / Z6 / TT'
+      + ' 共享同一文件，按文件粒度判定只能整体回滚，故声明为 shared。'
+      + ' 内容要点：① 英文与中文 README 首屏重写为「问题 → 价值主张 → 受众」结构，并新增「Who it\'s for / Who it\'s not for」'
+      + ' 与「Where it fits」对比表（覆盖 Sudowrite / Novelcrafter / Obsidian+Longform / novelWriter / Manuskript /'
+      + ' SillyTavern / Open WebUI 等替代品检索词），英文版新增可折叠目录（Contents）；'
+      + ' ② **修掉三处既有的事实错误**——英文 README 写「49 checks」、中文 README 两处写「49 条」，'
+      + ' 而 `scripts/ci-offline-checks.mjs` 实际是 **50 条**（离线套件实跑 50/50 佐证）；'
+      + ' ③ `docs/README.md` 的 Host Contract 版本由 1.19.0 更正为 **1.20.0**、条目数 20 更正为 **21**'
+      + '（唯一真源 `server.js` 的 `HOST_CONTRACT_VERSION`），并新增「一之再补、v1.0.0 轮」小节，'
+      + ' 把此前**未被索引**的 21 份文档（含时态重构四件、DSH rc1→rc2 六件、`post-implementation-audit.md`）'
+      + ' 与仓库根的 `.audit-2026/` 与三份中文报告一并登记；'
+      + ' ④ `CONTRIBUTING.md` 中英两半各新增「怎么找到该看的地方」（架构入口表）与「该跑哪一套？」'
+      + '（区分 50 条离线套件与 `verify-all`，并写明成本纪律与成本总闸）。'
+      + ' 仓库级 Description 与 Topics 经 GitHub REST API 写入，属**仓库设置而非文件**，不进 git（与 G1 / W / W2 同例）。'
+      + ' ⚠️ 写 Topics 走的是专用端点 `PUT /repos/{owner}/{repo}/topics`：实测仓库 PATCH 即使返回 200 也**不会**改 topics，'
+      + ' 必须写后回读校验。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

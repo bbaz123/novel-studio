@@ -57,7 +57,7 @@
 | **`openviking-embedding-setup.md`** | **OpenViking 记忆库与向量模型**：完整下载地址（含本机可达性实测）、`ov.conf` 配置方法（按 0.4.17.1 实际字段核对）、源码内 `vendor/models/` 那一份怎么用、验证清单、未验证项 |
 | **`main-v2-upgrade-2026-09-24.md`** | **主体 V2 交付报告（2026-09-24/25）**：上下文身份/完整性/溯源三件与信封字段、历史问题清零表（19 项逐条回真实代码）、本轮修掉的 5 个真实缺陷（含压缩输入恒空、审计工具静默报 0、隔离包装器不传变量）、性能前后数据、生成质量回归（50/50 逐字节相同）、用户可见行为变化（无）、未完成项与风险 |
 | **`main-v2-acceptance-2026-09-25.md`** | **主体 V2 验收报告（第二步：质量门/行为门/兼容门）**：结论 A PASS（允许冻结 Host Contract）；今天这棵树重新抓取的 50 例上下文与 pre-V2 **逐字节 50/50 相同**；13 项历史问题逐条从当前代码重证；9 项宿主契约各有命令级证据；旧库零 schema 写入；性能对照；验收期间发现并最小修复的 3 处（含 1 个本轮引入的测试工具缺陷）与 4 项残余风险 |
-| **`host-contract.md`** + **`host-contract.v1.json`** | **Host Contract 1.19.0（冻结 · 插件阶段的稳定地面）**：10 份契约（Context/Task-Run/Trace-Audit/Settings 隔离/取消恢复/DB 迁移/插件 adapter/AI route/错误重试/兼容策略）各自的输入输出、状态、错误码、retryable、可观测字段与不变条件；插件可用接口白名单（26 工具 / 75 端点 / 71 张表）与不得绕过的边界；契约版本三处互锁与验证方式（`test-host-contract.mjs`，含负向对照）；`contract_history` 记 1.0.0–1.19.0 共 20 条 |
+| **`host-contract.md`** + **`host-contract.v1.json`** | **Host Contract 1.20.0（冻结 · 插件阶段的稳定地面）**：10 份契约（Context/Task-Run/Trace-Audit/Settings 隔离/取消恢复/DB 迁移/插件 adapter/AI route/错误重试/兼容策略）各自的输入输出、状态、错误码、retryable、可观测字段与不变条件；插件可用接口白名单（26 工具 / 75 端点 / 71 张表）与不得绕过的边界；契约版本三处互锁与验证方式（`test-host-contract.mjs`，含负向对照）；`contract_history` 记 1.0.0–1.20.0 共 21 条（**唯一真源是 `server.js` 的 `HOST_CONTRACT_VERSION`，本行数字以它为准**） |
 | **`story-state-kernel-2026-09-26.md`** | **第四步交付报告：确定性故事状态内核**（门控层 `story_state` + 10 张新表 + 17 端点（当时契约 1.2.0 再追加 1 条只读事实端点 = 18）+ 8 插件工具）：方法（先基线后改动）、实际修改文件、schema migration（25→35 表、+16 索引）、18 相位状态机与提案/快照/回滚语义、上下文接入与真实渲染样本、**验收期抓到并修掉的 5 个真实缺陷**、测试结果（逐字节 50/50、端到端 59/0/0、契约 28/0/0、离线 32/32、一键 54/0/1）、性能对照、兼容性与未完成项 |
 | **`host-contract-1.1-2026-09-26.md`** | **Host Contract 变更说明 1.0.0 → 1.1.0（附加式）**：层 14→15、表 25→35、工具 15→23、端点 26→43 的逐项差异与兼容性论证（默认关闭、未开启逐字节 50/50、开启后只 +1 层且其余层逐层相同）、契约测试结果、插件侧新能力与边界 |
 | **`golden-novel-regression-2026-09-26.md`** | **第五步终验报告：Golden Novel 联合回归（主体 + 插件 + 真实生成质量）**：12 章 / 19 类难 case 的联合夹具（119 条断言 0 失败）、一次运行抓到并修掉的 4 个真实缺陷（含「角色知识边界」整条路不可用与知识可见窗口方向反了，附**变异对照**证明回归真的能抓住）、Host Contract **当时 1.2.0** 的附加式变更、逐字节 20/20 与压力 50 用例 0 异常、性能实测（32/14/12 ms、净 +393 字）、用户行为变化表 8 项、17 项历史问题从当前代码逐条重证、7 条风险与 5 项未验证（**真实模型文本质量未验证** → 判定 B. PASS WITH FOLLOW-UP） |
@@ -74,6 +74,34 @@
 | **`plugin-runtime-map.md`** | **宿主 / DSH bundle / 服务端的边界与实际加载路径**：谁加载谁、实际跑的是哪一份代码、模型侧能写什么、逐条复验命令 |
 | **`openviking-call-map.md`** | **OpenViking 三条调用链**（作品资源链 / 会话链 / 共享资料链）：配置来源、scope 边界、失败重试语义，以及哪些结论离线可复验、哪些仍是 BLOCKED |
 | `story-state-kernel-2026-09-26.md` / `golden-novel-regression-2026-09-26.md` | 故事状态内核与 Golden Novel 联合回归（见上表，同属描述当前代码的一批） |
+
+### 一之再补、v1.0.0 轮（2026-09-30 ~ 10-02）· 同样描述当前代码
+
+这一批是**当前默认分支**（`Experimental-Version-v1.0`）上的最新材料：时态故事状态重构 + 一轮独立审计驱动的修复。
+**取证材料不在 `docs/` 里**，而在仓库根的 [`.audit-2026/`](../.audit-2026/A1-ai-pipeline.md) —— 见下表。
+
+| 文档 | 内容 |
+|---|---|
+| **`temporal-state-contract.md`** | **时态故事状态契约**：T0–T8 的不变量与语义（逐章时点、历史隔离、原子归约），是这一层"什么算对"的判据来源 |
+| **`temporal-refactor-audit.md`** | 时态重构**开工前审计**（T0 基线）：缺口清单与当时的代码事实 |
+| **`temporal-refactor-acceptance.md`** | 时态重构**验收**：T0–T8 逐项状态与证据、逐字节等价对照 |
+| **`temporal-refactor-progress.md`** / `temporal-refactor-progress.json` | 逐相位进度（人读版 + 机器可读账本） |
+| **`post-implementation-audit.md`** | 落地后**独立重审**（不继承上一轮 PASS）的审计快照 |
+| **`code-review-2026-09-19-round2-summary.md`** | 第二轮回审总结（第一轮为 `code-review-2026-09-19-summary.md`） |
+| **`self-review-2026-09-16.md`** / **`self-review-2026-09-18.md`** | 主体 V2 期间的两轮自审记录 |
+| **`DSH_0.1.7_RC1_RC2_*`（4 份）** / `DSH_RC1_COMPATIBILITY_BASELINE.md` / `RC1_vs_RC2_CAPABILITY_MATRIX.md` | 宿主 DSH 0.1.7-rc1 → rc2 升级的 API 差异、兼容矩阵、插件实测与能力对照（升级兼容性的取证材料） |
+
+**仓库根目录的审计与缺陷材料（不在 `docs/`，但对理解 v1.0.0 是必需的）：**
+
+| 路径 | 内容 |
+|---|---|
+| **[`.audit-2026/A1-ai-pipeline.md`](../.audit-2026/A1-ai-pipeline.md)** | A1 专项审计：AI 流水线（含质量门、直连/慢通道、上下文装配） |
+| **[`.audit-2026/A2-state-data.md`](../.audit-2026/A2-state-data.md)** | A2 专项审计：故事状态与数据层 |
+| **[`.audit-2026/A3-frontend-security.md`](../.audit-2026/A3-frontend-security.md)** | A3 专项审计：前端编辑器 / AI 修改安全 / AI UX / 性能 |
+| `../.audit-2026/api-run.txt` | 接口套件**修复前**的原始输出（190 PASS / 1 FAIL，其中 FAIL 即报告里的 B4 请求体上限漂移） |
+| **[`../缺陷修复报告-20261002.md`](../缺陷修复报告-20261002.md)** | v1.0.0 修复轮的**逐条对照清单**：每条含"改了什么 / 未改什么 / 为什么 / 证据" |
+| **[`../缺点及修复报告.md`](../缺点及修复报告.md)** | 审计**总表**（§40 Phase 0 + Phase 1 高杠杆项来源）与验收方案 |
+| `../缺陷修复报告.md` | 上一轮（v0.9.x）的修复报告，作为历史对照保留 |
 
 配套的可复现验证工具在 `.p0-recon/`、`.p1-baseline/` 与 `.p6-cutover/`（各有 README）。
 一键跑全部验证：`node .p1-baseline/verify-all.mjs`。

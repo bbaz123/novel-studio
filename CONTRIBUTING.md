@@ -34,6 +34,37 @@ node .p1-baseline/check-utf8.mjs         # text files must be valid UTF-8
 > instance or an external repository are marked *skipped* — **skipped is not passed**,
 > and a new failure must never be hidden behind a skip.
 
+### Finding your way around
+
+Five minutes here saves you an hour of reading:
+
+| Want to know… | Read |
+| --- | --- |
+| How the AI kernel assembles context for one chapter | [`docs/ai-core.md`](docs/ai-core.md) |
+| What a layer must declare, and what may never be trimmed away | [`docs/context-contract.md`](docs/context-contract.md) |
+| The host / plugin / server boundary | [`docs/host-contract.md`](docs/host-contract.md) or [`docs/plugin-runtime-map.md`](docs/plugin-runtime-map.md) |
+| Which files a change set touches, and whether it can be rolled back | [`docs/phase-map.md`](docs/phase-map.md) |
+| What is known to be unfinished | [`docs/pending-decisions.md`](docs/pending-decisions.md) |
+| Everything else in `docs/` | [`docs/README.md`](docs/README.md) (index, Chinese-first) |
+
+The whole product surface is small enough to read: `server.js` (HTTP + creation-kernel endpoints), `db.js` (schema and migrations), `ai/` (kernel: context assembly, story state, continuity guard), `public/` (front-end, no build step), `harness-plugins/novel-writing/` (the DSH plugin).
+
+### Which suite should I run?
+
+Two suites, different jobs — running the wrong one wastes your time or your budget:
+
+```bash
+# A. Offline suite — 50 checks, no live instance, no API key, zero cost.
+#    This is what CI runs on every push. Start here.
+node scripts/ci-offline-checks.mjs
+
+# B. Full acceptance sweep — needs a live instance and an external dsh checkout;
+#    anything it cannot reach is reported as SKIPPED (not passed).
+node .p1-baseline/verify-all.mjs
+```
+
+> **Cost discipline.** Some checks create real harness jobs and can therefore produce **billed** calls. They are disabled unless you explicitly opt in (`NOVELSTUDIO_GATE_CONFIRMED_ISOLATED=1`, `NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1`). The final check in suite B is a **cost gate**: any real call detected in the window fails it. See `.p1-baseline/README.md` §六.
+
 ### Project conventions
 
 - **Zero npm dependencies** — `package.json` has no `dependencies`, and the runtime pulls in no third-party packages. PRs that add one will generally not be merged.
@@ -91,6 +122,38 @@ node .p1-baseline/check-utf8.mjs         # 文本文件必须是合法 UTF-8
 
 > ⚠️ `verify-all.mjs` 的汇总会区分**通过 / 未通过 / 跳过**：需要活实例或外部仓库的检查会标成「跳过」，
 > **跳过不等于通过**；新增的「未通过」也不要用「跳过」去掩盖。
+
+### 怎么找到该看的地方
+
+先花五分钟看这几份，能省一小时乱翻：
+
+| 你想知道 | 看 |
+| --- | --- |
+| AI 内核怎么为一章装配上下文 | [`docs/ai-core.md`](docs/ai-core.md) |
+| 一个层必须声明什么、什么内容绝不许被裁掉 | [`docs/context-contract.md`](docs/context-contract.md) |
+| 宿主 / 插件 / 服务端的边界 | [`docs/host-contract.md`](docs/host-contract.md) 或 [`docs/plugin-runtime-map.md`](docs/plugin-runtime-map.md) |
+| 一次改动会碰到哪些文件、能不能单独回滚 | [`docs/phase-map.md`](docs/phase-map.md) |
+| 已知还没做完的是什么 | [`docs/pending-decisions.md`](docs/pending-decisions.md) |
+| `docs/` 里的其它内容 | [`docs/README.md`](docs/README.md)（索引） |
+
+整个产品的面并不大，值得直接读一遍：`server.js`（HTTP 与创作内核端点）、`db.js`（表结构与迁移）、`ai/`（内核：上下文装配、故事状态、连续性护栏）、`public/`（前端，无构建步骤）、`harness-plugins/novel-writing/`（DSH 插件）。
+
+### 该跑哪一套？
+
+两套套件分工不同——跑错那套，浪费的是你的时间或你的钱包：
+
+```bash
+# A. 离线套件：50 条，不需要活实例、不需要 API Key、零费用。
+#    每次 push 上 CI 跑的就是这一条。先跑它。
+node scripts/ci-offline-checks.mjs
+
+# B. 全量验收：需要活实例与外部 dsh 检出；够不着的项一律标「跳过」（不是通过）。
+node .p1-baseline/verify-all.mjs
+```
+
+> **成本纪律**：部分检查会真建 harness 任务，因此**可能产生计费调用**。它们默认不跑，必须显式授权
+> （`NOVELSTUDIO_GATE_CONFIRMED_ISOLATED=1`、`NOVELSTUDIO_ALLOW_HARNESS_SPAWN=1`）。
+> 套件 B 的最后一条是**成本总闸**：窗口内检出任何真实调用即判未通过。详见 `.p1-baseline/README.md` §六。
 
 ### 项目约定
 

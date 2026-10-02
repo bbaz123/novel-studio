@@ -13,6 +13,36 @@
 
 **本地运行的 AI 小说创作工坊。** 它把长篇写作必然会遇到的那几件事——**设定漂移、伏笔丢失、角色状态自相矛盾、AI 腔**——做成**可检查、可拦截的机制**，而不是靠提示词碰运气。
 
+**长篇不是在第 3 章崩的，是在第 40 章崩的。** 第 12 章写「李队」、第 40 章变成「李队长」；第 3 章已经死掉的配角重新出场；埋的线到完结都没人回收。对话式 AI 能写出漂亮的段落，却会把情节线丢掉，而且**更长的提示词治不了这个病**。
+
+Novel Studio 把它做成**确定性、可检查的机制**：本机跑一个 Node.js 服务，整座书库就是一个 SQLite 文件，**零 npm 依赖**——不用 `npm install`、不用注册账号、不连云、不订阅。
+
+> **完全不接 AI 也能用。** 纯手写、设定管理、大纲与导出开箱即用、零费用；AI（DeepSeek 或任意 OpenAI 兼容服务商）是可选项，只在你打开开关的功能里才用。
+
+**谁适合用**
+
+- **写 100 章以上长篇的网文 / 连载作者**：经常搞不清设定、角色状态和还没回收的伏笔
+- **想用 AI 助手但不愿把稿子交出去的人**：所有内容都留在你自己拥有的本地文件里
+- **想把它接进自己流水线的开发者**：界面只是本地 HTTP API 的薄客户端，[75 条端点](harness-plugins/novel-writing/plugin.json)可直接脚本化
+
+**谁不适合用**
+
+- **不是 SaaS**：没有账号、没有云同步、没有协作、没有订阅——它是你自己拥有的、可离线运行的软件
+- **不是一键出书机**：AI 产出是草稿或提案，要你点头才落库，不是自动驾驶
+- **不是模型厂商**：它不带模型、不卖 token，API Key 是你自己的，费用付给你自己的服务商
+- **不是 Agent 框架**：它是一个应用；[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 集成是可选的，只用于重活（成文流水线）
+
+**它和别的工具怎么选**（不打算取代谁，各自有各自的强项）
+
+| 你想要 | 可以先看 | Novel Studio 的差别 |
+| --- | --- | --- |
+| 一本被专业编辑打磨过的成稿 | [Sudowrite](https://www.sudowrite.com/)、[Novelcrafter](https://www.novelcrafter.com/) | 那些是托管 SaaS，句子级工具更强；本项目的重心是**100+ 章的连贯性**，而不是句子打磨，而且自托管、免费 |
+| 离线、纯文本的写作环境 | [Obsidian](https://obsidian.md/) + Longform、[novelWriter](https://novelwriter.io/)、[Manuskript](https://www.theologeek.ch/manuskript/) | 那些是优秀的文件式编辑器，但没有 AI、也没有故事状态；本项目维护**可查询的故事状态**（角色状态 / 事件账本 / 伏笔）并能据此驱动模型 |
+| 本地大模型对话前端 | [SillyTavern](https://github.com/SillyTavern/SillyTavern)、[KoboldAI](https://github.com/LostRuins/koboldcpp)、[Open WebUI](https://github.com/open-webui/open-webui) | 那些是对话优先、场景之间刻意无状态的；本项目是**正文优先**，模型读到的是装配好、按预算裁剪过的上下文 |
+| 自己写一个写作工具 | 任意 Node.js HTTP 客户端 | 本项目的界面就是本地 API 的薄客户端，你可以直接脚本化同一套内核 |
+
+**一句实话**：Novel Studio 写不出比托管 AI 写作服务更漂亮的**单句**，也不会像人类编辑那样给你一份成熟大纲。它做的是那些工具不做的事——**不让设定漂移、死人复活和伏笔失踪悄悄过去**，而且是在你自己的机器上、免费做这件事。
+
 > 📌 版本 **v1.0.0**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.0.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.0.0)。
 >
 > 🔎 **English keywords**：local-first AI novel writing studio / novel writing software · AI writing assistant · AI 小说写作软件 · Chinese web novel (网文) / long-form fiction · character consistency & foreshadowing tracker · worldbuilding tool · story bible · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted & privacy-first, your data never leaves your machine.
@@ -80,7 +110,7 @@
 
 - **零 npm 依赖**：`package.json` 里没有 `dependencies`，运行时不引入任何第三方包；用的是 Node 自带的 `node:sqlite`
 - **纯 ESM**、无构建步骤（前端是原生页面，改完刷新即生效）
-- **CI 零计费**：49 条离线检查 + 隔离实例活测，Windows / Linux 双平台，**绝不调用真实模型**
+- **CI 零计费**：50 条离线检查 + 隔离实例活测，Windows / Linux 双平台，**绝不调用真实模型**
 - **服务只监听 `127.0.0.1`**，写请求校验 `Origin` / `Host`（防 DNS rebinding）
 
 ### 作品管理
@@ -646,7 +676,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 [docs/pending-decisions.md](docs/pending-decisions.md) 与最近的审查报告。
 
 - ~~声明开源许可证~~ → **已定案：MIT**（见 [LICENSE](LICENSE)）
-- ~~接入 CI~~ → **已落地**：`.github/workflows/ci.yml`（离线 49 条 × Windows/Linux + 依赖下限 22.15 + 活实例 2 条）。
+- ~~接入 CI~~ → **已落地**：`.github/workflows/ci.yml`（离线 50 条 × Windows/Linux + 依赖下限 22.15 + 活实例 2 条）。
   每个 job 先打**平台事实**（platform/release/arch/node/路径分隔符）；ubuntu 两格本机没有 Linux 可预演，
   首次真红要**修脚本**，不许整格 `continue-on-error`（确需临时放行只对该 step 并注明）
 - **跨平台一键启动**：目前 `start-novel-studio.cmd` 只服务 Windows；macOS / Linux 需要 `npm start`
@@ -1000,7 +1030,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 ## 🧪 测试与验证
 
 ```bash
-# 离线清单（49 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
+# 离线清单（50 条：不需要实例、不碰你的数据、零计费）——CI 跑的就是这一条
 node scripts/ci-offline-checks.mjs
 
 # 活实例回归：起一个隔离实例（临时数据目录 + 停用 OpenViking）再跑，跑完自动关掉
