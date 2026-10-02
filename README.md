@@ -15,6 +15,8 @@ Turns setting drift, lost foreshadowing, contradictory character state and AI-fl
 
 [**English**](README.md) · [简体中文](README.zh-CN.md)
 
+> 📌 Version **v1.0.0** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.0.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.0.0).
+
 <img src="assets/screenshot-writing.png" alt="Novel Studio writing desk: chapter tree on the left, rich-text editor in the middle, live story-reference panel on the right" width="100%">
 
 </div>
@@ -322,4 +324,4 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ## 📝 Changelog
 
-Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent work: story-state kernel, cross-work reference library, direction-driven retrieval, and index layering.
+Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.0.0** (experimental channel, branch `Experimental-Version-v1.0`) — a high-leverage fix round on top of v0.9.6: the AI quality gate no longer silently passes when its reply fails to parse, editor autosave now keeps version history, 9 offline gates that had been failing on a stale spawn environment are green again, and the per-chapter contract is back in the prompt. Recent feature work: story-state kernel, cross-work reference library, direction-driven retrieval, and index layering.

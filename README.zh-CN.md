@@ -13,7 +13,7 @@
 
 **本地运行的 AI 小说创作工坊。** 它把长篇写作必然会遇到的那几件事——**设定漂移、伏笔丢失、角色状态自相矛盾、AI 腔**——做成**可检查、可拦截的机制**，而不是靠提示词碰运气。
 
-> 📌 版本 **v0.9.6**（主体 V2 · 重构后）。本仓库的**默认分支 `refactor/p0-p6` 就是当前开发线**；`main` 保留重构前的旧版（v0.9.3），安装方式与项目结构一律以本页为准。
+> 📌 版本 **v1.0.0**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.0.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.0.0)。
 >
 > 🔎 **English keywords**：local-first AI novel writing studio / novel writing software · AI writing assistant · AI 小说写作软件 · Chinese web novel (网文) / long-form fiction · character consistency & foreshadowing tracker · worldbuilding tool · story bible · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted & privacy-first, your data never leaves your machine.
 
@@ -696,6 +696,27 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 
 ## 📝 更新记录
 
+### 🛠️ 最近更新（2026-10-02 · **v1.0.0** 实验版：修复轮 + 审计取证）
+
+**这就是当前版本。** 分支 `Experimental-Version-v1.0` 承接 `refactor/p0-p6` 的全部代码，并在其上完成一轮
+高杠杆修复（依据《缺点及修复报告.md》§40 Phase 0 / Phase 1）。本轮 50/50 离线用例通过（零计费）。
+
+- **质量门不再在解析失败时静默放行**：AI 质检返回解析不出来时，旧实现直接当成「跳过并通过」——
+  也就是**永久静默失效且不留痕**。现在：先如实记一条「质量门未解析」日志，再按"只输出 JSON"的契约
+  修复重试一次，仍失败才返回 skipped（通道不可用是另一条分支，不再和解析失败合并）
+- **编辑器自动保存开始留历史版本**：AI 路径一直有版本兜底，唯独作者自己手改没有——一次全选覆盖
+  在防抖后不可逆。现在按 90 秒节流自动留档，并按 `kind` 分区保留（自动留 20 份，手动/草稿各 10 份不变）
+- **9 条离线门禁从长期红灯恢复**：服务端收紧到"每进程随机能力令牌"后，这 9 条脚本仍发固定头却
+  没打开兼容开关，于是被当成作者通道、断言反向失败。修的是脚本的 spawn 环境，**没有放宽任何期望值、没有跳过、没有吞错**
+- **「本章契约」重新进得了提示词**：两个 bug 叠加——时态分支根本没渲染契约块，且路由守卫把整批
+  `/api/novel/story_state/*` 子路径拦掉了（写契约实际改的是总开关）。已补渲染分支并把契约 GET/PUT 提到守卫之前
+- **截断提示语不再指向直连通道不存在的工具**：直连请求体里没有 `tools` 字段，模型调不了任何工具，
+  但被裁掉的层还写着"你可以用工具查回"。现在按通道如实降级提示语（`tools=0` 进缓存键，两条通道各取所需）
+- **其余同轮修复**：分段长正文续写不再只跳当前片、导入重建的批次基线、披露视图与分支沙盘的边界断言等
+
+审计取证与逐条对照：[.audit-2026/](../.audit-2026/A1-ai-pipeline.md)（AI 流水线 / 状态与数据 / 前端与安全三份）、
+[缺陷修复报告-20261002.md](../缺陷修复报告-20261002.md)、[缺点及修复报告.md](../缺点及修复报告.md)。
+
 ### 🛠️ 最近更新（2026-09-27 ~ 29 · 创作内核增强：七类新能力 + 共享资料库 + 方向驱动检索 / 索引层化）
 
 这一轮把「AI 能替你做什么」从"生成正文"扩到**定风格、试分支、查资料、导入重建、核对上下文**，
@@ -703,7 +724,7 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 期间抓到并修掉 3 个真实缺陷。交付与验收报告：
 [docs/enhancement-acceptance.md](docs/enhancement-acceptance.md)、
 [docs/post-implementation-acceptance.md](docs/post-implementation-acceptance.md)。
-（应用版本号仍是 **v0.9.6**——本轮改的是内核与插件契约，没有发新版号。）
+（那一轮改的是内核与插件契约，当时没有发新版号；版号在随后的 **v1.0.0** 一并收口。）
 
 - **上下文可核对到底**：新增运行时**贡献记录**（来源 / 内容 hash / 长度 / 去重 / 省略原因），
   可查「这一层为什么在、又为什么被裁」，只读端点，不新增表
