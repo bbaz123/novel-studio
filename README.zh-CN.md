@@ -689,6 +689,8 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 
 这个项目目前由作者一个人维护，**Issue 与 PR 都欢迎**。动手之前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)，要点只有几条：
 
+- **提问、想法、"这个怎么用"**：请走 [Discussions](https://github.com/bbaz123/novel-studio/discussions)，不要开 issue
+- **Bug**：[Bug 报告模板](.github/ISSUE_TEMPLATE/bug_report.yml) 会要你的 Node 版本、操作系统、复现步骤与报错原文
 - **先开 issue 再写大 PR**：避免几十行改动做完才发现方向不对
 - **改完先跑现状**：`node .p1-baseline/verify-all.mjs`（离线跑批；需要活实例或外部仓库的检查会明确标成「跳过」，**跳过不等于通过**）
 - **不要提交 `data/`**：里面是你的作品与 API Key（已在 `.gitignore` 内）

@@ -345,6 +345,8 @@ Only items that can be checked against the current repository are listed. The fu
 
 Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first — the essential rules are:
 
+- **Questions, ideas and "how do I…"** — use [Discussions](https://github.com/bbaz123/novel-studio/discussions) rather than an issue
+- **Bugs** — the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml) asks for your Node version, OS, reproduction steps and the verbatim error
 - **Open an issue before a large PR** so we can agree on direction first
 - **No npm dependencies** — the project is deliberately zero-dependency, and PRs adding one will not be merged
 - **Pure ESM** — `.mjs` plus `"type": "module"`; no CommonJS `require`
