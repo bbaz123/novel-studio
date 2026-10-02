@@ -248,9 +248,21 @@ function verify(snapDir) {
     console.log(`  · 快照记录的基线是 ${base.slice(0, 8)}，当前 HEAD 已是 ${live.slice(0, 8)}`
       + `——快照取自更早时点，下面按**快照自己的基线**校验。\n`);
   }
+  // ⚠️ 这里**刻意不用 `git archive … | tar -xf -`**（2026-10-02 实测踩到）：
+  // Windows 自带的 bsdtar 解不开**超过 16 字节的 UTF-8 路径**——`docs/新手入门.md`（16 字节）
+  // 能解，`缺点及修复报告.md`（25 字节）直接报 `Invalid empty pathname`，整个导出失败，
+  // 于是"快照工具离线测试"整条判红。这与快照内容无关，纯属传输层的编码缺陷。
+  // 改用 `git checkout-index`：由 git 自己把 blob 写盘，不经过 tar，中文长文件名照常工作。
+  // 代价是 `export-ignore` 不再生效——已核对本仓库的 .gitattributes 没有该属性（只有 text/eol 与 binary），
+  // 且对同一 commit 逐文件比过 sha256：两种方式导出 **399 个文件、0 处内容差异**。
+  // 用独立索引文件（GIT_INDEX_FILE）以免动到仓库真实索引里的暂存状态。
   try {
-    const tar = execFileSync('git', ['archive', base], { cwd: REPO, maxBuffer: 512 * 1024 * 1024 });
-    execFileSync('tar', ['-xf', '-', '-C', scratch], { input: tar, maxBuffer: 512 * 1024 * 1024 });
+    const tree = execFileSync('git', ['rev-parse', `${base}^{tree}`], { cwd: REPO, encoding: 'utf8' }).trim();
+    const tmpIndex = path.join(dir, '.export-index');
+    const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+    execFileSync('git', ['read-tree', tree], { cwd: REPO, env });
+    execFileSync('git', ['checkout-index', '-a', '-f', `--prefix=${scratch}${path.sep}`], { cwd: REPO, env, maxBuffer: 512 * 1024 * 1024 });
+    fs.rmSync(tmpIndex, { force: true });
     say(true, `已从快照记录的基线 (${base.slice(0, 8)}) 导出干净树`);
   } catch (e) {
     say(false, `导出基线 ${base.slice(0, 8)} 失败（该 commit 还在仓库里吗？）：${String(e.stderr || e.message).slice(0, 200)}`);
