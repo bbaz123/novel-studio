@@ -360,6 +360,14 @@
           verification: { ok: !!v.ok, reasons: v.reasons || [] }, at: Date.now(),
         };
       } catch (e) {
+        // ⚠️ P1-08：取消必须**中断整次任务**，不能被吞成"本片失败"再继续跑下一片。
+        // 旧实现把所有异常一律记成 `status:'failed'` 并继续循环：用户在进度卡上点「停止」，
+        // 抛出的 cancelledErr 被这里吞掉，于是后续每一片照常发起（分钟级 + 计费），
+        // 而界面还提示"已取消" —— 取消按钮的真实语义变成了"跳过这一片"。
+        // 现在：带 cancelled 标记（或 AbortError）的异常直接返回 cancelled，不再启动后续片。
+        if (e && (e.cancelled === true || e.name === 'AbortError')) {
+          return { results: out, cancelled: true };
+        }
         rec = {
           segment_id: seg.segment_id, ordinal: seg.ordinal, source_version: plan.source_version,
           status: 'failed', output: '', output_hash: null, error: String((e && e.message) || e),

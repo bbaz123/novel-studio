@@ -120,7 +120,9 @@ async function startIsolatedServer() {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ns-temporal-http-'));
   child = spawn(process.execPath, [path.join(REPO, 'server.js')], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(port), NOVELSTUDIO_DATA_DIR: dataDir, NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_OPENVIKING_PEER_ID: 'ci-temporal-06' },
+    // 该测试专门覆盖旧 HTTP 模型头的兼容阴性路径；生产默认仍拒绝固定头，
+    // 这里只在隔离实例显式打开兼容开关，避免测试依赖环境外泄。
+    env: { ...process.env, PORT: String(port), NOVELSTUDIO_DATA_DIR: dataDir, NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1', NOVELSTUDIO_OPENVIKING_PEER_ID: 'ci-temporal-06' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
@@ -164,6 +166,8 @@ async function main() {
     const workB = wB.json.id; works.push(workB);
     const cb = await api('POST', '/api/chapters', { work_id: workB, title: '第1章' });
     const b1 = cb.json.id;
+    // 新作品默认开启；这里显式关闭，构造旧作品兼容语义的阴性对照。
+    await api('PUT', '/api/novel/state/temporal', { work_id: workB, temporal_enabled: false });
 
     // ── G0 开关与模型侧边界 ────────────────────────────────────────────────────
     console.log('【G0 开关与模型侧边界】');

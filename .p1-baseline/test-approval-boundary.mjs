@@ -74,6 +74,11 @@ const server = spawn(process.execPath, ['server.js'], {
     NOVELSTUDIO_DATA_DIR: DATA_DIR,
     NOVELSTUDIO_OV_DISABLED: '1',
     NOVELSTUDIO_OPENVIKING_PEER_ID: 'enh-approval-test',
+    // R02.2 起服务端默认不再把固定 `X-Novel-Agent` 头当作模型身份（改用每进程随机
+    // capability token，见 server.js 的 isAgentRequest）。本测试专门验证"模型通道"的审批边界，
+    // 因此必须显式打开旧头兼容开关——否则这些请求会被当成**作者通道**放行，断言全部反向失败
+    // （这正是本门禁此前长期红灯的根因）。
+    NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });

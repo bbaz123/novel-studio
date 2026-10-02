@@ -1,7 +1,7 @@
 {
   "$comment": "Host Contract 的可机读契约面（由真实代码导出，不是手抄）。任何字段的变化都必须走主体变更流程：改代码 → 改本文件 → 改 docs/host-contract.md → 跑 .p1-baseline/test-host-contract.mjs。",
-  "host_contract": "1.19.0",
-  "frozen_at": "2026-09-30",
+  "host_contract": "1.20.0",
+  "frozen_at": "2026-10-02",
   "host": {
     "service": "novel-studio",
     "engine": "novel-core",
@@ -12,8 +12,8 @@
   },
   "context": {
     "endpoints": [
-      "GET /api/novel/context?work_id=&chapter_id=&mode=&direction=&library_recall_phase=&direction_source=&request_id=&boundary=&commit_id=&worldline_id=&perspective=&pov_character_id=",
-      "GET /api/ai_context?chapter_id=&direction=&library_recall_phase=&direction_source=&request_id=&boundary=&commit_id=&worldline_id=&perspective=&pov_character_id="
+      "GET /api/novel/context?work_id=&chapter_id=&mode=&direction=&library_recall_phase=&direction_source=&request_id=&boundary=&commit_id=&worldline_id=&perspective=&pov_character_id=&tools=",
+      "GET /api/ai_context?chapter_id=&direction=&library_recall_phase=&direction_source=&request_id=&boundary=&commit_id=&worldline_id=&perspective=&pov_character_id=&tools="
     ],
     "modes": [
       "full",
@@ -580,6 +580,7 @@
       "story_facts",
       "story_memories",
       "story_memory_proposals",
+      "story_memory_segments",
       "story_repair_runs",
       "story_repair_steps",
       "story_snapshots",
@@ -971,6 +972,11 @@
       "version": "1.19.0",
       "frozen_at": "2026-09-30",
       "note": "附加式：T7 存量重建、迁移门禁与 bootstrap。新增作者侧 GET /api/novel/state/backfill（只读进度：迁移状态、逐章状态机、预算、bootstrap 候选）与 POST /api/novel/state/backfill/step（冻结不可变修订 + 返回抽取请求或登记候选；本处理器不调用模型，模型结果由调用方按批提供）、POST /api/novel/state/backfill/confirm（作者逐章按序确认，可信前缀只在按序确认后前进；重复确认幂等）、POST /api/novel/state/backfill/bootstrap/plan（扫描旧字段最新值建立待确认候选；幂等、不自动回填）、POST /api/novel/state/backfill/bootstrap/decide（作为开篇设定 / 指定章生效 / 拒绝；拒绝不写任何状态）。上述写入口模型侧（X-Novel-Agent）一律 403；确认前不写任何正式状态。章节/作品归属校验失败一律 404。PUT /api/novel/state/temporal 启用改为迁移门禁：缺必要表或索引 → 503 且不改配置，不吞错误继续跑；启用成功即登记迁移版本（app_settings.temporal_migration 1.0.0），响应新增 migration（登记后状态）与首次启用时的 enable_scope（章数 / 预计模型调用 / 待重建范围 / bootstrap 待确认数；旧作品默认不启用自动模型分析）。未开启 temporal_enabled 的作品不触发额外模型调用、旧上下文与端点契约不变；无新表；插件工具/端点面不变。"
+    },
+    {
+      "version": "1.20.0",
+      "frozen_at": "2026-10-02",
+      "note": "附加式（审计修复轮）。① 上下文装配的通道能力：GET /api/novel/context 与 GET /api/ai_context 新增可选参数 tools（tools=0 表示本通道没有工具能力，如直连 /api/ai/*）——此时被裁剪层的截断提示语不再指示模型调用它调不到的工具，而是如实写'当前没有查回路径'；该参数进装配缓存键（后缀 |notools），默认（不给参数）缓存键与响应逐字节同 1.19.0。② 整次采纳的并发基线：POST /api/novel/adopt 的 expected 新增 updated_at（与既有 expected.content_hash 互补，二者取其一即可表达'本次采纳基于哪一版正文'），不一致时 409 整体回滚；响应 adopt 字段新增 content_hash_before / content_hash_after（附加字段，旧消费方可忽略）。③ 模型侧写入边界收紧：POST /api/novel/events 与 PUT /api/story_memory 在模型通道（X-Novel-Agent 或 capability token）下**一律落提案**，不再接受插件自报 proposed=false（响应新增 forced_proposal）；POST /api/novel/foreshadows/:id/status 新增一次性作者审批 op `foreshadow_status`（精确绑定 event_id + status；作者通道行为不变，响应新增 agent_approved）。④ 通用 CRUD 的 chapters 写入改为单事务（正文 + revision/pending 同生共死），并新增 kind='auto' 的编辑器自动快照（节流 90s、独立保留 20 份）；请求体超限在通用 CRUD 上按 413 返回（此前被降级成 400）。⑤ 影响分析报告新增 additive 字段 coverage.in_scope / truncated / truncated_at_chapter / not_revalidated 与 totals.skipped_by_limit / in_scope / truncated（旧字段 skipped_by_coverage 语义修正为'被覆盖策略排除的章数'，不再恒为 0）。⑥ 新增故事状态只读/写入端点 POST|GET /api/novel/story_state/contract（此前被同前缀守卫吞掉、恒 404；与既有 /api/novel/state/contract 同实现），PUT /api/novel/story_state 在未给 enabled 字段时不再把开关改成 false（局部更新语义）。未开启相关开关的作品零行为变化；无新表；插件工具面不变（仍 26 个）。"
     }
   ]
 }

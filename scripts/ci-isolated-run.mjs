@@ -54,6 +54,7 @@ const child = spawn(process.execPath, [path.join(REPO, 'server.js')], {
     PORT: String(PORT),
     NOVELSTUDIO_DATA_DIR: DATA_DIR,
     NOVELSTUDIO_OV_DISABLED: '1',
+    NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1',
     NOVELSTUDIO_OPENVIKING_PEER_ID: 'ci-isolated-peer',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

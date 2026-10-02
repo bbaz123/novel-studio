@@ -185,6 +185,7 @@ try {
   // ── C6：未启用作品行为不变 ─────────────────────────────────────────────
   const wkB = await client.createWork('T5 未启用对照');
   const B = Number(wkB.json.id);
+  await client.api('PUT', '/api/novel/story_state', { work_id: B, enabled: false, note: 'temporal 旧作品兼容对照' });
   const cb1 = Number((await client.createChapter(B, '对照第1章', { content: '<p>对照第一章。</p>' })).json.id);
   const cb2 = Number((await client.createChapter(B, '对照第2章', { content: '<p>对照第二章。</p>' })).json.id);
   const MEMORY_B = '未启用作品记忆标记：应当保留在装配里。';
@@ -226,6 +227,39 @@ try {
   const vW = T.temporalVersionOf(W);
   a.ok('C7 temporalVersionOf：启用作品非空（进外部版本串）', typeof vW === 'string' && vW.length > 0, vW.slice(0, 80));
   a.ok('C7 temporalVersionOf：未启用作品为空串（不改变缓存行为）', T.temporalVersionOf(B) === '');
+
+  // ── C1b（P1-06 回归）：时态引擎开启后「本章契约」必须仍然进提示词 ─────────────
+  // 两个叠加的 bug 让契约整块消失：
+  //   ① 时态分支一产出 text，非时态分支的 storyStateLayerOf 就再也不执行，
+  //      而 renderContractSection 的唯一调用点在那里 —— 打开时态引擎 = 契约从提示词消失；
+  //   ② 契约**端点本身**不可达：它挂在 story_state 前缀下，而该函数里
+  //      `if (sub !== 'state') return false;` 把那批子路径全挡掉了（PUT 实际改的是总开关）。
+  // 这条断言**只靠 assembled 文本**判定（不看内部函数），并且走 story_state 前缀调端点，
+  // 这样两个 bug 中任意一个复发都会立刻变红。
+  // ⚠️ 刻意放在**最后**：写入契约会让装配缓存失效（touchWork），
+  //    若放在中间，后面所有"同一装配/共享缓存"的断言都会因为 context_id 变化而误红。
+  {
+    const C_MARK = 'C1B契约标记' + Math.random().toString(36).slice(2, 8);
+    const putContract = await client.api('PUT', '/api/novel/story_state/contract', {
+      work_id: W, chapter_id: c5,
+      contract: {
+        chapter_goal: `${C_MARK}：本章必须让主角与王师傅在山道上对峙`,
+        required_beats: [{ text: `${C_MARK}-必须写到的情节点` }],
+        forbidden_beats: [{ text: `${C_MARK}-禁止出现的情节点` }],
+      },
+      note: 'P1-06 回归夹具',
+    });
+    a.ok('C1b 契约写入成功（前置条件成立，端点必须可达）', putContract.status === 200 || putContract.status === 201,
+      `status=${putContract.status} ${JSON.stringify(putContract.json || {}).slice(0, 200)}`);
+    const readBack = await client.api('GET', `/api/novel/story_state/contract?work_id=${W}&chapter_id=${c5}`);
+    a.ok('C1b 契约可回读（写入真的落到 chapter_contracts）',
+      readBack.status === 200 && String((readBack.json || {}).contract?.chapter_goal || '').includes(C_MARK),
+      `status=${readBack.status} ${JSON.stringify(readBack.json || {}).slice(0, 200)}`);
+    const ctxAfterContract = await client.api('GET', `/api/novel/context?work_id=${W}&chapter_id=${c5}&mode=full&boundary=after`);
+    const asmC = String((ctxAfterContract.json || {}).assembled || '');
+    a.ok('C1b 时态引擎开启时 assembled 仍包含本章契约（P1-06）', asmC.includes(C_MARK) && asmC.includes('本章契约'),
+      asmC.includes(C_MARK) ? 'ok' : `缺失：assembled 长度 ${asmC.length}｜PUT=${putContract.status}｜${asmC.replace(/\s+/g, ' ').slice(0, 500)}`);
+  }
 
   await client.deleteWork(W);
   await client.deleteWork(B);

@@ -3583,10 +3583,16 @@ async function saveChapterSnapshot({ id, content, title }) {
   } catch (e) {
     if (e.status === 409) {
       // UI-2：冲突时保留本地快照；自动刷新服务端内容会静默抹掉作者刚输入的文字。
-      state.editorConflictSnapshot = { id, content, title, serverUpdatedAt: chapter?.updated_at || null };
+      let server = null;
+      try { server = await api(`/chapters/${id}`); } catch (_) { /* 服务器暂时不可读，仍保留本地稿 */ }
+      state.editorConflictSnapshot = {
+        id, content, title,
+        serverUpdatedAt: server?.updated_at || chapter?.updated_at || null,
+        serverContent: server?.content,
+        serverTitle: server?.title
+      };
       toast('检测到其他窗口的修改，本地内容已保留，请先处理冲突', 'error');
-      const status = $('#editor-status');
-      if (status) status.innerHTML = '<span class="err">保存冲突：本地内容已保留</span>';
+      showEditorConflictActions();
       return false;
     }
     const status = $('#editor-status');
@@ -3597,6 +3603,63 @@ async function saveChapterSnapshot({ id, content, title }) {
   })();
   state.editorSaveInFlight.set(Number(id), request);
   try { return await request; } finally { if (state.editorSaveInFlight.get(Number(id)) === request) state.editorSaveInFlight.delete(Number(id)); }
+}
+
+// 409 冲突不是终止态：作者必须能明确选择保留哪一版，且选择后自动保存闸门恢复。
+function showEditorConflictActions() {
+  const status = $('#editor-status');
+  if (!status) return;
+  status.innerHTML = '<span class="err">保存冲突：本地内容已保留</span> '
+    + '<button class="btn small" data-action="editor-conflict-local">以本地为准</button> '
+    + '<button class="btn small secondary" data-action="editor-conflict-server">以服务端为准</button>';
+}
+
+async function resolveEditorConflict(choice) {
+  const conflict = state.editorConflictSnapshot;
+  if (!conflict) return false;
+  const id = Number(conflict.id);
+  if (!id) return false;
+  if (choice === 'server') {
+    try {
+      const latest = await api(`/chapters/${id}`);
+      const idx = state.chapters.findIndex((c) => c.id === id);
+      if (idx >= 0) state.chapters[idx] = latest;
+      const editor = $('#editor-content');
+      const title = $('#editor-title');
+      if (editor && Number(editor.dataset.chapterId) === id) editor.innerHTML = sanitizeEditorHtml(latest.content || '');
+      if (title && Number(editor?.dataset.chapterId) === id) title.value = latest.title || '';
+      state.editorConflictSnapshot = null;
+      state.editorSaveSnapshot = null;
+      state.editorSaveFailedSnapshot = null;
+      const status = $('#editor-status');
+      if (status) status.innerHTML = '<span class="ok">✔ 已采用服务端版本，自动保存已恢复</span>';
+      return true;
+    } catch (e) {
+      toast('读取服务端最新版本失败：' + e.message, 'error');
+      showEditorConflictActions();
+      return false;
+    }
+  }
+  if (choice === 'local') {
+    // 先取最新 updated_at，再以本地快照重试；不能关闭乐观锁或复用旧锁值。
+    let latest;
+    try { latest = await api(`/chapters/${id}`); } catch (e) {
+      toast('读取服务端最新版本失败：' + e.message, 'error');
+      showEditorConflictActions();
+      return false;
+    }
+    const snapshot = { id, content: conflict.content, title: conflict.title };
+    const idx = state.chapters.findIndex((c) => c.id === id);
+    if (idx >= 0) state.chapters[idx] = latest;
+    state.editorConflictSnapshot = null;
+    const ok = await saveChapterSnapshot(snapshot);
+    if (!ok) return false;
+    state.editorSaveSnapshot = null;
+    const status = $('#editor-status');
+    if (status) status.innerHTML = '<span class="ok">✔ 已采用本地版本，自动保存已恢复</span>';
+    return true;
+  }
+  return false;
 }
 
 async function saveCurrentChapter() {
@@ -3720,7 +3783,13 @@ async function restoreChapterDraft() {
   if (!d || !chapterId) return;
   if (!confirm('取回这版生成稿并覆盖当前正文吗？（当前正文会自动存为一条历史版本）')) return;
   try {
-    await api('/novel/chapter_save', { method: 'POST', body: { chapter_id: chapterId, content: d.content } });
+    // ⚠️ 必须转成段落 HTML 再写回（2026-10-01 实测缺陷）：草稿来自 AI 成文的**纯文本**，
+    // 直接当 HTML 写进正文会让浏览器把全部换行折叠掉——正文变成一整段，看起来"取回后没重新排版"。
+    // 服务端已在写入/读取两侧归一化，这里再兜一层：任何来源的草稿都不会再以裸文本进正文。
+    // 已含 <p>/<br> 的草稿原样写回（不会被二次包装）。
+    const isHtml = /<\/?(p|br|div|h[1-6]|blockquote|ul|ol|li|b|strong|i|em|u|span|a)\b[^>]*>/i.test(String(d.content || ''));
+    const content = isHtml ? d.content : textToParagraphsHtml(d.content || '');
+    await api('/novel/chapter_save', { method: 'POST', body: { chapter_id: chapterId, content } });
     state.chapterDraft = null;
     state.loadedWorkId = null;
     closeModal();
@@ -4609,7 +4678,7 @@ function impactSectionHtml() {
       <div class="muted" style="font-size:12px">只分析、只标记：给出显式出场与隐性因果的受影响章节、证据与处理结果，<b>不会</b>自动改写后文。重建必须由你另行点击并确认范围。</div>
       ${runs === null ? '<div class="muted mt-8">当前服务端不提供影响分析接口（可能是重启前的旧进程）：重启后可用。</div>' : ''}
       ${report ? `
-        <div class="muted mt-8" style="font-size:12px">根变更：第 ${esc(String(chapterTitleOfId(report.root_chapter_id)))} 章｜覆盖 ${esc(String(totals.downstream ?? 0))} 章（跳过 ${esc(String(totals.skipped_by_coverage ?? 0))}）｜保留 ${esc(String(totals.kept ?? 0))}｜待复核 ${esc(String(totals.needs_review ?? 0))}｜阻塞 ${esc(String(totals.blocked ?? 0))}｜生成修订 ${esc(String(totals.generated_revisions ?? 0))}（本阶段不生成后文修订）｜模型调用 ${esc(String(totals.model_calls ?? 0))}</div>
+        <div class="muted mt-8" style="font-size:12px">根变更：第 ${esc(String(chapterTitleOfId(report.root_chapter_id)))} 章｜覆盖 ${esc(String(totals.downstream ?? 0))} 章（跳过 ${esc(String(totals.skipped_by_coverage ?? 0))}${Number(totals.skipped_by_limit ?? 0) > 0 ? `｜<b>因上限未复核 ${esc(String(totals.skipped_by_limit))} 章，从第 ${esc(String(totals.truncated_at_chapter ?? '?'))} 章起</b>` : ''}）｜保留 ${esc(String(totals.kept ?? 0))}｜待复核 ${esc(String(totals.needs_review ?? 0))}｜阻塞 ${esc(String(totals.blocked ?? 0))}｜生成修订 ${esc(String(totals.generated_revisions ?? 0))}（本阶段不生成后文修订）｜模型调用 ${esc(String(totals.model_calls ?? 0))}</div>
         ${report.tentative ? '<div class="redline-scan warn mt-8">根章节的最新正文尚未确认：本报告只做试探性覆盖提示（未调用模型、未写任何候选状态）。</div>' : ''}
         ${(report.notes || []).map((n) => `<div class="muted" style="font-size:12px">· ${esc(n)}</div>`).join('')}
         ${groupHtml('需要复核（隐性因果）', groups.needs_review)}
@@ -7110,15 +7179,41 @@ async function verifyAIDraft(blueprint, article, targetWords) {
     reasoningEffort: 'low',
     temperature: 0.2
   });
-  if (!reply) return { pass: true, skipped: true }; // 质检通道不可用：不阻塞成文交付
+  const judge = (parsed) => {
+    const issues = Array.isArray(parsed.issues)
+      ? parsed.issues.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).filter(Boolean)
+      : [];
+    const pass = String(parsed.verdict) !== 'issues' || issues.length === 0;
+    const blocked = issues.some((x) => /未来章|禁止写入|未登记|具名角色|具名地点|妖兽/.test(x));
+    return { pass, issues, skipped: false, blocked };
+  };
+  // 质检通道不可用：不阻塞成文交付（但**必须带 reason**，否则调用侧的告警分支不会触发）。
+  if (!reply) return { pass: true, skipped: true, reason: 'channel_unavailable' };
   const parsed = extractJSONFromText(reply);
-  if (!parsed) return { pass: true, skipped: true };
-  const issues = Array.isArray(parsed.issues)
-    ? parsed.issues.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).filter(Boolean)
-    : [];
-  const pass = String(parsed.verdict) !== 'issues' || issues.length === 0;
-  const blocked = issues.some((x) => /未来章|禁止写入|未登记|具名角色|具名地点|妖兽/.test(x));
-  return { pass, issues, skipped: false, blocked };
+  if (parsed) return judge(parsed);
+  // ── P1-01：调用成功但输出**不满足结构化契约**，这与"通道不可用"是两件事 ──────────
+  // 旧实现把它和"通道不可用"合并成 `{pass:true, skipped:true}`（且不带 reason），而调用侧
+  // 只处理"带 reason 的 skipped"（见 performToolbarAIWrite 的 verdict.skipped && verdict.reason 分支）
+  // —— 于是模型一旦持续吐非 JSON（例如把解释写在前、被 max_tokens 截成半段、或包了 Markdown 代码块），
+  // **质量门永久静默失效**，界面上却看起来"已质检通过"。这是典型的"看似在做事、实际被旁路"。
+  // 处置：① 如实记一条 unparsed 日志（供复盘，不落作者正文）；② 只做**一次**契约修复重试；
+  //       ③ 仍失败则返回带 reason 的 skipped，让调用侧的告警分支生效（作者会看到"本次未完成质检"）。
+  reportClientLog({
+    level: 'warn',
+    kind: 'quality_gate_unparsed',
+    message: `[写作] 质检返回无法解析为契约 JSON（${String(reply).length} 字），本次视为未质检`,
+    context: { chars: String(reply).length, head: String(reply).slice(0, 200) }
+  });
+  let repaired = null;
+  {
+    const fix = await directAIWrite([
+      { role: 'system', content: '你是 JSON 修复器：把用户给的内容整理成一个 JSON 对象。只输出 JSON 本身，不要解释、不要 Markdown 代码块。' },
+      { role: 'user', content: `把下面内容整理为 {"verdict":"pass"或"issues","issues":["硬伤描述",…]}，不要新增未出现的问题，无法判断时用 "pass"：\n${String(reply).slice(0, 4000)}` }
+    ], { model: policyModel('fast'), maxTokens: 512, temperature: 0, reasoningEffort: 'low' });
+    repaired = fix ? extractJSONFromText(fix) : null;
+  }
+  if (repaired) return judge(repaired);
+  return { pass: true, skipped: true, reason: 'unparsed', raw_head: String(reply).slice(0, 200) };
 }
 
 // 质检不过时走 harness 精写内核修复：保留大部分正文、只修硬伤；
@@ -7807,6 +7902,11 @@ async function loadAIContext(options = {}) {
     if (direction) qs.set('direction', direction);
     if (libraryRecallPhase !== 'default') qs.set('library_recall_phase', libraryRecallPhase);
     if (direction && options.directionSource) qs.set('direction_source', String(options.directionSource));
+    // P1-07：直连通道的请求体里**没有 tools**，模型调不到任何工具。而截断提示语默认会写
+    // "可用 novel_lookup 查证" —— 那条提示在直连通道上是指向一个不存在的工具（模型照着查会一无所获）。
+    // 因此装配时如实声明本次通道没有工具，装配器会把提示语降级为"当前没有查回路径（已知缺口）"。
+    // 慢通道（harness）自己会另取一份带工具的上下文，不受这里影响。
+    qs.set('tools', '0');
     return `${path}?${qs.toString()}`;
   };
   const promise = (async () => {
@@ -7818,7 +7918,7 @@ async function loadAIContext(options = {}) {
       if (ctx && !(typeof ctx.assembled === 'string' && ctx.assembled) && workId) {
         try {
           // 同一组方向/阶段参数 → 与 /ai_context 命中**同一份服务器缓存**，不会二次召回（C3）。
-          const qs = new URLSearchParams({ work_id: String(workId), chapter_id: String(chapterId), mode: 'full' });
+          const qs = new URLSearchParams({ work_id: String(workId), chapter_id: String(chapterId), mode: 'full', tools: '0' });
           if (direction) qs.set('direction', direction);
           if (libraryRecallPhase !== 'default') qs.set('library_recall_phase', libraryRecallPhase);
           if (direction && options.directionSource) qs.set('direction_source', String(options.directionSource));
@@ -8262,27 +8362,70 @@ async function longTextRunTask(kind, opts) {
   const results = prior && Array.isArray(prior.results) ? prior.results.slice() : [];
   const signal = { cancelled: false };
   state.longTextCancel = signal;
-  if (typeof options.onStart === 'function') options.onStart(plan, results);
-  const parsedBySegment = new Map();
-  const run = await K.runSegmentedTask({
-    plan, results, signal,
-    verify: meta.verify || undefined,
-    messagesFor: (seg) => (meta.segmentMessages
-      ? meta.segmentMessages(seg)
-      : K.segmentMessages({ system: '你是资深中文小说编辑。', context: aiContextBlock() || '无', instruction: options.instruction, segment: seg, kind: meta.label })),
-    runner: async (seg, messages) => {
-      const raw = await longTextCallModel(kind, meta, {
-        segment: seg, chapterId, messages, prompt: meta.prompt ? meta.prompt(seg.target.text, seg) : null
-      });
-      const parsed = meta.parse ? meta.parse(seg, raw) : { output: raw };
-      parsedBySegment.set(seg.segment_id, parsed);
-      return parsed.output;
-    },
-    onProgress: (p) => {
-      longTextSaveRun(kind, chapterId, plan, p.results);
-      if (typeof options.onProgress === 'function') options.onProgress(plan, p.results);
+  // ── P1-08：把「停止」接进分段编排层 ──────────────────────────────────────────────
+  // 旧实现的三个问题叠在一起，使"停止"变成"跳过当前片"：
+  //   ① `longTextCancelRun()` 全仓无调用点（孤儿函数，只有定义）；
+  //   ② 分段进度条（`#ai-task-progress`）没有取消按钮 —— 用户能点到的「停止」只有**片内**
+  //      慢通道进度卡上的那一个；
+  //   ③ 那个按钮抛出的是 cancelledErr，而 `long-text.js` 的逐片 catch 把**任何**异常
+  //      都记成"本片失败"并继续下一片。
+  // 现在：分段任务自己在共享进度条上装取消按钮，并按"先置取消位、再尽力取消在途作业"处理。
+  // 后续片是否发起只由取消位决定，因此在途取消失败也不会让任务继续跑下去。
+  const cancelInflight = () => {
+    longTextCancelRun();
+    const ids = Array.isArray(state.longTextJobIds) ? state.longTextJobIds.slice() : [];
+    for (const id of ids) {
+      // 尽力取消在途作业；失败不影响"后续片不再发起"这一保证。
+      api('/harness/cancel', { method: 'POST', body: { job_id: id } }).catch(() => { /* 忽略 */ });
     }
-  });
+  };
+  const wireCancelButton = () => {
+    const el = document.getElementById('ai-task-progress');
+    if (!el) return null;
+    el.hidden = false;
+    el.innerHTML = `<span class="muted">长正文分段处理准备中…</span>`
+      + `<button class="btn secondary btn-xs" data-action="long-text-cancel">停止</button>`;
+    const btn = el.querySelector('[data-action="long-text-cancel"]');
+    if (btn) btn.addEventListener('click', (ev) => { ev.preventDefault(); cancelInflight(); });
+    return el;
+  };
+  const cancelCtl = wireCancelButton();
+  let run = null;
+  const parsedBySegment = new Map();
+  try {
+    if (typeof options.onStart === 'function') options.onStart(plan, results);
+    run = await K.runSegmentedTask({
+      plan, results, signal,
+      verify: meta.verify || undefined,
+      messagesFor: (seg) => (meta.segmentMessages
+        ? meta.segmentMessages(seg)
+        : K.segmentMessages({ system: '你是资深中文小说编辑。', context: aiContextBlock() || '无', instruction: options.instruction, segment: seg, kind: meta.label })),
+      runner: async (seg, messages) => {
+        const raw = await longTextCallModel(kind, meta, {
+          segment: seg, chapterId, messages, prompt: meta.prompt ? meta.prompt(seg.target.text, seg) : null
+        });
+        const parsed = meta.parse ? meta.parse(seg, raw) : { output: raw };
+        parsedBySegment.set(seg.segment_id, parsed);
+        return parsed.output;
+      },
+      onProgress: (p) => {
+        longTextSaveRun(kind, chapterId, plan, p.results);
+        if (typeof options.onProgress === 'function') options.onProgress(plan, p.results);
+      }
+    });
+  } catch (e) {
+    // 取消是"用户意图"，不是失败：如实上抛，由调用方按 e.cancelled 分支处理（不弹错误 toast）。
+    if ((e && e.cancelled === true) || signal.cancelled) {
+      const err = new Error('任务已取消');
+      err.cancelled = true;
+      err.partial = run && Array.isArray(run.results) ? run.results : results;
+      throw err;
+    }
+    throw e;
+  } finally {
+    if (cancelCtl) { cancelCtl.hidden = true; cancelCtl.innerHTML = ''; }
+    state.longTextCancel = null;
+  }
   for (const rec of run.results) {
     const parsed = parsedBySegment.get(rec.segment_id);
     if (parsed && rec.status === 'done') { rec.report = parsed.report || null; rec.extra = parsed.extra || null; }
@@ -8646,6 +8789,81 @@ function extractJSONFromText(text) {
     .replace(/"\s*,\s*"/g, '","')
     .replace(/"\s*,\s*([}\]])/g, '"$1');
   try { return JSON.parse(repaired); } catch (_) { return null; }
+}
+
+// 蓝图六个字段。判定"这是不是蓝图"与"抢救蓝图 JSON"都用同一份清单，
+// 两处各写一份必然漂移（漂移的后果：抢救回来了、闸门却认不出）。
+const BLUEPRINT_FIELDS = WRITING_DIRECTION_FIELD_ORDER;
+
+/**
+ * 章节蓝图解析（唯一入口）：先严格 JSON，失败再逐字段抢救。
+ *
+ * 为什么必须抢救（2026-10-01 真实事故）：模型在蓝图 JSON 的**字符串值里直接写了 ASCII 引号**
+ * （`…却被告知自己是"符合条件的"——读者知道…`），严格解析必然失败；旧实现只做"多一个引号"的
+ * 修引号重试，救不回这种情况，于是在调用点被当成"成文"整篇写进了章节正文
+ * （第一章正文 1589 字全是 `【蓝图】{…}`，而 chapters.blueprint_json 反而为空）。
+ *
+ * 与审稿报告的 parseReviewText 同一条纪律：**结构化产物解析失败时不许降级成正文**，
+ * 要么按字段抢救成对象，要么交由调用方报错，绝不落到"把 JSON 当小说"。
+ *
+ * @returns {{blueprint: object|null, stage: 'strict'|'salvaged'|'none'}}
+ */
+function parseBlueprintJSON(text) {
+  const s = String(text || '').trim();
+  if (!s) return { blueprint: null, stage: 'none' };
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    const strict = extractJSONFromText(s.slice(start, end + 1));
+    if (strict && typeof strict === 'object' && !Array.isArray(strict)) return { blueprint: strict, stage: 'strict' };
+  }
+  const body = start >= 0 ? s.slice(start) : s;
+  const salvaged = {};
+  for (const key of BLUEPRINT_FIELDS) {
+    const val = salvageJSONString(body, key);
+    if (val) salvaged[key] = val;
+  }
+  if (Object.keys(salvaged).length) return { blueprint: salvaged, stage: 'salvaged' };
+  return { blueprint: null, stage: 'none' };
+}
+
+/**
+ * 成文轮交付闸门（纯函数）：判定模型这次输出到底是"章节正文"还是"写作规划/蓝图"。
+ *
+ * 存在理由（2026-10-01 真实事故）：蓝图 JSON 解析失败时，parseAIWritingOutput 会把整篇
+ * 蓝图原文兜底成 finalText，界面照常弹出「AI 写作结果」、点一下就把蓝图插进正文 ——
+ * 全链路没有一处说"这不像正文"。更糟的是这条兜底路径**连蓝图的保存机会都跳过了**
+ * （蓝图分支才 PUT chapter_blueprint），于是正文被污染、蓝图却是空的。
+ *
+ * 判据刻意收窄，只在"肯定不是正文"时拦：① 仍带着【蓝图】/【提问】过程头（正文里不会出现）；
+ * ② 命中 ≥2 个蓝图专属字段名（`"scene_goal"` 这类 JSON 片段）。单个字段名可能是正文里的
+ * 技术描写或引用，不构成拒绝理由 —— 宁可漏拦，不可误拦一篇真正文。
+ *
+ * @returns {string} 空串 = 通过；非空 = 拒绝原因（可直接展示给作者）
+ */
+function detectNonProseOutput(text) {
+  const s = String(text || '');
+  if (!s.trim()) return '输出为空';
+  const head = s.trimStart().slice(0, 40);
+  if (/^【(蓝图|提问)】/.test(head)) return '输出仍以【蓝图】/【提问】过程头开头，不是章节正文';
+  if (/(^|\n)\s*【(蓝图|提问)】/.test(s.slice(0, 600))) return '输出里仍带着【蓝图】/【提问】过程头，不是章节正文';
+  const hits = BLUEPRINT_FIELDS.filter((k) => s.includes(`"${k}"`) || s.includes(`「${k}」`) || s.includes(`${k}：`));
+  if (hits.length >= 2) return `输出含蓝图字段（${hits.slice(0, 3).join('、')}）而非章节正文`;
+  return '';
+}
+
+/**
+ * 成文被闸门拦下后的一次重试提示词：把边界说到底，不给"再规划一遍"的空间。
+ * 首行禁止以【开头，是为了让模型彻底离开"过程头 + 规划"的输出形态。
+ */
+function buildAIWritingProseRetryPrompt(reason, targetWords) {
+  return [
+    `你上一次的输出不是章节正文，而是写作规划：${reason}。`,
+    `请**只输出本章正文本身**：不要【蓝图】/【提问】/【成文】等任何过程标记，不要输出任何 JSON、字段名、场景清单或写作说明；`,
+    `第一个字就是正文的第一个字（可以是人物动作、对话或环境描写）。`,
+    ``,
+    `【篇幅要求】整章正文以纯文本计约 ${targetWords} 字（区间 ${Math.max(2000, targetWords - 1000)}～${targetWords + 1000} 字），把场景写足，不要交提纲或摘要。`
+  ].join('\n');
 }
 
 /** 取一个 JSON 字符串值：value 内的裸引号不终止取值（以 `"` 后紧跟 , } ] 或 `"key":` 判定结束）。 */
@@ -10191,6 +10409,11 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
   const adoptEditorContent = async () => {
     const html = editor.innerHTML;
     const opKey = `aw-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // P1-10：带上并发基线（本次采纳基于哪一版正文）。旧实现不传 `expected`，而服务端闸门
+    // 只在收到该字段时才生效 —— 于是"两个窗口同时采纳"时后提交者静默覆盖先提交者。
+    // 这里用的 `updated_at` 就是编辑保存乐观锁用的同一个版本标记，服务端两种形态都认。
+    const chapterRow = (state.chapters || []).find((c) => Number(c.id) === Number(targetChapterId));
+    const expectedUpdatedAt = chapterRow ? String(chapterRow.updated_at || '') : '';
     const res = await api('/novel/adopt', {
       method: 'POST',
       body: {
@@ -10200,6 +10423,7 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
         legacy_proposal_ids: (selection && Array.isArray(selection.ids)) ? selection.ids : [],
         operation_key: opKey,
         adopt_kind: 'ai_result',
+        expected: expectedUpdatedAt ? { updated_at: expectedUpdatedAt } : {},
       }
     });
     // 服务端已落库：取消 800ms 自动保存，避免再写一版（否则每次采纳都多一条历史版本）。
@@ -10422,7 +10646,22 @@ async function performToolbarAIWrite(requirement) {
       }
       // ⏱ 记这一轮蓝图：via 是**实际**用到的通道（直连失败回退慢通道时记 harness）
       timing.round('blueprint', Date.now() - blueprintStartedAt, { via: jobMeta ? 'harness' : 'direct' });
-      parsed = parseAIWritingOutput(raw);
+      // 蓝图走**抢救式**解析：模型在 JSON 值里写裸引号（2026-10-01 事故）时，
+      // 严格解析必然失败；旧路径会把整篇蓝图兜底成「成文」，于是蓝图既没进弹窗、也没进
+      // chapters.blueprint_json，而是被当成正文写进了章节。
+      const bpParsed = parseBlueprintJSON(raw);
+      if (bpParsed.blueprint) {
+        if (bpParsed.stage === 'salvaged') {
+          reportClientLog({
+            level: 'warn', kind: 'blueprint_json_salvaged',
+            message: `[写作] 蓝图 JSON 严格解析失败，已按字段抢救出 ${Object.keys(bpParsed.blueprint).length}/${BLUEPRINT_FIELDS.length} 个字段（原样回显，请作者确认后成文）`,
+            context: { work_id: state.workId || null, chapter_id: writeChapterId, chars: String(raw).length }
+          });
+        }
+        parsed = { blueprint: bpParsed.blueprint };
+      } else {
+        parsed = parseAIWritingOutput(raw);
+      }
       }
 
       if (parsed.blueprint) {
@@ -10514,6 +10753,29 @@ async function performToolbarAIWrite(requirement) {
           err.rawOutput = String(proseData.output ?? proseData.text ?? '').slice(-2000) || '（AI 任务输出为空）';
           throw err;
         }
+        // 🚦 交付闸门（2026-10-01 事故）：成文轮回来的东西可能是"写作规划"而不是小说正文。
+        // 旧路径对这种输出没有任何检查——只要不是空串，就会弹结果弹窗、一点就写进章节，
+        // 于是【蓝图】JSON 成了第一章的正文。这里先判定一次，判定不通过就用纠正提示词重生成一次。
+        let proseReject = detectNonProseOutput(article);
+        if (proseReject) {
+          reportClientLog({
+            level: 'warn', kind: 'prose_output_rejected',
+            message: `[写作] 成文轮返回的不是正文（${proseReject}），已用纠正提示词重生成一次`,
+            context: { work_id: state.workId || null, chapter_id: writeChapterId, via: proseRoute, chars: article.length, head: article.slice(0, 80) }
+          });
+          proseData = await runHarnessJob(
+            { ...jobBase, prompt: buildAIWritingProseRetryPrompt(proseReject, target) },
+            'AI 写作（2/3 成文）· 上次返回的是规划不是正文，正在重新成文…'
+          );
+          proseRoute = 'harness';
+          article = parseAIWritingOutput(proseData.output || '').finalText || '';
+          proseReject = detectNonProseOutput(article);
+          if (proseReject) {
+            const err = new Error(`AI 连续两次返回的不是章节正文（${proseReject}）：已停止写入，未改动本章正文`);
+            err.rawOutput = String(proseData.output || '').slice(-2000);
+            throw err;
+          }
+        }
         // 直连路径没有代理现场入账 → 交付后后台补提案；harness 路径已按纪律入账。
         let needsLedger = proseData.via === 'direct';
         let blockedDraft = false;
@@ -10595,6 +10857,18 @@ async function performToolbarAIWrite(requirement) {
             timing.round('continuation', Date.now() - contStartedAt, { via: contVia, round: rounds, gap, ok: false });
             break;
           }
+          // 🚦 补足轮同样过闸门：续写轮也可能吐规划（模型在"还要写多少字"的压力下回去规划）。
+          // 判据与成文轮共用同一个纯函数——两处各写一份必然漂移。
+          const contReject = detectNonProseOutput(more);
+          if (contReject) {
+            reportClientLog({
+              level: 'warn', kind: 'continuation_output_rejected',
+              message: `[写作] 补足轮返回的不是正文（${contReject}），本轮片段丢弃（已保留的正文不受影响）`,
+              context: { chapter_id: writeChapterId, via: contVia, round: rounds, chars: more.length }
+            });
+            timing.round('continuation', Date.now() - contStartedAt, { via: contVia, round: rounds, gap, ok: false, rejected: contReject });
+            break;
+          }
           article = `${article}\n\n${more}`;
           timing.round('continuation', Date.now() - contStartedAt, { via: contVia, round: rounds, gap, ok: true, chars: more.length });
         }
@@ -10626,6 +10900,15 @@ async function performToolbarAIWrite(requirement) {
 
       if (parsed.finalText) {
         // 模型跳过蓝图直接给了正文（降级路径，兼容旧行为）
+        // 🚦 但"跳过蓝图"不等于"跳过校验"：这条路径同样可能收到规划/蓝图（2026-10-01 事故
+        // 就是从这里进了章节正文）。此处只拦不重试——蓝图轮还没走过确认，重生成一次更划算的是
+        // 让作者直接用「重试」；这里先保证绝不把规划当正文弹窗并写回。
+        const skippedReject = detectNonProseOutput(parsed.finalText);
+        if (skippedReject) {
+          const err = new Error(`AI 这次返回的不是章节正文（${skippedReject}）：未写入任何内容，请重试`);
+          err.rawOutput = String(parsed.finalText).slice(-2000);
+          throw err;
+        }
         const writeTiming = timing.summary();
         const mode = await showAIWritingResult(parsed.finalText, jobMeta && jobMeta.scan, jobMeta && jobMeta.proposals, targetWords, jobMeta && jobMeta.job_id, {
           chapterId: writeChapterId,
@@ -10682,10 +10965,13 @@ async function performToolbarAIWrite(requirement) {
       const detail = e.rawOutput || e.tail || e.message || '未知错误';
       // 断流/超时同理：已经写出来的部分不销毁，只说清它在哪里（弹窗仍然照旧弹出、原因仍照旧展示）。
       const kept = await saveInterruptedDraft(e.partialText || interruptedPartial, writeChapterId);
+      // 失败**原因**必须原文进弹窗，不能被"常见原因"那种泛化清单盖掉：交付闸门拦下"返回的是规划
+      // 而不是正文"时（2026-10-01 事故），作者唯一能看懂的就是这句话本身；只给通用清单等于没说。
       openModal({
         title: '⚠️ AI 写作未完成',
         body: `
-          <div class="muted mb-8">任务已结束，但没有得到可用的写作结果。常见原因：AI 拒绝执行、创作内核通道异常（如中文需求在传输中被损坏）、或返回内容无法解析。下方是原始输出尾部，可复制反馈排查：</div>
+          <div class="mb-8"><b>${esc(String(e.message || '未知错误'))}</b></div>
+          <div class="muted mb-8">常见原因：AI 拒绝执行、创作内核通道异常（如中文需求在传输中被损坏）、或返回内容无法解析。下方是原始输出尾部，可复制反馈排查：</div>
           ${kept ? `<div class="muted mb-8">已经写出来的 ${kept} 字没有丢：已存为草稿，可在章节里「取回生成稿」。</div>` : ''}
           <pre style="white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto;background:rgba(0,0,0,.25);padding:10px;border-radius:6px;font-size:12px">${esc(String(detail).slice(-2000))}</pre>`,
         footer: '<button class="btn" data-close-modal>知道了</button>'
@@ -10798,6 +11084,10 @@ async function batchGenerateChapters(count) {
       const proseData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: buildAIWritingProsePrompt(initial, bp, target) }, `${label} · 成文`);
       let article = parseAIWritingOutput(proseData.output || '').finalText || '';
       if (!article.trim()) throw new Error('AI 没有返回正文内容');
+      // 🚦 与交互路径同一条交付闸门：规划/蓝图不是正文，宁可不写回也不污染章节。
+      // 批量生成没有人在旁边看着，这道闸门尤其重要（一次跑 N 章，污染会跟着写回 N 章）。
+      const batchReject = detectNonProseOutput(article);
+      if (batchReject) throw new Error(`AI 返回的不是章节正文（${batchReject}），本章未写回`);
       // 3) 字数补足：大小缺口分开处理（与交互路径同一条判据）——
       //    小缺口（<15%）直连秒级补足，大缺口才劳驾精写内核（那 17 秒换"能补够"是值得的）。
       let rounds = 0;
@@ -10818,6 +11108,8 @@ async function batchGenerateChapters(count) {
           more = parseAIWritingOutput(cont.output || '').finalText || '';
         }
         if (!more.trim()) break;
+        // 🚦 同一条闸门：补足片段是规划就丢弃本轮（已确认的正文照旧写回，不因补足失败而作废整章）
+        if (detectNonProseOutput(more)) break;
         article = `${article}\n\n${more}`;
       }
       // 4) 全文确定性红线扫描（本地正则、零成本）：结果只做**告知**，不改变写回内容。
@@ -12689,6 +12981,14 @@ async function handleAction(action, actionEl, e) {
 
       case 'manual-save-chapter':
         await manualSaveChapter();
+        break;
+
+      case 'editor-conflict-local':
+        await resolveEditorConflict('local');
+        break;
+
+      case 'editor-conflict-server':
+        await resolveEditorConflict('server');
         break;
 
       case 'open-save-history':

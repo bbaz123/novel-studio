@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { db, withTransaction, inTransaction } from './db.js';
 import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo } from './harness.js';
@@ -107,14 +110,91 @@ function sendError(res, status, message) {
   sendJSON(res, status, { error: message || 'Internal error' });
 }
 
+// ── 整库备份 / 还原（P1-01）───────────────────────────────────────────────
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+function sha256File(file) {
+  const h = createHash('sha256');
+  h.update(fs.readFileSync(file));
+  return h.digest('hex');
+}
+function createDatabaseBackup(label = 'manual') {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const safe = String(label || 'manual').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 40) || 'manual';
+  const target = path.join(BACKUP_DIR, `novel-${safe}-${Date.now()}-${randomBytes(6).toString('hex')}.db`);
+  const escaped = target.replace(/'/g, "''");
+  db.exec(`VACUUM INTO '${escaped}'`);
+  const check = validateSqliteFile(target);
+  if (!check.ok) { try { fs.unlinkSync(target); } catch (_) {} throw new Error(`备份完整性校验失败：${check.error}`); }
+  const stat = fs.statSync(target);
+  return { path: target, size: stat.size, sha256: sha256File(target), integrity: 'ok', created_at: new Date().toISOString() };
+}
+function validateSqliteFile(file) {
+  if (!file || !fs.existsSync(file)) return { ok: false, error: '备份文件不存在' };
+  const stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size < 100) return { ok: false, error: '备份文件大小异常' };
+  // 以独立只读进程校验，避免把待恢复库附加进当前连接污染工作事务。
+  try {
+    const probe = new DatabaseSync(file, { readOnly: true });
+    const row = probe.prepare('PRAGMA quick_check').get();
+    probe.close();
+    return String(row?.quick_check || '').toLowerCase() === 'ok' ? { ok: true, size: stat.size, sha256: sha256File(file) } : { ok: false, error: 'quick_check 未通过' };
+  } catch (e) { return { ok: false, error: `备份不是可用 SQLite 数据库：${e.message}` }; }
+}
+function restoreDatabaseFrom(file) {
+  const checked = validateSqliteFile(file);
+  if (!checked.ok) throw new Error(checked.error);
+  const safety = createDatabaseBackup('pre-restore');
+  const escaped = String(file).replace(/'/g, "''");
+  // FTS5 的 shadow tables（*_data、*_idx 等）由虚拟表自己维护，不能直接 DELETE/INSERT；
+  // 只恢复业务表与虚拟表本身，完成后通过 rebuild 重建索引。
+  const tables = db.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','shadow') AND name NOT LIKE 'sqlite_%' AND name <> 'library_index_fts' AND name NOT LIKE 'library_index_fts_%'").all().map((r) => String(r.name));
+  try {
+    db.exec(`PRAGMA foreign_keys = OFF; ATTACH DATABASE '${escaped}' AS restore_src;`);
+    withTx(() => {
+      for (const table of tables) {
+        const q = table.replace(/"/g, '""');
+        db.exec(`DELETE FROM "${q}";`);
+        const cols = db.prepare(`PRAGMA table_info("${q}")`).all().map((r) => r.name).filter(Boolean);
+        if (cols.length) {
+          const list = cols.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',');
+          db.exec(`INSERT INTO "${q}" (${list}) SELECT ${list} FROM restore_src."${q}";`);
+        }
+      }
+    });
+    db.exec('DETACH DATABASE restore_src; PRAGMA foreign_keys = ON;');
+    try { db.exec("INSERT INTO library_index_fts(library_index_fts) VALUES ('rebuild')"); } catch (_) { /* 没有资料库 FTS 时忽略 */ }
+  } catch (e) {
+    try { db.exec('DETACH DATABASE restore_src; PRAGMA foreign_keys = ON;'); } catch (_) {}
+    throw new Error(`还原失败（当前库未替换）：${e.message}`);
+  }
+  return { ok: true, restored_from: file, safety_backup: safety, integrity: 'ok', size: checked.size, sha256: checked.sha256 };
+}
+
 // ── 模型侧写入的审批边界（2026-09-27，R02.2）──────────────────────────────────
 // 通道区分不使用任何客户端自报的"我已获授权"布尔（那没有效力），而是看**请求来源通道**：
 //   · 作者界面（浏览器同源）→ 不带 X-Novel-Agent 标记 → 按既有语义放行（作者本人就是授权）；
 //   · dsh 插件工具（模型侧）→ 带 `X-Novel-Agent: 1` → 写入必须引用一条作者创建的、仍有效的审批。
 // 审批的创建端点反过来**拒绝**带该标记的请求，模型无法给自己发审批。
 const AGENT_HEADER = 'x-novel-agent';
+const AGENT_CAPABILITY_HEADER = 'x-novel-agent-token';
+// 每个宿主进程独立的能力令牌：模型子进程由宿主注入，不能仅靠固定布尔头声明身份。
+const AGENT_CAPABILITY_TOKEN = randomBytes(32).toString('hex');
+process.env.NOVELSTUDIO_AGENT_TOKEN = AGENT_CAPABILITY_TOKEN;
+// 保留旧插件兼容：固定头仍可将请求归入“模型通道”，但宿主发起的正式插件请求同时带随机令牌。
+// 新代码不得把固定头当作“已获授权”；审批仍是所有模型写入的第二道门。
+// 固定布尔头默认不再构成模型身份；仅为旧版离线 fixture 显式打开兼容开关。
+// 正式宿主/插件路径必须使用随机 capability token。
+const ALLOW_LEGACY_AGENT_HEADER = process.env.NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER === '1';
 function isAgentRequest(req) {
-  return String(req.headers[AGENT_HEADER] || '').trim() === '1';
+  return String(req.headers[AGENT_CAPABILITY_HEADER] || '').trim() === AGENT_CAPABILITY_TOKEN
+    || (ALLOW_LEGACY_AGENT_HEADER && String(req.headers[AGENT_HEADER] || '').trim() === '1');
+}
+
+// 宿主级配置/进程控制没有“模型提案”语义，必须是作者通道；未知/模型通道一律拒绝。
+// 统一入口供所有宿主副作用路由复用，避免只给少数端点打补丁。
+function requireAuthorChannel(req, label = '该操作') {
+  if (isAgentRequest(req)) return { ok: false, status: 403, message: `${label}只能由作者通道执行` };
+  return { ok: true };
 }
 
 /**
@@ -656,6 +736,11 @@ function normalizeOvEndpoint(raw) {
     return { ok: false, error: `地址格式不正确：${text}（示例：http://127.0.0.1:1933）` };
   }
   if (!url.hostname) return { ok: false, error: `地址缺少主机名：${text}` };
+  const host = String(url.hostname || '').toLowerCase();
+  // OpenViking 会接收章节正文；默认只允许本机回环，避免把整部作品误发到私网/公网。
+  if (!isLocalHost(host)) {
+    return { ok: false, error: 'OpenViking 地址只能使用本机回环地址（127.0.0.1、localhost 或 ::1）；作品正文不会发送到远端主机' };
+  }
   return { ok: true, value: withScheme.replace(/\/+$/, '') };
 }
 
@@ -784,7 +869,9 @@ function validateOwnership(resource, data) {
 function maskApiKey(key) {
   const k = String(key || '');
   if (!k) return '';
-  return k.length <= 8 ? k : `${k.slice(0, 6)}…${k.slice(-4)}`;
+  // 短 Key 也必须掩码：返回原文会让“已掩码”接口直接泄露全部凭证。
+  if (k.length <= 8) return '••••••';
+  return `${k.slice(0, 6)}…${k.slice(-4)}`;
 }
 
 function insertRow(resource, data) {
@@ -1022,7 +1109,7 @@ const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 // confirm / bootstrap 是作者动作，模型侧 403；确认前不写任何正式状态）。PUT /api/novel/state/temporal 启用
 // 改为迁移门禁（缺表/缺索引 → 503，不吞错误继续跑），启用即登记迁移版本，响应新增 migration 与首次启用的
 // enable_scope（预算 + 待重建范围）；未开启作品不触发额外模型调用、旧上下文不变；插件工具/端点面不变，无新表。
-const HOST_CONTRACT_VERSION = '1.19.0';
+const HOST_CONTRACT_VERSION = '1.20.0';
 
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
@@ -1378,18 +1465,57 @@ function listAIErrors() {
   });
 }
 
+// 编辑器正文一律是 HTML；任何"纯文本进正文"的路径都必须先转段落，否则换行会被 HTML 折叠。
+// 导入走 textToHtml()，AI 写回走前端 textToParagraphsHtml()，两条都做了这件事。
+function looksLikeHtml(text) {
+  const s = String(text || '');
+  return /<\/?(p|br|div|h[1-6]|blockquote|ul|ol|li|b|strong|i|em|u|span|a)\b[^>]*>/i.test(s);
+}
+
+/**
+ * 纯文本 → 编辑器 HTML（段落 <p>）；已经是 HTML 的原样返回（不重复包装）。
+ *
+ * 为什么必须做（2026-10-01 实测）：AI 成文的草稿是以**纯文本**（`\n\n` 分段）落库的，
+ * 而 `restoreChapterDraft` 把草稿原文直接 POST 给 `/novel/chapter_save`，
+ * 于是正文被写成一段没有任何 `<p>` 的长文本 —— 浏览器把 147 处段落分隔全部折叠成空格，
+ * 编辑器里看起来"取回后没有重新排版"。同一章的 AI 结果应用路径（走 `textToParagraphsHtml`）
+ * 却排版正常，差别就来自这一处缺失的转换。
+ *
+ * @param {string} text 纯文本或 HTML
+ * @returns {string} 编辑器可直接渲染的 HTML
+ */
+function contentToEditorHtml(text) {
+  const s = String(text || '');
+  if (!s.trim()) return '';
+  if (looksLikeHtml(s)) return s;
+  return textToHtml(s);
+}
+
+/**
+ * 把一行**草稿版本**的 content 归一化为编辑器 HTML。
+ * 写入、读取、以及表结构演进时都走这里 —— 三处各写一份必然漂移，
+ * 而漂移的后果正是这次缺陷：写进去是纯文本、取回时没有任何一处转段落。
+ */
+function normalizeDraftRow(row) {
+  if (!row) return row;
+  return { ...row, content: contentToEditorHtml(row.content) };
+}
+
 // ---------- chapter manual save versions ----------
 /**
  * @param {'manual'|'draft'} [kind] manual=手动保存/覆盖前备份的历史版本；draft=AI 生成稿草稿。
  *   草稿与历史版本同表但分区，列表与清理都按 kind 隔离，互不挤占。
  */
 function saveChapterVersion(chapterId, title, summary, content, kind = 'manual') {
+  // 草稿是**纯文本来源**（AI 成文正文、中断时的半章片段），落库即转成编辑器 HTML：
+  // 取回草稿会直接写进正文，若这里存的是裸文本，正文就会丢掉全部段落结构。
+  const stored = kind === 'draft' ? contentToEditorHtml(content) : asString(content);
   const info = prepare(`
     INSERT INTO chapter_save_versions (chapter_id, title, summary, content, created_at, kind)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(chapterId, asString(title), asString(summary), asString(content), now(), kind === 'draft' ? 'draft' : 'manual');
+  `).run(chapterId, asString(title), asString(summary), stored, now(), kind === 'draft' ? 'draft' : 'manual');
   pruneChapterVersions(chapterId);
-  return prepare('SELECT * FROM chapter_save_versions WHERE id = ?').get(Number(info.lastInsertRowid));
+  return normalizeDraftRow(prepare('SELECT * FROM chapter_save_versions WHERE id = ?').get(Number(info.lastInsertRowid)));
 }
 
 function listChapterVersions(chapterId) {
@@ -1412,11 +1538,44 @@ function getLatestDraft(chapterId) {
     LIMIT 1
   `).get(chapterId);
   if (!row) return null;
-  return { ...row, chars: plainText(row.content).length };
+  // 归一化在**读**这一侧也做一遍：本轮修复之前落库的草稿存的是纯文本（没有 <p>），
+  // 不回放归一化的话，那些历史草稿取回正文后依然是一整段（旧数据不该逼作者手工重排）。
+  const normalized = normalizeDraftRow(row);
+  if (normalized.content !== row.content) {
+    // 顺手把旧行**真正**修好（替换同一行，不新增版本、不挤占草稿分区）：
+    // 只在"存的确实是纯文本"时发生一次，之后这行的读取不再依赖归一化。
+    try {
+      prepare('UPDATE chapter_save_versions SET content = ? WHERE id = ?').run(normalized.content, row.id);
+    } catch (_) { /* 自愈失败不影响本次返回：本次返回的已经是归一化内容 */ }
+  }
+  return { ...normalized, chars: plainText(row.content).length };
+}
+
+// 自动快照的节流：编辑器每次停手都会 PUT（800ms 防抖），若不节流，一小时写作会产出
+// 上百份整章副本，把历史版本面板冲垮、库也白胖一圈。策略（P1-04）：
+//   · 距上一份 auto 快照 ≥ AUTO_SNAPSHOT_MIN_GAP_MS 才留新的一份（同窗口内的连续保存共享同一份兜底）；
+//   · auto 分区独立保留 20 份（比 manual/draft 宽，因为它承担"手滑兜底"而非"里程碑"）。
+// 为什么不把间隔调得更小（例如 30 秒）：**快照存的是"覆盖前"的那一版正文**。
+// 因此只要窗口内发生过一次保存，窗口内后续的破坏性编辑仍有一份可回滚的前置版本；
+// 调小间隔并不会增加"可回滚到的时间点跨度"，只会成比例放大写入量与 prune 频率。
+// （若将来实测发现"想回滚的那一版恰好被节流合并掉"，再调小这个常量即可。）
+// 为什么用 app_settings 而不是新表：它已经是现成的 key-value 存储，且这条状态是纯运维性数据。
+const AUTO_SNAPSHOT_MIN_GAP_MS = 90 * 1000;
+const AUTO_SNAPSHOT_MIN_KEEP = 20;
+function shouldAutoSnapshot(chapterId) {
+  try {
+    const key = `auto_snapshot_at:${Number(chapterId)}`;
+    const last = Date.parse(String(getAppSettingDb(key, '') || ''));
+    if (Number.isFinite(last) && Date.now() - last < AUTO_SNAPSHOT_MIN_GAP_MS) return false;
+    setAppSettingDb(key, now());
+    return true;
+  } catch (_) {
+    return true;   // 节流状态读写失败时宁可多留一份，也不要静默丢掉兜底能力
+  }
 }
 
 function pruneChapterVersions(chapterId) {
-  // 两个分区各自保留 10 份：草稿不能把历史版本挤掉，反之亦然。
+  // 三个分区各自保留：草稿不能把历史版本挤掉，反之亦然（auto 见上面的常量说明）。
   prepare(`
     DELETE FROM chapter_save_versions
     WHERE chapter_id = ? AND kind = 'manual'
@@ -1435,6 +1594,16 @@ function pruneChapterVersions(chapterId) {
         WHERE chapter_id = ? AND kind = 'draft'
         ORDER BY created_at DESC, id DESC
         LIMIT 10
+      )
+  `).run(chapterId, chapterId);
+  prepare(`
+    DELETE FROM chapter_save_versions
+    WHERE chapter_id = ? AND kind = 'auto'
+      AND id NOT IN (
+        SELECT id FROM chapter_save_versions
+        WHERE chapter_id = ? AND kind = 'auto'
+        ORDER BY created_at DESC, id DESC
+        LIMIT ${AUTO_SNAPSHOT_MIN_KEEP}
       )
   `).run(chapterId, chapterId);
 }
@@ -1610,6 +1779,47 @@ function getStoryMemoryRow(workId) {
 }
 function getStoryMemory(workId) {
   return getStoryMemoryRow(workId)?.summary || '';
+}
+
+function listStoryMemorySegments(workId, throughChapter = Infinity) {
+  const rows = prepare(`SELECT * FROM story_memory_segments WHERE work_id = ? AND from_chapter <= ? ORDER BY from_chapter ASC, to_chapter ASC, id ASC`)
+    .all(Number(workId), Number.isFinite(Number(throughChapter)) ? Number(throughChapter) : 2147483647);
+  return rows.map((r) => {
+    let source = [];
+    try { source = JSON.parse(r.source_chapter_ids || '[]'); } catch (_) {}
+    return { id: r.id, work_id: r.work_id, from_chapter: r.from_chapter, to_chapter: r.to_chapter, summary: r.summary, revision: r.revision, source_chapter_ids: source, created_at: r.created_at, updated_at: r.updated_at };
+  });
+}
+
+function ensureMemorySegment(workId, fromChapter, toChapter, summary, sourceChapterIds = []) {
+  const from = Math.max(0, Number(fromChapter) || 0);
+  const to = Math.max(from, Number(toChapter) || from);
+  const text = asString(summary, '');
+  if (!text.trim()) return null;
+  const ids = JSON.stringify(Array.from(new Set((Array.isArray(sourceChapterIds) ? sourceChapterIds : []).map(Number).filter((n) => n > 0))));
+  prepare(`INSERT INTO story_memory_segments (work_id, from_chapter, to_chapter, summary, revision, source_chapter_ids, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+    ON CONFLICT(work_id, from_chapter, to_chapter) DO UPDATE SET summary = excluded.summary, revision = story_memory_segments.revision + 1, source_chapter_ids = excluded.source_chapter_ids, updated_at = excluded.updated_at`)
+    .run(Number(workId), from, to, text, ids, now(), now());
+  return listStoryMemorySegments(workId).find((r) => r.from_chapter === from && r.to_chapter === to) || null;
+}
+
+// 将一次性旧摘要拆成可追溯的十章窗口。摘要没有结构化章标记时按文本比例切片，
+// 仍保留旧 summary 作为完整兼容源；新写入不会再把全部记忆塞进单一 cap。
+function ensureMemorySegmentsFromSummary(workId, summary) {
+  const chapters = prepare('SELECT id, position FROM chapters WHERE work_id = ? ORDER BY position ASC, id ASC').all(Number(workId));
+  if (!chapters.length || !String(summary || '').trim()) return [];
+  const windows = [];
+  for (let i = 0; i < chapters.length; i += 10) windows.push(chapters.slice(i, i + 10));
+  const text = String(summary);
+  const size = Math.max(1, Math.ceil(text.length / windows.length));
+  return windows.map((win, i) => ensureMemorySegment(
+    workId,
+    Number(win[0].position) || i * 10,
+    Number(win[win.length - 1].position) || i * 10 + win.length - 1,
+    text.slice(i * size, i === windows.length - 1 ? undefined : (i + 1) * size),
+    win.map((c) => c.id),
+  )).filter(Boolean);
 }
 
 // 长期记忆超过该字数时标记 needs_compression，提示创作上下文里让 AI 优先压缩。
@@ -2810,7 +3020,10 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   const shownChapterIds = shown.map((c) => c.id);
 
   const memoryRow = getStoryMemoryRow(workId);
-  const storyMemory = memoryRow?.summary || '';
+  const memorySegments = chapterIndex >= 0 ? listStoryMemorySegments(workId, chapterIndex) : listStoryMemorySegments(workId);
+  const segmentedMemory = memorySegments.map((s) => `【记忆段 ${s.from_chapter + 1}-${s.to_chapter + 1}章】${s.summary}`).join('\n');
+  // 分段摘要优先进入上下文，旧 summary 作为兼容兜底；两者都保留可追溯来源。
+  const storyMemory = segmentedMemory || memoryRow?.summary || '';
   const memoryRowId = memoryRow ? memoryRow.id : null;
   // T5：没有章节归属的全书摘要不进历史事实层（可在界面只读查看，或经存量重建后使用）。
   const memoryPolicy = StoryState.Temporal.memoryLayerPolicyOf(cursor);
@@ -3067,8 +3280,8 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     // T5：启用作品上 story_state 层改由 temporal provider 提供（章前/章后同一 cursor）；
     // 旧内核不再重复注入同一字段（权威来源唯一）。
     const builtTemporalState = StoryState.Temporal.buildTemporalStoryStateLayer({ cursor });
-    if (builtTemporalState.text) {
-      storyStateLayer = L('story_state', builtTemporalState.text, {
+    if (builtTemporalState.text || StoryState.isEnabled(workId)) {
+      storyStateLayer = L('story_state', builtTemporalState.text || '【故事状态】当前暂无已确认的状态事实；不得把候选内容当作正典。', {
         note: withCursorNote(`时态状态引擎（角色 ${builtTemporalState.meta.counts.characters}｜关系 ${builtTemporalState.meta.counts.relations}｜剧情线 ${builtTemporalState.meta.counts.plotlines}｜伏笔 ${builtTemporalState.meta.counts.foreshadows}）`),
       });
     }
@@ -3078,8 +3291,8 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
       const comp = StoryState.compositionOf(workId, chapter.id);
       if (comp) {
         const built = StoryState.storyStateLayerOf(comp);
-        if (built && built.text) {
-          storyStateLayer = L('story_state', built.text, {
+        if (built && (built.text || StoryState.isEnabled(workId))) {
+          storyStateLayer = L('story_state', built.text || '【故事状态】当前暂无已确认的状态事实；不得把候选内容当作正典。', {
             sourceIds: comp.timelineView.visible.slice(0, 20).map((t) => t.id).filter((x) => x !== null),
             note: `正典 ${built.meta.canon_count} 条｜时间线可见 ${built.meta.timeline_visible} 条｜伏笔 ${JSON.stringify(built.meta.foreshadows)}`,
           });
@@ -3180,11 +3393,20 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     const recallLayerRef = layers.find((l) => l && l.id === 'recall');
     if (recallLayerRef && semanticRecall && semanticRecall.status === 'ok' && Array.isArray(semanticRecall.hits) && semanticRecall.hits.length) {
       const hostLayers = layers.filter((l) => l && l.id !== 'recall' && l.text);
+      // 记忆层可能在门控/时态分支中被替换为占位文本；贡献去重仍应以实际进入
+      // 请求的长期记忆原文作为比较基准，避免 OV 重复内容漏标。
+      if (storyMemory && !hostLayers.some((l) => l.id === 'memory' && String(l.text).includes(String(storyMemory).slice(0, 40)))) {
+        hostLayers.push({ id: 'memory', text: storyMemory });
+      }
       const keptHits = [];
       const dupHits = [];
       recallHitsBeforeDedup = semanticRecall.hits.slice();
       for (const h of semanticRecall.hits) {
-        const hostLayerId = findDuplicateLayer(h.text, hostLayers);
+        // OpenViking chapter文档通常带 `# 标题` 行，而宿主 memory 层带
+        // `【记忆段 …】` 前缀；去掉这些结构标签后再比较正文，避免同一内容因
+        // 来源包装不同而漏掉重复判定。
+        const comparable = String(h.text || '').replace(/^\s*#.*(?:\r?\n|$)/, '').replace(/^\s*【记忆段[^】]*】/u, '').trim();
+        const hostLayerId = findDuplicateLayer(comparable, hostLayers);
         if (hostLayerId) {
           dupHits.push({ uri: h.uri, rel: (h.source_meta && h.source_meta.rel) || '', code: 'duplicate_of_host_layer', reason: `与宿主层「${hostLayerId}」逐字重复（来源感知去重）`, host_layer: hostLayerId });
           continue;
@@ -3193,7 +3415,9 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
       }
       if (dupHits.length) {
         const dedupOn = getAppSetting('ov_recall_dedup', '0') === '1';
-        recallDedup = { applied: dedupOn && keptHits.length !== semanticRecall.hits.length, duplicates: dupHits };
+        // 即使开关关闭也要保留重复判定，供贡献记录写入 duplicate_of/marked；
+        // applied 只表示是否从最终上下文中实际移除。
+        recallDedup = { applied: dedupOn, duplicates: dupHits };
         if (dedupOn) {
           semanticRecall = {
             ...semanticRecall,
@@ -3225,6 +3449,11 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     workId,
     chapterId: chapter ? chapter.id : null,
     requestId: contextOpts.requestId || newContextRequestId(),
+    // P1-07：截断提示语里的"可用 X 工具查回"只在**真的有工具**的通道上成立。
+    // 直连通道（/api/ai/*）的请求体没有 tools，模型调不了任何工具；而 assembled 是两条
+    // 通道共用的同一段文本。调用方按通道传 toolsAvailable:false 时，装配器改为如实写
+    // "被截掉的部分当前没有查回路径（已知缺口）"，不再指示模型去调一个不存在的工具。
+    toolsAvailable: contextOpts.toolsAvailable !== false,
   });
 
   // 完整性不合格**必须响亮**：否则"有清单"会变成一种装饰。
@@ -4559,6 +4788,76 @@ function scheduleTemporalImpact(workId, chapterId, { delayMs = TEMPORAL_IMPACT_D
 }
 
 /**
+ * ── P1-12：章序变化必须触发下游失效 ─────────────────────────────────────────────
+ * 背景（审计发现）：`earliestOrderDifference`（`ai/story-state/temporal/impact.mjs:154`）
+ * 与 `markDownstreamStale`（`:145`）都已实现，但**没有任何生产调用点**——`ensureOrderVersion`
+ * 只在保存/确认时被调用，重排后新提交引用新章序，而所有下游 binding 仍是 `valid`、
+ * 覆盖表照旧复制，于是 40 章之后的状态与历史**静默错位**，作者看不到任何告警。
+ *
+ * 这里把两者接起来，并刻意做成"**只在章序真的变了**才动"：
+ *   · 写前取一次现有章序版本核心（`before`，未开启时态的作品返回 null → 整段零开销）；
+ *   · 写后 `ensureOrderVersion(force)` 落/取新章序版本（顺序没变时它会复用旧行，幂等）；
+ *   · 两段章序逐位比较，只有存在差异才 `markDownstreamStale({reason:'order_changed'})`，
+ *     并返回最早差异章的指纹供调用方记录日志。
+ * 这样"普通正文保存"不会误标 stale（阴性对照见 tests/temporal/03/08 的断言）。
+ */
+function captureOrderState(workId) {
+  const w = Number(workId) || 0;
+  if (!w) return null;
+  try {
+    if (!StoryState.Temporal.isTemporalEnabled(w)) return null;
+    const latest = StoryState.Temporal.latestOrderVersion(w);
+    const order = StoryState.Temporal.listOrder(w);
+    return {
+      workId: w,
+      chapters: Array.isArray(order.chapters) ? order.chapters.slice() : [],
+      version_id: latest ? String(latest.id || '') : '',
+    };
+  } catch (e) {
+    log({ level: 'warn', layer: 'ai', kind: 'order_capture_failed', message: `章序快照失败（work ${w}）：${e.message}`, context: { work_id: w } });
+    return null;
+  }
+}
+
+function applyOrderChangeInvalidation(before, { source = 'crud' } = {}) {
+  if (!before || !before.workId) return { changed: false, reason: 'not_captured' };
+  const w = before.workId;
+  try {
+    const created = StoryState.Temporal.ensureOrderVersion(w, { force: true });
+    const next = StoryState.Temporal.listOrder(w);
+    const after = Array.isArray(next.chapters) ? next.chapters : [];
+    const diff = StoryState.Temporal.earliestOrderDifference(before.chapters, after);
+    if (!diff) return { changed: false, reason: 'order_same', version_id: String(created && created.id || '') };
+    const marked = StoryState.Temporal.markDownstreamStale({
+      workId: w, fromChapterId: diff.chapter_id, reason: 'order_changed',
+    });
+    // 计数口径：`markDownstreamStale` 的实际返回是 `{...plan, applied}`，
+    // 变更条数在 `applied.changed`（这里做一次兼容归一，避免日志出现 undefined）。
+    const changedCount = Number(
+      (marked && marked.applied && marked.applied.changed)
+      ?? (marked && marked.changed)
+      ?? 0
+    ) || 0;
+    log({
+      level: 'info', layer: 'ai', kind: 'order_changed_invalidation',
+      message: `章序变化（${source}）：从第 ${diff.index + 1} 位起为 #${diff.chapter_id}，已标记下游失效 ${changedCount} 项`,
+      context: {
+        work_id: w, source, at_index: diff.index, chapter_id: diff.chapter_id,
+        old_chapter_id: diff.old_chapter_id, new_chapter_id: diff.new_chapter_id,
+        changed: changedCount, order_version_id: String(created && created.id || ''),
+      },
+    });
+    return {
+      changed: true, reason: 'order_changed', version_id: String(created && created.id || ''),
+      at_index: diff.index, chapter_id: diff.chapter_id, invalidated: changedCount,
+    };
+  } catch (e) {
+    log({ level: 'warn', layer: 'ai', kind: 'order_invalidation_failed', message: `章序失效标记失败（work ${w}）：${e.message}`, context: { work_id: w, source } });
+    return { changed: false, reason: `error:${e.message}` };
+  }
+}
+
+/**
  * AC-44 旧入口互锁：时态引擎已开启的作品，角色状态 / 人物关系 / 剧情线状态的直接修改
  * 必须携带 chapter_id（生效位置），统一转换为 author_correction 命令；否则拒绝。
  * 未开启作品（默认）直接放行——旧语义完全不变。
@@ -4637,6 +4936,21 @@ async function handleAPI(req, res, pathname, query) {
   const segments = pathname.split('/').filter(Boolean);
   const resource = segments[1];
   const id = segments[2] ? parseId(segments[2]) : null;
+
+  // 宿主副作用路由集中 fail-closed：这些接口没有“模型提案”语义，
+  // 不能因遗漏某个分支而把 X-Novel-Agent 请求当作作者操作放行。
+  const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+  const authorOnlyHostMutation = mutating && (
+    resource === 'debug' || resource === 'demo' || resource === 'import' ||
+    resource === 'chapter_versions' || resource === 'shutdown' || resource === 'backup' ||
+    resource === 'harness' ||
+    (resource === 'logs' && method === 'DELETE') ||
+    (resource === 'env' && ['open_folder', 'dsh_repo'].includes(segments[2]))
+  );
+  if (authorOnlyHostMutation) {
+    const author = requireAuthorChannel(req, '宿主操作');
+    if (!author.ok) return sendError(res, author.status, author.message);
+  }
 
   // 跨源写请求一律拒绝（浏览器页面防护；同源 UI 与无 Origin 的工具调用不受影响）
   if (!isLocalRequest(req)) {
@@ -4989,12 +5303,16 @@ async function handleAPI(req, res, pathname, query) {
     // 两条端点因此共享同一份缓存，不会各召回一次（C3 约束）。
     // T5：与 /api/novel/context 完全相同的时态参数与缓存后缀规则（两条端点共享缓存，不串线/不串视角）。
     const temporalParams = temporalContextParamsOf(query);
+    // P1-07：与 /api/novel/context 同口径的通道能力参数（默认有工具；tools=0 表示直连通道）。
+    const noTools = String(query.tools || '') === '0';
     const cacheKey = contextCacheKeyOf({ workId, chapterId, mode: 'full', phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
-      + temporalCacheSuffixOf(workId, temporalParams);
+      + temporalCacheSuffixOf(workId, temporalParams)
+      + (noTools ? '|notools' : '');
     let budgeted = cacheGetContext(cacheKey, workId);
     if (budgeted === undefined) {
       budgeted = await buildNovelContext(workId, chapterId, 'full', {
         direction, directionSource, libraryRecallPhase, requestId,
+        toolsAvailable: !noTools,
         boundary: temporalParams.boundary || undefined,
         commitId: temporalParams.commitId || undefined,
         worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
@@ -5055,7 +5373,7 @@ async function handleAPI(req, res, pathname, query) {
     if (segments[2] === 'versions') {
       return sendJSON(res, 200, { work_id: workId, versions: listMemoryVersions(workId) });
     }
-    return sendJSON(res, 200, { work_id: workId, summary: getStoryMemory(workId) });
+    return sendJSON(res, 200, { work_id: workId, summary: getStoryMemory(workId), segments: listStoryMemorySegments(workId, Number(query.through_chapter_index)) });
   }
   if (resource === 'story_memory' && method === 'POST' && segments[2] === 'rollback') {
     const body = await readBody(req);
@@ -5075,16 +5393,20 @@ async function handleAPI(req, res, pathname, query) {
     const workId = Number(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
     // headless 生成任务先落提案（作者确认后写入并留版本快照）。
-    if (body.proposed === true) {
+    // P1-09：与 /api/novel/events 同一纪律——**模型通道强制提案**，不接受插件自报 proposed=false。
+    const agentChannel = isAgentRequest(req);
+    if (body.proposed === true || agentChannel) {
       const result = addMemoryProposal(workId, {
         summary: asString(body.summary, ''),
         delta: asString(body.delta, ''),
-        note: asString(body.note, 'dsh 创作插件提案'),
+        note: agentChannel && body.proposed !== true
+          ? '模型通道：服务端强制落提案（不接受插件自报的 proposed=false）'
+          : asString(body.note, 'dsh 创作插件提案'),
         // 来源标记必须随提案落库：作者点「采纳」时再判闸，靠的就是这个字段。
         // 不带标记的调用方（作者/历史路径）落空串，采纳时按普通提案处理。
         guard: asString(body.guard, '')
       });
-      return sendJSON(res, 200, { ok: true, ...result, work_id: workId });
+      return sendJSON(res, 200, { ok: true, ...result, work_id: workId, forced_proposal: agentChannel && body.proposed !== true });
     }
     // summary 直接提交；或 delta 增量：与当前摘要做安全拼接（语义压缩由调用方模型完成）。
     let summary = asString(body.summary, '');
@@ -5126,6 +5448,10 @@ async function handleAPI(req, res, pathname, query) {
       source: body.source || 'manual',
       note: body.note || ''
     });
+    // 记忆段按十章窗口登记，旧 summary 仍是兼容总览；段记录带来源章 id，便于回查。
+    try {
+      ensureMemorySegmentsFromSummary(workId, summary);
+    } catch (e) { log({ level: 'warn', layer: 'db', kind: 'memory_segment_failed', message: `长期记忆分段登记失败：${e.message}` }); }
     notifyChange('story_memory', { workId, id: workId });
     return sendJSON(res, 200, { ...result, work_id: workId });
   }
@@ -5419,7 +5745,12 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   const workIdOf = (v) => Number(v) || 0;
 
   // ── 开关与总览 ────────────────────────────────────────────────────────────
-  if (sub === 'story_state' && method === 'GET') {
+  // ⚠️ `&& !leaf` 是必须的：本路由段还有更具体的子路径（`/story_state/contract` 等），
+  // 它们由下方 `leaf === 'contract'` 的分支处理。少了这个条件，`sub === 'story_state'`
+  // 会**吞掉所有子路径**——实测后果是「本章契约」的读写端点全部不可达：
+  // PUT 实际改的是总开关（响应里是 story_state 总览），GET 也回总览，
+  // 于是 chapter_contracts 永远是空表，story_state 层的「本章契约」块永远不出现。
+  if (sub === 'story_state' && !leaf && method === 'GET') {
     const workId = workIdOf(query.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const work = prepare('SELECT id FROM works WHERE id = ?').get(workId);
@@ -5434,18 +5765,55 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       kernel_version: StoryState.STORY_STATE_VERSION,
     });
   }
-  if (sub === 'story_state' && method === 'PUT') {
+  if (sub === 'story_state' && !leaf && method === 'PUT') {
     const body = await readBody(req);
     const workId = workIdOf(body.work_id);
     if (!workId) return sendError(res, 400, '缺少 work_id');
     const work = prepare('SELECT id FROM works WHERE id = ?').get(workId);
     if (!work) return sendError(res, 404, '作品不存在');
-    const enabled = body.enabled === true || body.enabled === 1 || body.enabled === '1';
-    const saved = StoryState.setEnabled(workId, enabled, asString(body.note, ''));
+    // ⚠️ 局部请求不得把开关**关掉**：旧实现是 `body.enabled === true || === 1 || === '1'`，
+    // 于是任何**没提 enabled** 的 PUT（例如只带 note 的调用、或只切 temporal 三开关的调用）
+    // 都被判成 false 并真的写库 —— 一个只读意图的调用把作品的故事状态静默关了。
+    // 现在：`enabled` 未出现在 body 里 = 不改这一项；显式给 false 才是关。
+    const enabledGiven = Object.prototype.hasOwnProperty.call(body, 'enabled');
+    const enabled = enabledGiven
+      ? (body.enabled === true || body.enabled === 1 || body.enabled === '1')
+      : null;
+    const saved = enabled === null
+      ? { work_id: workId, enabled: (StoryState.configOf(workId) || { enabled: false }).enabled }
+      : StoryState.setEnabled(workId, enabled, asString(body.note, ''));
     // 开关一变，装配结果必须失效——否则界面会继续用旧上下文（含/不含 story_state 层）。
     touchWork(workId);
     notifyChange('novel_context', { workId, id: workId });
     return sendJSON(res, 200, { ok: true, ...saved, summary: StoryState.summaryOf(workId) });
+  }
+
+  // ── 本章契约（读 / 写）──────────────────────────────────────────────────────
+  // ⚠️ P1-06 根因之二：契约端点挂在 `story_state` 前缀下（见下方 `/api/novel/state/contract` 的
+  // 同一批分支），但下面这一行守卫 `if (sub !== 'state') return false;` 会把 **story_state 的
+  // 全部子路径**挡掉 —— 于是 `/api/novel/story_state/contract` 恒 404（实测），
+  // 而 chapter_contracts 永远是空表、story_state 层的「本章契约」块永远不出现。
+  // 现在把契约分支提到守卫**之前**，并让 story_state 也走这一批需要具体 leaf 的分支。
+  if (method === 'GET' && leaf === 'contract' && (sub === 'state' || sub === 'story_state')) {
+    const chapterId = Number(query.chapter_id) || 0;
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const contract = StoryState.readContract(chapterId);
+    return sendJSON(res, 200, {
+      ok: true, chapter_id: chapterId, contract,
+      versions: StoryState.listContractVersions(chapterId),
+      fields: StoryState.CONTRACT_FIELDS,
+    });
+  }
+  if (method === 'PUT' && leaf === 'contract' && (sub === 'state' || sub === 'story_state')) {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id) || 0;
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!ch) return sendError(res, 404, '章节不存在');
+    const workId = workIdOf(body.work_id) || Number(ch.work_id);
+    const saved = StoryState.saveContract(workId, chapterId, body.contract || body, { note: asString(body.note, '') });
+    touchWork(workId);
+    return sendJSON(res, 200, { ok: true, ...saved });
   }
 
   if (sub !== 'state') return false;
@@ -6381,6 +6749,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       legacy_proposal_ids: legacySel,
       expected: {
         content_hash: asString(expected.content_hash, ''),
+        // P1-10：并发基线的**第二形态**。`content_hash` 要求调用方拿到服务端正文原文才能算，
+        // 而前端手里就有章节行的 `updated_at`（编辑保存的乐观锁 `_if_updated_at` 用的也是它）。
+        // 两者取其一即可表达"我这次采纳基于哪一版正文"；都没给才表示调用方不作并发校验。
+        updated_at: asString(expected.updated_at ?? body._if_updated_at, ''),
         state_hashes: expected.state_hashes && typeof expected.state_hashes === 'object' ? expected.state_hashes : {},
         legacy_hashes: expected.legacy_hashes && typeof expected.legacy_hashes === 'object' ? expected.legacy_hashes : {},
       },
@@ -6431,6 +6803,14 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         const contentHashBefore = freshChapter ? Approvals.chapterBaselineHash(freshChapter.content) : '';
         if (contentProvided && chapterId && expected.content_hash && expected.content_hash !== contentHashBefore) {
           throw new Error('本章正文在确认之后被修改过（基线 hash 不一致），为避免覆盖新内容已拒绝采纳；请重新审阅');
+        }
+        // P1-10：`expected.updated_at` 是同一个并发基线的**第二形态**（见上面 norm.expected 的字段注释）。
+        // 旧实现只认 content_hash，而 AI 采纳这条路径从不传它 —— 于是这道闸门**恒不成立**：
+        // 两个窗口（或一窗 + 一次 AI 采纳）同时提交时，后提交者静默覆盖先提交者。
+        // 旧稿仍会进历史版本（所以不是不可逆），但这不该发生，且作者不会收到任何提示。
+        if (contentProvided && chapterId && !expected.content_hash && expected.updated_at && freshChapter
+            && String(freshChapter.updated_at) !== String(expected.updated_at)) {
+          throw new Error('本章正文在确认之后被其它窗口修改过（版本不一致），为避免覆盖新内容已拒绝采纳；请刷新后重新确认');
         }
         // 1) 状态提案：内核自带的陈旧检查会拒绝 stale 项（这里直接让整次采纳回滚）
         const stateApplied = [];
@@ -7318,12 +7698,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     // 缓存键含 phase + direction 哈希；无方向且 default 时与旧键逐字节相同（审计兼容）。
     // T5：可选时态参数（boundary/commit/worldline/perspective/pov）——默认参数时缓存键与旧版逐字节相同。
     const temporalParams = temporalContextParamsOf(query);
+    // P1-07：通道能力进缓存键 —— 有工具与无工具两条通道产出的 assembled 截断提示语不同，
+    // 不进键就会互相误命中（作者先点直连再走慢通道时，会拿到"没有查回路径"的旧文本）。
+    // 默认（未显式传 tools=0）与旧键逐字节相同，避免影响既有缓存行为。
+    const noTools = String(query.tools || '') === '0';
     const cacheKey = contextCacheKeyOf({ workId, chapterId, mode, phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
-      + temporalCacheSuffixOf(workId, temporalParams);
+      + temporalCacheSuffixOf(workId, temporalParams)
+      + (noTools ? '|notools' : '');
     let ctx = cacheGetContext(cacheKey, workId);
     if (ctx === undefined) {
       ctx = await buildNovelContext(workId, chapterId, mode, {
         direction, directionSource, libraryRecallPhase, requestId,
+        toolsAvailable: !noTools,
         boundary: temporalParams.boundary || undefined,
         commitId: temporalParams.commitId || undefined,
         worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
@@ -7348,6 +7734,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     });
   }
   if (resource === 'novel' && segments[2] === 'semantic' && method === 'PUT') {
+    const author = requireAuthorChannel(req, '语义检索开关');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const body = await readBody(req);
     const enabled = body.enabled !== false;
     setAppSetting('ov_semantic_enabled', enabled ? '1' : '0');
@@ -7374,12 +7762,16 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     });
   }
   if (resource === 'novel' && segments[2] === 'memory_auto_compress' && method === 'PUT') {
+    const author = requireAuthorChannel(req, '自动压缩开关');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const body = await readBody(req);
     const enabled = body.enabled === true || body.enabled === '1';
     setAppSetting(MEMORY_AUTO_COMPRESS_KEY, enabled ? '1' : '0');
     return sendJSON(res, 200, { ok: true, enabled, threshold: MEMORY_COMPRESS_HINT });
   }
   if (resource === 'novel' && segments[2] === 'semantic_index' && method === 'POST') {
+    const author = requireAuthorChannel(req, '语义索引重建');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const body = await readBody(req);
     if (!ovEffectiveEnabled()) return sendError(res, 400, '语义集成未启用（请先在上下文页签打开开关）');
     const workId = Number(body.work_id) || null;
@@ -7402,6 +7794,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       return sendJSON(res, 200, await openVikingStatusPayload());
     }
     if (method === 'PUT') {
+      const author = requireAuthorChannel(req, 'OpenViking 配置');
+      if (!author.ok) return sendError(res, author.status, author.message);
       const body = await readBody(req);
       const applied = [];
       // endpoint：字段出现即视为作者的明确意图（空串=清除，回到配置文件/默认值）。
@@ -7434,6 +7828,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   }
   // 一键把当前生效凭证写进 ~/.openviking/ovcli.conf，让 dsh 侧（GUI 会话 / 写作任务）共用同一套。
   if (resource === 'novel' && segments[2] === 'openviking' && segments[3] === 'global_config' && method === 'POST') {
+    const author = requireAuthorChannel(req, 'OpenViking 全局配置');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const cfg = resolveOpenVikingConfig();
     if (!cfg.endpoint && !cfg.apiKey) return sendError(res, 400, '当前没有可写入的 OpenViking 地址或 Key');
     const out = writeGlobalOpenVikingConfig({ endpoint: cfg.endpoint, apiKey: cfg.apiKey });
@@ -7486,6 +7882,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   // 打开本机目录（参数是枚举键，不是路径）。dry_run=true 只回显将要打开的目录，不真的打开——
   // 自动化测试用它覆盖成功路径，而不必在验证时弹出资源管理器窗口。
   if (resource === 'env' && segments[2] === 'open_folder' && method === 'POST') {
+    const author = requireAuthorChannel(req, '打开宿主目录');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const parsed = await readBodyOrError(req, res);
     if (!parsed.ok) return;
     const body = parsed.body;
@@ -7503,6 +7901,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   }
   // 填 dsh 仓库路径（AI 设置页「本地创作内核」卡）。与 OpenViking 卡同构：存设置 → 立即注入 → 复检。
   if (resource === 'env' && segments[2] === 'dsh_repo' && method === 'PUT') {
+    const author = requireAuthorChannel(req, 'dsh 仓库配置');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const parsed = await readBodyOrError(req, res);
     if (!parsed.ok) return;
     const body = parsed.body;
@@ -7633,9 +8033,21 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       if (Number(ch.work_id) !== workId) return sendError(res, 400, '章节不属于该作品');
     }
     // headless 生成任务（NOVELSTUDIO_PROPOSE_MODE=1）先落提案，作者在工坊界面确认后入账。
-    if (body.proposed === true) {
-      const result = addEventProposal(workId, { ...fields, note: asString(body.note, 'dsh 创作插件提案') });
-      return sendJSON(res, 201, { ok: true, ...result, work_id: workId });
+    // ── P1-09：模型通道**一律**走提案，不再由插件端自报 ──────────────────────────
+    // 旧实现把"要不要走提案"的决定权交给了**插件端环境变量**：`novel-tools.mjs` 按
+    // `NOVELSTUDIO_PROPOSE_MODE === '1'` 自己决定 `proposed: true/false`，而全仓只有
+    // `POST /api/harness/run` 注入过这个变量（`POST /api/harness/job` 的命名任务没有）。
+    // 于是一个未注入该变量的 dsh 进程调用 `novel_event_add` 时，事件**直接入账**，
+    // 既没有作者审批、也不留提案记录（审计上不可见）——这与 `server.js:173-177` 自己写下的
+    // 纪律"模型侧写入必须引用作者创建的、仍有效的审批"直接矛盾。
+    // 现在：服务端按请求通道裁决（`isAgentRequest`）。作者通道行为不变；模型通道强制提案。
+    const agentChannel = isAgentRequest(req);
+    if (body.proposed === true || agentChannel) {
+      const note = agentChannel && body.proposed !== true
+        ? '模型通道：服务端强制落提案（不接受插件自报的 proposed=false）'
+        : asString(body.note, 'dsh 创作插件提案');
+      const result = addEventProposal(workId, { ...fields, note });
+      return sendJSON(res, 201, { ok: true, ...result, work_id: workId, forced_proposal: agentChannel && body.proposed !== true });
     }
     const result = addStoryEvent(workId, fields);
     notifyChange('events', { workId, id: workId });
@@ -7664,6 +8076,16 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!['open', 'resolved', 'dropped'].includes(status)) return sendError(res, 400, 'status 必须是 open/resolved/dropped');
     const row = prepare('SELECT * FROM story_events WHERE id = ? AND kind = ?').get(id, 'foreshadow');
     if (!row) return sendError(res, 404, '伏笔不存在');
+    // P1-09：这里是**直接改账本**（没有提案表可落），因此模型通道必须持作者的一次性审批，
+    // 且审批精确绑定 (event_id, status) —— 一次授权只能改这一条伏笔的这一个状态。
+    // 作者通道（浏览器同源）行为不变：作者本人就是授权。
+    const guard = guardAgentWrite(req, {
+      op: 'foreshadow_status',
+      workId: row.work_id,
+      binding: { event_id: id, status },
+      approvalId: body.approval_id,
+    });
+    if (!guard.ok) return sendError(res, guard.status, guard.message);
     prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ?').run(status, id);
     if (status === 'resolved' && body.resolves_event_id) {
       const rid = Number(body.resolves_event_id);
@@ -7673,7 +8095,7 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     }
     touchWork(row.work_id);
     notifyChange('events', { workId: row.work_id, id: row.work_id });
-    return sendJSON(res, 200, { ok: true, id, foreshadow_status: status });
+    return sendJSON(res, 200, { ok: true, id, foreshadow_status: status, agent_approved: !guard.author });
   }
   if (resource === 'novel' && segments[2] === 'proposals' && method === 'GET') {
     const workId = Number(query.work_id);
@@ -8290,12 +8712,31 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
 
   // Graceful shutdown: release port and stop the Node process
   if (resource === 'shutdown' && method === 'POST') {
+    const author = requireAuthorChannel(req, '关闭服务');
+    if (!author.ok) return sendError(res, author.status, author.message);
     sendJSON(res, 200, { ok: true, message: '服务正在关闭' });
     setTimeout(() => {
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 500).unref();
     }, 80);
     return;
+  }
+
+  // 应用内整库备份/还原：只允许作者通道；还原前先校验待恢复库并制作当前库安全副本。
+  if (resource === 'backup' && method === 'POST' && !segments[2]) {
+    const author = requireAuthorChannel(req, '整库备份');
+    if (!author.ok) return sendError(res, author.status, author.message);
+    try { const body = await readBody(req).catch(() => ({})); return sendJSON(res, 201, { ok: true, backup: createDatabaseBackup(body.label || 'manual') }); }
+    catch (e) { return sendError(res, 500, `备份失败：${e.message}`); }
+  }
+  if (resource === 'backup' && method === 'POST' && segments[2] === 'restore') {
+    const author = requireAuthorChannel(req, '整库还原');
+    if (!author.ok) return sendError(res, author.status, author.message);
+    const body = await readBody(req);
+    const file = String(body.path || '').trim();
+    if (!file || !path.isAbsolute(file)) return sendError(res, 400, '还原必须提供绝对备份路径');
+    try { return sendJSON(res, 200, restoreDatabaseFrom(file)); }
+    catch (e) { return sendError(res, 400, `还原拒绝：${e.message}`); }
   }
 
   // AI endpoints
@@ -8387,16 +8828,40 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         return row ? sendJSON(res, 200, maskRow(row)) : sendError(res, 404, 'Not found');
       }
       if (method === 'POST') {
+        if (isAgentRequest(req)) return sendError(res, 403, '通用资源写入只能由作者通道执行；模型请使用受审批保护的专用工具');
         const body = await readBody(req);
-        const newId = insertRow(resource, body);
-        if (body.work_id) touchWork(body.work_id);
-        if (resource === 'works') touchWork(newId);
-        const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(newId);
-        // T2（W9）：通用 CRUD 新建章节也可能**带正文**（前端「创作工作台成果」流程即如此）。
-        // 与其它入口同一后处理：内容非空才建 revision + pending 提案（origin=chapter_create）。
-        if (resource === 'chapters' && typeof body.content === 'string' && body.content.trim()) {
-          afterTemporalContentSave((row && row.work_id) || Number(body.work_id) || 0, newId, body.content, 'chapter_create');
-        }
+        // ── P1-11：通用 CRUD 的写入必须与它触发的派生写入同事务 ────────────────────
+        // 旧实现的矛盾：`server.js:4625` 的注释声称"所有正文写入口在写入的同一个事务里调用
+        // afterTemporalContentSave"，但这条最常用的路径（通用 CRUD）根本没有事务包裹，
+        // `updateRow`/`insertRow` 走 SQLite autocommit。后果不是"少写一行"，而是**状态劈叉**：
+        // 正文已提交、而 revision/pending 绑定回滚（例如 TEMPORAL_SCHEMA_MISSING 或
+        // 事件修订不匹配），请求返回失败但字已经存进库；更糟的是缺了 pending 绑定之后，
+        // 默认查询不会在这一章停住（history.mjs 的 pending 停止逻辑），旧的 valid 状态
+        // 会继续充当"最新" —— 之后所有基于该章的推断都是错位的，而界面毫无提示。
+        // 因此：写入 + 派生记录放进同一个事务；通知/同步/埋点留在事务**提交之后**。
+        // P1-12：章序变化检测的"写前快照"（非 chapters 资源、未开启时态的作品都会拿到 null）。
+        const orderBefore = resource === 'chapters' ? captureOrderState(Number(body.work_id) || 0) : null;
+        const wrote = withTx(() => {
+          const newId = insertRow(resource, body);
+          if (body.work_id) touchWork(body.work_id);
+          if (resource === 'works') {
+            touchWork(newId);
+            // P1-04：新作品默认接入 Story State；存量作品没有此行，仍保持旧行为，
+            // 由作者在故事状态页显式开启并执行回填。
+            StoryState.setEnabled(newId, true, '新作品默认开启（可由作者关闭）');
+          }
+          const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(newId);
+          // T2（W9）：通用 CRUD 新建章节也可能**带正文**（前端「创作工作台成果」流程即如此）。
+          // 与其它入口同一后处理：内容非空才建 revision + pending 提案（origin=chapter_create）。
+          if (resource === 'chapters' && typeof body.content === 'string' && body.content.trim()) {
+            afterTemporalContentSave((row && row.work_id) || Number(body.work_id) || 0, newId, body.content, 'chapter_create');
+          }
+          return { newId, row };
+        });
+        const newId = wrote.newId;
+        const row = wrote.row;
+        // P1-12：新建章节可能改变章序（新章排在末尾/父章下），写后比较并标记下游失效。
+        if (orderBefore) applyOrderChangeInvalidation(orderBefore, { source: 'chapter_create' });
         // OpenViking 增量同步：新建作品触发全量建索引，其余资源防抖后重写对应文件。
         if (resource === 'works') {
           syncWorkFull(newId).then(() => {}).catch((e) => log({ level: 'warn', layer: 'sync', kind: 'sync_error', message: `新作品同步失败（work ${newId}）：${e.message}` }));
@@ -8410,6 +8875,7 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         return sendJSON(res, 201, maskRow(row));
       }
       if (method === 'PUT' && id) {
+        if (isAgentRequest(req)) return sendError(res, 403, '通用资源写入只能由作者通道执行；模型请使用受审批保护的专用工具');
         const body = await readBody(req);
         const old = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
         // 乐观锁：编辑保存携带读取时的 updated_at，冲突返回 409（前端提示刷新）。
@@ -8422,24 +8888,45 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           const lock = temporalLegacyStateWrite(resource, old, body);
           if (lock && lock.blocked) return sendError(res, 409, lock.message);
         }
-        const changes = updateRow(resource, id, body);
-        if (changes === 0) return sendError(res, 404, 'Not found');
+        // P1-11：见上面 POST 分支的长注释 —— 正文写入必须与 revision/pending 同事务。
+        // 这里额外覆盖 P1-04：内容变化时顺手留一份 `kind='auto'` 的历史版本，
+        // 让"作者自己的手改"和 AI 改动一样可回滚（旧实现只有显式保存通道才建版本）。
+        const contentChanged = resource === 'chapters'
+          && old && typeof body.content === 'string' && body.content !== old.content;
+        // P1-12：只对可能改变章序的 chapters 写入取写前快照（position / volume_id / parent_id 任一存在即可）。
+        const orderRelevant = resource === 'chapters' && old?.work_id
+          && (body.position !== undefined || body.volume_id !== undefined || body.parent_id !== undefined || body.work_id !== undefined);
+        const orderBefore = orderRelevant ? captureOrderState(old.work_id) : null;
+        const putResult = withTx(() => {
+          const changes = updateRow(resource, id, body);
+          if (changes === 0) return { notFound: true };
+          if (contentChanged && shouldAutoSnapshot(id)) {
+            saveChapterVersion(id, old.title, old.summary, old.content, 'auto');
+            pruneChapterVersions(id);
+          }
+          // T2（W1/W2）：编辑器自动保存 / 手动保存都经过这里；正文变化才记录修订并排队分析。
+          if (resource === 'chapters' && old?.work_id && typeof body.content === 'string' && body.content !== old.content) {
+            afterTemporalContentSave(old.work_id, Number(id), body.content, 'editor_save');
+          }
+          if (old?.work_id) touchWork(old.work_id);
+          if (body.work_id) touchWork(body.work_id);
+          if (resource === 'works') touchWork(Number(id));
+          const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
+          return { row };
+        });
+        if (putResult.notFound) return sendError(res, 404, 'Not found');
+        const row = putResult.row;
+        // P1-12：写后比较章序；只有真的变了才标下游失效（普通正文保存不受影响）。
+        if (orderBefore) applyOrderChangeInvalidation(orderBefore, { source: 'chapter_update' });
         // P5 埋点：章节正文落盘是「AI 草稿 → 作者最终正文」的测量点（见函数注释）。
         // 只在正文真的被写时尝试；没有待测量的采纳行时它是空操作。
+        // 放在事务提交之后：埋点本身不是正文的一部分，不该因为它失败把正文一起回滚。
         if (resource === 'chapters' && typeof body.content === 'string' && body.content.trim()) {
           measureAdoptEditDistance(id, body.content);
           // D8-#3：记忆自动压缩的触发点（**默认关闭**，见 maybeAutoCompressMemory）。
           // 放在正文落盘之后：此时长期记忆的输入（本章正文）才是最新的。
           if (old?.work_id) maybeAutoCompressMemory(old.work_id);
         }
-        // T2（W1/W2）：编辑器自动保存 / 手动保存都经过这里；正文变化才记录修订并排队分析。
-        if (resource === 'chapters' && old?.work_id && typeof body.content === 'string' && body.content !== old.content) {
-          afterTemporalContentSave(old.work_id, Number(id), body.content, 'editor_save');
-        }
-        if (old?.work_id) touchWork(old.work_id);
-        if (body.work_id) touchWork(body.work_id);
-        if (resource === 'works') touchWork(Number(id));
-        const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
         const wid = resource === 'works'
           ? Number(id)
           : ((old?.work_id ?? row?.work_id ?? Number(body.work_id)) || null);
@@ -8451,14 +8938,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         return sendJSON(res, 200, maskRow(row));
       }
       if (method === 'DELETE' && id) {
+        if (isAgentRequest(req)) return sendError(res, 403, '通用资源写入只能由作者通道执行；模型请使用受审批保护的专用工具');
         const old = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
         // P5 埋点的连带清理（决策 D6·C-①）：`ai_eval_events` 的 work_id/chapter_id 是**裸列**，
         // 没有像其它二十余张作品域表那样写 `ON DELETE CASCADE`。不显式删就会留下孤儿行：
         // 谁也够不到它们，而 `GET /api/ai/eval`（不带 work_id）会把它们算进全局聚合，把指标带偏。
         // ⚠️ 必须在 deleteRow **之前**删：章节随作品级联消失后，就再也解析不出 chapter_id 了。
         if (resource === 'works') purgeEvalEventsOfWork(Number(id));
+        // P1-12：删章同样改变章序（其后的章节位次整体前移），要检测并标记下游失效。
+        const orderBefore = resource === 'chapters' && old?.work_id ? captureOrderState(old.work_id) : null;
         const removed = deleteRow(resource, id);
         if (!removed) return sendError(res, 404, 'Not found');
+        if (orderBefore) applyOrderChangeInvalidation(orderBefore, { source: 'chapter_delete' });
         if (old?.work_id) touchWork(old.work_id);
         if (resource === 'works') touchWork(Number(id));
         // OpenViking 增量同步：删除作品 → 整目录移除；其余资源 → 删除对应文件。
@@ -8473,7 +8964,14 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       }
       return sendError(res, 405, 'Method not allowed');
     } catch (e) {
-      return sendError(res, 400, e.message);
+      // 请求体类错误不能被一视同仁地降级成 400：`readBody` 用 err.code 区分
+      // 「体积超限(PAYLOAD_TOO_LARGE)」与「JSON 畸形(INVALID_JSON)」，
+      // 而这里此前把两者都写成 400 —— 于是一个 38MB 的请求体（上限 36MB）在
+      // **通用 CRUD 路径**上得到的是"400 请求体不是合法 JSON"式的误导（实测 B4 失败项），
+      // 客户端据此会去查 JSON 语法而不是去查体积。修：按 code 映射状态码，未知错误仍是 400。
+      const status = e && e.code === 'PAYLOAD_TOO_LARGE' ? 413 : 400;
+      if (status === 413) res.setHeader('Connection', 'close'); // 请求体未读完：明确关闭，不复用
+      return sendError(res, status, e && e.code === 'INVALID_JSON' ? '请求体不是合法 JSON' : (e && e.message) || '请求体读取失败');
     }
   }
 
@@ -8481,6 +8979,27 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
 }
 
 function serveStatic(req, res, pathname) {
+  // 静态资源的统一安全响应头（P2-10）。缺它们不会立刻出事，但会放大任何一处 XSS 的后果
+  // （没有 CSP 就没有第二道防线），也允许本机其它页面用 iframe 嵌套工坊。
+  // CSP 说明：脚本与样式全部来自本机同源静态文件（零依赖、无 CDN），因此 default-src 'self'
+  // 就够；'unsafe-inline' 只开放给 style（styles.css 之外仍有少量内联 style 属性），
+  // 不开放给 script —— 这一点很关键：项目把 HTML 消毒交给 sanitizeEditorHtml，
+  // CSP 是它的兜底，而不是替代品。
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join('; '));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
   let filePath;
   if (pathname === '/') {
     filePath = path.join(publicDir, 'index.html');

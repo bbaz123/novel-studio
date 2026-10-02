@@ -88,7 +88,18 @@ async function main() {
     record('B2 Origin:null 写请求拒绝', r2.status === 403, `status=${r2.status}`);
     const r3 = await api('POST', '/api/works', { body: '{bad json', });
     record('B3 非法 JSON 400', r3.status === 400, `status=${r3.status}`);
-    const big = Buffer.alloc(33 * 1024 * 1024, 65); // 33MB
+    // B4 请求体上限：**判据从实现里读**，不写死数字。
+    // 早先这里写死 33MB，而 server.js 为容纳「24MiB 归档 base64」把上限提到了 36MB，
+    // 于是这条断言长期红着却与产品行为无关（33MB 合法 → 回 400 非法 JSON 是正确行为）。
+    // 现在：解析 server.js 的 MAX_BODY_BYTES，发「上限 + 4MB」的体，要求 413 或断连。
+    let maxBodyBytes = 36_000_000;
+    try {
+      const src = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
+      const m = src.match(/const\s+MAX_BODY_BYTES\s*=\s*([0-9_]+)/);
+      if (m) maxBodyBytes = Number(m[1].replace(/_/g, ''));
+    } catch (_) { /* 读不到就用默认值：仍然远大于旧的 32MB */ }
+    const oversizeBytes = maxBodyBytes + 4 * 1024 * 1024;
+    const big = Buffer.alloc(oversizeBytes, 65);
     let payloadResult = '';
     try {
       const res = await fetch(BASE + '/api/works', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: big });
@@ -97,7 +108,8 @@ async function main() {
     } catch (e) {
       payloadResult = 'network:' + (e.cause?.code || e.message);
     }
-    record('B4 超 32MB 请求体被拒绝(413或断连)', /status=413|network:/.test(payloadResult), payloadResult);
+    record(`B4 超上限请求体被拒绝（${Math.round(oversizeBytes / 1024 / 1024)}MB > ${Math.round(maxBodyBytes / 1024 / 1024)}MB，413或断连）`,
+      /status=413|network:/.test(payloadResult), payloadResult);
     const r5 = await api('POST', '/api/works', { body: { title: '本机同源' }, headers: { Origin: 'http://127.0.0.1:3738' } });
     record('B5 本机 Origin 写请求放行', r5.status === 201, `status=${r5.status}`);
     if (r5.json?.id) { created.works.push(r5.json.id); await api('DELETE', `/api/works/${r5.json.id}`); }

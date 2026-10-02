@@ -275,11 +275,30 @@ export function downstreamCoverage({ workId, rootChapterId, commitId = null, cov
     all.push({ chapter_id: chapterId, binding_id: bindingId, explicit_hits: hits.map((h) => h.resource_key), has_explicit_hit: hits.length > 0 });
   }
   const selected = String(coverage) === 'explicit_hits_only' ? all.filter((r) => r.has_explicit_hit) : all;
+  // ── P1-13：把"被上限截断"显式化 ─────────────────────────────────────────────
+  // 旧实现有两个问题叠在一起，让"保守全量复核"这句契约悄悄不成立：
+  //   ① `chapters` 只取前 max_chapters 条（默认 200），第 251 章以后的章节**永不进入复核**；
+  //   ② `skipped` 算的是 `all.length - selected.length` —— all_downstream 时 selected === all，
+  //      于是它**恒为 0**，报告里的 `skipped_by_coverage` 永远显示"没跳过任何章"。
+  // 结果：300 章作品以第 50 章为根时，报告写 downstream=200 / skipped=0，作者无法看出漏了 50 章。
+  // 现在把三件事分开表达：`in_scope`（策略范围内的全部下游）、`chapters`（本次真的复核的）、
+  // `not_revalidated`（因上限没复核的章号），并在 totals 里给出 in_scope / skipped_by_limit。
+  const cap = Math.max(1, Number(maxChapters) || IMPACT_LIMITS.max_chapters);
+  const picked = selected.slice(0, cap);
+  const notRevalidated = selected.slice(cap).map((r) => r.chapter_id);
   return {
     ok: true, commit_id: commit.id, order_version_id: String(order.order_version_id || ''),
     coverage: String(coverage), all,
-    chapters: selected.slice(0, Math.max(1, Number(maxChapters) || IMPACT_LIMITS.max_chapters)).map((r) => r.chapter_id),
+    in_scope: selected.length,
+    in_scope_chapters: selected.map((r) => r.chapter_id),
+    chapters: picked.map((r) => r.chapter_id),
+    // 兼容字段：语义修正为"因覆盖策略被排除的章数"（explicit_hits_only 对照模式下才有值）。
     skipped: all.length - selected.length,
+    // 因**上限**未复核的章：这才是长效作品里真正的缺口，必须能被报告读到。
+    truncated: notRevalidated.length > 0,
+    truncated_at_chapter: notRevalidated.length ? notRevalidated[0] : null,
+    not_revalidated: notRevalidated,
+    max_chapters: cap,
     policy: String(coverage) === 'all_downstream'
       ? '保守：根章之后的全部章节一律进入复核；依赖图只用于解释与排序，不用于排除。'
       : '变异对照：只复核有显式依赖命中的章节（不是产品语义，只用于证明保守传播是必须的）。',
@@ -567,8 +586,12 @@ export async function runImpactAnalysis({
       root_revision_id: rootRevision ? rootRevision.id : null, head_commit_id: head.id,
       confirmed_root: rootConfirmed, changes, changed_resources: [...changedResources],
     },
-    policy: { coverage_mode: cov.coverage, max_chapters: Math.max(1, Number(maxChapters) || IMPACT_LIMITS.max_chapters), no_generation: true },
-    coverage: { mode: cov.coverage, chapters: cov.chapters, skipped: cov.skipped, policy: cov.policy, all: cov.all },
+    policy: { coverage_mode: cov.coverage, max_chapters: cov.max_chapters, no_generation: true },
+    coverage: {
+      mode: cov.coverage, chapters: cov.chapters, skipped: cov.skipped, policy: cov.policy, all: cov.all,
+      in_scope: cov.in_scope, truncated: cov.truncated, truncated_at_chapter: cov.truncated_at_chapter,
+      not_revalidated: cov.not_revalidated,
+    },
     idempotencyKey: key,
   });
   const run = created.run;
@@ -579,7 +602,11 @@ export async function runImpactAnalysis({
     root_revision_id: rootRevision ? rootRevision.id : null,
     base_commit_id: head.id, working_worldline_id: null,
     tentative: !rootConfirmed,
-    coverage: { mode: cov.coverage, chapters: cov.chapters, skipped: cov.skipped, policy: cov.policy },
+    coverage: {
+      mode: cov.coverage, chapters: cov.chapters, skipped: cov.skipped, policy: cov.policy,
+      in_scope: cov.in_scope, truncated: cov.truncated, truncated_at_chapter: cov.truncated_at_chapter,
+      not_revalidated: cov.not_revalidated,
+    },
     changes,
     downstream: [],
     explicit_appearances: [], explicit_dependencies: [], implicit_dependencies: [],
@@ -659,8 +686,20 @@ export async function runImpactAnalysis({
   report.totals = {
     downstream: cov.chapters.length, kept: counters.kept, conflict: counters.conflict,
     needs_review: counters.needs_review, blocked: counters.blocked,
-    skipped_by_coverage: cov.skipped, model_calls: counters.model_calls, generated_revisions: 0,
+    // P1-13：skipped_by_coverage = 覆盖策略排除的章数；skipped_by_limit = 因 max_chapters 上限
+    // 未复核的章数（旧实现把它算成 0，等于把"漏了 50 章"从报告里抹掉）。
+    skipped_by_coverage: cov.skipped,
+    skipped_by_limit: cov.not_revalidated.length,
+    in_scope: cov.in_scope,
+    truncated: cov.truncated,
+    truncated_at_chapter: cov.truncated_at_chapter,
+    not_revalidated: cov.not_revalidated,
+    model_calls: counters.model_calls, generated_revisions: 0,
   };
+  if (cov.truncated) {
+    report.notes.push(`⚠ 本次复核被上限截断：策略范围内 ${cov.in_scope} 章，只复核了前 ${cov.chapters.length} 章；`
+      + `第 ${cov.truncated_at_chapter} 章起的 ${cov.not_revalidated.length} 章**未被复核**（提高 max_chapters 或分批续跑）。`);
+  }
   report.notes.push('T3 只分析与标记：不生成/不覆盖任何正文；修订器只能由 T4 的作者按钮授权启动。');
   Runs.updateRun(run.id, { status: 'ready', result: report });
   return { ok: true, enabled: true, tentative: false, run: Runs.getRun(run.id), report };

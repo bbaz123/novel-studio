@@ -20,7 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { db } from '../../db.js';
 import { sha16, stableStringify } from './hash.mjs';
 
-export const APPROVAL_OPS = ['chapter_save', 'state_proposal_apply', 'proposal_apply', 'state_rollback', 'temporal_apply', 'temporal_correction', 'repair_run_start', 'repair_run_apply'];
+export const APPROVAL_OPS = ['chapter_save', 'state_proposal_apply', 'proposal_apply', 'state_rollback', 'temporal_apply', 'temporal_correction', 'repair_run_start', 'repair_run_apply', 'foreshadow_status'];
 export const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 const stmtCache = new Map();
@@ -169,6 +169,17 @@ export function checkBinding(op, want, got) {
     }
     if (want.manifest_hash && got.manifest_hash && String(want.manifest_hash) !== String(got.manifest_hash)) {
       return '候选清单在审批之后发生了变化（manifest hash 不一致）';
+    }
+    return '';
+  }
+  // P1-09：伏笔状态是**直接改账本**的写入（没有提案表），因此模型通道必须持作者审批，
+  // 且审批要精确绑定到"哪一条伏笔"与"改成什么状态"——否则一次授权可以改任意伏笔。
+  if (op === 'foreshadow_status') {
+    if (Number(want.event_id) !== Number(got.event_id)) {
+      return `审批绑定的伏笔是 #${want.event_id}，本次修改的是 #${got.event_id}`;
+    }
+    if (str(want.status) !== str(got.status)) {
+      return `审批绑定的状态是 ${want.status}，本次提交的是 ${got.status}`;
     }
     return '';
   }

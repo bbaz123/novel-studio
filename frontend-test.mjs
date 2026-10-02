@@ -139,7 +139,7 @@ const storage = () => {
 const requests = [];
 // 可切换的桩状态：stale = 模拟「页面是新版、服务进程还是旧代码」→ 新接口一律 404 API not found
 // directEmptyOnce = 模拟实测现象「思考 token 吃光 max_tokens → 空回复」；blueprintAsProse = 模拟模型跳过蓝图直接给正文
-const stub = { stale: false, directEmptyOnce: false, blueprintAsProse: false };
+const stub = { stale: false, directEmptyOnce: false, blueprintAsProse: false, editorConflict: false, editorPutBodies: [] };
 // R09 桩：作者样文 / 文风档案 / 三级意图。桩也维护"服务端状态"：
 // 这样断言的是"请求真的发出去了、界面用的是服务端回来的数据"，而不是本地状态自说自话。
 const styleStub = {
@@ -374,7 +374,15 @@ const fetchStub = async (url, opts = {}) => {
   const u = String(url);
   let json = {};
   let status = 200;
-  if (stub.stale && (u.includes('/api/novel/openviking') || u.includes('/api/env/tools'))) {
+  if (stub.editorConflict && u.includes('/api/chapters/107')) {
+    if ((opts.method || 'GET').toUpperCase() === 'PUT') {
+      stub.editorPutBodies.push(JSON.parse(String(opts.body || '{}')));
+      if (stub.editorPutBodies.length === 1) { json = { error: '内容已在其他窗口被修改' }; status = 409; }
+      else json = { id: 107, title: '本地标题', content: '<p>本地稿</p>', summary: '', updated_at: 'server-v2' };
+    } else {
+      json = { id: 107, title: '服务端标题', content: '<p>服务端稿</p>', summary: '', updated_at: 'server-v2' };
+    }
+  } else if (stub.stale && (u.includes('/api/novel/openviking') || u.includes('/api/env/tools'))) {
     json = { error: 'API not found' };
     status = 404;
   } else
@@ -877,14 +885,16 @@ globalThis.__probe = {
   traceStart, traceStopStream, traceRenderTopbarButton, traceOpSummary, renderTraceList, traceShape, traceCallerLocation,
   traceUpsertOp, traceHandleStreamItem, traceFilteredOps, normalizeTraceSummary,
   extractReviewFromText, extractJSONFromText,
+  parseBlueprintJSON, detectNonProseOutput, buildAIWritingProseRetryPrompt, BLUEPRINT_FIELDS,
   HELP_TEXT, helpDot, fieldHelp, helpTitle, renderToolRows, TOOL_SPECS, loadOpenVikingStatus, loadEnvTools,
   tooltipHtmlFor,
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
+  saveChapterSnapshot, resolveEditorConflict, flushSave,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
   WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
   continuityGuardSummaryHtml,
   streamAIDirectWrite,
-  performToolbarAIWrite,
+  performToolbarAIWrite, restoreChapterDraft, previewChapterDraft,
   loadAIContext,
   WRITING_DIRECTION_MAX_CHARS, normalizeWritingDirectionText, clipWritingDirectionText, buildWritingDirectionFromBlueprint, savedBlueprintForChapter, directionKeyHashOf,
   newWriteTiming,
@@ -926,6 +936,33 @@ if (runtimeError) {
 const P = sandbox.__probe;
 check('1b 探针成功取出追踪模块引用', !!P && !!P.trace && typeof P.traceToggle === 'function');
 if (!P) process.exit(1);
+// --- P0-01：409 保存冲突必须可恢复（本地优先 / 服务端优先） ---
+{
+  const savedChapters = P.state.chapters, savedWorkId = P.state.workId;
+  const savedConflict = P.state.editorConflictSnapshot, savedFailed = P.state.editorSaveFailedSnapshot;
+  const savedNodes = { editor: containers['#editor-content'], title: containers['#editor-title'], status: containers['#editor-status'] };
+  const editor = mkEl('editor-content', 'div'); editor.dataset.chapterId = '107'; editor.innerHTML = '<p>本地冲突稿</p>';
+  const title = mkEl('editor-title', 'input'); title.value = '本地标题';
+  const status = mkEl('editor-status', 'div');
+  containers['#editor-content'] = editor; containers['#editor-title'] = title; containers['#editor-status'] = status;
+  P.state.workId = 1; P.state.chapters = [{ id: 107, title: '旧标题', content: '<p>旧稿</p>', summary: '', updated_at: 'client-v1' }];
+  P.state.editorConflictSnapshot = null; P.state.editorSaveFailedSnapshot = null;
+  stub.editorConflict = true; stub.editorPutBodies.length = 0;
+  const first = await P.saveChapterSnapshot({ id: 107, content: '<p>本地冲突稿</p>', title: '本地标题' });
+  check('P0-01a 409 保存失败进入可见冲突态而非静默丢稿', first === false && !!P.state.editorConflictSnapshot && P.state.editorConflictSnapshot.content.includes('本地冲突稿') && String(status.innerHTML).includes('以本地为准'));
+  check('P0-01b 冲突态 flushSave 明确等待作者决策', await P.flushSave() === false);
+  const localResolved = await P.resolveEditorConflict('local');
+  check('P0-01c 以本地为准读取最新版本并再次 PUT，清除冲突态', localResolved === true && !P.state.editorConflictSnapshot && stub.editorPutBodies.length >= 2 && stub.editorPutBodies[1]._if_updated_at === 'server-v2');
+  check('P0-01d 本地决策后自动保存闸门恢复', await P.flushSave() === true);
+  P.state.editorConflictSnapshot = { id: 107, content: '<p>不要覆盖</p>', title: '本地标题' };
+  const serverResolved = await P.resolveEditorConflict('server');
+  check('P0-01e 以服务端为准加载正文并清除冲突态', serverResolved === true && !P.state.editorConflictSnapshot
+    && P.state.chapters.find((c) => c.id === 107)?.content.includes('服务端稿') && title.value === '服务端标题');
+  check('P0-01f 服务端决策后自动保存闸门恢复', await P.flushSave() === true);
+  stub.editorConflict = false; P.state.chapters = savedChapters; P.state.workId = savedWorkId;
+  P.state.editorConflictSnapshot = savedConflict; P.state.editorSaveFailedSnapshot = savedFailed;
+  for (const [k, v] of Object.entries(savedNodes)) { if (v) containers['#' + (k === 'editor' ? 'editor-content' : k === 'title' ? 'editor-title' : 'editor-status')] = v; }
+}
 // 把 document 级 keydown 真的送到 app.js 的监听器（此前桩丢弃监听器 → 键盘路径不可测）
 const fireDocKeydown = (event) => { for (const fn of docListeners.get('keydown') || []) fn({ preventDefault() {}, ...event }); };
 
@@ -2536,6 +2573,130 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   sandbox.toast = realToast;
 }
 
+// --- 11b) 回归（2026-10-01 真实事故）：模型在蓝图 JSON 的值里写裸 ASCII 引号时，
+//     整篇蓝图曾被当成"正文"写进章节（第一章正文 1589 字全是 `【蓝图】{…}`，
+//     而 chapters.blueprint_json 反而是空的 —— 蓝图既没进确认弹窗，也没落库）。
+//     这里同时钉三件事：① 解析器必须把六段内容抢救出来；② 交付闸门必须拒绝"规划当正文"；
+//     ③ 闸门在写回之前生效（不许出现"先写进去再说"）。
+{
+  const savedCtx = P.state.aiContext;
+  const savedConfigs = P.state.apiConfigs;
+  const savedActive = P.state.activeConfigId;
+  const savedChapters = P.state.chapters;
+  const savedWork = P.state.work;
+  const savedChapterId = P.state.currentChapterId;
+  const savedNode = containers['#editor-content'];
+  const savedHarness = sandbox.runHarnessJob;
+  const savedConfirm = sandbox.showBlueprintConfirm;
+  const savedResult = sandbox.showAIWritingResult;
+  const savedApply = sandbox.applyAIWritingArticle;
+  const savedReport = sandbox.reportClientLog;
+
+  // 事故原文（结构照抄真实产物）：hook/conflicts 的值里带**未转义的 ASCII 引号**，
+  // 严格 JSON.parse 必失败；蓝图专属字段名齐全，闸门靠它们判定"这不是正文"。
+  const INCIDENT_BLUEPRINT = [
+    '【蓝图】',
+    '{',
+    '  "scene_goal": "在全国直播的觉醒日最高光时刻，岳宸炎被检测石判成D级·无战斗能力，全场惋惜散去之后，系统在他脑子里开口。",',
+    '  "plot_points": "1｜检测中心外广场·排队人群：天没亮就到，他手里那张体检通知单被汗捏出折痕。\\n2｜主检测台·轮到他：按手、三秒，暗黄色。",',
+    '  "conflicts": "表层冲突是「场面期待 vs 检测结果」；里层是他刚被判成最底层，却被告知自己是"符合条件的"。",',
+    '  "character_changes": "岳宸炎：从排队时的一点期待，到接受D级结果。",',
+    '  "hook": "系统又说：这个，别扔。他问为什么。回答："因为从今天起，它是你唯一的伪装。"",',
+    '  "references": "回扣：觉醒检测石·光色分级；系统开场语「检测完成，宿主符合绑定条件」。",',
+    '}'
+  ].join('\n');
+  check('108i 前提：这条事故样本严格 JSON 解析必然失败（否则测不到那条兜底路径）',
+    P.extractJSONFromText(INCIDENT_BLUEPRINT) === null);
+
+  const bpParsed = P.parseBlueprintJSON(INCIDENT_BLUEPRINT);
+  check('108j 蓝图解析能按字段抢救出全部六段（不再把整篇蓝图当成成文）',
+    bpParsed.stage === 'salvaged' && P.BLUEPRINT_FIELDS.every((k) => String(bpParsed.blueprint[k] || '').trim()),
+    `${bpParsed.stage}｜${JSON.stringify(Object.keys(bpParsed.blueprint || {}))}`);
+  check('108k 抢救出的情节点未截断（换行与内容都在，弹窗里作者能直接改）',
+    String(bpParsed.blueprint.plot_points || '').includes('主检测台') && String(bpParsed.blueprint.plot_points).includes('\n'),
+    JSON.stringify(String(bpParsed.blueprint.plot_points || '').slice(-30)));
+
+  // 闸门本身：规划要拦，真正文不能误拦
+  check('108l 交付闸门拦下"带【蓝图】过程头的规划"',
+    P.detectNonProseOutput(INCIDENT_BLUEPRINT).includes('过程头'), P.detectNonProseOutput(INCIDENT_BLUEPRINT));
+  check('108m 交付闸门拦下"没有过程头但字段名齐全的规划"',
+    P.detectNonProseOutput('{"scene_goal":"目标","plot_points":"一","hook":"钩"}').includes('蓝图字段'),
+    P.detectNonProseOutput('{"scene_goal":"目标","plot_points":"一","hook":"钩"}'));
+  const realProseSample = '岳宸炎把手按在石板上，三秒钟，黑色的石头亮起来，是暗黄色。\n\n广播里念：「D级·普通人，能力：无。」他听见身后有人说"可惜"——那声音不大，却比嘲笑更难受。';
+  check('108n 交付闸门不误拦真正文（对话里的引号与项目符号都不算规划）',
+    P.detectNonProseOutput(realProseSample) === '', JSON.stringify(P.detectNonProseOutput(realProseSample)));
+  check('108o 纠正提示词明确禁止过程标记与 JSON（重生成才有机会拿到正文）',
+    P.buildAIWritingProseRetryPrompt('输出含蓝图字段', 4000).includes('只输出本章正文本身')
+      && P.buildAIWritingProseRetryPrompt('输出含蓝图字段', 4000).includes('4000'));
+
+  // 端到端：成文轮"两次都吐规划"时，绝不能写进章节。
+  // ⚠️ 本章**预置一份已保存蓝图**：写作入口会因此跳过蓝图轮（不再调用模型、不弹确认框），
+  //    于是可以直接验证成文轮——否则蓝图轮会先被 fetch 桩的通用回复接管，测到的是别的分支。
+  const SAVED_BP = {
+    scene_goal: '第一章：觉醒日全场失望与系统上线之间的那一秒反差。',
+    plot_points: '1｜检测中心外广场·排队。\n2｜主检测台·轮到他：暗黄色。',
+    conflicts: '场面期待 vs 检测结果。',
+    character_changes: '岳宸炎：接受D级结果。',
+    hook: '系统开口。',
+    references: '光色分级。'
+  };
+  P.state.aiContext = { assembled: '上下文', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+  P.state.apiConfigs = [{ id: 1, api_key: 'sk-test', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 }];
+  P.state.activeConfigId = 1;
+  P.state.workId = 2;
+  P.state.work = { id: 2, title: '测试作品' };
+  P.state.currentChapterId = 107;
+  P.state.chapters = [{
+    id: 107, title: '第107章', target_words: 3000, content: '<p>原文</p>',
+    blueprint_json: JSON.stringify(SAVED_BP)
+  }];
+  containers['#editor-content'] = mkEl('editor-content');
+  containers['#editor-content'].innerHTML = '<p>原文</p>';
+  containers['#modal-root'].innerHTML = '';
+  check('108p0 前提：本章已保存蓝图（写作入口因此跳过蓝图轮，直接测成文轮）',
+    !!P.savedBlueprintForChapter(107));
+  const prosePrompts = [];
+  sandbox.runHarnessJob = async (body) => {
+    const prompt = String((body && body.prompt) || '');
+    prosePrompts.push(prompt);
+    // 成文轮与重生成轮**都**吐规划（事故现场）
+    return { output: INCIDENT_BLUEPRINT };
+  };
+  sandbox.showBlueprintConfirm = async (bp) => ({ ...bp, skip: false, target_words: 3000 });
+  let resultOpened = 0;
+  sandbox.showAIWritingResult = async () => { resultOpened += 1; return null; };
+  let applied = 0;
+  sandbox.applyAIWritingArticle = async () => { applied += 1; };
+  const rejectLogs = [];
+  sandbox.reportClientLog = (o) => { if (o && o.kind) rejectLogs.push(String(o.kind)); };
+  let e2eErr = '';
+  try { await P.performToolbarAIWrite('写第一章'); } catch (e) { e2eErr = e.message; }
+  check('108p 成文轮连续返回规划时：不打开结果弹窗、不写回章节（绝不把蓝图正文写进去）',
+    resultOpened === 0 && applied === 0,
+    `opened=${resultOpened} applied=${applied} err=${e2eErr}`);
+  check('108q 拦下时如实说明原因（作者知道发生了什么，而不是静默无结果）',
+    String(containers['#modal-root'].innerHTML).includes('不是章节正文'),
+    String(containers['#modal-root'].innerHTML).slice(0, 120));
+  check('108r 拦下这件事留下客户端日志（事故在日志里必须可见）',
+    rejectLogs.includes('prose_output_rejected'), JSON.stringify(rejectLogs));
+  check('108s 确实重生成过一次（不是一次失败就放弃）',
+    prosePrompts.filter((p) => p.includes('只输出本章正文本身')).length === 1,
+    JSON.stringify(prosePrompts.map((p) => p.slice(0, 24))));
+
+  P.state.aiContext = savedCtx;
+  P.state.apiConfigs = savedConfigs;
+  P.state.activeConfigId = savedActive;
+  P.state.chapters = savedChapters;
+  P.state.work = savedWork;
+  P.state.currentChapterId = savedChapterId;
+  if (savedNode === undefined) delete containers['#editor-content']; else containers['#editor-content'] = savedNode;
+  sandbox.runHarnessJob = savedHarness;
+  sandbox.showBlueprintConfirm = savedConfirm;
+  sandbox.showAIWritingResult = savedResult;
+  sandbox.applyAIWritingArticle = savedApply;
+  sandbox.reportClientLog = savedReport;
+}
+
 // --- 12) 批量生成：红线自检结果必须**告知**作者（此前完全没读 scan，作者永远不知道命中多少） ---
 // 关键点有两个：① 扫的是**成文 + 补足合并后**的全文（不是 harness 单次 job 的 output）；
 //            ② 三种口径（命中 / 通过 / 不可用）要分别说得出口，不能含糊成一句"完成"。
@@ -3081,6 +3242,55 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   sandbox.directAIWrite = savedDirect;
   sandbox.applyAIWritingArticle = savedApply;
   sandbox.AbortController = savedAbort;
+}
+
+// --- 15b) 回归（2026-10-01 实测缺陷）：取回生成稿必须把**纯文本**转成段落 HTML ---
+// 现场：AI 成文的草稿是以纯文本（`\n\n` 分段，无任何 <p>）落库的，而「取回生成稿」把草稿原文
+// 直接 POST 给 /novel/chapter_save，于是正文被写成一整段 —— 浏览器把 147 处换行全部折叠，
+// 作者看到的就是"取回正文后没有重新排版"（第一章走 AI 结果应用那条路却排版正常，差别就在这次转换）。
+{
+  const savedApi = sandbox.api;
+  const savedToast = sandbox.toast;
+  const savedConfirm = sandbox.confirm;
+  const savedDraft = P.state.chapterDraft;
+  const savedChapterId = P.state.currentChapterId;
+  const savedChapters = P.state.chapters;
+
+  const plainDraft = '第一段正文。\n\n第二段正文，带一个行内换行。\n这里接上一行。\n\n第三段正文。';
+  const posts = [];
+  sandbox.api = async (p, o = {}) => {
+    if (String(p) === '/novel/chapter_save') { posts.push(o && o.body); return { ok: true, version_id: 9 }; }
+    return savedApi(p, o);
+  };
+  sandbox.toast = () => {};
+  sandbox.confirm = () => true; // 取回前会问"覆盖当前正文吗"，测试里直接确认
+  P.state.currentChapterId = 107;
+  P.state.chapters = [{ id: 107, title: '第107章', content: '' }];
+  P.state.chapterDraft = { chapter_id: 107, chars: plainDraft.length, content: plainDraft };
+
+  let restoreErr = '';
+  try { await P.restoreChapterDraft(); } catch (e) { restoreErr = e.message; }
+  const body = posts[0] || {};
+  check('115f 取回生成稿时把纯文本草稿转成段落 HTML（<p> 齐备，不再是裸换行）',
+    !restoreErr && String(body.content || '').includes('<p>第一段正文。</p>') && String(body.content || '').includes('<p>第三段正文。</p>'),
+    `err=${restoreErr} content=${JSON.stringify(String(body.content || '').slice(0, 90))}`);
+  check('115g 段落内的单换行保留为 <br>（不被压平、也不被拆成两段）',
+    String(body.content || '').includes('带一个行内换行。<br>这里接上一行。'),
+    JSON.stringify(String(body.content || '').slice(0, 160)));
+  check('115h 已经是 HTML 的草稿原样写回（不二次包装）',
+    await (async () => {
+      posts.length = 0;
+      P.state.chapterDraft = { chapter_id: 107, chars: 4, content: '<p>已是 HTML。</p>' };
+      try { await P.restoreChapterDraft(); } catch (_) { return false; }
+      return String((posts[0] || {}).content || '') === '<p>已是 HTML。</p>';
+    })());
+
+  sandbox.api = savedApi;
+  sandbox.toast = savedToast;
+  sandbox.confirm = savedConfirm;
+  P.state.chapterDraft = savedDraft;
+  P.state.currentChapterId = savedChapterId;
+  P.state.chapters = savedChapters;
 }
 
 // --- 16) 「模型正在思考」相位：把长时间思考从"像卡死"变成看得见的进展 ---

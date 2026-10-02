@@ -162,7 +162,7 @@ try {
   ok('B1 准备：作品 + 三章（前两章有正文，第三章还没写）+ 角色', !!(workId && c1 && c2 && c3 && characterId));
 
   const overview0 = await jfetch(`/api/novel/story_state?work_id=${workId}`);
-  ok('B2 既有能力先证明可用：状态总览默认关闭且可显式打开', overview0.status === 200 && overview0.data.enabled === false);
+  ok('B2 新作品默认启用、且仍可由作者显式切换', overview0.status === 200 && overview0.data.enabled === true);
   await jfetch('/api/novel/story_state', { method: 'PUT', body: { work_id: workId, enabled: true, note: '披露测试' } });
   const hashBefore = (await jfetch(`/api/novel/story_state?work_id=${workId}`)).data.state_hash;
 

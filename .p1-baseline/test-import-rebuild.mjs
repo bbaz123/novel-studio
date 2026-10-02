@@ -165,7 +165,9 @@ process.on('exit', cleanup);
 
 server = spawn(process.execPath, ['server.js'], {
   cwd: REPO,
-  env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: DATA_DIR, NOVELSTUDIO_OV_DISABLED: '1' },
+  // 固定 X-Novel-Agent 头默认不再构成模型身份（见 server.js 的 isAgentRequest）；
+  // 本测试要断言"模型侧不得确认重建结果"，因此显式打开旧头兼容开关。
+  env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: DATA_DIR, NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 server.stdout.on('data', (c) => { serverLog += c; });

@@ -49,3 +49,9 @@ desktop.ini
 vendor/**/*.part
 
 pnpm-lock.yaml
+
+# 一次性修复前的文件备份（fix-backup-<时间戳>/）：只是"改动前长什么样"的副本。
+# 这些文件的内容在 git 历史里本来就有（提交前的那一版），属于本地回滚材料而非资产。
+# 与 .gitignore 顶部 data/ 同源理由：新工具引入新产物时，忽略清单必须跟上，
+# 否则一次 `git add -A` 就会把本地备份目录也推上公开仓库。
+.p1-baseline/fix-backup-*/

@@ -87,13 +87,22 @@ export function orderVersionJsonOf(order) {
   return { version: 1, chapters: order.chapters, scenes: order.scenes };
 }
 
-/** 取（必要时创建）当前章序版本；顺序未变则复用既有版本（幂等，不重复建行）。 */
-export function ensureOrderVersion(workId) {
+/**
+ * 取（必要时创建）当前章序版本；顺序未变则复用既有版本（幂等，不重复建行）。
+ *
+ * `force:true`：**即使顺序没变也落一个新版本**。用途只有一个——P1-12 的章序变化检测：
+ *   "写前取一次版本核心 → 写后再 force 落版本 → 两段逐位比较"。
+ *   不 force 的话，重排后若内容恰好在别处触发了 `ensureOrderVersion`，写后取到的仍是旧行，
+ *   检测就会**漏报**（而漏报的后果是下游状态静默错位）。
+ *   反之 force 也不会造成重复行：`id = 'ord_' + sha16(workId|orderHash)` 是内容寻址，
+ *   且 INSERT OR REPLACE —— 同一份章序只会有一行。
+ */
+export function ensureOrderVersion(workId, { force = false } = {}) {
   const w = Number(workId) || 0;
   const order = listOrder(w);
   const core = { chapters: order.chapters, scenes: order.scenes };
   const latest = prep('SELECT * FROM story_chapter_order_versions WHERE work_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(w);
-  if (latest) {
+  if (latest && !force) {
     let prevCore = null;
     try { prevCore = JSON.parse(latest.order_json); } catch { prevCore = null; }
     if (prevCore && sameOrder({ chapters: prevCore.chapters || [], scenes: prevCore.scenes || {} }, core)) {

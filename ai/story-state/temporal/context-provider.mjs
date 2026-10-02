@@ -20,6 +20,8 @@ import { stateAt, resolveCommit } from './history.mjs';
 import { orderOfCommit } from './worldline-store.mjs';
 import { getTemporalConfig } from './config.mjs';
 import { domainViewsOf, relationViewsOf, plotlineViewsOf, characterViewsOf, stateEntries } from './projection.mjs';
+import { readContract } from '../store.mjs';
+import { renderContractSection } from '../contract.mjs';
 import { latestSaveProposalBinding, pendingSaveNewerThan } from './event-store.mjs';
 import { getRevision } from './revision-store.mjs';
 
@@ -336,6 +338,18 @@ export function buildTemporalStoryStateLayer({ cursor, maxPerSection = 12 } = {}
   push('读者披露', v.disclosure.map((d) => `- ${d.entity_id}：${line(typeof d.value === 'object' ? JSON.stringify(d.value) : d.value, 120)}`));
   push('其它事实（地点/势力/物品/任务/承诺/目标/世界事实）', v.world_facts.map((f) => `- [${f.domain}] ${f.entity_id}${f.predicate && f.predicate !== 'state' ? `（${f.predicate}）` : ''}：${line(typeof f.value === 'object' ? JSON.stringify(f.value) : f.value, 120)}`));
   push('作者计划（未发生，禁止写入正文）', v.author_plan.map((p) => `- [${p.domain}] ${p.entity_id}${p.predicate && p.predicate !== 'state' ? `（${p.predicate}）` : ''}：${line(typeof p.value === 'object' ? JSON.stringify(p.value) : p.value, 120)}`));
+  // ── P1-06：本章契约必须回到这一层 ────────────────────────────────────────────
+  // 旧实现的坑：时态引擎**整层替换**了 story_state 的渲染（server.js 的 temporal 分支
+  // 一旦产出 text，非时态分支的 storyStateLayerOf 就再也不会执行），而「本章契约」
+  // 只在 storyStateLayerOf 里渲染（renderContractSection 的**唯一**调用点）。
+  // 后果是"越用越少"：作者打开时态引擎后，本章契约与硬约束从提示词里静默消失，
+  // 而层标签、PROVENANCE.reason 与两份契约文档仍声称这一层包含契约。
+  // 现在把契约块作为与引擎无关的追加项渲染在这里（读契约是只读操作，不违反本模块纪律①）。
+  const contractRow = cursor.chapter_id ? readContract(cursor.chapter_id) : null;
+  const contractText = contractRow ? renderContractSection(contractRow, { includeStyle: false }) : '';
+  if (contractText) {
+    sections.push(`【本章契约（本章必须/不得包含）】\n${contractText}`);
+  }
   const text = sections.join('\n');
   const counts = {
     characters: v.characters.length, relations: v.relations.length, plotlines: v.plotlines.length,

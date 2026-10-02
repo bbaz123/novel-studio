@@ -156,6 +156,9 @@ const server = spawn(process.execPath, ['server.js'], {
     OPENVIKING_API_KEY: '',
     OPENVIKING_BEARER_TOKEN: '',
     NOVELSTUDIO_OPENVIKING_PEER_ID: 'direction-retrieval-test',
+    // 固定 X-Novel-Agent 头默认不再构成模型身份（见 server.js 的 isAgentRequest）；
+    // 本测试含"模型侧不得绕过装配"类断言，因此显式打开旧头兼容开关。
+    NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });

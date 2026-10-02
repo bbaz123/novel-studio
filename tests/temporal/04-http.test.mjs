@@ -3,7 +3,7 @@
  * tests/temporal/04-http.test.mjs —— 时态故事状态 HTTP 端到端（生产路由接线证据，零计费）。
  *
  * 为什么单列：01–03 证明领域与存储；本套件只证明**真实 HTTP 路由**确实接上了 service：
- *   H1  新作品默认关闭；总览可读、schema 自检通过
+ *   H1  新作品的 temporal 引擎默认关闭（Story State 基础开关与 temporal 分离）；总览可读、schema 自检通过
  *   H2  未开启作品：/at 返回 enabled:false（不写一行、不报错）
  *   H3  模型通道（X-Novel-Agent）不能开开关 / 不能确认状态（403）
  *   H4  作者可开启（temporal_enabled / auto_analysis_enabled / repair_enabled）
@@ -54,18 +54,19 @@ async function main() {
   }
   const c = chapters;
   try {
-    // ── H1 默认关闭 + 总览 ────────────────────────────────────────────────
-    console.log('【H1 默认关闭与总览】');
+    // ── H1 temporal 引擎默认关闭 + 总览 ────────────────────────────────────
+    console.log('【H1 temporal 默认关闭与总览】');
     {
       const s = await api('GET', `/api/novel/state/temporal?work_id=${workId}`);
-      ok('H1a 总览可读且默认关闭', s.status === 200 && s.json.config && s.json.config.enabled === false, `status=${s.status} enabled=${s.json?.config?.enabled}`);
+      ok('H1a 总览可读且 temporal 默认关闭（与基础 Story State 分离）', s.status === 200 && s.json.config && s.json.config.enabled === false, `status=${s.status} enabled=${s.json?.config?.enabled}`);
       ok('H1b 引擎 schema 自检通过（11 张表齐全）', s.json.schema_ok === true, (s.json.missing_tables || []).join(','));
-      ok('H1c 未开启时没有 HEAD / 没有提交', s.json.head_commit_id === null, String(s.json.head_commit_id));
+      ok('H1c 新作品尚未保存正文时没有 HEAD / 没有提交', s.json.head_commit_id === null, String(s.json.head_commit_id));
     }
 
-    // ── H2 未开启作品的时间线查询 ─────────────────────────────────────────
-    console.log('【H2 未开启作品：零写入、零副作用】');
+    // ── H2 作者显式关闭后的时间线查询 ─────────────────────────────────────
+    console.log('【H2 显式关闭作品：零写入、零副作用】');
     {
+      await api('PUT', '/api/novel/state/temporal', { work_id: workId, temporal_enabled: false });
       const at = await api('GET', `/api/novel/state/at?work_id=${workId}&chapter_id=${c[4]}`);
       ok('H2a /at 返回 enabled:false（不是报错、也不是空状态冒充）', at.status === 200 && at.json.enabled === false, `status=${at.status} ${at.text.slice(0, 120)}`);
       const panel = await api('GET', `/api/novel/state/panel?work_id=${workId}&chapter_id=${c[4]}`);
@@ -170,6 +171,64 @@ async function main() {
       ok('H8e 下游第 6 章被标 stale（先分析、不自动改写）', c6.json.validity === 'stale' || (c6.json.stop && c6.json.stop.reason === 'stale'), `validity=${c6.json.validity} stop=${JSON.stringify(c6.json.stop)}`);
     }
 
+    // ── H10 章序重排 → 下游失效（P1-12 回归）─────────────────────────────
+    // 背景：earliestOrderDifference 与 markDownstreamStale 都已实现，但旧实现里
+    // **没有任何生产调用点**——重排后新提交引用新章序，而所有下游 binding 仍是 valid，
+    // 于是第 40 章之后的状态与历史静默错位，作者看不到告警。
+    // 双向断言：① 章序真的变了 → 必须被标失效并留下 order_changed_invalidation 日志；
+    //          ② 普通正文保存（顺序没变）→ **不得**产生该日志（防误标）。
+    console.log('【H10 章序重排触发下游失效（P1-12）】');
+    {
+      const logsOf = async (kind) => {
+        const r = await api('GET', `/api/logs?kind=${encodeURIComponent(kind)}&limit=200`);
+        const rows = (r.json && (r.json.entries || r.json.logs || r.json.rows)) || [];
+        return rows.filter((x) => String(x.kind || '') === kind);
+      };
+      // ⚠️ 为什么用**负** position：本作既有章节全部是 `position=0`（`RESOURCE_CONFIG.chapters`
+      // 的 `defaults.position = 0`，测试建章时不传 position），排序实际退化为"同值按 id"。
+      // 因此把临时章的 position 设成 0 或 1 **都不会真正改变章序**（我在这里连踩两次红）。
+      // 用严格小于 0 的值才能把它排到全部既有章节之前，从而构成一次真实的重排。
+      const cA = Number((await api('POST', '/api/chapters', { work_id: workId, title: '重排甲', content: '<p>甲</p>', position: -2 })).json.id);
+      const cB = Number((await api('POST', '/api/chapters', { work_id: workId, title: '重排乙', content: '<p>乙</p>', position: -1 })).json.id);
+      ok('H10a 造出两章临时章节（前置条件成立）', !!cA && !!cB, `cA=${cA} cB=${cB}`);
+
+      const beforeSave = (await logsOf('order_changed_invalidation')).length;
+      const normalSave = await api('PUT', `/api/chapters/${cA}`, { content: '<p>甲（只改正文，不动位置）</p>' });
+      ok('H10b 普通正文保存成功', normalSave.status === 200, `status=${normalSave.status}`);
+      ok('H10c 普通保存**不**触发章序失效（阴性对照：不得误标）',
+        (await logsOf('order_changed_invalidation')).length === beforeSave,
+        `before=${beforeSave} after=${(await logsOf('order_changed_invalidation')).length}`);
+
+      const beforeMove = (await logsOf('order_changed_invalidation')).length;
+      // ⚠️ 四次踩坑记录（**全部是用例编排问题**，不是产品缺陷；留档免得下次重犯）：
+      //   ① 排序键是 `(position ASC, id ASC)`：把 B 移到与 A **相同**的 position 不会换位（同值比 id）；
+      //   ② 本作既有 10 章的 position **全是 0**（CRUD `defaults.position = 0`，测试建章不传 position），
+      //      所以"把某章移到 0"等于没动——必须用**严格小于 0** 的值；
+      //   ③ 我先给 A/B 用了 position 1/2，于是即便把 B 移到 899 也只是把它推到**最后**，顺序仍不变；
+      //   ④ 结论：**要让"变了"这件事可证，就得让两章之间存在可被跨过的距离**——
+      //      这里用 A=-2、B=-1，再把 **B 提到 -3**，B 就会越过 A 成为第一位。
+      const moved = await api('PUT', `/api/chapters/${cB}`, { position: -3 });
+      ok('H10d 改位置成功', moved.status === 200, `status=${moved.status}`);
+      const rows = await logsOf('order_changed_invalidation');
+      ok('H10e 章序变化**必须**留下 order_changed_invalidation 日志（P1-12）',
+        rows.length === beforeMove + 1,
+        `before=${beforeMove} after=${rows.length} msgs=${JSON.stringify(rows.map((r) => String(r.message || '').slice(0, 60))).slice(0, 300)}`);
+      // ⚠️ /api/logs 按 id DESC 返回：**最新的一条是 rows[0]**，不是最后一条。
+      // 且它的 `context` 是**字符串**（app_logs.context 列），要自己 parse——我第一次就栽在
+      // "以为服务端已 parse 成对象"，于是 ctx 恒为空对象、断言恒红。
+      const last = rows[0] || {};
+      let ctx = last.context;
+      if (typeof ctx === 'string') { try { ctx = JSON.parse(ctx); } catch { ctx = {}; } }
+      ctx = ctx && typeof ctx === 'object' ? ctx : {};
+      ok('H10f 日志指明最早差异章与来源（本次是乙章被提到第一位）',
+        Number(ctx.new_chapter_id) === cA || Number(ctx.chapter_id) === cA || Number(ctx.at_index) === 0,
+        `ctx=${JSON.stringify(ctx).slice(0, 200)}`);
+
+      const del = await api('DELETE', `/api/chapters/${cB}`);
+      ok('H10g 删章同样被检测（删后不再校验内容，只确认接口正常）', del.status === 200, `status=${del.status}`);
+      await api('DELETE', `/api/chapters/${cA}`);
+    }
+
     // ── H9 参数与归属校验 ────────────────────────────────────────────────
     console.log('【H9 参数与归属校验】');
     {
@@ -189,4 +248,3 @@ async function main() {
 }
 
 main().catch((e) => { console.error('测试异常：', e); process.exit(1); });
-

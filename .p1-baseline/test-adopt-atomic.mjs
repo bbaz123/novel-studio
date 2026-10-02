@@ -85,6 +85,8 @@ async function startServer() {
     env: {
       ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: DATA_DIR,
       NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_OPENVIKING_PEER_ID: 'enh-adopt-test',
+      // 见 test-approval-boundary.mjs 的同名说明：固定 X-Novel-Agent 头默认不再构成模型身份。
+      NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

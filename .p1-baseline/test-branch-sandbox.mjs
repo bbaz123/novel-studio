@@ -139,7 +139,9 @@ const goodCandidate = (over = {}) => ({
 // ══════════════════ 隔离实例 ══════════════════
 const server = spawn(process.execPath, ['server.js'], {
   cwd: REPO,
-  env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: DATA_DIR, NOVELSTUDIO_OV_DISABLED: '1' },
+  // 固定 X-Novel-Agent 头默认不再构成模型身份（见 server.js 的 isAgentRequest）；
+  // 本测试含"模型侧采纳只写蓝图/被拒"类断言，因此显式打开旧头兼容开关。
+  env: { ...process.env, PORT: String(PORT), NOVELSTUDIO_DATA_DIR: DATA_DIR, NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';

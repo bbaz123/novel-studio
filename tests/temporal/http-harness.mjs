@@ -135,7 +135,7 @@ export async function startIsolatedServer({ tag = 'temporal-http', env = {} } = 
   const dataDir = mkdtempSync(path.join(tmpdir(), `ns-${tag}-`));
   const child = spawn(process.execPath, [path.join(REPO, 'server.js')], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(port), NOVELSTUDIO_DATA_DIR: dataDir, NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_OPENVIKING_PEER_ID: `ci-${tag}`, ...env },
+    env: { ...process.env, PORT: String(port), NOVELSTUDIO_DATA_DIR: dataDir, NOVELSTUDIO_OV_DISABLED: '1', NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1', NOVELSTUDIO_OPENVIKING_PEER_ID: `ci-${tag}`, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';

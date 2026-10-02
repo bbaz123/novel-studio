@@ -18,6 +18,14 @@ export const db = new DatabaseSync(join(dataDir, 'novel.db'));
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA busy_timeout = 5000;');
+// 启动自检：损坏库不得带病进入可写服务；调用方应先从备份恢复。
+try {
+  const check = db.prepare('PRAGMA quick_check').get();
+  const verdict = String(check?.quick_check || check?.integrity_check || '').toLowerCase();
+  if (verdict !== 'ok') throw new Error(`SQLite quick_check 未通过：${verdict || 'unknown'}`);
+} catch (e) {
+  throw new Error(`数据库完整性自检失败，已拒绝启动写入：${e.message}`);
+}
 
 // ── 深度感知事务原语（2026-09-27，R03）──────────────────────────────────────
 // 为什么放在 db.js：宿主（server.js）与故事状态内核（ai/story-state/store.mjs）都要开事务，
@@ -184,6 +192,20 @@ CREATE TABLE IF NOT EXISTS story_memories (
   work_id INTEGER NOT NULL UNIQUE REFERENCES works(id) ON DELETE CASCADE,
   summary TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- 分段长期记忆：旧 story_memories.summary 保留兼容；段记录提供可追溯的章节窗口。
+CREATE TABLE IF NOT EXISTS story_memory_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  from_chapter INTEGER NOT NULL,
+  to_chapter INTEGER NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  revision INTEGER NOT NULL DEFAULT 1,
+  source_chapter_ids TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(work_id, from_chapter, to_chapter)
 );
 
 CREATE TABLE IF NOT EXISTS plotline_characters (
@@ -1291,6 +1313,7 @@ CREATE INDEX IF NOT EXISTS idx_story_events_work ON story_events(work_id, create
 CREATE INDEX IF NOT EXISTS idx_story_events_chapter ON story_events(chapter_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_story_events_dedup ON story_events(work_id, dedup_key);
 CREATE INDEX IF NOT EXISTS idx_memory_versions_work ON memory_versions(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_story_memory_segments_work ON story_memory_segments(work_id, from_chapter, to_chapter);
 CREATE INDEX IF NOT EXISTS idx_writing_redlines_work ON writing_redlines(work_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_event_proposals_work ON story_event_proposals(work_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_proposals_work ON story_memory_proposals(work_id, status, created_at DESC);

@@ -246,13 +246,53 @@ function consoleEcho(record, where) {
  *   remote  true 表示来自远端上报：使用 entry 给定的 code_file/code_line/code_func/stack，不再解析服务端调用栈
  *   dedupMs 去重窗口（默认 10s；同 layer+kind+message 内只记一条）
  */
+/**
+ * 日志脱敏（P2-11）。
+ *
+ * 为什么要有它：logger 是**全项目唯一的落库出口**（`app_logs`），而调用方习惯把
+ * `context` 原样塞进来（含 URL query、请求体摘要、外部服务回包）。此前没有任何一层
+ * 做脱敏 —— 一旦某条链路把 `api_key` / `token` / `authorization` 带进 query 或 context，
+ * 它就会**永久留在库里**，而这台机器的库是要跟着作品一起备份的。
+ *
+ * 两条纪律：
+ *   · 只改**看起来像凭证**的值，其余原样保留（日志的可诊断性优先）；
+ *   · 递归但**有深度上限**，避免把大对象走成性能问题。
+ */
+const SECRET_KEY_RE = /(api[_-]?key|apikey|token|bearer|authorization|secret|password|passwd|credential|cookie)/i;
+const SECRET_VALUE_RE = /\b(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.)/g;
+export const REDACTED = '[REDACTED]';
+export function redactText(v) {
+  const s = String(v == null ? '' : v);
+  return s.replace(SECRET_VALUE_RE, REDACTED);
+}
+export function redactValue(v, key = '', depth = 0) {
+  if (v == null) return v;
+  if (typeof v === 'string') {
+    if (SECRET_KEY_RE.test(key) && v) return REDACTED;
+    return redactText(v);
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') return v;
+  if (depth >= 4) return '[depth-limit]';
+  if (Array.isArray(v)) return v.slice(0, 50).map((x) => redactValue(x, key, depth + 1));
+  if (typeof v === 'object') {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k] = redactValue(val, k, depth + 1);
+    return out;
+  }
+  return redactText(v);
+}
+export function redactContext(context) {
+  if (!context || typeof context !== 'object') return context || {};
+  return redactValue(context, '', 0);
+}
+
 export function log(entry = {}) {
   try {
     const level = LEVELS.includes(entry.level) ? entry.level : 'info';
     const layer = LAYERS.includes(entry.layer) ? entry.layer : 'server';
     const kind = String(entry.kind || 'event').slice(0, 40);
-    const message = String(entry.message ?? '').slice(0, 4000);
-    const context = (entry.context && typeof entry.context === 'object') ? entry.context : {};
+    const message = redactText(String(entry.message ?? '')).slice(0, 4000);
+    const context = redactContext((entry.context && typeof entry.context === 'object') ? entry.context : {});
 
     // 防刷屏：同 layer+kind+message 在 dedup 窗口内只记第一条。
     const dedupKey = `${layer}|${level}|${kind}|${message.slice(0, 160)}`;

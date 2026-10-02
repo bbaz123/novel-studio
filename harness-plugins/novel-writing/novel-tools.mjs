@@ -63,7 +63,12 @@ export function apply(ctx, config) {
           method: options.method || 'GET',
           // X-Novel-Agent：声明"这是模型侧通道"。宿主据此要求写入类操作引用作者审批
           // （R02.2）。作者界面（浏览器同源）不带该标记，语义不变。
-          headers: { 'content-type': 'application/json', 'X-Novel-Agent': '1' },
+          // 模型侧身份由宿主进程随机令牌证明；固定布尔头只作为兼容字段，不再是信任根。
+          headers: {
+            'content-type': 'application/json',
+            'X-Novel-Agent': '1',
+            ...(process.env.NOVELSTUDIO_AGENT_TOKEN ? { 'X-Novel-Agent-Token': process.env.NOVELSTUDIO_AGENT_TOKEN } : {})
+          },
           body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
           signal: AbortSignal.timeout(options.timeout || 25000),
         })

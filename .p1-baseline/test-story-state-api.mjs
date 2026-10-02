@@ -7,7 +7,7 @@
  * 只有对着真库、真 HTTP 才能证明。
  *
  * 覆盖：
- *   S1  开关：新作品默认**关闭**（未开启时上下文里不存在 story_state 层）
+ *   S1  开关：新作品默认**开启**（旧作品可保持关闭）
  *   S2  开关打开后上下文出现 story_state 层，且层内容含契约/正典
  *   S3  契约：版本递增、哈希变化、历史版本可查
  *   S4  提案：登记不写状态 → 应用才写；结论明确（applied / stale）
@@ -17,7 +17,7 @@
  *   S8  写后校验：缺必需节拍 → fail；有 unknown 也不算通过
  *   S9  伏笔派生九态：逾期 / 错误回收
  *   S10 实体别名：改名后旧名仍可解析；称呼碰撞被报出
- *   S11 未开启的作品：预检/校验接口**不运行**，且返回 enabled:false 而不是报错
+ *   S11 显式关闭的旧兼容作品：预检/校验接口**不运行**，且返回 enabled:false 而不是报错
  *   S12 开关关闭后上下文回到接入前的层构成（层数不变）
  *
  * 用法: node .p1-baseline/test-story-state-api.mjs --base http://127.0.0.1:3739
@@ -62,26 +62,25 @@ async function main() {
   }
   const [c1, c2, c3, c4] = chapters;
 
-  // ── S1 默认关闭 ─────────────────────────────────────────────────────────
-  console.log('【S1 开关默认关闭】');
+  // ── S1 新作品默认开启 ───────────────────────────────────────────────────
+  console.log('【S1 新作品默认开启】');
   {
     const s = await api('GET', `/api/novel/story_state?work_id=${workId}`);
-    ok('S1a 状态总览可读且默认关闭', s.status === 200 && s.json.enabled === false, `status=${s.status} enabled=${s.json?.enabled}`);
+    ok('S1a 状态总览可读且默认开启', s.status === 200 && s.json.enabled === true, `status=${s.status} enabled=${s.json?.enabled}`);
     ok('S1b 总览带相位/伏笔状态/冲突分级词表', Array.isArray(s.json.phases) && s.json.phases.length === 18
       && s.json.foreshadow_states.length === 9 && s.json.conflict_levels.length === 5,
       `phases=${s.json?.phases?.length} fstate=${s.json?.foreshadow_states?.length} levels=${s.json?.conflict_levels?.length}`);
 
     const ctx = await api('GET', `/api/novel/context?work_id=${workId}&chapter_id=${c1}&mode=full`);
     const ids = (ctx.json.context_manifest || []).map((m) => m.id);
-    ok('S1c 未开启时上下文里没有 story_state 层', !ids.includes('story_state'), ids.join(','));
-    ok('S1d 未开启时也不把它列进 excluded（不属于这套层）',
-      !(ctx.json.context_envelope?.excluded || []).some((e) => e.id === 'story_state'));
-    ok('S1e story_state 字段为 null（附加字段，旧消费方不受影响）', ctx.json.story_state === null, String(ctx.json.story_state));
+    ok('S1c 新作品上下文默认含 story_state 层', ids.includes('story_state'), ids.join(','));
+    ok('S1d story_state 层带溯源元数据', !!ctx.json.context_manifest?.find((m) => m.id === 'story_state')?.source);
+    ok('S1e story_state 字段已下发', !!ctx.json.story_state, String(ctx.json.story_state));
   }
 
-  // ── 打开开关（后续写入类断言都需要它；S1 已证明默认是关的）─────────────
+  // ── 开关显式确认（后续写入类断言继续覆盖作者路径）─────────────
   const turnOn = await api('PUT', '/api/novel/story_state', { work_id: workId, enabled: true, note: '测试开启' });
-  ok('S1f 开关可显式打开（由作者决定，不默认生效）', turnOn.status === 200 && turnOn.json.enabled === true);
+  ok('S1f 开关可由作者显式保持开启', turnOn.status === 200 && turnOn.json.enabled === true);
 
   // ── S3 契约 ─────────────────────────────────────────────────────────────
   console.log('【S3 章节契约】');
@@ -403,6 +402,8 @@ async function main() {
     const w2 = await api('POST', '/api/works', { title: '状态内核测试·未开启' });
     cleanup.works.push(w2.json.id);
     const c = await api('POST', '/api/chapters', { work_id: w2.json.id, title: '第1章', content: '' });
+    // 模拟升级前的存量作品：作者尚未显式开启，因此保持兼容关闭语义。
+    await api('PUT', '/api/novel/story_state', { work_id: w2.json.id, enabled: false, note: '兼容旧作品' });
     const pf = await api('POST', '/api/novel/state/preflight', { work_id: w2.json.id, chapter_id: c.json.id });
     ok('S11a 未开启时预检返回 enabled:false（不报错、不算风险）',
       pf.status === 200 && pf.json.enabled === false && pf.json.risks.length === 0, JSON.stringify(pf.json).slice(0, 160));

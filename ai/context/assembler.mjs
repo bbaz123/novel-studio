@@ -56,16 +56,24 @@ export function renderSection(label, text, cap, options = {}) {
  * 渲染选项：把该层在 RETRIEVAL 里声明的查回工具带进截断提示语，
  * 让模型看到的是**真实可用**的工具名——早先提示语写死 novel_lookup，
  * 而它覆盖不到长期记忆与事件账本，等于让模型去查一个查不到的地方。
+ *
+ * ⚠️ P1-07：工具可用性取决于**通道**，不取决于层的声明。
+ * 直连通道（`/api/ai/*`）的请求体里没有 `tools` 字段，模型根本调不了任何工具；
+ * 但 `assembled` 是两条通道共用的同一段文本，于是直连通道上的截断提示语会指示模型
+ * 去调用一个它在这个通道里不存在的工具（`layers.mjs:32` 的"没有查回路径"分支被跳过）。
+ * 现在：调用方按通道能力传 `tools: false`，装配器据此**如实**降级提示语。
  */
-function renderOptionsOf(layerId) {
+function renderOptionsOf(layerId, opts = {}) {
   const decl = RETRIEVAL[layerId];
-  return { retrievalTool: (decl && decl.tool) || '' };
+  const toolsAvailable = opts.toolsAvailable !== false;
+  return { retrievalTool: toolsAvailable ? ((decl && decl.tool) || '') : '' };
 }
 
 export function assemble(layers, options = {}) {
   const mode = options.mode || 'full';  const budget = options.totalBudget ?? (mode === 'settings' ? TOTAL_BUDGET.settings : TOTAL_BUDGET.default);
   const flexOrder = options.flexOrder || FLEX_ORDER;
   const flexCaps = options.flexCaps || FLEX_CAPS;
+  const renderOpts = { toolsAvailable: options.toolsAvailable !== false };
 
   // 过滤空层（与旧实现的 .filter(Boolean) 一致），保持数组下标与层一一对应
   const rows = layers.filter(Boolean).map((l) => ({
@@ -81,7 +89,7 @@ export function assemble(layers, options = {}) {
     scores: l.scores && typeof l.scores === 'object' ? l.scores : null,
     note: typeof l.note === 'string' ? l.note : '',
   }));
-  for (const r of rows) r.section = renderSection(r.label, r.text, r.cap, renderOptionsOf(r.id));
+  for (const r of rows) r.section = renderSection(r.label, r.text, r.cap, renderOptionsOf(r.id, renderOpts));
 
   const sections = rows.map((r) => r.section.text);
   let joined = sections.join('\n\n');
@@ -96,11 +104,14 @@ export function assemble(layers, options = {}) {
       if (idx < 0) continue;
       for (const cap of flexCaps) {
         if (joined.length <= budget) break;
-        rows[idx].section = renderSection(rows[idx].label, rows[idx].text, cap, renderOptionsOf(rows[idx].id));
+        // 收缩档位只能缩小声明 cap；不得因 mode/调用方传入更大的 flex cap 而越过层规格。
+        const declaredCap = Number.isFinite(rows[idx].cap) ? rows[idx].cap : Infinity;
+        const appliedCap = Math.min(Number(cap), declaredCap);
+        rows[idx].section = renderSection(rows[idx].label, rows[idx].text, appliedCap, renderOptionsOf(rows[idx].id, renderOpts));
         rows[idx].shrunk = true; // 记录「被收敛循环压过」——与「被自身 cap 截断」是两件事
         sections[idx] = rows[idx].section.text;
         joined = sections.join('\n\n');
-        shrinkLog.push({ id: rows[idx].id, appliedCap: cap, totalAfter: joined.length });
+        shrinkLog.push({ id: rows[idx].id, appliedCap, declaredCap: Number.isFinite(declaredCap) ? declaredCap : null, totalAfter: joined.length });
       }
     }
   }

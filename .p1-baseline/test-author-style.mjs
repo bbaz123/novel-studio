@@ -185,6 +185,9 @@ const server = spawn(process.execPath, ['server.js'], {
     PORT: String(PORT),
     NOVELSTUDIO_DATA_DIR: DATA_DIR,
     NOVELSTUDIO_OV_DISABLED: '1', // 本测试只验证作者侧数据与门控层
+    // 固定 X-Novel-Agent 头默认不再构成模型身份（见 server.js 的 isAgentRequest）；
+    // 本测试要断言"模型侧不能写样文/档案/意图"，因此显式打开旧头兼容开关。
+    NOVELSTUDIO_ALLOW_LEGACY_AGENT_HEADER: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
