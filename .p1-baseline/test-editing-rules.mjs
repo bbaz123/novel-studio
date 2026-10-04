@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
- * test-editing-rules.mjs —— R07「三档编辑 + 编辑保护规则 + 七项能力 + 题材档」隔离测试（零计费）。
+ * test-editing-rules.mjs —— R07「三档编辑 + 编辑保护规则 + 能力目录 + 题材档」隔离测试（零计费）。
  *
  * 覆盖（任务书 §10.3 的验收判据，逐条落到断言）：
  *   A. 纯模块：目录/版本/hash 稳定；白名单解析（未知 tier/能力/题材如实回报且不采用）；
  *      保护规则在所有档位都在；能力按任务与题材决定是否加载；同一选择 → 同一 hash（确定性）。
  *   B. 请求可见性：打开开关后规则块真的进入 `/api/novel/context` 的 assembled（=目标请求的提示词正文），
  *      关闭后**不进入**（且 assembled 与基线逐字节一致）；R05 贡献记录里有 layer:edit_rules 与内容 hash。
- *   C. 能力逐项 fixture：七项能力各自「启用→进入请求 / 关闭→不进入」；
+ *   C. 能力逐项 fixture：**目录里每一项**能力各自「启用→进入请求 / 关闭→不进入」；
  *      「题材不适用 → 不加载」有明确 decision 原因（genre_not_applicable）。
+ *      ⚠ 这里**不写死能力条数**：条数与名字从 editingRuleCatalog() 派生，`abilityTexts` 必须覆盖目录全部 id
+ *      （C 段自己断言这一点）——2026-10-02 新增三项能力时，硬编码的 7 让三条 C 断言假红且一条漏检。
  *   D. 写入边界：模型侧（X-Novel-Agent）不能改编辑规则开关（403）。
  *   E. 确定性扫描：结构化 finding（规则/位置/摘录/严重性/建议），关闭能力不产生对应 finding。
  *
@@ -51,14 +53,17 @@ const ok = (name, cond, detail = '') => {
 console.log('【A. 规则资产（纯模块）】');
 {
   const catalog = editingRuleCatalog();
-  ok('A1 目录：三档 + 七项能力 + 七题材 + 保护规则，且都带版本/hash',
-    catalog.tiers.length === 3 && catalog.abilities.length === 7 && catalog.genres.length === 7
+  ok('A1 目录：三档 + 七题材 + 保护规则，且都带版本/hash（能力条数不写死，见 A2）',
+    catalog.tiers.length === 3 && catalog.genres.length === 7
+      && catalog.abilities.length === ABILITIES.length && catalog.abilities.length > 0
       && catalog.version === EDITING_RULE_VERSION
       && [...catalog.tiers, ...catalog.abilities, ...catalog.genres, catalog.protection].every((r) => /^[0-9a-f]{16}$/.test(r.hash) && r.version === EDITING_RULE_VERSION),
     JSON.stringify({ tiers: catalog.tiers.length, abilities: catalog.abilities.length, genres: catalog.genres.length }));
-  ok('A2 七项能力 id 与任务书一致（命名自由，能力覆盖不可少）',
+  ok('A2 能力目录覆盖任务书点名的那批（id 命名自由，能力覆盖不可少）',
     ['fiction-humanizer', 'dialogue-editor', 'webnovel-pacing', 'mystery-review', 'romance-review', 'character-voice', 'chapter-hook']
-      .every((id) => catalog.abilities.some((a) => a.id === id)));
+      .every((id) => catalog.abilities.some((a) => a.id === id))
+      && ['narrative-distance', 'scene-logic', 'style-density']
+        .every((id) => catalog.abilities.some((a) => a.id === id)));
   ok('A3 新增能力默认关闭（不改变旧作品既有生成行为）',
     catalog.abilities.every((a) => a.default_enabled === false));
   ok('A4 白名单解析：未知值如实回报且不采用',
@@ -140,8 +145,56 @@ console.log('【E. 确定性扫描（纯模块）】');
   const off = scanEditing(text, { abilities: [], genre: 'general', task: 'review' });
   ok('E7 关闭的能力不产生对应 finding（开关有真实输出差）',
     !ids(off).includes('deterministic:ai-tell') && !ids(off).includes('deterministic:romance-tell')
-      && off.skipped.every((s) => s.reason === 'disabled') && off.skipped.length === 7);
+      && off.skipped.every((s) => s.reason === 'disabled') && off.skipped.length === ABILITIES.length);
   ok('E8 与档位无关的重复检测在关闭能力时仍然工作', ids(off).includes('deterministic:duplicate-paragraph'));
+
+  // ── E9–E14：2026-10-02 第三轮（作者逐句意见）新增的两类「叙述者在场」与场景逻辑判据 ──
+  // 这一组的价值在于钉住"旧规则测不到的那部分"：它们不是用词问题，词表型红线永远不响。
+  const chanceText = [
+    '他原本以为今天早上能讨一个说法。',
+    '他在心里把这句话转了很多遍，转顺了，顺到张嘴就能说出来。',
+    '他想发火。这个年纪遇到这种事，砸个东西也行，骂两句也行。',
+  ].join('\n');
+  const narr = scanEditing(chanceText, { abilities: ['narrative-distance'], genre: 'general', task: 'review' });
+  const narrIds = (r) => r.findings.map((f) => f.rule_id);
+  ok('E9 过程交代（把话磨到能说出口）被逐段定位', narrIds(narr).filter((x) => x === 'deterministic:narrator-distance').length >= 2,
+    JSON.stringify(narr.findings.map((f) => f.message)));
+  ok('E10 叙述者越界（这个年纪遇到这种事）被逐段定位', narr.findings.some((f) => /叙述者越界/.test(f.message)));
+
+  const narrOff = scanEditing(chanceText, { abilities: [], genre: 'general', task: 'review' });
+  ok('E11 narrative-distance 默认关闭时不产生 finding（开关有真实输出差）',
+    !narrIds(narrOff).includes('deterministic:narrator-distance'));
+
+  const clicheText = [
+    '他慢慢点了一下头。',
+    '他慢慢点了一下头。',
+    '“那我现在是什么。”',
+    '“宿主。”',
+  ].join('\n');
+  const den = scanEditing(clicheText, { abilities: ['style-density'], genre: 'general', task: 'review' });
+  ok('E12 同一个过渡动作写两遍 → 报重复（只报密度会漏，本章密度仅 0.2/千字）',
+    den.findings.some((f) => f.rule_id === 'deterministic:gesture-cliche-repeat'));
+
+  const placement = scanEditing([
+    '剑在书包里，和卷子挤在一起。',
+    '剑在书包夹层里，压在最底下。',
+  ].join('\n'), { abilities: ['scene-logic'], genre: 'general', task: 'review' });
+  ok('E13 同一物件的两个方位陈述 → 判为矛盾（零误报口径：只认明确陈述）',
+    placement.findings.some((f) => f.rule_id === 'deterministic:object-placement-conflict'));
+
+  const placementNeg = scanEditing([
+    '侧袋里是水杯和伞。主袋里是卷子和错题本。',
+    '再往里摸。指尖碰到一个硬的东西。',
+    '书包搁在脚边，剑在主袋里，和卷子挤在一起。',
+  ].join('\n'), { abilities: ['scene-logic'], genre: 'general', task: 'review' });
+  ok('E14 动作句（再往里摸）与只有一处方位陈述时**不报**（误报比漏报更伤）',
+    !placementNeg.findings.some((f) => f.rule_id === 'deterministic:object-placement-conflict'));
+
+  const recall = scanEditing([
+    '方的纸，0731。', '短信上是0731检测中心。', '他又看了一遍0731那几个数字。', '纸条上的0731和短信前面那四个一样。',
+  ].join('\n'), { abilities: ['scene-logic'], genre: 'general', task: 'review' });
+  ok('E15 同一编号被反复调出 → detail-recall（首次写足、之后只留关键连接）',
+    recall.findings.some((f) => f.rule_id === 'deterministic:detail-recall'));
 }
 
 // ══════════════════ 隔离实例 ══════════════════
@@ -221,16 +274,27 @@ try {
     JSON.stringify(layerEntry || null));
 
   // ── 逐项能力 fixture：启用/关闭 ──
+  // id → 进入规则块后的能力标题（rules.mjs 里写的是 `【${ability.name}】`）。
+  // ⚠ 这张表必须覆盖 ABILITIES 全量：少一个 id 时 `abilityTexts[id]` 是 undefined，
+  // `String(text).includes(undefined)` 恒为 false，那条 C 断言会以"能力没进块"的假象变红
+  // （2026-10-02 新增三项能力时就发生过，同时 C 段的循环也把它们漏掉了）。
   const abilityTexts = {
     'fiction-humanizer': '能力·去 AI 腔',
+    'narrative-distance': '能力·叙述距离',
+    'scene-logic': '能力·场景逻辑',
     'dialogue-editor': '能力·对白编辑',
     'webnovel-pacing': '能力·网文节奏',
     'mystery-review': '能力·悬疑审视',
     'romance-review': '能力·感情线审视',
     'character-voice': '能力·角色声音',
     'chapter-hook': '能力·章末钩子',
+    'style-density': '能力·结构密度',
   };
-  const reviewOnly = new Set(['mystery-review', 'romance-review']);
+  ok('C0 逐项 fixture 覆盖目录全部能力（少一项就会以"没进块"的假象变红）',
+    ABILITIES.every((a) => typeof abilityTexts[a.id] === 'string') && Object.keys(abilityTexts).length === ABILITIES.length,
+    JSON.stringify({ abilities: ABILITIES.length, fixtures: Object.keys(abilityTexts).length }));
+  // 只挂 review 的能力：C 段必须用 review 任务跑，否则决策是 task_not_applicable（那是 A8 的管辖范围）
+  const reviewOnly = new Set(ABILITIES.filter((a) => !(a.tasks || []).includes('write')).map((a) => a.id));
   for (const ability of ABILITIES) {
     const id = ability.id;
     const task = reviewOnly.has(id) ? 'review' : 'write';

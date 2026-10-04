@@ -198,6 +198,20 @@ export function apply(ctx, config) {
     }).join('\n')
   })
 
+  // ── 「本次是重新规划」标记（2026-10-04）────────────────────────────────────
+  // 由 novel-studio 网页在**规划轮**的 harness 任务上通过 env 注入：NOVEL_OMIT_LAYERS=blueprint。
+  // 它只对这一轮生效：作者点「AI 写作」要求重新规划时，检索类工具也不该把**上一版蓝图**端出来 ——
+  // 否则模型会照着旧计划复述/追问，作者看到的就是"我都点了重新生成，怎么还在讲旧蓝图"
+  // （实测报障，见 docs/blueprint-regenerate-20261004.md）。
+  // 成文轮不带这个标记：那时新蓝图已确认，必须能被查到。
+  const OMIT_LAYERS = String(process.env.NOVEL_OMIT_LAYERS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean)
+  const omitSuffix = () => (OMIT_LAYERS.length ? `&omit_layers=${encodeURIComponent(OMIT_LAYERS.join(','))}` : '')
+  const omitsBlueprint = () => OMIT_LAYERS.includes('blueprint')
+  // 「重写本章」= 标记里带上了"前面发生过什么"那一组层（scene/memory/events/foreshadows/recall）。
+  // 用它来决定检索结果里要不要隐藏章节摘要与记忆库召回（见 novel_lookup 的说明）。
+  const omitsChapterHistory = () => OMIT_LAYERS.some((x) => ['scene', 'memory', 'events', 'foreshadows', 'recall'].includes(x))
+
   register('novel_context', [
     '写作前调用：取指定作品/章节的完整创作上下文（ST 式分层装配，每层有独立预算，超长会注明截断）。',
     '包含：卷/剧情线/章节进度大纲、长期记忆摘要（过长时会标注建议压缩）、最近事件账本、未闭合伏笔、当前场景与前后章衔接、出场角色卡（按相关性评分排序，别名/称呼同样命中，含对话示例与角色系统提示）、人物关系、按优先级激活的世界观词条、写作风格红线。',
@@ -217,7 +231,8 @@ export function apply(ctx, config) {
     }
     const chapterId = envId(args, 'chapter_id')
     const mode = args.mode || process.env.NOVELSTUDIO_MODE || 'full'
-    const ctx = await jfetch(`/api/novel/context${identitySuffix(workId, chapterId, mode)}`)
+    // omitSuffix()：规划轮跳过上一版蓝图层（标记由宿主注入，见文件上方说明）
+    const ctx = await jfetch(`/api/novel/context${identitySuffix(workId, chapterId, mode)}${omitSuffix()}`)
     if (!ctx.ok) throw new Error('novel-studio 返回异常')
     const head = `作品：${ctx.work?.title ?? ''}${ctx.chapter ? `｜当前章节：第${(ctx.chapter?.position ?? -1) + 1}节 ${ctx.chapter?.title ?? ''}` : ''}（mode=${ctx.mode ?? ''}）`
     const body = ctx.assembled || JSON.stringify(ctx)
@@ -263,7 +278,11 @@ export function apply(ctx, config) {
     }
     if (!kind || kind === 'chapter') {
       const chs = pick(data.chapters)
-      if (chs.length) out.push('章节：\n' + chs.map((c) => `- ${c.title}${c.summary ? `：${String(c.summary).slice(0, 120)}` : ''}${blueprintBrief(c.blueprint_json)}`).join('\n'))
+      // 「重写本章」（标记含 scene/memory/events 等）时**整段不返回**：章节标题+摘要就是
+      // "前面发生过什么"，把它端给模型，新规划又会被旧情节拽回去（作者 2026-10-04 的决定）。
+      // 非重写模式下 `omitsBlueprint()` 为假，行为与原来逐字一致。
+      const skipChapterHistory = omitsChapterHistory()
+      if (chs.length && !skipChapterHistory) out.push('章节：\n' + chs.map((c) => `- ${c.title}${c.summary ? `：${String(c.summary).slice(0, 120)}` : ''}${omitsBlueprint() ? '' : blueprintBrief(c.blueprint_json)}`).join('\n'))
     }
     if (!kind || kind === 'plotline') {
       const pls = pick(data.plotlines)
@@ -278,11 +297,17 @@ export function apply(ctx, config) {
       if (rs.length) out.push('人物关系：\n' + rs.map((r) => `- ${r.from_name} —${r.relation || '关系'}→ ${r.to_name}${r.description ? `（${String(r.description).slice(0, 200)}）` : ''}`).join('\n'))
     }
     // 语义检索（OpenViking 共享记忆库）：与关键词结果并列，供查证关键词没覆盖到的相关内容。
+    // 「重写本章」时整段略过：记忆库里存的就是前文与既有设定，那正是本轮要摆脱的东西。
     const sem = Array.isArray(data.semantic?.hits) ? data.semantic.hits.slice(0, 6) : []
-    if (!kind && sem.length) {
+    if (!kind && sem.length && !omitsChapterHistory()) {
       out.push('语义相关（记忆库）：\n' + sem.map((s) => `- 【${s.label}】${s.kind ? `（${s.kind}，相关度 ${s.score}%）` : ''}：${String(s.text || '').slice(0, 200)}`).join('\n'))
     }
-    if (!out.length) return `未检索到与“${query}”相关的内容。`
+    if (!out.length) {
+      // 重写模式下"查不到"是预期结果（本章既有记录被刻意排除），如实说明，别让模型以为工具坏了。
+      return omitsChapterHistory()
+        ? `未检索到与“${query}”相关的内容（本次是「重写本章」：章节既有记录与记忆库召回已被排除，只保留角色/设定/世界观/词条/剧情线）。`
+        : `未检索到与“${query}”相关的内容。`
+    }
     return out.join('\n\n')
   })
 
@@ -1116,7 +1141,7 @@ export function apply(ctx, config) {
       direction,
       direction_source: directionSource,
       library_recall_phase: direction ? 'direction' : undefined,
-    })}`, { timeout: 40000 })
+    })}${omitSuffix()}`, { timeout: 40000 })
     const parts = [
       `【写作简报】作品：${ctx.work?.title ?? ''}${ctx.chapter ? `｜第${(ctx.chapter?.position ?? -1) + 1}节 ${ctx.chapter?.title ?? ''}` : ''}（mode=${ctx.mode ?? mode}）`,
       `确定性故事状态：${info.enabled ? '已开启' : '未开启（本次不注入状态层，也没有预检/校验）'}`,

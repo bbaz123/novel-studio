@@ -1,0 +1,9 @@
+﻿import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync('data/novel.db', { readOnly: true });
+const c = db.prepare('SELECT LENGTH(content) AS n, updated_at FROM chapters WHERE id = 121').get();
+const t = String(db.prepare('SELECT content FROM chapters WHERE id = 121').get().content || '').replace(/<[^>]*>/g, '').replace(/\s+/g, '');
+console.log(`ch121 现状：${c.n} bytes / ${t.length} 字 / updated_at=${c.updated_at}`);
+for (const p of ['转顺了，顺到张嘴就能说出来', '这个年纪遇到这种事', '他慢慢点了一下头', '还记得它落下去的位置', '盖子拧回原来的位置']) {
+  console.log(`  ${t.includes(p.replace(/\s/g,'')) ? '仍在（未改动）' : '已无'}  ${p}`);
+}
+db.close();

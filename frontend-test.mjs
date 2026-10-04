@@ -19,6 +19,20 @@ const check = (name, cond, detail = '') => {
 };
 
 // ---------- 最小 DOM 桩 ----------
+/**
+ * 桩用的"取可见文本"：只做到足够真实的一步——去掉标签、还原常见实体、丢掉注释。
+ * 刻意不追求与浏览器逐字一致（那是真 DOM 的事），但"标签里没有文字、注释不算文字、
+ * `&nbsp;` 是空白"这三件事必须与浏览器一致，否则任何以"可读字符数"为判据的逻辑在测试里都会失真。
+ */
+function htmlToStubText(html) {
+  return String(html == null ? '' : html)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&');
+}
 class El {
   constructor(tag = 'div') {
     this.tagName = String(tag).toUpperCase();
@@ -43,7 +57,13 @@ class El {
     };
   }
   get innerHTML() { return this._html; }
-  set innerHTML(v) { this._html = String(v); }
+  // 桩必须让 innerHTML→textContent 也成立（浏览器里 el.innerHTML='<p>x</p>' 之后 el.textContent 就是 'x'）。
+  // 此前只有反方向成立，于是 stripHtml()（产品里就是"取 textContent"）在桩里恒返回空串 ——
+  // 结果"正文有没有可读字符"这类判据在测试里永远判成空（2026-10-02 空内容护栏的回归用例正是这么假失败的）。
+  set innerHTML(v) {
+    this._html = String(v);
+    this._text = htmlToStubText(this._html);
+  }
   // 桩必须让 textContent 与 innerHTML 互见：浏览器里 el.textContent='x' 之后 innerHTML 就是 'x'。
   // 早先两者各存各的，于是"产品用 textContent 写状态"的路径在断言里永远是空的（假失败/假绿都可能）。
   get textContent() { return this._text || ''; }
@@ -139,7 +159,7 @@ const storage = () => {
 const requests = [];
 // 可切换的桩状态：stale = 模拟「页面是新版、服务进程还是旧代码」→ 新接口一律 404 API not found
 // directEmptyOnce = 模拟实测现象「思考 token 吃光 max_tokens → 空回复」；blueprintAsProse = 模拟模型跳过蓝图直接给正文
-const stub = { stale: false, directEmptyOnce: false, blueprintAsProse: false, editorConflict: false, editorPutBodies: [] };
+const stub = { stale: false, directEmptyOnce: false, blueprintAsProse: false, editorConflict: false, editorPutBodies: [], serverBlocksEmpty: false };
 // R09 桩：作者样文 / 文风档案 / 三级意图。桩也维护"服务端状态"：
 // 这样断言的是"请求真的发出去了、界面用的是服务端回来的数据"，而不是本地状态自说自话。
 const styleStub = {
@@ -374,7 +394,22 @@ const fetchStub = async (url, opts = {}) => {
   const u = String(url);
   let json = {};
   let status = 200;
-  if (stub.editorConflict && u.includes('/api/chapters/107')) {
+  if (stub.serverBlocksEmpty && u.includes('/api/chapters/121')) {
+    // 服务端空正文护栏的契约形状（server.js checkEmptyOverwrite）：409 + 机器可判的 code + 现正文字数。
+    // 桩必须与服务端同形，否则"客户端能不能读懂这个拒绝"这件事在测试里根本发生不了。
+    if ((opts.method || 'GET').toUpperCase() === 'PUT') {
+      const sent = JSON.parse(String(opts.body || '{}'));
+      stub.editorPutBodies.push(sent);
+      if (sent.confirm_empty === true) {
+        json = { id: 121, title: '第三章', content: String(sent.content || ''), summary: '', updated_at: 'after-clear' };
+      } else {
+        json = { error: '本章正文现有 3982 字，这次写入的内容是空的——已拒绝，未改动任何内容。', code: 'EMPTY_OVERWRITE_BLOCKED', current_chars: 3982 };
+        status = 409;
+      }
+    } else {
+      json = { id: 121, title: '第三章', content: `<p>${'正文'.repeat(900)}</p>`, summary: '', updated_at: 'base-1' };
+    }
+  } else if (stub.editorConflict && u.includes('/api/chapters/107')) {
     if ((opts.method || 'GET').toUpperCase() === 'PUT') {
       stub.editorPutBodies.push(JSON.parse(String(opts.body || '{}')));
       if (stub.editorPutBodies.length === 1) { json = { error: '内容已在其他窗口被修改' }; status = 409; }
@@ -889,18 +924,20 @@ globalThis.__probe = {
   HELP_TEXT, helpDot, fieldHelp, helpTitle, renderToolRows, TOOL_SPECS, loadOpenVikingStatus, loadEnvTools,
   tooltipHtmlFor,
   state, openLastReview, htmlNodeToText, editorPlainText, diffParagraphs,
-  saveChapterSnapshot, resolveEditorConflict, flushSave,
+  saveChapterSnapshot, resolveEditorConflict, flushSave, flushEditorSaves, scheduleSave,
+  writeChapterBody, editorSnapIsBlank, readableCharCount, recoveryBarHtml, knownChapterBodyChars, clearChapterBodyExplicit, restoreLastSavedVersion,
+  adoptEditorContentImpl,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
   WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
   continuityGuardSummaryHtml,
   streamAIDirectWrite,
-  performToolbarAIWrite, restoreChapterDraft, previewChapterDraft,
+  performToolbarAIWrite, askAIQuestion, askToolbarAIWriteRequirement, showBlueprintConfirm, openModal, closeModal, restoreChapterDraft, previewChapterDraft, dismissChapterDraft, refreshRecoveryBar, dismissJobResult, dismissChapterReview,
   loadAIContext,
-  WRITING_DIRECTION_MAX_CHARS, normalizeWritingDirectionText, clipWritingDirectionText, buildWritingDirectionFromBlueprint, savedBlueprintForChapter, directionKeyHashOf,
+  WRITING_DIRECTION_MAX_CHARS, normalizeWritingDirectionText, clipWritingDirectionText, buildWritingDirectionFromBlueprint, directionKeyHashOf,
   newWriteTiming,
   withThinkingHeadroom,
   verifyAIDraft,
-  pollHarnessJob,
+  pollHarnessJob, showAITaskProgress, runHarnessJob, handleAction,
   ATTRIBUTIONS, renderThanks, AI_TABS,
   loadEditRules, renderEditRulesCard, collectEditSelection, saveEditRules, scanEditRules, renderEditScanHtml,
   loadAuthorStyle, renderAuthorStyleCard, authorIntentRow, openAuthorSampleModal, saveAuthorSample, toggleAuthorSample, deleteAuthorSample, analyzeAuthorProfile, saveAuthorIntents,
@@ -965,6 +1002,234 @@ if (!P) process.exit(1);
 }
 // 把 document 级 keydown 真的送到 app.js 的监听器（此前桩丢弃监听器 → 键盘路径不可测）
 const fireDocKeydown = (event) => { for (const fn of docListeners.get('keydown') || []) fn({ preventDefault() {}, ...event }); };
+
+// --- P-STOP：进度卡的「停止」必须对**每一条**在跑的路都有效（2026-10-02 晚，作者报"给我个停止按钮啊"）---
+// 根因：按钮一直在卡里，但默认 hidden，只有调用方显式 setCancel 时才显示/可用。而审稿/修稿管线与
+// 成文管线的质检阶段各自 new 了一张卡却从没注册 → 那些阶段画面在转、却没有停止按钮。
+// 改成"登记制"后，判据是：**只要有一条 harness 任务在跑，点停止就必须真的发出取消请求**。
+{
+  const savedJob = P.state.currentJob, savedApi = sandbox.api, savedToast = sandbox.toast;
+  const calls = [];
+  const toasts = [];
+  sandbox.toast = (m) => { toasts.push(String(m)); };
+  sandbox.api = async (p, o = {}) => {
+    const u = String(p);
+    if (u.startsWith('/harness/job?id=')) return { id: 'job-stop-1', status: 'running', tail: '正在写…', model_slot: 'running' };
+    if (u === '/harness/cancel') { calls.push(o && o.body); return { ok: true }; }
+    return { ok: true };
+  };
+  P.state.aiTaskRunning = false;
+  const card = P.showAITaskProgress('停止按钮回归');
+  let done = false;
+  const poll = P.pollHarnessJob('job-stop-1', card, { timeoutMs: 30000 })
+    .then(() => { done = true; })
+    .catch(() => { done = true; });
+  await new Promise((r) => setTimeout(r, 1800));   // 让轮询真的跑起来（首轮 1.5s 退避）
+  const stillRunning = !done;
+  P.handleAction('ai-task-cancel');                // ← 等价于点进度卡上的「停止」
+  await new Promise((r) => setTimeout(r, 200));
+  check('P-STOP-1 没有显式注册取消回调的任务，点「停止」也会真的发出 /harness/cancel',
+    stillRunning && calls.length === 1 && Number(calls[0].job_id) !== 0 && String(calls[0].job_id) === 'job-stop-1',
+    JSON.stringify({ stillRunning, calls }));
+  await poll;
+  check('P-STOP-2 取消后轮询立即结束（不再继续等这条任务）', done === true, JSON.stringify({ done }));
+  card.close();
+  sandbox.api = savedApi; sandbox.toast = savedToast;
+}
+// 三道判据分别验证，缺一条这次事故就会重演：
+//   ① 客户端：编辑器被清空时不发写入请求（只在编辑器/内存层拦，不依赖服务端）；
+//   ② 服务端：真的发出去也要被 409 EMPTY_OVERWRITE_BLOCKED 拦下，且本地进入可见的暂停态（不是静默丢稿）；
+//   ③ 唯一放行口：作者显式确认后才带上 confirm_empty 落库；
+//   ④ 出路可见：恢复条同时给出「取回历史版本」「确认清空本章」两个动作；
+//   ⑤ 导航不能被保存问题锁死（旧实现 flushSave 在暂停/失败态返回 false，20 多处导航全失灵）。
+{
+  const savedChapters = P.state.chapters, savedWorkId = P.state.workId;
+  const savedConflict = P.state.editorConflictSnapshot, savedFailed = P.state.editorSaveFailedSnapshot;
+  const savedEmpty = P.state.editorEmptyBlocked, savedSaveSnap = P.state.editorSaveSnapshot;
+  const savedRecoveryFor = P.state.recoveryForChapter;
+  const savedNodes = { editor: containers['#editor-content'], title: containers['#editor-title'], status: containers['#editor-status'] };
+  const editor = mkEl('editor-content', 'div'); editor.dataset.chapterId = '121'; editor.innerHTML = '';
+  const title = mkEl('editor-title', 'input'); title.value = '第三章 我的S级天赋去哪了？';
+  const status = mkEl('editor-status', 'div');
+  containers['#editor-content'] = editor; containers['#editor-title'] = title; containers['#editor-status'] = status;
+  P.state.workId = 18;
+  P.state.chapters = [{ id: 121, title: '第三章 我的S级天赋去哪了？', content: `<p>${'正文'.repeat(900)}</p>`, summary: '', updated_at: 'base-1' }];
+  // 让"本页见过这一章有正文"这件事成立：真实链路里 loadWorkData 从 state.chapters 记峰值、
+  // 打开章节时编辑器里就是那份正文；测试里没有走 loadWorkData，所以**编辑器先装正文、再清空**，
+  // 顺序必须与真实一致（护栏判据是"编辑器空 + 本页记得它有正文"，跳过前一步就等于没测到）。
+  P.state.chapterBodyPeak.delete(121);
+  editor.innerHTML = `<p>${'正文'.repeat(900)}</p>`;
+  P.knownChapterBodyChars(121);           // 编辑器里装着正文 → 峰值记下 1800 字
+  editor.innerHTML = '';                  // 作者误触清空（这就是事故的那一步）
+  const peakSeen = P.knownChapterBodyChars(121);
+  P.state.editorConflictSnapshot = null; P.state.editorSaveFailedSnapshot = null;
+  P.state.editorEmptyBlocked = null; P.state.editorSaveSnapshot = null;
+  stub.serverBlocksEmpty = true;
+  stub.editorPutBodies.length = 0;
+
+  const blocked = await P.saveChapterSnapshot({ id: 121, content: '', title: '第三章 我的S级天赋去哪了？' });
+  // 判据：客户端**不自己拍板**（它问服务端），但发现服务端也拒绝后就绝不落库，
+  // 并且不会带着 confirm_empty 偷偷写进去 —— "清空"永远是作者显式选的，不是回退出来的。
+  check('P-EMPTY-1 编辑器被清空时写入被拦下（正文没有被覆盖，也没有替作者确认清空）', blocked === false
+    && !P.state.editorConflictSnapshot
+    && !stub.editorPutBodies.some((b) => b.confirm_empty === true)
+    && stub.editorPutBodies.every((b) => String(b.content || '').trim() === ''),
+    `ret=${JSON.stringify(blocked)} peak=${peakSeen} puts=${JSON.stringify(stub.editorPutBodies)}`);
+
+  const verdictEmpty = await P.writeChapterBody(121, { content: '<div><br></div>', title: '第三章 我的S级天赋去哪了？' });
+  check('P-EMPTY-2 显式写入空正文时进入「已暂停」态（不是冲突、也不是静默丢稿）', verdictEmpty === 'empty'
+    && !!P.state.editorEmptyBlocked && !P.state.editorConflictSnapshot
+    && P.state.editorSaveFailedSnapshot?.code === 'EMPTY_OVERWRITE_BLOCKED',
+    `verdict=${JSON.stringify(verdictEmpty)} blocked=${!!P.state.editorEmptyBlocked} conflict=${!!P.state.editorConflictSnapshot} code=${P.state.editorSaveFailedSnapshot?.code}`);
+
+  check('P-EMPTY-3 判空口径=去掉标签后没有可读字符（`<div><br></div>`、纯空白都算空）',
+    P.editorSnapIsBlank('<div><br></div>') && P.editorSnapIsBlank('   ') && P.editorSnapIsBlank('<p>&nbsp;</p>')
+    && !P.editorSnapIsBlank('<p>醒。</p>') && P.readableCharCount('<p>醒。</p>') === 1);
+
+  const forced = await P.writeChapterBody(121, { content: '', title: '第三章 我的S级天赋去哪了？', confirmEmpty: true });
+  check('P-EMPTY-4 只有作者显式确认才带 confirm_empty 落库（这是唯一的空正文写入口）', forced === 'saved'
+    && stub.editorPutBodies.length >= 1 && stub.editorPutBodies[stub.editorPutBodies.length - 1].confirm_empty === true);
+
+  P.state.editorEmptyBlocked = { id: 121, content: '', title: '第三章 我的S级天赋去哪了？' };
+  const bar = P.recoveryBarHtml(P.state.chapters.find((c) => c.id === 121));
+  check('P-EMPTY-5 恢复条给出两条出路（取回历史版本 / 确认清空本章），作者不会卡在"已暂停"上',
+    bar.includes('editor-empty-restore') && bar.includes('editor-empty-clear'));
+
+  check('P-EMPTY-6 空内容暂停不再锁死导航（flushSave 放行；只有 409 真冲突才拦人）', (await P.flushSave()) === true);
+
+  // ── P-EMPTY-7/8/9：2026-10-02 晚，作者报"修稿完成后无法直接加进正文，而是报错" ──
+  // 根因：暂停态是**粘性**的（只在显式清空/采纳成功时才清），作者把正文粘回来之后它还挂着；
+  // 而"合并到正文"（mergeReviewDiff→adopt）**完全不经过编辑器**，却在开头调 flushSave，
+  // 于是每次合并/导航都弹一句"本章编辑器是空的，已暂停保存"，看起来像是它挡住了操作。
+  const savedToast = sandbox.toast;
+  const msgs = [];
+  sandbox.toast = (m) => { msgs.push(String(m)); };
+  // 7) 粘性暂停态：编辑器已经有正文 → 必须自动清除，且不再认为"有未保存的空白"
+  editor.innerHTML = '<p>正文已经粘回来了，这一版不该再被当成空稿。</p>';
+  P.state.editorEmptyBlocked = { id: 121, content: '', title: '第三章' };
+  P.state.editorSaveFailedSnapshot = { id: 121, message: '旧失败态', code: 'EMPTY_OVERWRITE_BLOCKED' };
+  const quietOk = await P.flushEditorSaves();
+  check('P-EMPTY-7 编辑器已有正文时，粘性暂停态自动清除（不再把这一章当成空稿）',
+    quietOk === true && P.state.editorEmptyBlocked === null && P.state.editorSaveFailedSnapshot === null);
+
+  // 8) 内部等待落盘（采纳/合并走的那条）**不得产生任何提示**
+  msgs.length = 0;
+  await P.flushEditorSaves();
+  check('P-EMPTY-8 内部等待落盘不弹任何提示（采纳/合并路径不再听到"编辑器是空的"）',
+    msgs.length === 0, JSON.stringify(msgs));
+
+  // 9) 导航闸门仍在真的暂停时提示（提示没有被误删，只是搬回了导航这一层）
+  editor.innerHTML = '';
+  P.state.editorEmptyBlocked = { id: 121, content: '', title: '第三章' };
+  msgs.length = 0;
+  const navOk = await P.flushSave();
+  check('P-EMPTY-9 真的还空着时，导航仍给出那条提示并放行（提示搬到了导航层）',
+    navOk === true && msgs.some((m) => m.includes('已暂停保存')), JSON.stringify(msgs));
+
+  // 10) 作者报障的**原路径**：编辑器是空的，但要点"合并修稿到正文"。
+  //     这条路的正文来自入参（调用方算好的修稿稿），与编辑器无关 —— 必须：
+  //     ① 采纳请求里带的是**修订稿**（不是编辑器那份空内容）；② 全程不弹"编辑器是空的"警报。
+  const savedApi10 = sandbox.api, savedFetch10 = sandbox.fetch;
+  const adoptBodies = [];
+  sandbox.api = async (url, opts = {}) => {
+    const u = String(url);
+    // 注意：这里替换的是 api() 本身（不是 fetch），所以 body 是**对象**而不是 JSON 字符串。
+    if (u.includes('/novel/adopt')) { adoptBodies.push(typeof opts.body === 'string' ? JSON.parse(opts.body) : (opts.body || {})); return { ok: true, adopt: { legacy: { events: 0, memories: 0 }, chapter_updated_at: 'rev-1' } }; }
+    if (u.includes('/chapters/121')) return { id: 121, title: '第三章', content: '<p>库里的旧稿</p>', summary: '', updated_at: 'rev-1', content_hash: 'hash-rev' };
+    if (u.includes('/harness/recoverable')) return { jobs: [] };
+    if (u.includes('/novel/draft')) return { draft: null };
+    if (u.includes('/novel/review')) return { review: null };
+    return { ok: true };
+  };
+  sandbox.fetch = async () => ({ ok: true, status: 200, text: async () => '{"ok":true,"adopt":{"legacy":{"events":0,"memories":0},"chapter_updated_at":"rev-1"}}' });
+  editor.innerHTML = '';                                  // 编辑器确实是空的
+  P.state.editorEmptyBlocked = { id: 121, content: '', title: '第三章' };
+  msgs.length = 0;
+  let merged = false; let mergeErr = '';
+  try {
+    await P.adoptEditorContentImpl({ targetChapterId: 121, html: '<p>这是修稿后的正文，必须写进去。</p>', selectionIds: [], adoptKind: 'review_merge' });
+    merged = true;
+  } catch (e) { mergeErr = String(e && e.message); }
+  check('P-EMPTY-10 编辑器为空时合并修稿：写进去的是**修订稿**，且不弹"编辑器是空的"警报',
+    merged && !mergeErr && adoptBodies.length === 1
+      && String(adoptBodies[0].content).includes('这是修稿后的正文')
+      && !msgs.some((m) => m.includes('已暂停保存')),
+    mergeErr || JSON.stringify({ bodies: adoptBodies.map((b) => String(b.content).slice(0, 30)), msgs }));
+  sandbox.api = savedApi10; sandbox.fetch = savedFetch10;
+  sandbox.toast = savedToast;
+  P.state.editorEmptyBlocked = savedEmpty;
+
+  P.state.chapters = savedChapters; P.state.workId = savedWorkId;
+  P.state.editorConflictSnapshot = savedConflict; P.state.editorSaveFailedSnapshot = savedFailed;
+  P.state.editorEmptyBlocked = savedEmpty; P.state.editorSaveSnapshot = savedSaveSnap;
+  P.state.recoveryForChapter = savedRecoveryFor;
+  P.state.chapterBodyPeak.delete(121); // 峰值是"本页见过"的累积量，测试用完要清掉，避免影响后续用例
+  stub.serverBlocksEmpty = false;
+  for (const [k, v] of Object.entries(savedNodes)) { if (v) containers['#' + (k === 'editor' ? 'editor-content' : k === 'title' ? 'editor-title' : 'editor-status')] = v; }
+}
+
+// --- P-EMPTY-11/12（2026-10-04 报障）：空稿被拦下时，恢复条必须**当场**画出那两条出路 ---
+// 现场（作者原话）："编辑器当前是空的，已暂停自动保存（正文没有被覆盖）——用编辑器上方的恢复条
+// 取回原稿，或明确选择清空本章，你没有按钮让我选择清空本章，一刷新又恢复了"。
+// 即：那句话把他指向了一个**不存在的出口** —— 恢复条上根本没有「确认清空本章」，
+// 于是他清不掉这一章，刷新后正文又回来了（护栏没让它落盘，这本身是对的）。
+// 根因：那两个调用点只调 `refreshChapterRecovery`（**只取数据、不碰 DOM**），
+// 而且"这一章的恢复数据已经取过"（`state.recoveryForChapter === id`，打开章节后必然如此）时，
+// 连这个调用都被整个跳过 → 恢复条保持旧 HTML，按钮永远不出现。
+{
+  const savedChapters = P.state.chapters; const savedChapterId = P.state.currentChapterId;
+  const savedDraft = P.state.chapterDraft; const savedReview = P.state.chapterReview;
+  const savedJobs = P.state.chapterJobs; const savedBlocked = P.state.editorEmptyBlocked;
+  const savedFailed = P.state.editorSaveFailedSnapshot; const savedSaveSnap = P.state.editorSaveSnapshot;
+  const savedRecoveryFor = P.state.recoveryForChapter; const savedToast = sandbox.toast;
+  const savedNodes = { editor: containers['#editor-content'], title: containers['#editor-title'] };
+
+  const editor = mkEl('editor-content', 'div');
+  editor.dataset.chapterId = '121';
+  editor.innerHTML = '';                                   // 作者把正文清掉了
+  const title = mkEl('editor-title', 'input');
+  title.value = '第三章 我的S级天赋去哪了？';
+  containers['#editor-content'] = editor; containers['#editor-title'] = title;
+  const box = mkEl('chapter-recovery', 'div');              // 恢复条容器（渲染前是空的，与真实一致）
+  P.state.chapters = [{ id: 121, title: '第三章 我的S级天赋去哪了？', content: `<p>${'正文'.repeat(900)}</p>`, updated_at: 'base-1' }];
+  P.state.currentChapterId = 121;
+  P.state.chapterDraft = null; P.state.chapterReview = null; P.state.chapterJobs = [];
+  P.state.editorEmptyBlocked = null; P.state.editorSaveFailedSnapshot = null; P.state.editorSaveSnapshot = null;
+  P.state.recoveryForChapter = 121;                         // ← 复现条件：这一章的恢复数据已经取过了
+  P.state.chapterBodyPeak.delete(121);
+  P.state.chapterBodyPeak.set(121, 3982);                   // 本页见过这一章有正文（护栏判据）
+  sandbox.toast = () => {};
+
+  // ① 自动保存那条路：空稿 → 800ms 后闸门命中
+  P.scheduleSave();
+  await new Promise((r) => setTimeout(r, 900));
+  check('P-EMPTY-11 空稿被自动保存闸门拦下时，恢复条当场给出「取回历史版本 / 确认清空本章」',
+    !!P.state.editorEmptyBlocked && String(box.innerHTML).includes('data-action="editor-empty-restore"')
+      && String(box.innerHTML).includes('data-action="editor-empty-clear"'),
+    JSON.stringify({ blocked: !!P.state.editorEmptyBlocked, bar: String(box.innerHTML).slice(0, 140) }));
+
+  // ② 服务端拦下那条路（tripEmptyGuardState）同样不能只记状态、不画出路
+  box.innerHTML = '';
+  P.state.editorEmptyBlocked = null; P.state.editorSaveFailedSnapshot = null;
+  stub.serverBlocksEmpty = true; stub.editorPutBodies.length = 0;
+  await P.saveChapterSnapshot({ id: 121, content: '', title: '第三章 我的S级天赋去哪了？' });
+  check('P-EMPTY-12 服务端拦下空正文后，恢复条同样当场给出两条出路（不是只在状态栏写"已暂停"）',
+    String(box.innerHTML).includes('data-action="editor-empty-clear"')
+      && String(box.innerHTML).includes('data-action="editor-empty-restore"'),
+    String(box.innerHTML).slice(0, 160));
+
+  stub.serverBlocksEmpty = false;
+  sandbox.toast = savedToast;
+  P.state.chapters = savedChapters; P.state.currentChapterId = savedChapterId;
+  P.state.chapterDraft = savedDraft; P.state.chapterReview = savedReview; P.state.chapterJobs = savedJobs;
+  P.state.editorEmptyBlocked = savedBlocked; P.state.editorSaveFailedSnapshot = savedFailed;
+  P.state.editorSaveSnapshot = savedSaveSnap; P.state.recoveryForChapter = savedRecoveryFor;
+  P.state.chapterBodyPeak.delete(121);
+  if (savedNodes.editor) { containers['#editor-content'] = savedNodes.editor; registered.set('#editor-content', savedNodes.editor); }
+  else registered.delete('#editor-content');
+  if (savedNodes.title) { containers['#editor-title'] = savedNodes.title; registered.set('#editor-title', savedNodes.title); }
+  else registered.delete('#editor-title');
+}
 
 // init() 是异步的，等它跑完
 await new Promise((r) => setTimeout(r, 800));
@@ -1902,7 +2167,8 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
     !!P.longTextEngine() && P.longTextEngine().VERSION === '1.0.0' && P.longTextEngine() === sandbox.NovelLongText);
 
   const r08Chapter = Array.from({ length: 24 }, (_, i) => `第${i + 1}段：他推开门，雨点砸在台阶上。` + '这是一句用来凑长度的测试文本。'.repeat(4)).join('\n\n');
-  P.state.longTextSettings = { request_chars: 1500, output_reserve_chars: 400, protocol_chars: 100, max_segment_chars: 600, min_segment_chars: 100 };
+  // 分段阈值用例（58q/58r）：预算刻意压到 1000，让 24 段的长章节必须分段。
+  P.state.longTextSettings = { request_chars: 1000, output_reserve_chars: 400, protocol_chars: 100, max_segment_chars: 600, min_segment_chars: 100 };
   const planShort = P.longTextPlanFor('polish', '短正文一段。', {});
   const planLong = P.longTextPlanFor('polish', r08Chapter, {});
   check('58q 短正文走单请求、超限正文自动分段（按最终序列化请求判定）',
@@ -1986,6 +2252,11 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
 
   const singleCalls = [];
   P.state.longTextRunner = async ({ segment, kind }) => { singleCalls.push(kind + ':' + (segment ? segment.segment_id : 'single')); return '模块内单请求结果'; };
+  // ⚠️ 单请求归属用例（58ae/58af）必须先把预算抬回默认量级：审稿提示词自身已长到 ≈1400 字符
+  //（buildAIReviewPrompt 内联了写作纪律与反 AI 腔清单），而上面为 58q 压到的 1000 字符可用额度
+  // 会让 17 字的短正文也判成"必须分段"——那两个用例测的是**归属**（谁来跑这一次模型），
+  // 不是分段阈值。2026-10-02 复核：沿用旧值 1500 时 58ae/58af 必然失败。
+  P.state.longTextSettings = { request_chars: 8000, output_reserve_chars: 400, protocol_chars: 100, max_segment_chars: 600, min_segment_chars: 100 };
   let singleRev = null; let singleReview = null; let singleErr = null;
   try {
     singleRev = await P.longTextRunTask('revision_patch', { text: revBase, chapterId: 113, issues: ['补动作'], currentText: () => revBase, singleRunByCaller: true });
@@ -2630,8 +2901,9 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       && P.buildAIWritingProseRetryPrompt('输出含蓝图字段', 4000).includes('4000'));
 
   // 端到端：成文轮"两次都吐规划"时，绝不能写进章节。
-  // ⚠️ 本章**预置一份已保存蓝图**：写作入口会因此跳过蓝图轮（不再调用模型、不弹确认框），
-  //    于是可以直接验证成文轮——否则蓝图轮会先被 fetch 桩的通用回复接管，测到的是别的分支。
+  // ⚠️ 2026-10-04 起，本章**预置已保存蓝图**不再让写作入口跳过蓝图轮（作者报障后移除了那条捷径），
+  //    因此这里必须把蓝图轮喂成一个正常成功的蓝图（否则 fetch 桩的通用回复会被蓝图轮接走，
+  //    测到的就是别的分支）。成文轮仍按原样返回规划 —— 那才是本用例要测的事故现场。
   const SAVED_BP = {
     scene_goal: '第一章：觉醒日全场失望与系统上线之间的那一秒反差。',
     plot_points: '1｜检测中心外广场·排队。\n2｜主检测台·轮到他：暗黄色。',
@@ -2653,14 +2925,23 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   containers['#editor-content'] = mkEl('editor-content');
   containers['#editor-content'].innerHTML = '<p>原文</p>';
   containers['#modal-root'].innerHTML = '';
-  check('108p0 前提：本章已保存蓝图（写作入口因此跳过蓝图轮，直接测成文轮）',
-    !!P.savedBlueprintForChapter(107));
+  check('108p0 前提：本章已保存蓝图（旧实现会因此跳过蓝图轮 —— 2026-10-04 起不再跳过）',
+    String(P.state.chapters[0].blueprint_json || '').includes('scene_goal'));
   const prosePrompts = [];
+  const proseBodies = [];
   sandbox.runHarnessJob = async (body) => {
     const prompt = String((body && body.prompt) || '');
     prosePrompts.push(prompt);
+    proseBodies.push(body || {});
     // 成文轮与重生成轮**都**吐规划（事故现场）
     return { output: INCIDENT_BLUEPRINT };
+  };
+  // 蓝图轮：走直连并给出一个正常蓝图（这样流程才会进入本用例真正要测的成文轮）。
+  const savedDirectFor108 = sandbox.directAIWrite;
+  sandbox.directAIWrite = async (messages) => {
+    const prompt = String((messages && messages[0] && messages[0].content) || '');
+    if (prompt.includes('【蓝图】')) return `【蓝图】\n${JSON.stringify(SAVED_BP)}`;
+    return '';
   };
   sandbox.showBlueprintConfirm = async (bp) => ({ ...bp, skip: false, target_words: 3000 });
   let resultOpened = 0;
@@ -2682,7 +2963,11 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('108s 确实重生成过一次（不是一次失败就放弃）',
     prosePrompts.filter((p) => p.includes('只输出本章正文本身')).length === 1,
     JSON.stringify(prosePrompts.map((p) => p.slice(0, 24))));
-
+  check('108p1 本章已有蓝图也不再跳过蓝图轮：成文轮之前先跑了一轮"要蓝图"',
+    prosePrompts.length >= 1 && !prosePrompts[0].includes('只输出本章正文本身'),
+    JSON.stringify(prosePrompts.map((p) => p.slice(0, 24))));
+  // 规划轮走慢通道时模型带着检索工具（novel_context / novel_lookup），它们会绕过前端那层 omit ——
+  // 这条由独立用例 P-OMIT-1 验证（见下方），本用例只管事故现场的拦截语义。
   P.state.aiContext = savedCtx;
   P.state.apiConfigs = savedConfigs;
   P.state.activeConfigId = savedActive;
@@ -2691,6 +2976,7 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   P.state.currentChapterId = savedChapterId;
   if (savedNode === undefined) delete containers['#editor-content']; else containers['#editor-content'] = savedNode;
   sandbox.runHarnessJob = savedHarness;
+  sandbox.directAIWrite = savedDirectFor108;
   sandbox.showBlueprintConfirm = savedConfirm;
   sandbox.showAIWritingResult = savedResult;
   sandbox.applyAIWritingArticle = savedApply;
@@ -2809,9 +3095,19 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       && c.body && c.body.blueprint && c.body.blueprint.scene_goal === '直连开场'),
     JSON.stringify(blueprintViaDirect.calls.filter((c) => c.url.includes('blueprint')).map((c) => c.body)));
 
-  check('110c 直连不可用（空回复）时蓝图回退慢通道，且慢通道拿到的是蓝图提示词',
-    blueprintFallback.harnessPrompts.some(isBlueprintPrompt) && blueprintFallback.harnessCalls === 4,
-    JSON.stringify({ harness: blueprintFallback.harnessCalls }));
+  // ⚠️ 断言不写死 harness 次数（2026-10-02 修）：次数取决于"成文有没有达到 target_words"，
+  //    而那个长度口径此前被桩的缺陷污染 —— 桩的 stripHtml（取 textContent）恒返回空串，
+  //    于是正文长度恒为 0，补足轮**必然**跑满 2 轮，次数才凑成 4。桩修好后补足轮按需触发，
+  //    写死次数就成了"桩越准越假失败"的脆断言。这里改钉真正的不变量：
+  //    ① 直连不可用时蓝图必须出现在慢通道里；② 回退路径的慢通道任务数比直连成功路径正好多一次。
+  check('110c 直连不可用（空回复）时蓝图回退慢通道，且回退路径恰好比直连路径多占用一次慢通道',
+    blueprintFallback.harnessPrompts.some(isBlueprintPrompt)
+      && blueprintFallback.harnessCalls === blueprintViaDirect.harnessCalls + 1
+      && blueprintFallback.harnessCalls >= 3,
+    JSON.stringify({
+      fallback: blueprintFallback.harnessCalls, viaDirect: blueprintViaDirect.harnessCalls,
+      kinds: blueprintFallback.harnessPrompts.map((p) => (isBlueprintPrompt(p) ? 'bp' : isContinuationPrompt(p) ? 'cont' : 'prose'))
+    }));
 
   const truncatedRun = await runBatch({ scanTotal: 0, truncated: true, directReply: () => directBlueprint });
   check('110d 上下文被预算截断时蓝图**不走直连**（只有慢通道能取回被裁掉的原文）',
@@ -3293,6 +3589,356 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   P.state.chapters = savedChapters;
 }
 
+// --- 15c) 回归（2026-10-04，作者报障）：生成稿那条提示必须有「关闭」出口 ---
+// 现场：编辑器上方的「🗂 有未应用的生成稿（219 字，22:48:44）」只有「取回生成稿 / 预览」，
+// 作者明确不要这一版时无处可点 —— 那条提示会一直挂着（"永远也不想要这个版本"却没有关闭按钮）。
+// 判据不是"按钮长得像关闭"，而是：① 点它真的落到专用接口且带的是这一份的 id；
+// ② 本地与服务端同步（提示立刻消失）；③ 它**不是写路径**（正文一个字都不动）；
+// ④ 取消 = 什么都不发生（误点不丢稿）。
+{
+  const savedApi = sandbox.api;
+  const savedToast = sandbox.toast;
+  const savedConfirm = sandbox.confirm;
+  const savedDraft = P.state.chapterDraft;
+  const savedChapterId = P.state.currentChapterId;
+  const savedChapters = P.state.chapters;
+  const savedJobs = P.state.chapterJobs;
+  const savedReview = P.state.chapterReview;
+
+  const draft = { id: 49, chapter_id: 121, chars: 219, content: '<p>AI 写的那一版。</p>', created_at: '2026-10-02T14:48:44.000Z' };
+  const chapter = { id: 121, title: '第三章', content: '<p>正文</p>' };
+  P.state.currentChapterId = 121;
+  P.state.chapters = [chapter];
+  P.state.chapterDraft = { ...draft };
+  P.state.chapterReview = null;
+  P.state.chapterJobs = [];
+  P.state.editorEmptyBlocked = null;
+  P.state.editorSaveFailedSnapshot = null;
+
+  const barHtml = P.recoveryBarHtml(chapter);
+  check('P-DISMISS-1 生成稿那条上同时有「取回生成稿 / 预览 / 关闭」（关闭不再缺失）',
+    barHtml.includes('data-action="restore-draft"') && barHtml.includes('data-action="preview-draft"')
+    && barHtml.includes('data-action="dismiss-draft"'), barHtml.slice(0, 200));
+
+  const calls = [];
+  const box = mkEl('chapter-recovery', 'div');
+  sandbox.api = async (p, o = {}) => {
+    calls.push({ p: String(p), o });
+    if (String(p) === '/novel/draft/dismiss') return { ok: true, dismissed: 1, draft: null };
+    return { ok: true };
+  };
+  sandbox.toast = () => {};
+  sandbox.confirm = () => true; // 关闭前会问一句；测试里直接确认
+  let err = '';
+  try { await P.handleAction('dismiss-draft', { dataset: { action: 'dismiss-draft' } }); } catch (e) { err = String(e && e.message); }
+  const dismissCall = calls.find((c) => c.p === '/novel/draft/dismiss');
+  check('P-DISMISS-2 「关闭」落在专用接口上，且带的是**这一份**草稿的 id',
+    !err && !!dismissCall && Number(dismissCall.o?.body?.chapter_id) === 121 && Number(dismissCall.o?.body?.draft_id) === 49,
+    err || JSON.stringify(calls.map((c) => c.p)));
+  check('P-DISMISS-3 关闭后本地立刻同步：那条提示从恢复条上消失（不必等切章/刷新）',
+    P.state.chapterDraft === null && !P.recoveryBarHtml(chapter).includes('未应用的生成稿')
+    && !String(box.innerHTML).includes('未应用的生成稿'), String(box.innerHTML).slice(0, 160));
+  check('P-DISMISS-4 关闭**不是写路径**：没有任何正文写入请求（不影响正常写作）',
+    calls.length > 0 && calls.every((c) => !/chapter_save|\/novel\/adopt|\/chapters\//.test(c.p)),
+    JSON.stringify(calls.map((c) => c.p)));
+
+  // 服务端若回话说"还剩更早的一份"，界面按服务端真值显示它 —— 不自己猜、也不静默吞掉
+  calls.length = 0;
+  sandbox.api = async (p, o = {}) => {
+    calls.push({ p: String(p), o });
+    if (String(p) === '/novel/draft/dismiss') {
+      return { ok: true, dismissed: 1, draft: { id: 40, chapter_id: 121, chars: 88, content: '<p>更早的一版。</p>', created_at: '2026-09-01T10:00:00.000Z' } };
+    }
+    return { ok: true };
+  };
+  P.state.chapterDraft = { ...draft };
+  await P.handleAction('dismiss-draft', { dataset: { action: 'dismiss-draft' } });
+  check('P-DISMISS-5 关闭后若还有更早的未应用草稿，界面按服务端真值显示它（不静默藏掉）',
+    Number(P.state.chapterDraft?.id) === 40 && String(box.innerHTML).includes('88 字'), String(box.innerHTML).slice(0, 160));
+
+  // 反悔/误点：确认框里选取消 → 一个请求都不发，草稿原地不动
+  calls.length = 0;
+  sandbox.confirm = () => false;
+  P.state.chapterDraft = { ...draft };
+  await P.handleAction('dismiss-draft', { dataset: { action: 'dismiss-draft' } });
+  check('P-DISMISS-6 确认框里选「取消」时不发任何请求、草稿原样留着（误点不丢稿）',
+    calls.length === 0 && Number(P.state.chapterDraft?.id) === 49, JSON.stringify(calls.map((c) => c.p)));
+
+  sandbox.api = savedApi;
+  sandbox.toast = savedToast;
+  sandbox.confirm = savedConfirm;
+  P.state.chapterDraft = savedDraft;
+  P.state.currentChapterId = savedChapterId;
+  P.state.chapters = savedChapters;
+  P.state.chapterJobs = savedJobs;
+  P.state.chapterReview = savedReview;
+}
+
+// --- 15d) 同一类缺口的第二处：长任务那条「⏳ AI 写作：已完成，结果待应用 · 产出 N 字符」 ---
+// 现场（作者截图）：同一条恢复条上挂着三条「已完成，结果待应用」（1711 / 75 / 135 字符），
+// 只有「取回结果并应用」——同样没有"这结果我不要了"的出口，它们就一直挂在那儿。
+// 判据：① 已完成/失败的行有关闭、**正在跑的行没有**（跑着的只能停止/接回）；
+// ② 关闭要等 /harness/mark_applied 成功后才收起本行；③ 服务端拒绝时本行必须留着。
+{
+  const savedApi = sandbox.api;
+  const savedToast = sandbox.toast;
+  const savedConfirm = sandbox.confirm;
+  const savedJobs = P.state.chapterJobs;
+  const savedChapterId = P.state.currentChapterId;
+  const savedChapters = P.state.chapters;
+  const savedDraft = P.state.chapterDraft;
+  const savedReview = P.state.chapterReview;
+
+  const chapter = { id: 119, title: '第119章', content: '<p>正文</p>' };
+  const doneJob = { id: 'job-done-1', chapter_id: 119, kind: 'prose', stage: 'AI 写作', status: 'done', has_output: true, output_chars: 1711 };
+  const failedJob = { id: 'job-failed-1', chapter_id: 119, kind: 'prose', stage: 'AI 写作', status: 'failed', has_output: false, output_chars: 0, error: 'spawn EPERM' };
+  const runningJob = { id: 'job-run-1', chapter_id: 119, kind: 'prose', stage: 'AI 写作', status: 'running', resumable: true, has_output: false, output_chars: 0 };
+  P.state.currentChapterId = 119;
+  P.state.chapters = [chapter];
+  P.state.chapterDraft = null;
+  P.state.chapterReview = null;
+  P.state.chapterJobs = [runningJob, doneJob, failedJob];
+  P.state.editorEmptyBlocked = null;
+  P.state.editorSaveFailedSnapshot = null;
+
+  const bar = P.recoveryBarHtml(chapter);
+  check('P-DISMISS-7 已完成/失败的任务行都有「关闭」，正在跑的那行没有（跑着的只能停止/接回）',
+    bar.includes('data-action="dismiss-job" data-id="job-done-1"')
+    && bar.includes('data-action="dismiss-job" data-id="job-failed-1"')
+    && !bar.includes('data-action="dismiss-job" data-id="job-run-1"')
+    && bar.includes('data-action="resume-job" data-id="job-run-1"'),
+    bar.slice(0, 260));
+
+  const box = mkEl('chapter-recovery', 'div');
+  const calls = [];
+  const msgs = [];
+  sandbox.toast = (m) => { msgs.push(String(m)); };
+  sandbox.confirm = () => true;
+  sandbox.api = async (p, o = {}) => { calls.push({ p: String(p), o }); return { ok: true }; };
+  await P.handleAction('dismiss-job', { dataset: { action: 'dismiss-job', id: 'job-done-1' } });
+  check('P-DISMISS-8 关闭一条结果：落到 /harness/mark_applied（带这条 job id），成功后本行从恢复条上收起',
+    calls.length === 1 && calls[0].p === '/harness/mark_applied' && calls[0].o?.body?.job_id === 'job-done-1'
+    && !P.state.chapterJobs.some((j) => j.id === 'job-done-1')
+    && !String(box.innerHTML).includes('job-done-1') && String(box.innerHTML).includes('job-failed-1'),
+    JSON.stringify({ calls: calls.map((c) => c.p), left: (P.state.chapterJobs || []).map((j) => j.id) }));
+
+  // 失败态：服务端没答应（例如服务端还是旧代码 → 404 API not found）时，本地那一行**必须留着**，
+  // 否则作者看到"关掉了"，刷新后它又回来 —— 那比不关更糟。
+  calls.length = 0;
+  msgs.length = 0;
+  sandbox.api = async (p) => { calls.push({ p: String(p) }); const e = new Error('API not found'); e.status = 404; throw e; };
+  P.state.chapterJobs = [doneJob];
+  await P.handleAction('dismiss-job', { dataset: { action: 'dismiss-job', id: 'job-done-1' } });
+  check('P-DISMISS-9 服务端拒绝时不移除本地那一行，并明确报错（不允许"关了又自己回来"）',
+    P.state.chapterJobs.some((j) => j.id === 'job-done-1') && msgs.some((m) => m.includes('关闭失败')),
+    JSON.stringify({ jobs: P.state.chapterJobs.map((j) => j.id), msgs }));
+
+  calls.length = 0;
+  sandbox.confirm = () => false;
+  await P.handleAction('dismiss-job', { dataset: { action: 'dismiss-job', id: 'job-done-1' } });
+  check('P-DISMISS-10 取消确认时不发任何请求、那一行还在（误点不丢结果）',
+    calls.length === 0 && P.state.chapterJobs.some((j) => j.id === 'job-done-1'), JSON.stringify(calls.map((c) => c.p)));
+
+  sandbox.api = savedApi;
+  sandbox.toast = savedToast;
+  sandbox.confirm = savedConfirm;
+  P.state.chapterJobs = savedJobs;
+  P.state.currentChapterId = savedChapterId;
+  P.state.chapters = savedChapters;
+  P.state.chapterDraft = savedDraft;
+  P.state.chapterReview = savedReview;
+}
+
+// --- 15e) 第三处（同一形状的最后一个出口）：🔍 上次审稿 那一条 ---
+// 现场：恢复条上「🔍 上次审稿（N 个问题，时间）」同样只有「查看」——作者看过、不想再看到时，
+// 那条提示会一直挂着（审稿记录每章保留最近 10 份，于是它总能"顶上来"）。
+// 判据：① 那行有关闭；② dismissed 的记录**不再渲染**（关掉是真关掉，不是只改个状态）；
+// ③ 关闭等服务端确认，失败保留本行；④ 取消＝什么都不发生。
+{
+  const savedApi = sandbox.api;
+  const savedToast = sandbox.toast;
+  const savedConfirm = sandbox.confirm;
+  const savedReview = P.state.chapterReview;
+  const savedJobs = P.state.chapterJobs;
+  const savedChapterId = P.state.currentChapterId;
+  const savedChapters = P.state.chapters;
+  const savedDraft = P.state.chapterDraft;
+  const savedEmpty = P.state.editorEmptyBlocked;
+  const savedFailed = P.state.editorSaveFailedSnapshot;
+
+  const chapter = { id: 121, title: '第三章', content: '<p>正文</p>' };
+  const review = { id: 77, chapter_id: 121, issue_count: 3, parsed: true, dismissed: 0, created_at: '2026-10-02T13:42:59.367Z' };
+  P.state.currentChapterId = 121;
+  P.state.chapters = [chapter];
+  P.state.chapterDraft = null;
+  P.state.chapterReview = { ...review };
+  P.state.chapterJobs = [];
+  P.state.editorEmptyBlocked = null;
+  P.state.editorSaveFailedSnapshot = null;
+
+  const withRow = P.recoveryBarHtml(chapter);
+  check('P-DISMISS-11 审稿那条上有「查看 / 关闭」（关闭不再缺失）',
+    withRow.includes('data-action="open-last-review"') && withRow.includes('data-action="dismiss-review"'),
+    withRow.slice(0, 200));
+  // 判据要落在"渲染结果"上，而不是"状态字段被改了"：只有那一条从 HTML 里真的没了，才算关掉。
+  P.state.chapterReview = { ...review, dismissed: 1 };
+  check('P-DISMISS-12 dismissed=1 的审稿不再渲染那一条（它是唯一一条时，整条恢复条随之消失）',
+    P.recoveryBarHtml(chapter) === '', JSON.stringify(P.recoveryBarHtml(chapter)));
+  P.state.chapterReview = { ...review };
+
+  const box = mkEl('chapter-recovery', 'div');
+  const calls = [];
+  const msgs = [];
+  sandbox.toast = (m) => { msgs.push(String(m)); };
+  sandbox.confirm = () => true;
+  sandbox.api = async (p, o = {}) => {
+    calls.push({ p: String(p), o });
+    if (String(p) === '/novel/review/dismiss') return { ok: true, dismissed: 1, review: { ...review, dismissed: 1 } };
+    return { ok: true };
+  };
+  await P.handleAction('dismiss-review', { dataset: { action: 'dismiss-review', id: '77' } });
+  check('P-DISMISS-13 关闭审稿提示：落到 /novel/review/dismiss（带这一章的 review id），成功后本地同步、那行消失',
+    calls.length === 1 && calls[0].p === '/novel/review/dismiss'
+    && Number(calls[0].o?.body?.chapter_id) === 121 && Number(calls[0].o?.body?.review_id) === 77
+    && Number(P.state.chapterReview?.dismissed) === 1
+    && !String(box.innerHTML).includes('上次审稿'),
+    JSON.stringify({ calls: calls.map((c) => c.p), dismissed: P.state.chapterReview?.dismissed }));
+
+  // 失败态：服务端没答应 → 本地那一条必须留着（否则刷新后它又出现）
+  calls.length = 0;
+  msgs.length = 0;
+  sandbox.api = async (p) => { calls.push({ p: String(p) }); const e = new Error('API not found'); e.status = 404; throw e; };
+  P.state.chapterReview = { ...review };
+  await P.handleAction('dismiss-review', { dataset: { action: 'dismiss-review', id: '77' } });
+  check('P-DISMISS-14 服务端拒绝时不收起本行，并明确报错（避免"关了又回来"）',
+    Number(P.state.chapterReview?.dismissed) === 0 && msgs.some((m) => m.includes('关闭失败')) && P.recoveryBarHtml(chapter).includes('上次审稿'),
+    JSON.stringify({ dismissed: P.state.chapterReview?.dismissed, msgs }));
+
+  calls.length = 0;
+  sandbox.confirm = () => false;
+  await P.handleAction('dismiss-review', { dataset: { action: 'dismiss-review', id: '77' } });
+  check('P-DISMISS-15 取消确认时不发请求、那一条还在（误点不丢报告）',
+    calls.length === 0 && Number(P.state.chapterReview?.dismissed) === 0, JSON.stringify(calls.map((c) => c.p)));
+
+  sandbox.api = savedApi;
+  sandbox.toast = savedToast;
+  sandbox.confirm = savedConfirm;
+  P.state.chapterReview = savedReview;
+  P.state.chapterJobs = savedJobs;
+  P.state.currentChapterId = savedChapterId;
+  P.state.chapters = savedChapters;
+  P.state.chapterDraft = savedDraft;
+  P.state.editorEmptyBlocked = savedEmpty;
+  P.state.editorSaveFailedSnapshot = savedFailed;
+}
+
+// --- P-MODAL-1（2026-10-04 作者报障）：AI 写作的提问窗口不该被"点到窗口外面"关掉 ---
+// 现场：提问窗口正等着他回答，鼠标一滑点到遮罩上，窗口就关了 —— 而关掉等于把 pending 解析成
+// null（整次写作取消），作者什么意图都没表达。已有的机制是 openModal 的 protectedBackdrop
+// （点遮罩只提示、不关闭），但那两个 AI 交互框都没传它。这里钉三件事：
+// ① 提问框与蓝图确认框都带这个保护；② 保护状态下关窗仍可走明确动作（✕/取消 → closeModal）；
+// ③ 普通弹窗（不带保护）的行为不被误改。
+{
+  const modalRoot = containers['#modal-root'];
+  const savedHtml = String(modalRoot.innerHTML || '');
+  const p = P.askAIQuestion('觉醒地点要改成学校吗？', 'AI 写作 · 需要向你确认');
+  await new Promise((r) => setTimeout(r, 5));
+  check('P-MODAL-1 AI 写作的提问窗口带遮罩保护（点窗口外面不会关掉它）',
+    P.state.modalProtected === true
+      && String(modalRoot.innerHTML).includes('ai-writing-question')
+      && String(modalRoot.innerHTML).includes('ai-writing-answer'),
+    JSON.stringify({ protected: P.state.modalProtected, html: String(modalRoot.innerHTML).slice(0, 120) }));
+  let answer = 'unset';
+  p.then((v) => { answer = v; });
+  P.closeModal();                       // 明确关闭（等同于点 ✕ / 取消）
+  await new Promise((r) => setTimeout(r, 5));
+  check('P-MODAL-2 保护状态下「✕/取消」仍然一按就关（只是不再被误触关闭）',
+    answer === null, JSON.stringify({ answer }));
+
+  const bp = P.showBlueprintConfirm({ scene_goal: '雨夜摊牌', plot_lines: '' });
+  await new Promise((r) => setTimeout(r, 5));
+  check('P-MODAL-3 蓝图确认框同样带遮罩保护（它是要填的表单，关掉＝放弃这次写作）',
+    P.state.modalProtected === true && String(modalRoot.innerHTML).includes('bp-scene-goal'),
+    JSON.stringify({ protected: P.state.modalProtected }));
+  P.closeModal();
+  await new Promise((r) => setTimeout(r, 5));
+
+  // 第三处（作者截图报障）：AI 写作的**需求框**（✍️ AI 写作 · 写点什么？）。
+  // 它同样带 textarea 与"开始生成"按钮，误触关闭＝丢需求 + 取消这次生成。
+  const req = P.askToolbarAIWriteRequirement();
+  await new Promise((r) => setTimeout(r, 5));
+  check('P-MODAL-4 AI 写作需求框带遮罩保护（点外面不会把需求框关掉）',
+    P.state.modalProtected === true && String(modalRoot.innerHTML).includes('toolbar-ai-write-req'),
+    JSON.stringify({ protected: P.state.modalProtected, html: String(modalRoot.innerHTML).slice(0, 100) }));
+  let reqVal = 'unset';
+  req.then((v) => { reqVal = v; });
+  P.closeModal();
+  await new Promise((r) => setTimeout(r, 5));
+  check('P-MODAL-5 需求框的「✕/取消」仍然一按就关（返回 null = 明确放弃）',
+    reqVal === null, JSON.stringify({ reqVal }));
+
+  // 默认值口径：openModal 现在默认保护（作者要求"任何弹窗都别被误触点外面关掉"）；
+  // 仍想"点外面就关"的纯信息弹窗必须显式传 protectedBackdrop: false。
+  P.openModal({ title: '默认口径', body: '<div>纯信息</div>' });
+  const defaultProtected = P.state.modalProtected === true;
+  P.openModal({ title: '显式放行', body: '<div>纯信息</div>', protectedBackdrop: false });
+  const optOut = P.state.modalProtected === false;
+  check('P-MODAL-6 openModal 默认带保护；显式 protectedBackdrop:false 可放行（保留"点外面关闭"的能力）',
+    defaultProtected && optOut, JSON.stringify({ defaultProtected, optOut }));
+  P.closeModal();
+  await new Promise((r) => setTimeout(r, 5));
+  modalRoot.innerHTML = savedHtml;
+}
+
+// --- P-Q-1（2026-10-04 作者报障）：提问轮的产出是**问句**，必须当场标记已应用 ---
+// 现场：恢复条上挂着「AI 写作：已完成，结果待应用 · 产出 144 / 186 字符」+「取回结果并应用」，
+// 而那两轮的产出其实是两个反问句（"要改成学校还是保留检测中心？"）。作者点"取回结果"只会
+// 把一句问句当稿子取回来；他自己在截图里问的就是"任务完成但是没显示？"。
+{
+  const saved = {
+    api: sandbox.api, toast: sandbox.toast, harness: sandbox.runHarnessJob,
+    ask: sandbox.askAIQuestion, chapterId: P.state.currentChapterId,
+    workId: P.state.workId, work: P.state.work, chapters: P.state.chapters, aiContext: P.state.aiContext,
+    direct: sandbox.directAIWrite, card: sandbox.showAITaskProgress, editor: containers['#editor-content'],
+    pipeRunning: P.state.aiWritePipelineRunning,
+  };
+  P.state.currentChapterId = 620;
+  P.state.workId = 2;
+  P.state.work = { id: 2, title: '测试作品' };
+  P.state.chapters = [{ id: 620, title: '第620章' }];
+  P.state.aiContext = { assembled: '上下文', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+  containers['#editor-content'] = mkEl('editor-content');
+  containers['#editor-content'].dataset = { chapterId: '620' };
+  const marked = [];
+  const baseApi = sandbox.api;
+  sandbox.api = async (p, o = {}) => {
+    if (String(p) === '/harness/mark_applied') { marked.push(o?.body?.job_id); return { ok: true }; }
+    if (String(p).startsWith('/ai_context') || String(p).startsWith('/novel/context')) {
+      return { assembled: '上下文', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+    }
+    return baseApi(p, o);
+  };
+  sandbox.toast = () => {};
+  sandbox.directAIWrite = async () => '';
+  sandbox.runHarnessJob = async () => ({ job_id: 'job-q-1', output: '【提问】觉醒日要改成在学校操场举行吗？' });
+  let asked = 0;
+  sandbox.askAIQuestion = async () => { asked += 1; return { type: 'skip' }; };   // 作者点"跳过提问直接生成"
+  sandbox.showAITaskProgress = () => ({ note() {}, close() {}, track: () => () => {}, runCancel: () => {} });
+  let qErr = '';
+  try { await P.performToolbarAIWrite('重写第一章'); } catch (e) { qErr = e.message; }
+  await new Promise((r) => setTimeout(r, 20));
+  check('P-Q-1 提问轮任务在问句展示后立刻标记已应用（不再以"结果待应用"挂在恢复条上）',
+    asked >= 1 && marked.length >= 1 && marked.every((id) => id === 'job-q-1'),
+    JSON.stringify({ asked, marked: marked.length, err: qErr }));
+  sandbox.api = saved.api; sandbox.toast = saved.toast; sandbox.runHarnessJob = saved.harness;
+  sandbox.askAIQuestion = saved.ask;
+  sandbox.directAIWrite = saved.direct; sandbox.showAITaskProgress = saved.card;
+  if (saved.editor) containers['#editor-content'] = saved.editor;
+  P.state.currentChapterId = saved.chapterId; P.state.workId = saved.workId; P.state.work = saved.work;
+  P.state.chapters = saved.chapters; P.state.aiContext = saved.aiContext;
+  P.state.aiWritePipelineRunning = saved.pipeRunning;
+}
+
 // --- 16) 「模型正在思考」相位：把长时间思考从"像卡死"变成看得见的进展 ---
 // 背景：DeepSeek 的思考以 `delta.reasoning_content` 逐片下发，正文之前**可能持续十几秒**。
 // 此前这些帧被整个忽略，客户端在这段时间里一帧都收不到 —— 进度卡上一直写着"已 0 字"，
@@ -3309,8 +3955,10 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   sandbox.TextDecoder = class { decode(b) { return b ? Buffer.from(b).toString('utf8') : ''; } };
   sandbox.reportClientLog = () => {};
   // 用记账替身而不是真进度卡：真卡片的 label 节点在 DOM 桩里取不到，断言会变成永久假绿/假红。
+  // ⚠️ update(tail, label) 有两个参数：tail 是卡片正文（心跳的"已思考 Ns"在这里），
+  // label 是卡片标题。只记 label 会看不到心跳文案（2026-10-02 实测撞到）。
   sandbox.showAITaskProgress = () => ({
-    update: (tail, label) => { updates.push(String(label || tail)); },
+    update: (tail, label) => { updates.push(String(tail || '')); if (label) updates.push(String(label)); },
     note: () => {}, close: () => {}, setCancel: () => {}
   });
   const sse = (frames) => {
@@ -3340,6 +3988,22 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('116a 进入思考时进度卡改说"模型正在思考"（十几秒的思考不再看起来像卡死）',
     withPhase.ok && updates.some((u) => u.includes('思考')),
     JSON.stringify(updates));
+
+  // 116a2（2026-10-02 补）：只有"进入思考"这一帧还不够 —— 实测成文轮首字延迟 25s，
+  // 期间卡片上一动不动仍然像卡死。服务端现在每 2.5s 发一次 heartbeat 心跳
+  // （带 elapsed_ms / reasoning_chars，仍不含推理内容），客户端要把它渲染成
+  // "已思考 Ns · 思考已写 M 字"，让作者看得出任务在推进。
+  updates.length = 0;
+  const withHeartbeat = await runFrames([
+    { phase: 'thinking', reasoning_chars: 12 },
+    { phase: 'thinking', heartbeat: true, elapsed_ms: 7500, reasoning_chars: 380 },
+    { delta: '正文' },
+    { done: true, text: '正文' }
+  ]);
+  check('116a2 思考期心跳让进度卡带上"已思考 Ns"与思考规模（首字到来前也在动）',
+    withHeartbeat.ok && updates.some((u) => /已思考\s*8?s/.test(u) && u.includes('380'))
+      && !updates.some((u) => u.includes('reasoning')),
+    JSON.stringify(updates));
   check('116b 思考相位不影响正文：交付的正文仍然只有模型写出的那部分',
     withPhase.ok && withPhase.value.text === '正文',
     JSON.stringify(withPhase.ok ? withPhase.value.text : String(withPhase.error)));
@@ -3351,10 +4015,16 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     JSON.stringify(updates));
 
   // 跨文件契约：DOM 桩看不出服务端到底怎么处理思考帧，直接读 server.js。
+  // ⚠️ 断言的是"服务端确实在 work_stream 的回调里发出 thinking 相位"，而不是某个固定字面量：
+  // 2026-10-02 起 onThinking 还带 `reasoning_chars`（只报思考规模、仍不转发推理内容），
+  // 旧断言钉死了 `onThinking: () => send({ phase: 'thinking' })` 这一整串，于是"合法的字段扩充"
+  // 会被判成回归。这里改为允许附加字段、同时继续钉住"不外泄推理内容"。
   const srvSrc = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
+  const thinkingWired = /onThinking:\s*\([^)]*\)\s*=>\s*send\(\{[^}]*phase:\s*'thinking'[^}]*\}\)/.test(srvSrc);
   check('116d 服务端只上报相位、不转发思考内容（推理过程不外泄，也不多传数据）',
-    srvSrc.includes('delta?.reasoning_content') && srvSrc.includes("onThinking: () => send({ phase: 'thinking' })"),
-    JSON.stringify({ detects: srvSrc.includes('reasoning_content'), wires: srvSrc.includes("send({ phase: 'thinking' })") }));
+    srvSrc.includes('delta?.reasoning_content') && thinkingWired
+      && !/send\(\{[^}]*reasoning_content\s*:/.test(srvSrc),
+    JSON.stringify({ detects: srvSrc.includes('reasoning_content'), wires: thinkingWired }));
 
   sandbox.fetch = savedFetch;
   sandbox.TextDecoder = savedDecoder;
@@ -3470,18 +4140,9 @@ P.traceStopStream();
     /^[0-9a-f]{8}$/.test(P.directionKeyHashOf('甲')) && P.directionKeyHashOf('甲') === P.directionKeyHashOf('甲')
       && P.directionKeyHashOf('甲') !== P.directionKeyHashOf('乙'));
 
-  const savedChaptersForBp = P.state.chapters;
-  P.state.chapters = [
-    { id: 901, blueprint_json: JSON.stringify({ scene_goal: '目标' }) },
-    { id: 902, blueprint_json: '{坏 JSON' },
-    { id: 903, blueprint_json: JSON.stringify({ other: 'x' }) },
-    { id: 904, blueprint_json: JSON.stringify(['a']) },
-    { id: 905, blueprint_json: '' },
-  ];
-  check('C1l savedBlueprintForChapter 保守判据：可解析且有已知字段才算；坏 JSON/数组/未知字段/空都不算',
-    !!P.savedBlueprintForChapter(901) && P.savedBlueprintForChapter(902) === null && P.savedBlueprintForChapter(903) === null
-      && P.savedBlueprintForChapter(904) === null && P.savedBlueprintForChapter(905) === null && P.savedBlueprintForChapter(0) === null);
-  P.state.chapters = savedChaptersForBp;
+  // C1l（2026-10-04 删除）：原用例断言 `savedBlueprintForChapter` 的保守判据。
+  // 作者报障"已有蓝图就跳过蓝图轮"之后，那条捷径整个被移除、函数与用例一并删除 ——
+  // 保留一条测死代码的用例，只会让"它还活着"这件事看起来像真的。新行为由 C3e 系列守。
 
   // C3：loadAIContext 的方向/阶段进请求；in-flight 去重按「方向+阶段」分键
   {
@@ -3528,7 +4189,9 @@ P.traceStopStream();
     P.state.aiContext = saved.aiContext; P.state.currentChapterId = saved.chapterId; P.state.workId = saved.workId; P.state.work = saved.work;
   }
 
-  // C3e：已保存蓝图 → 入口按蓝图方向做唯一一次 direction 装配，不再走 defer（也不产生第二次召回）
+  // C3e（2026-10-04 改写）：作者报障 —— 本章已有蓝图时，以前入口会**静默沿用旧蓝图并跳过蓝图轮**，
+  // 于是"改了前文/对蓝图不满意 → 再点一次 AI 写作（含结果弹窗里的「重新生成」）"仍然按旧蓝图写。
+  // 现在每次都必须完整执行：入口一律 defer 且显式跳过上一版蓝图层，蓝图轮照跑、照弹确认框。
   {
     const saved = {
       fetch: sandbox.fetch, api: sandbox.api, toast: sandbox.toast, report: sandbox.reportClientLog,
@@ -3563,6 +4226,22 @@ P.traceStopStream();
     sandbox.reportClientLog = () => {};
     sandbox.TextDecoder = class { decode(b) { return b ? Buffer.from(b).toString('utf8') : ''; } };
     sandbox.runHarnessJob = async () => ({ output: '' });
+    // 蓝图轮走直连：桩必须能分辨"这是在问蓝图"还是"这是在要正文"，
+    // 否则蓝图轮会拿到一段正文、整个流程就不是真实形状了。
+    const blueprintPrompts = [];
+    const savedDirect = sandbox.directAIWrite;
+    sandbox.directAIWrite = async (messages) => {
+      const prompt = String((messages && messages[0] && messages[0].content) || '');
+      if (prompt.includes('【蓝图】')) {
+        blueprintPrompts.push(prompt);
+        return '【蓝图】\n{"scene_goal":"雨夜摊牌","plot_points":"对峙","conflicts":"旧账被翻出","character_changes":"主角动摇","hook":"门外有人","references":""}';
+      }
+      return '';
+    };
+    // 蓝图确认框必须被走过一次：作者要能改、能重规划、也能跳过（这是"先出蓝图"的意义）
+    const savedConfirmFn = sandbox.showBlueprintConfirm;
+    let confirmCalls = 0;
+    sandbox.showBlueprintConfirm = async (bp) => { confirmCalls += 1; return { ...bp, skip: false, target_words: 3000 }; };
     let resultOpened = 0;
     sandbox.showAIWritingResult = async () => { resultOpened += 1; return null; };
     let applyCalls = 0;
@@ -3579,18 +4258,21 @@ P.traceStopStream();
     let writeErr = '';
     try { await P.performToolbarAIWrite('续写本章'); } catch (e) { writeErr = e.message; }
     const errModal = String(containers['#modal-root'].innerHTML).includes('AI 写作未完成');
-    check('C3e 已保存蓝图：入口直接做唯一一次 direction 装配（不出现 defer、来源=saved_blueprint）',
-      aiCalls.length === 1 && decodeURIComponent(aiCalls[0]).includes('library_recall_phase=direction')
-        && aiCalls[0].includes('direction_source=saved_blueprint')
-        && !aiCalls.some((u) => u.includes('library_recall_phase=defer')),
-      JSON.stringify({ aiCalls, err: writeErr, toasts: toasts.slice(0, 2) }));
-    check('C3e2 已保存蓝图路径不再自相矛盾地提示"本章蓝图未保存"（它本来就在库里）',
-      !toasts.some((t) => t.includes('本章蓝图未保存')), JSON.stringify(toasts));
-    check('C3f 该路径照常走到结果弹窗（跳过蓝图生成轮不代表流程中断）',
+    check('C3e 本章已有蓝图也照样先出蓝图：入口一律 defer + 显式跳过上一版蓝图层（不再有 saved_blueprint 捷径）',
+      aiCalls.length >= 2
+        && aiCalls[0].includes('library_recall_phase=defer') && aiCalls[0].includes('omit_layers=blueprint')
+        && !aiCalls.some((u) => u.includes('direction_source=saved_blueprint'))
+        && aiCalls.some((u) => u.includes('library_recall_phase=direction') && u.includes('direction_source=confirmed_blueprint')),
+      JSON.stringify({ aiCalls, err: writeErr, toasts: toasts.slice(0, 3) }));
+    check('C3e2 已有 blueprint_json 时蓝图轮照样跑（模型被问一次新蓝图）且新蓝图走确认框',
+      blueprintPrompts.length === 1 && confirmCalls === 1,
+      JSON.stringify({ blueprintPrompts: blueprintPrompts.length, confirmCalls }));
+    check('C3f 该路径照常走到结果弹窗（流程完整：蓝图 → 确认 → 成文）',
       resultOpened === 1 && applyCalls === 0 && !errModal && writeErr === '',
       JSON.stringify({ resultOpened, applyCalls, errModal, writeErr, modal: String(containers['#modal-root'].innerHTML).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 400), toasts }));
     sandbox.fetch = saved.fetch; sandbox.api = saved.api; sandbox.toast = saved.toast; sandbox.reportClientLog = saved.report;
     sandbox.showAIWritingResult = saved.showResult; sandbox.applyAIWritingArticle = saved.apply; sandbox.runHarnessJob = saved.harness;
+    sandbox.directAIWrite = savedDirect; sandbox.showBlueprintConfirm = savedConfirmFn;
     sandbox.TextDecoder = saved.decoder; sandbox.showAITaskProgress = saved.card;
     P.state.currentChapterId = saved.chapterId; P.state.workId = saved.workId; P.state.work = saved.work;
     P.state.chapters = saved.chapters; P.state.aiContext = saved.aiContext;
@@ -3598,6 +4280,90 @@ P.traceStopStream();
     P.state.aiTaskRunning = saved.aiTaskRunning;
   }
 }
+// --- P-OMIT-1（2026-10-04）：规划轮走慢通道时，检索工具也不许把上一版蓝图端出来 ---
+// 背景：前端那层 `omit_layers=blueprint` 只作用于**前端自己装配的上下文**。慢通道的模型还带着
+// 检索工具（novel_context → /api/novel/context、novel_lookup → /api/search 的 blueprint_json），
+// 那两条路各自去服务端取数据，会绕过前端。因此规划轮的 harness 任务必须带
+// `env.NOVEL_OMIT_LAYERS=blueprint`（服务端透传到子进程 → 插件按标记省略蓝图层与蓝图摘要）；
+// 成文轮不带 —— 那时新蓝图已确认，必须能被查到。
+{
+  const saved = {
+    fetch: sandbox.fetch, api: sandbox.api, toast: sandbox.toast, report: sandbox.reportClientLog,
+    showResult: sandbox.showAIWritingResult, apply: sandbox.applyAIWritingArticle, harness: sandbox.runHarnessJob,
+    direct: sandbox.directAIWrite, confirm: sandbox.showBlueprintConfirm, card: sandbox.showAITaskProgress,
+    chapterId: P.state.currentChapterId, workId: P.state.workId, work: P.state.work, chapters: P.state.chapters,
+    aiContext: P.state.aiContext, apiConfigs: P.state.apiConfigs, activeConfigId: P.state.activeConfigId,
+  };
+  P.state.aiTaskRunning = false;
+  P.state.currentChapterId = 610;
+  P.state.workId = 2;
+  P.state.work = { id: 2, title: '测试作品' };
+  P.state.apiConfigs = [{ id: 1, api_key: 'sk-test', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', temperature: 0.8, max_tokens: 4096 }];
+  P.state.activeConfigId = 1;
+  P.state.chapters = [{ id: 610, title: '第610章' }];
+  containers['#editor-content'] = mkEl('editor-content');
+  containers['#editor-content'].innerHTML = '<p>已有正文</p>';
+  containers['#editor-content'].dataset = { chapterId: '610' };
+  const baseApi = sandbox.api;
+  const ctxCalls = [];
+  const ledgerPosts = [];
+  sandbox.api = async (p, o = {}) => {
+    const s = String(p);
+    if (s.startsWith('/harness/run') && o && o.body && o.body.action === 'ledger') { ledgerPosts.push(o.body); return { job_id: '' }; }
+    if (s.startsWith('/ai_context') || s.startsWith('/novel/context')) {
+      ctxCalls.push(s);
+      return { assembled: '服务端装配文本', context_manifest: [], context_stats: { truncatedLayers: 0 } };
+    }
+    return baseApi(p, o);
+  };
+  sandbox.toast = () => {};
+  sandbox.reportClientLog = () => {};
+  sandbox.TextDecoder = class { decode(b) { return b ? Buffer.from(b).toString('utf8') : ''; } };
+  // 进度卡替身必须实现 track/runCancel：流式成文会注册取消句柄，缺了它会抛错并静默回退慢通道，
+  // 于是本用例测到的是"回退路径"而不是"直连成文 + 采纳 + 入账"。
+  sandbox.showAITaskProgress = () => ({ note() {}, close() {}, track: () => () => {}, runCancel: () => {} });
+  sandbox.directAIWrite = async () => '';   // 规划轮**强制走慢通道**，才能看到它的任务体
+  sandbox.showBlueprintConfirm = async (bp) => ({ ...bp, skip: false, target_words: 3000 });
+  let pOmitResultOpened = 0; let pOmitApplied = 0;
+  sandbox.showAIWritingResult = async () => { pOmitResultOpened += 1; return 'replace'; };   // 走到"采纳"，才会触发入账提案
+  sandbox.applyAIWritingArticle = async () => { pOmitApplied += 1; };
+  const bodies = [];
+  sandbox.runHarnessJob = async (body) => {
+    bodies.push(body || {});
+    const p = String(body?.prompt || '');
+    // 规划轮给蓝图，成文轮给正文：两轮都走慢通道，才能同时验 env 标记与"采纳后入账"。
+    return p.includes('【蓝图】')
+      ? { output: '【蓝图】\n{"scene_goal":"雨夜摊牌","plot_points":"对峙","conflicts":"旧账","character_changes":"主角动摇","hook":"门外有人","references":""}' }
+      : { output: '雨夜的正文。他把伞收起来，抖掉上面的水。' };
+  };
+  let omitErr = '';
+  try { await P.performToolbarAIWrite('续写本章'); } catch (e) { omitErr = e.message; }
+  const norm = (v) => String(v || '').split(',').filter(Boolean).sort().join(',');
+  const FULL = 'blueprint,events,foreshadows,memory,recall,scene';
+  const PROSE = 'events,foreshadows,memory,recall,scene';
+  check('P-OMIT-1 「重写本章」标记随规划轮的慢通道任务下发（含旧蓝图与"前面发生过什么"那一组）',
+    bodies.length >= 1 && norm(bodies[0]?.env?.NOVEL_OMIT_LAYERS) === FULL
+      && String(bodies[0].prompt || '').includes('【蓝图】'),
+    omitErr || JSON.stringify(bodies.map((b) => ({ env: b.env || null, head: String(b.prompt || '').slice(0, 16) }))));
+  // 两次前端装配都要带跳层参数：规划轮（defer）带全套，成文轮（direction）少 blueprint 一项
+  // —— 成文轮发生时新蓝图已确认，那一层此刻装的就是新蓝图。
+  const deferCall = ctxCalls.find((u) => u.includes('library_recall_phase=defer')) || '';
+  const dirCall = ctxCalls.find((u) => u.includes('library_recall_phase=direction')) || '';
+  check('P-OMIT-2 规划轮装配 omit 全套、成文轮装配少 blueprint（新蓝图必须可见）',
+    norm(decodeURIComponent(deferCall).match(/omit_layers=([^&]*)/)?.[1]) === FULL
+      && norm(decodeURIComponent(dirCall).match(/omit_layers=([^&]*)/)?.[1]) === PROSE,
+    JSON.stringify({ ctxCalls: ctxCalls.map((u) => decodeURIComponent(u).slice(0, 120)) }));
+  // 说明：这里**不**断言"重写模式额外补一次入账" —— 核对该需求时发现慢通道内核本来就会提交
+  // 入账提案（前端再补一次会变成两套提案），所以重写模式在该处不改行为。本用例只守三条：
+  // 慢通道任务的标记、两次装配的 omit 参数、以及流程仍能走到采纳。
+  sandbox.fetch = saved.fetch; sandbox.api = saved.api; sandbox.toast = saved.toast; sandbox.reportClientLog = saved.report;
+  sandbox.showAIWritingResult = saved.showResult; sandbox.applyAIWritingArticle = saved.apply; sandbox.runHarnessJob = saved.harness;
+  sandbox.directAIWrite = saved.direct; sandbox.showBlueprintConfirm = saved.confirm; sandbox.showAITaskProgress = saved.card;
+  P.state.currentChapterId = saved.chapterId; P.state.workId = saved.workId; P.state.work = saved.work;
+  P.state.chapters = saved.chapters; P.state.aiContext = saved.aiContext;
+  P.state.apiConfigs = saved.apiConfigs; P.state.activeConfigId = saved.activeConfigId;
+}
+
 // --- T6：五组独立导航（真实点击 + 每页只加载自己的数据）+ 章末状态面板 + 影响 / 逐章重建接线 ---
 {
   const savedT6 = {

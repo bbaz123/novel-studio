@@ -1,0 +1,17 @@
+import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
+const src = process.argv[2];
+const out = process.argv[3];
+const db = new DatabaseSync(src);
+const ch = db.prepare('SELECT id, updated_at, LENGTH(content) AS len FROM chapters WHERE id = 121').get();
+const n = db.prepare('SELECT COUNT(*) AS n FROM chapter_save_versions').get().n;
+console.log(`source ch121: len=${ch.len} updated_at=${ch.updated_at} | versions=${n}`);
+db.exec(`VACUUM INTO '${out.replace(/\\/g, '/')}'`);
+db.close();
+console.log(`clean copy: ${out} (${fs.statSync(out).size} bytes)`);
+const v = new DatabaseSync(out, { readOnly: true });
+const ch2 = v.prepare('SELECT id, updated_at, LENGTH(content) AS len FROM chapters WHERE id = 121').get();
+const n2 = v.prepare('SELECT COUNT(*) AS n FROM chapter_save_versions').get().n;
+const v49 = v.prepare('SELECT LENGTH(content) AS len FROM chapter_save_versions WHERE id = 49').get();
+console.log(`verify copy: ch121 len=${ch2.len} versions=${n2} v49 len=${v49.len}`);
+v.close();

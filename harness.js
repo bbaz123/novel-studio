@@ -939,11 +939,27 @@ export async function runHarnessTaskWithProgress(prompt, options = {}, onChunk) 
           clearTimeout(timer);
           cleanupSignal();
           if (code === 0) {
+            // 📝 记账要能分辨"跑完且有产出"和"跑完但是空的"（2026-10-04）：
+            // 旧日志只有 duration_ms/model，一次**输出 0 字**的慢通道任务和一次成功任务
+            // 在日志里长得一模一样（都写"Harness 任务完成"），作者事后问"任务完成但是没显示？"
+            // 时完全无从查起。现在把输出字数记进 context，并在空产出时单独告警一行。
+            const outChars = stdout.trim().length;
             log({
               level: 'info', layer: 'harness', kind: 'task_done',
-              message: 'Harness 任务完成',
-              context: { duration_ms: Date.now() - startedAt, model: options.model || '', reasoning_effort: reasoningEffort }
+              message: `Harness 任务完成（输出 ${outChars} 字符）`,
+              context: { duration_ms: Date.now() - startedAt, model: options.model || '', reasoning_effort: reasoningEffort, output_chars: outChars, exit_code: code }
             });
+            if (outChars === 0) {
+              log({
+                level: 'warn', layer: 'harness', kind: 'task_done_empty',
+                message: 'Harness 任务以退出码 0 结束，但输出为空 —— 这一步没有产出任何内容（作者不会看到结果弹窗）',
+                context: {
+                  duration_ms: Date.now() - startedAt, model: options.model || '',
+                  kind: options.kind || '', stage: options.stage || '',
+                  chapter_id: options.chapterId || null, work_id: options.workId || null
+                }
+              });
+            }
             recordHarnessTrace('harness 任务（慢通道）', { t0: traceT0, model: options.model || '', status: 'ok', result: stdout.trim() });
             resolve(stdout.trim());
           } else {

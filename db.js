@@ -1217,6 +1217,24 @@ const MIGRATIONS = [
   // 用户关掉弹窗（含「先审稿再应用」）不再等于稿件静默消失。
   // 默认 'manual' 让既有历史版本行为与语义完全不变。
   `ALTER TABLE chapter_save_versions ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'`,
+  // 草稿是否已被采纳进正文（2026-10-02）：采纳成功后把该草稿标记为已应用，
+  // 「取回生成稿」/恢复条不再把已经进正文的稿子当成"未应用"反复提示
+  //（真实事故：正文与草稿逐字相同，界面仍显示「有未应用的生成稿」）。
+  // 只标记、不删除：草稿仍留在版本表里可查。默认 0 → 存量草稿语义不变（仍视为未应用）。
+  `ALTER TABLE chapter_save_versions ADD COLUMN draft_applied INTEGER NOT NULL DEFAULT 0`,
+  // 作者主动「关闭」一份生成稿（2026-10-04）：这一版我不要了，以后别再提示。
+  // 为什么需要它：恢复条上的「有未应用的生成稿」此前只有「取回 / 预览」两个出口，
+  // 作者不想用这一版时，那条提示会永远挂在编辑器上方（实测报障："缺少关闭按钮"）。
+  // 为什么是标记而不是删除：与 draft_applied 同一思路 —— 关闭只影响提示，内容仍留在
+  // 版本表里（误点不会让整章产出凭空消失），且**不改正文**。
+  // 默认 0 → 存量草稿语义不变（仍然照常提示）。
+  `ALTER TABLE chapter_save_versions ADD COLUMN draft_dismissed INTEGER NOT NULL DEFAULT 0`,
+  // 作者主动「关闭」上次审稿的提示（2026-10-04）：恢复条上「🔍 上次审稿（N 个问题）」这一行
+  // 同样只有「查看」，作者不想再看时无处可点，提示就一直挂着。
+  // 注意它只影响**恢复条那条提示**：审稿记录本身照常可查（GET /novel/review 仍返回该行，
+  // 带 dismissed=1），因为"别再提示我"不等于"把报告删了"。
+  // 默认 0 → 存量审稿语义不变（仍然照常提示）。
+  `ALTER TABLE chapter_reviews ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0`,
   // 提案来源标记（AI 自压缩 = 'agent'）：让「来源」能跨落库/读取存活到作者采纳那一刻。
   // 默认空串 → 存量提案仍按普通提案处理，采纳语义不变。
   `ALTER TABLE story_memory_proposals ADD COLUMN guard TEXT NOT NULL DEFAULT ''`,

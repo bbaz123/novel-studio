@@ -121,9 +121,24 @@ const state = {
   editorSaveInFlight: new Map(), // 发送中的章节保存请求；导航时等待，避免只清定时器却丢回包
   editorConflictSnapshot: null, // 409 时保留本地稿，先让作者处理冲突，不静默覆盖
   editorSaveFailedSnapshot: null,
+  // 空内容保存护栏（2026-10-02）：正文本来有内容、编辑器却被清空时，暂停自动保存并让作者确认。
+  // 存的是"被拦下的空快照"；作者确认后才放行写入（见 scheduleSave / flushSave）。
+  editorEmptyBlocked: null,
+  // 本页为每一章见过的**最大正文字数**（只增不减）。空内容护栏的判据用它，而不是用
+  // state.chapters[].content —— 后者会被任何一次刷新或他处写入改成空/变短，
+  // 于是"正文曾经有 3982 字、现在编辑器是空的"这个事实就再也判不出来了（2026-10-02 事故的根因之一）。
+  chapterBodyPeak: new Map(),
+  // 采纳冲突（2026-10-02）：服务端正文在本次采纳期间真的变了，等作者选择如何处理。
+  pendingAdoptConflict: null,
   editorComposing: false,
   imeComposing: false,
-  aiTaskRunning: false, // F-43：harness 任务互斥锁
+  aiTaskRunning: false, // F-43：harness 任务互斥锁（单个 harness 任务用；成文管线有自己的一把，见下）
+  // 「AI 写本章」整条管线的互斥（2026-10-02）：**必须与 aiTaskRunning 分开**。
+  // 理由：管线内部会调用 runHarnessJob / streamAIDirectWrite，它们各自会在结束时把
+  // aiTaskRunning 置回 false —— 用同一个标志位做入口锁，蓝图轮一结束锁就没了；
+  // 反过来用深度计数去护住它，又会把"某个内层任务留下的残留标志"误当成"管线仍在跑"。
+  // 独立标志位只由 performToolbarAIWrite 自己置位/释放，语义单一。
+  aiWritePipelineRunning: false,
   demoStatusLoaded: false, // F-30：示例状态缓存，避免每次渲染都请求 /demo/status
   demoStatus: null,
   savedRange: null,
@@ -248,6 +263,14 @@ async function api(path, options = {}) {
     if (!res.ok) {
       const err = new Error((data && data.error) || extractReadableError(text, res.status));
       err.status = res.status;
+      // 服务端给的机器可判标记（如 EMPTY_OVERWRITE_BLOCKED）随错误对象一起带出去：
+      // 调用方要据此给出"怎么补救"的具体动作，而不是把那句中文再拿去做正则匹配。
+      // 纯附加字段，普通错误对象上没有这些键，行为不变。
+      if (data && typeof data === 'object') {
+        for (const k of ['code', 'current_chars']) {
+          if (data[k] !== undefined) err[k] = data[k];
+        }
+      }
       throw err;
     }
     return data ?? {};
@@ -666,7 +689,21 @@ function enhanceModalGenFill() {
   foot.insertBefore(btn, saveBtn);
 }
 
-function openModal({ title, body, footer = '', large = false, protectedBackdrop = false } = {}) {
+/**
+ * 打开弹窗。
+ *
+ * `protectedBackdrop` 现在**默认为 true**（2026-10-04，作者第二轮报障后定稿）：
+ * 点遮罩不关闭，只提示"请用右上角 ✕ 或按钮关闭"。
+ *
+ * 为什么从"逐个加保护"改成"默认全保护"：这个开关先只挂在采纳冲突框上，作者随后连续撞到
+ * 三处同类缺口 —— 提问窗口、蓝图确认框、AI 写作需求框（"我鼠标不小心点到窗口外面就关了"）。
+ * 逐个补是在追着报障跑；而**误触关闭的代价是不对称的**（丢掉输入 / 取消一次正在跑的付费任务），
+ * 所以默认应该是安全的那个方向。
+ *
+ * 仍要"点外面就关"的弹窗（纯信息/预览类）显式传 `protectedBackdrop: false` ——
+ * 关闭判定见全局 click 处理器里的 data-modal-backdrop 分支。
+ */
+function openModal({ title, body, footer = '', large = false, protectedBackdrop = true } = {}) {
   const root = $('#modal-root');
   state.modalReturnFocus = document.activeElement;
   root.innerHTML = `
@@ -731,6 +768,13 @@ function closeModal() {
   // 所有 pending* 都必须在同一个边界收口，否则"某条路径忘了清"就变成长期泄漏。
   state.pendingAIApply = null;
   state.pendingReviewDiff = null;
+  // 采纳冲突确认框被 ✕ / 点遮罩关掉时，等在那里的 Promise 必须有个结局，
+  // 否则这条采纳流程会永远挂着（作者看不到任何后续提示）。按"先不写"处理。
+  if (state.pendingAdoptConflict) {
+    const pendingConflict = state.pendingAdoptConflict;
+    state.pendingAdoptConflict = null;
+    try { if (pendingConflict.resolve) pendingConflict.resolve(false); } catch (_) { /* 收口失败不影响关弹窗 */ }
+  }
   // 弹窗关闭闸的状态同理：必须在同一处清空，否则下一个弹窗会继承上一个的快照/保护位。
   state.modalBaseline = null;
   state.modalProtected = false;
@@ -840,6 +884,14 @@ function chapterWordCount(chapter) {
   const count = wordCount(chapter.content);
   chapterWordCountCache.set(chapter.id, { content: chapter.content, count });
   return count;
+}
+
+/** 内存里该章的正文（没有则空串）。空内容护栏的"这一章原本有没有正文"判据用它。 */
+function chapterContentOf(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return '';
+  const row = (state.chapters || []).find((c) => Number(c.id) === id);
+  return row && typeof row.content === 'string' ? row.content : '';
 }
 
 function setSidebar(show) {
@@ -993,6 +1045,13 @@ async function loadWorkData(force = false) {
   });
   state.libraryLoaded = false; // P4：资料层的「按作品开关」随作品切换失效，下次进资料库页时重新取
   chapterWordCountCache.clear(); // F-29：章节全量重建，字数缓存失效
+  // 空内容护栏的"该章曾经有多少字"：**按最大值累积，绝不因为某次载入变短就下调**。
+  // 只在服务端确认过的正文比记忆里更长时才上调；本页自己写空/写短时服务端也会有这一版，
+  // 但那是"已知的破坏结果"，不该拿来把护栏的判据冲淡（事故正是这样发生的）。
+  for (const c of state.chapters) {
+    const n = readableCharCount(c.content);
+    if (n > (Number(state.chapterBodyPeak.get(c.id)) || 0)) state.chapterBodyPeak.set(c.id, n);
+  }
   state.terms.forEach((t) => state.termsCache.set(t.id, t));
   state.characters.forEach((c) => state.charsCache.set(c.id, c));
   if (!state.activeConfigId && apiConfigs.length) state.activeConfigId = apiConfigs[0].id;
@@ -1000,10 +1059,14 @@ async function loadWorkData(force = false) {
 
 // 所有会替换编辑器或作品上下文的入口共用这一闸门。失败时保留当前正文与光标，
 // 不让一次点击把未保存稿带到另一个作品/章节。
+// 注意：这里只剩"输入法组字中 / 409 真冲突"两种拦人状态（见 flushSave）；空内容暂停
+// 与保存失败都不再阻止导航 —— 它们是提示与出路问题，不是"不许走"问题。
 async function ensureSavedBeforeNavigation() {
   const ok = await flushSave();
   if (!ok) {
-    toast('当前章节未能保存，已保留原页面；请处理保存冲突后再离开', 'error');
+    toast(state.editorEmptyBlocked
+      ? '本章编辑器当前是空的，已暂停保存以免覆盖正文：请恢复内容，或用「历史版本/取回生成稿」找回后重试'
+      : '当前章节有未解决的保存冲突，已保留原页面；请选择留哪一版后再离开', 'error');
     return false;
   }
   return true;
@@ -1343,12 +1406,31 @@ function recoveryBarHtml(current) {
   const d = state.chapterDraft;
   const r = state.chapterReview;
   const draftOk = d && Number(d.chapter_id) === Number(current.id);
-  const reviewOk = r && Number(r.chapter_id) === Number(current.id);
+  // r.dismissed：作者已经把「上次审稿」这条提示关掉（2026-10-04）——审稿记录照旧可查，
+  // 但这一行不再显示。判据放在这里而不是服务端过滤：关闭是关于"提示"的，
+  // 别的入口（例如从审稿页回看）不该因此查不到报告。
+  const reviewOk = r && Number(r.chapter_id) === Number(current.id) && !r.dismissed;
   const jobs = Array.isArray(state.chapterJobs) ? state.chapterJobs : [];
   const saveFailed = state.editorSaveFailedSnapshot && Number(state.editorSaveFailedSnapshot.id) === Number(current.id);
-  if (!draftOk && !reviewOk && !jobs.length && !saveFailed) return '';
+  // 「编辑器被清空、自动保存已暂停」也是这一条恢复条要说话的状态：两条出路（取回原稿 / 明确清空）
+  // 都只有这里能提供。事故复盘：旧实现只把暂停写进状态栏，作者看到"暂停了"却没有任何可点的动作。
+  const bodyEmpty = state.editorEmptyBlocked && Number(state.editorEmptyBlocked.id) === Number(current.id);
+  if (!draftOk && !reviewOk && !jobs.length && !saveFailed && !bodyEmpty) return '';
   const items = [];
-  if (saveFailed) items.push(`<span class="recovery-item">⚠ 正文保存失败：${esc(state.editorSaveFailedSnapshot.message || '请重试')} <button class="btn small" data-action="manual-save-chapter">重试保存</button></span>`);
+  if (bodyEmpty) {
+    const held = knownChapterBodyChars(current.id);
+    items.push(`<span class="recovery-item">🛡 本章编辑器是空的，<b>自动保存已暂停</b>（正文没有被覆盖${held ? `：库里仍有 ${held} 字` : ''}）
+      <button class="btn small" data-action="editor-empty-restore">取回历史版本</button>
+      <button class="btn small secondary" data-action="editor-empty-clear">确认清空本章</button></span>`);
+  }
+  if (saveFailed) {
+    // 空正文被服务端拦下时"重试保存"只会再被拦一次；先给能走通的那两步。
+    const blocked = state.editorSaveFailedSnapshot.code === 'EMPTY_OVERWRITE_BLOCKED';
+    items.push(`<span class="recovery-item">⚠ 正文${blocked ? '空内容写入被服务端拦下，正文未被改动' : `保存失败：${esc(state.editorSaveFailedSnapshot.message || '请重试')}`}
+      ${blocked
+        ? '<button class="btn small" data-action="editor-empty-restore">取回历史版本</button><button class="btn small secondary" data-action="editor-empty-clear">确认清空本章</button>'
+        : '<button class="btn small" data-action="manual-save-chapter">重试保存</button>'}</span>`);
+  }
   // 长任务：刷新/重启后仍要看得出「还在跑」还是「跑完了没应用」。
   for (const j of jobs.slice(0, 4)) {
     const st = jobStatusLabel(j);
@@ -1356,6 +1438,10 @@ function recoveryBarHtml(current) {
     const actions = [];
     if (st.canResume) actions.push(`<button class="btn small" data-action="resume-job" data-id="${esc(j.id)}">接回进度</button>`);
     if (st.canFetch) actions.push(`<button class="btn small" data-action="fetch-job" data-id="${esc(j.id)}">取回结果并应用</button>`);
+    // 「关闭」只出现在**已经结束**的任务上（2026-10-04：作者截图里三条「已完成，结果待应用」同样没有出口，
+    // 那些结果他永远不想要，提示却一直挂着）。判据直接用 canResume —— 还在跑的行只能停止/接回：
+    // 把一条还在跑的任务"关掉"，等于把"它还在跑"这件事藏起来，那是误导，不是关闭。
+    if (!st.canResume) actions.push(`<button class="btn small secondary" data-action="dismiss-job" data-id="${esc(j.id)}" title="这条结果不要了：以后不再提示（任务记录与产出仍留在库里，正文不受影响）">✕ 关闭</button>`);
     items.push(`<span class="recovery-item">${st.cls === 'err' ? '⚠️' : '⏳'} ${esc(what)}：<b class="recovery-${st.cls}">${st.text}</b>
       ${j.output_chars ? `· 产出 ${j.output_chars} 字符` : ''}
       ${j.error ? `· ${esc(String(j.error).slice(0, 60))}` : ''}
@@ -1364,24 +1450,56 @@ function recoveryBarHtml(current) {
   if (draftOk) {
     items.push(`<span class="recovery-item">🗂 有未应用的生成稿（${Number(d.chars) || 0} 字，${fmtTraceTime(d.created_at)}）
       <button class="btn small" data-action="restore-draft">取回生成稿</button>
-      <button class="btn small secondary" data-action="preview-draft">预览</button></span>`);
+      <button class="btn small secondary" data-action="preview-draft">预览</button>
+      <button class="btn small secondary" data-action="dismiss-draft" title="这一版不要了：以后不再提示（不会改动正文，内容也不删除）">✕ 关闭</button></span>`);
   }
   if (reviewOk) {
     const label = r.parsed
       ? `🔍 上次审稿（${Number(r.issue_count) || 0} 个问题，${fmtTraceTime(r.created_at)}）`
       : `🔍 上次审稿格式异常，已存原文（${fmtTraceTime(r.created_at)}）`;
     items.push(`<span class="recovery-item">${label}
-      <button class="btn small secondary" data-action="open-last-review">查看</button></span>`);
+      <button class="btn small secondary" data-action="open-last-review">查看</button>
+      <button class="btn small secondary" data-action="dismiss-review" data-id="${Number(r.id) || 0}" title="这条提示不要了：以后不再提示（审稿报告仍留在库里，正文不受影响）">✕ 关闭</button></span>`);
   }
   return `<div class="recovery-bar">${items.join('')}</div>`;
 }
 
-/** 拉取当前章节的草稿与最近审稿状态（失败静默：这只是辅助提示，不该影响写作）。 */
+/**
+ * 就地重画恢复条（不整页 render）。
+ * 为什么不用 render()：它会重建编辑器节点，正在写的人会丢光标与撤销栈；
+ * 而恢复条只是一段提示，自己重画即可。
+ *
+ * `chapterId` 可显式指定（护栏那几条路拿得到编辑器上的章号）；不传时按
+ * 当前章 → 编辑器 dataset 的顺序取。顺序不能倒过来：编辑器节点在切章的一瞬间可能还挂着
+ * 上一章的 dataset，而"当前章"是我们真正要画的那一条（渲染路径自己会用 dataset 取数）。
+ */
+function refreshRecoveryBar(chapterId = 0) {
+  if (typeof document === 'undefined') return false;
+  const box = document.getElementById('chapter-recovery');
+  if (!box) return false;
+  const editor = document.getElementById('editor-content');
+  const id = Number(chapterId) || Number(state.currentChapterId) || Number(editor?.dataset?.chapterId) || 0;
+  const cur = state.chapters.find((c) => c.id === id);
+  if (!cur) return false;
+  // 每条自己会核对 chapter_id（recoveryBarHtml 里逐条比对），所以这里不存在"画错章的提示"。
+  box.innerHTML = recoveryBarHtml(cur);
+  return true;
+}
+
+/**
+ * 拉取当前章节的草稿与最近审稿状态（失败静默：这只是辅助提示，不该影响写作）。
+ *
+ * ⚠️ 末尾**必须**就地重画一次恢复条（2026-10-04 事故）：本函数是"让恢复条反映最新状态"的
+ * 主入口，而取数据与画界面此前被拆在两处（画的那句写在 render() 的 .then 里）。
+ * 于是"调了 refreshChapterRecovery 就等于界面会更新"这个假设是错的 —— 空稿护栏那三条路
+ * 正是这么调的，作者看到"用恢复条取回原稿，或明确选择清空本章"，恢复条上却什么都没有。
+ */
 async function refreshChapterRecovery(chapterId) {
   const id = Number(chapterId);
   if (!id) {
     state.chapterDraft = null;
     state.chapterReview = null;
+    refreshRecoveryBar();
     return;
   }
   state.recoveryForChapter = id;
@@ -1408,6 +1526,7 @@ async function refreshChapterRecovery(chapterId) {
     state.chapterReview = null;
     state.chapterJobs = [];
   }
+  refreshRecoveryBar(id);
 }
 
 /**
@@ -3380,6 +3499,49 @@ async function renderContextTab(list) {
 
 // F-01：自动保存用闭包快照捕获当时的章节与内容，800ms 后触发时不再重查 DOM，
 // 避免定时器在编辑器已被替换（切章/切视图）后才触发而把新章节内容写回旧章节或丢字。
+//
+// ── 空内容保存护栏的三个判据（2026-10-02 事故后重做，与旧实现的口径差别写清）──
+/** 正文"有内容"的判据下限：低于这些可读字符的稿子不再算"值得保护的正文章节"。 */
+const EMPTY_SAVE_MIN_CHARS = 50;
+/**
+ * 可读字符数（汉字/字母/数字；不含标点与空白）。
+ * 与 wordCount（去空白后计长）分工不同：只有标点、空行、零宽字符的稿子救不回来，
+ * 不该用"长度"去冒充"内容"—— 服务端 checkEmptyOverwrite 用的是同一口径，两侧必须一致。
+ */
+function readableCharCount(text) {
+  const t = typeof stripHtml === 'function' ? stripHtml(String(text == null ? '' : text)) : String(text == null ? '' : text);
+  const m = t.match(/[\p{Script=Han}\p{L}\p{N}]/gu);
+  return m ? m.length : 0;
+}
+/** 快照是不是"空正文"（去标签后无任何可读字符；`<div><br></div>` 也算空）。 */
+function editorSnapIsBlank(html) {
+  return readableCharCount(html) === 0;
+}
+/** 本页为某章见过的最大正文可读字数（只增不减，切章/刷新都不会把它变小）。 */
+function knownChapterBodyChars(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return 0;
+  const prior = Number(state.chapterBodyPeak.get(id)) || 0;
+  let known = prior;
+  try {
+    const snap = state.editorSaveSnapshot;
+    if (snap && Number(snap.id) === id) known = Math.max(known, readableCharCount(snap.content));
+  } catch (_) { /* 读快照失败不影响已记住的峰值 */ }
+  try {
+    const editor = $('#editor-content');
+    if (editor && Number(editor.dataset.chapterId) === id) known = Math.max(known, readableCharCount(editor.innerHTML));
+  } catch (_) { /* 无编辑器节点时只用已记住的峰值 */ }
+  if (known > prior) state.chapterBodyPeak.set(id, known);
+  return known;
+}
+function setEditorEmptyHoldStatus(reason) {
+  const status = $('#editor-status');
+  if (!status) return;
+  const n = Number(state.editorSaveFailedSnapshot?.chapter_chars)
+    || (state.editorEmptyBlocked ? knownChapterBodyChars(state.editorEmptyBlocked.id) : 0);
+  status.innerHTML = `<span class="err">⏸ ${esc(reason)}：已暂停保存，正文未被覆盖</span>` + (n ? ` · <span>原正文 ${n} 字仍在</span>` : '');
+}
+
 function scheduleSave() {
   clearTimeout(state.editorSaveTimer);
   const editor = $('#editor-content');
@@ -3389,10 +3551,35 @@ function scheduleSave() {
     content: editor ? editor.innerHTML : '',
     title: title ? title.value : ''
   };
+  // 每敲一次就把"本页见过的该章最大正文"记一遍：护栏的判据因此不依赖任何会被刷新改小的状态。
+  if (state.editorSaveSnapshot.id) knownChapterBodyChars(state.editorSaveSnapshot.id);
   if (!state.editorComposing) state.editorSaveTimer = setTimeout(() => {
     state.editorSaveTimer = null;
     const snap = state.editorSaveSnapshot;
     state.editorSaveSnapshot = null;
+    // 🛡 空内容保存护栏（2026-10-02 事故后重做）：正文本来有内容、编辑器却空了 —— 一次误触
+    // （全选删除 / 误按替换 / 另一条写通道把内容换掉了）就会在 800ms 后把整章覆盖成空白。
+    //
+    // 与旧实现的区别（事故复盘）：旧版在这里弹 confirm 让作者确认，而**判据是内存里的
+    // state.chapters[].content**。那一份内存稿一旦已经是空的（例如此前发生过一次空写、
+    // 或该章是从别处被改空的），护栏就永久失效并继续放行；而且它只看得见这条自动保存通道。
+    // 现在：① 判据用"本页见过的最长正文"（只增不减，不受刷新/他处写入影响）；
+    //       ② 交互改成**只暂停，不弹窗**——写入永远不经作者之外的手落到空稿上；
+    //       ③ 服务端另有一道以库里现正文为准的权威护栏（EMPTY_OVERWRITE_BLOCKED）。
+    // 判据只用"编辑器可见文本 + 该章正文长度"，不参与任何生成决策。
+    if (snap && editorSnapIsBlank(snap.content) && knownChapterBodyChars(snap.id) > EMPTY_SAVE_MIN_CHARS) {
+      state.editorEmptyBlocked = snap;
+      setEditorEmptyHoldStatus('编辑器为空');
+      toast('编辑器当前是空的，已暂停自动保存（正文没有被覆盖）——用编辑器上方的恢复条取回原稿，或明确选择清空本章', 'error');
+      // 必须**当场**把恢复条画出来：两条出路（取回原稿 / 确认清空）都在那里，
+      // 否则作者只看到一句"用恢复条…"却找不到任何按钮（2026-10-04 报障原文：
+      // "你没有按钮让我选择清空本章，一刷新又恢复了"）。
+      // ⚠️ 只调 refreshChapterRecovery 不够：它以前只取数据不碰 DOM，而且"该章数据已取过"
+      // （state.recoveryForChapter === snap.id，打开章节后必然如此）时连这个调用都会被跳过。
+      refreshRecoveryBar(snap.id);
+      if (snap.id && state.recoveryForChapter !== snap.id) refreshChapterRecovery(snap.id).catch(() => { /* 提示层失败不影响写作 */ });
+      return;
+    }
     if (snap && !state.editorConflictSnapshot) saveChapterSnapshot(snap);
     else if (snap) state.editorSaveSnapshot = snap;
   }, 800);
@@ -3405,8 +3592,37 @@ function scheduleSave() {
 
 // F-01：立即落盘——清掉待执行的定时器并把最新快照同步保存（幂等：无待保存快照时为空操作）。
 // 在所有「切换章节 / 离开写作视图 / 切换作品 / 手动·批量保存前」路径调用，确保 800ms 内切章不丢字。
+//
+// 🚦 导航闸门的口径（2026-10-02 事故后修正）：**正文永远不会因为导航而丢**，所以"保存有问题"
+// 只该给出提示与出路，不该把作者锁在原地。旧实现只要存在未解决的空内容暂停 / 保存失败快照
+// 就返回 false，而它被 20 多处导航调用 —— 于是任何一次保存异常都会让切章、开面板、AI 工具
+// 全部失灵，"保存问题影响正常操作"的最大来源正是这里。
+// 现在只有两种状态仍然拦人：**正在输入法组字**（拦一下不会丢任何东西）和**409 真冲突**
+// （作者必须明确选一版，服务端那一版与本地这一版不可能自动合并）。
 async function flushSave() {
+  const ok = await flushEditorSaves();
+  // 空内容暂停：稿子的原样留在编辑器里（护栏没有覆盖任何正文），切走只会丢掉"那一版空白"，
+  // 而它本来就不该落盘 —— 提示一句，然后放行。
+  //
+  // ⚠️ 这句提示**只该属于"导航"**（2026-10-02 晚修正）：它曾被放在 flushSave 里，而
+  // `adoptEditorContentImpl` / `mergeReviewDiff`（合并到正文那条）也会调 flushSave ——
+  // 于是"合并修稿"这种**完全不经过编辑器**的操作也会弹出"本章编辑器是空的，已暂停保存"，
+  // 看起来像是它把操作挡住了（作者实际报的就是这一条）。现在把提示与"等待落盘"拆开：
+  //   · flushEditorSaves()  —— 只做"把在途/待写的稿子写完"，**不产生任何界面提示**，供所有内部流程调用；
+  //   · flushSave()         —— 导航闸门，在核心之上补那句（仍然返回 true 放行）。
+  if (state.editorEmptyBlocked) {
+    toast('本章编辑器是空的，已暂停保存（正文没有被覆盖）：原稿可用「历史版本 / 取回生成稿」找回；确实要清空本章请在恢复条里确认', 'error');
+  }
+  return ok;
+}
+
+/**
+ * 把编辑器"待写的稿子"落盘（flushSave 的核心，**无界面副作用**）。
+ * @returns {boolean} false = 有 409 真冲突或输入法组字中（作者必须自己处置）；其余情况一律 true。
+ */
+async function flushEditorSaves() {
   if (state.editorComposing || state.editorConflictSnapshot) return false;
+  clearEditorEmptyBlockIfStale();
   clearTimeout(state.editorSaveTimer);
   state.editorSaveTimer = null;
   // 等待时作者仍可能输入。循环处理最新快照，而不是把旧请求成功当作最新稿成功。
@@ -3418,11 +3634,36 @@ async function flushSave() {
       ...(snap ? [saveChapterSnapshot(snap)] : []),
       ...state.editorSaveInFlight.values()
     ]);
-    if (!results.every(Boolean)) return false;
+    if (!results.every(Boolean)) break;
     clearTimeout(state.editorSaveTimer);
     state.editorSaveTimer = null;
   }
-  return !state.editorSaveFailedSnapshot && !state.editorConflictSnapshot;
+  return !state.editorConflictSnapshot;
+}
+
+/**
+ * 清掉**已经过期**的空内容暂停态。
+ *
+ * 为什么必须有（2026-10-02 晚，作者报"修稿完成后无法加进正文"）：暂停态是一个**粘性标记**，
+ * 只在"作者显式清空"或"采纳成功"时才被清。作者把正文粘回编辑器（或那段空稿本来就是另一章/
+ * 另一时刻的）之后，标记还挂着，于是**之后每一次保存/导航都继续按"编辑器是空的"处理**，
+ * 反复弹出那条与当下无关的提示。判据：编辑器此刻**不是空的**、且**装的正是被拦下的那一章**。
+ */
+function clearEditorEmptyBlockIfStale() {
+  const blocked = state.editorEmptyBlocked;
+  if (!blocked) return false;
+  const editor = $('#editor-content');
+  if (!editor) return false;
+  if (blocked.id && Number(editor.dataset.chapterId) !== Number(blocked.id)) return false;
+  if (editorSnapIsBlank(editor.innerHTML)) return false;   // 真的还是空的：保留暂停态
+  state.editorEmptyBlocked = null;
+  state.editorSaveFailedSnapshot = null;
+  // 恢复条上那条「🛡 编辑器是空的，自动保存已暂停」此刻已经过期（正文回来了）：
+  // 不刷新的话它会一直挂着，比不提示更误导。刷新失败不影响保存本身。
+  const box = typeof document !== 'undefined' ? document.getElementById('chapter-recovery') : null;
+  const cur = (state.chapters || []).find((c) => Number(c.id) === Number(blocked.id));
+  if (box && cur) box.innerHTML = recoveryBarHtml(cur);
+  return true;
 }
 
 // 参考面板「伏笔」页签：未闭合/已回收/已废弃分组，可跳转章节、标记状态。
@@ -3561,45 +3802,15 @@ async function saveRedlines() {
 // F-07：PUT /chapters/:id 是部分更新——未传字段保持不变（后端 updateRow 仅更新 data[f]!==undefined 的字段），
 // 因此这里每次显式传 title/content/summary；summary 保持不变也从本地回读补上，避免被部分更新清空。
 // F-08：body 带 _if_updated_at 乐观锁，冲突（409）时提示并重载。
+//
+// 实现已收敛到 writeChapterBody（唯一写入出口）：本函数只保留"同一章同一时刻只有一个写入在途"
+// 的登记（flushSave / beforeunload 依赖这个 Map 判断"还有稿子没落库"），以及布尔返回值。
+// 空内容判据、409 冲突态、失败留稿这三件事因此不可能再与手动保存走出两套语义。
 async function saveChapterSnapshot({ id, content, title }) {
   if (!id) return true;
-  const chapter = state.chapters.find((c) => c.id === id);
-  const body = {
-    title: title || '未命名章节',
-    content: sanitizeEditorHtml(content), // F-03：保存前白名单消毒
-    summary: chapter?.summary || ''
-  };
-  if (chapter?.updated_at) body._if_updated_at = chapter.updated_at;
   const request = (async () => {
-   try {
-    const updated = await api(`/chapters/${id}`, { method: 'PUT', body });
-    const idx = state.chapters.findIndex((c) => c.id === id);
-    if (idx >= 0) state.chapters[idx] = updated;
-    if (state.workId) state.workMeta.delete(Number(state.workId));
-    state.editorSaveFailedSnapshot = null;
-    const status = $('#editor-status');
-    if (status) status.innerHTML = '<span class="ok">✔ 已自动保存</span> · <span>' + wordCount(content) + '</span> 字';
-    return true;
-  } catch (e) {
-    if (e.status === 409) {
-      // UI-2：冲突时保留本地快照；自动刷新服务端内容会静默抹掉作者刚输入的文字。
-      let server = null;
-      try { server = await api(`/chapters/${id}`); } catch (_) { /* 服务器暂时不可读，仍保留本地稿 */ }
-      state.editorConflictSnapshot = {
-        id, content, title,
-        serverUpdatedAt: server?.updated_at || chapter?.updated_at || null,
-        serverContent: server?.content,
-        serverTitle: server?.title
-      };
-      toast('检测到其他窗口的修改，本地内容已保留，请先处理冲突', 'error');
-      showEditorConflictActions();
-      return false;
-    }
-    const status = $('#editor-status');
-    if (status) status.innerHTML = `<span class="err">保存失败：${esc(e.message)}</span>`;
-    state.editorSaveFailedSnapshot = { id, content, title, message: e.message || '保存失败' };
-    return false;
-   }
+    const verdict = await writeChapterBody(id, { content, title });
+    return verdict === 'saved';
   })();
   state.editorSaveInFlight.set(Number(id), request);
   try { return await request; } finally { if (state.editorSaveInFlight.get(Number(id)) === request) state.editorSaveInFlight.delete(Number(id)); }
@@ -3652,7 +3863,8 @@ async function resolveEditorConflict(choice) {
     const idx = state.chapters.findIndex((c) => c.id === id);
     if (idx >= 0) state.chapters[idx] = latest;
     state.editorConflictSnapshot = null;
-    const ok = await saveChapterSnapshot(snapshot);
+    // 冲突已由作者选了"以本地为准"→ 这一次写入是明确的作者意图，不再次询问空内容。
+    const ok = (await writeChapterBody(id, { ...snapshot, confirmEmpty: true })) === 'saved';
     if (!ok) return false;
     state.editorSaveSnapshot = null;
     const status = $('#editor-status');
@@ -3672,6 +3884,11 @@ async function saveCurrentChapter() {
 // ---------- manual save / version history ----------
 // F-16：写通道注释——PUT /chapters/:id = 编辑器保存（自动/手动，乐观锁 + 白名单消毒）；
 // 另有 POST /novel/chapter_save = 审稿合并 / 批量生成写回（走 textToParagraphsHtml，旧稿自动存历史版本）。
+//
+// ⚠️ 手动保存空正文的护栏（2026-10-02 事故后补）：手动保存**不是**空正文的旁路。
+// 事故形状：手动保存这条路只经过 saveCurrentChapter（没有任何空内容判据），而它的孪生调用方
+// applyAIReply 在"应用 AI 结果"前正是用它做备份 —— 于是"编辑器被清空"这件事既没有护栏
+// 也没有提示，一路写到库里。现在它与自动保存共用同一条判据，共享同一个显式出口。
 async function manualSaveChapter() {
   const editor = $('#editor-content');
   const title = $('#editor-title');
@@ -3681,8 +3898,8 @@ async function manualSaveChapter() {
   // F-01：取消待执行的自动保存定时器，避免与本次手动 PUT 重复写入（乐观锁下会误判 409）。
   if (state.editorSaveTimer) { clearTimeout(state.editorSaveTimer); state.editorSaveTimer = null; state.editorSaveSnapshot = null; }
   try {
-    const ok = await saveCurrentChapter();
-    if (!ok) return; // 409 冲突：已提示并重载，不继续创建历史版本
+    const ok = await saveCurrentChapterChecked(id);
+    if (!ok) return; // 空内容 / 409 冲突：都不该再往下创建历史版本，也不该静默通过
     const version = await api('/chapter_versions', {
       method: 'POST',
       body: {
@@ -3698,6 +3915,216 @@ async function manualSaveChapter() {
   }
 }
 
+/**
+ * 编辑器正文写入的唯一出口（自动保存 / 手动保存 / 确认清空 / 取回历史版本共用）。
+ *
+ * 为什么要收敛成一个出口：此前"编辑器保存"分散在三处（scheduleSave 的定时器、
+ * flushSave 的等待循环、manualSaveChapter / saveCurrentChapter），每一处各自决定
+ * "要不要拦空内容、要不要弹确认、失败后怎么办" —— 结果就是同一件事在三条路径上语义不同。
+ *
+ * @param {number} chapterId
+ * @param {object} opts
+ *   · content/title   要写入的内容（默认取当前编辑器）
+ *   · confirmEmpty    作者已明确"就是要清空本章"；缺省时**不做任何交互**——
+ *                     判据命中就返回 'empty'，把"要不要清空"留给调用方去问、去显示出路。
+ *   · onEmptyConfirm  判据命中且未确认时的回调（由调用方决定交互方式）
+ * @returns {'saved'|'empty'|'conflict'|'error'}
+ */
+async function writeChapterBody(chapterId, { content = null, title = null, summary = undefined, confirmEmpty = false, onEmptyConfirm = null } = {}) {
+  const id = Number(chapterId) || 0;
+  if (!id) return 'error';
+  const editor = $('#editor-content');
+  const titleEl = $('#editor-title');
+  const html = content !== null ? content : (editor ? editor.innerHTML : '');
+  const useTitle = title !== null ? title : (titleEl ? titleEl.value : '');
+  const chapter = state.chapters.find((c) => c.id === id);
+  // ① 只在"本页见过该章有正文、而这次要写空"时介入。判据是**只增不减**的峰值，
+  //    不是 state.chapters[].content —— 后者可以被刷新/他处写入改成空，护栏会因此永久失效。
+  if (!confirmEmpty && editorSnapIsBlank(html) && knownChapterBodyChars(id) > EMPTY_SAVE_MIN_CHARS) {
+    // 先把服务端意见问出来（它才是权威；服务端认为该章正文不多就会放行）。
+    try {
+      await api(`/chapters/${id}`, { method: 'PUT', body: buildChapterWriteBody(id, html, useTitle, summary) });
+      return 'saved';
+    } catch (e) {
+      if (e.code === 'EMPTY_OVERWRITE_BLOCKED') {
+        // 两条拒绝路径（探针被拦 / 正常写入被拦）必须收敛到**同一套状态**：暂停态、可见出路、
+        // 状态栏说明。此前探针这条路只返回 'empty'，界面于是"什么都没发生"——
+        // 作者既看不到暂停提示，也没有恢复条上的两个出路按钮（回归用例抓到的正是这个不对称）。
+        tripEmptyGuardState(e, id, html, useTitle);
+        if (typeof onEmptyConfirm === 'function') onEmptyConfirm(e);
+        return 'empty';
+      }
+      return handleChapterWriteError(e, id, html, useTitle);
+    }
+  }
+  try {
+    const body = buildChapterWriteBody(id, html, useTitle, summary);
+    if (confirmEmpty) body.confirm_empty = true;
+    const updated = await api(`/chapters/${id}`, { method: 'PUT', body });
+    const idx = state.chapters.findIndex((c) => c.id === id);
+    if (idx >= 0) state.chapters[idx] = updated;
+    if (state.workId) state.workMeta.delete(Number(state.workId));
+    state.editorSaveFailedSnapshot = null;
+    const status = $('#editor-status');
+    if (status) status.innerHTML = '<span class="ok">✔ ' + (confirmEmpty ? '已按确认清空本章' : '已自动保存') + '</span> · <span>' + wordCount(html) + '</span> 字';
+    return 'saved';
+  } catch (e) {
+    return handleChapterWriteError(e, id, html, useTitle);
+  }
+}
+
+/** PUT /chapters/:id 的请求体（F-07 部分更新语义：显式带上 title/summary，避免被清空）。 */
+function buildChapterWriteBody(chapterId, html, title, summary = undefined) {
+  const chapter = state.chapters.find((c) => c.id === Number(chapterId));
+  const body = {
+    title: title || '未命名章节',
+    content: sanitizeEditorHtml(html), // F-03：保存前白名单消毒
+    summary: summary !== undefined ? summary : (chapter?.summary || '')
+  };
+  if (chapter?.updated_at) body._if_updated_at = chapter.updated_at;
+  return body;
+}
+
+/**
+ * 空正文被拒之后的统一收口：把"已暂停、稿子还在、有两个出路"这件事记进状态并显示出来。
+ * 三条拒绝路径（客户端探针、直接写入、服务端主动拦截）都走这里，界面不会出现"同名状态、两样表现"。
+ */
+function tripEmptyGuardState(err, id, html, title) {
+  state.editorEmptyBlocked = { id, content: html, title };
+  state.editorSaveFailedSnapshot = { id, content: html, title, message: err.message || '保存失败', code: err.code || 'EMPTY_OVERWRITE_BLOCKED' };
+  setEditorEmptyHoldStatus('服务端拦下了空正文写入');
+  // 先**同步**画一次恢复条（不等网络）：出路必须与"已暂停"这句话同时出现，
+  // 否则作者面对的就是一个"被告知有按钮、却看不到按钮"的界面。
+  refreshRecoveryBar(id);
+  refreshChapterRecovery(id).catch(() => { /* 提示层失败不影响写作 */ });
+}
+
+/** 写入失败的两个分支（409 冲突 / 其它错误）走同一条"保留稿子 + 记状态"的路。 */
+function handleChapterWriteError(e, id, html, title) {
+  const chapter = state.chapters.find((c) => c.id === Number(id));
+  if (e.status === 409 && e.code !== 'EMPTY_OVERWRITE_BLOCKED') {
+    state.editorConflictSnapshot = { id, content: html, title, serverUpdatedAt: chapter?.updated_at || null };
+    toast('检测到其他窗口的修改，本地内容已保留，请先处理冲突', 'error');
+    showEditorConflictActions();
+    return 'conflict';
+  }
+  const status = $('#editor-status');
+  if (status) status.innerHTML = `<span class="err">保存失败：${esc(e.message)}</span>`;
+  if (e.code === 'EMPTY_OVERWRITE_BLOCKED') {
+    tripEmptyGuardState(e, id, html, title);
+  } else {
+    state.editorSaveFailedSnapshot = { id, content: html, title, message: e.message || '保存失败', code: e.code || '' };
+    refreshRecoveryBar(id);   // 同上：失败提示与"重试保存"按钮必须同时出现，不能只写状态
+    refreshChapterRecovery(id).catch(() => { /* 提示层失败不影响写作 */ });
+  }
+  return e.code === 'EMPTY_OVERWRITE_BLOCKED' ? 'empty' : 'error';
+}
+
+/**
+ * 当前编辑器正文写入（手动保存用）。返回 boolean。
+ * 空内容**不在这一层做交互**：判据命中就停在 'empty'，由恢复条上的「确认清空本章」
+ * 承担"明确清空"这个动作 —— 同一件事只有一个入口，不会出现"两处都能清空、行为还不一样"。
+ */
+async function saveCurrentChapterChecked(chapterId) {
+  const id = Number(chapterId) || Number($('#editor-content')?.dataset.chapterId) || 0;
+  if (!id) return false;
+  const editor = $('#editor-content');
+  const title = $('#editor-title');
+  if (!editor || !title) return false;
+  const verdict = await writeChapterBody(id, { content: editor.innerHTML, title: title.value });
+  if (verdict === 'empty') {
+    toast('编辑器是空的：已暂停写入以免覆盖正文。确实要清空本章，请点编辑器上方的「确认清空本章」', 'error');
+    return false;
+  }
+  if (verdict !== 'saved') return false;
+  state.editorEmptyBlocked = null;
+  state.editorSaveFailedSnapshot = null;
+  state.editorSaveSnapshot = null;
+  clearTimeout(state.editorSaveTimer);
+  state.editorSaveTimer = null;
+  return true;
+}
+
+/** 明确选择"清空本章正文"：先确认，再带 confirm_empty 写入（服务端唯一接受空稿的方式）。 */
+async function clearChapterBodyExplicit() {
+  const editor = $('#editor-content');
+  const id = Number(editor?.dataset.chapterId) || Number(state.editorEmptyBlocked?.id) || 0;
+  if (!id) { toast('没有正在编辑的章节', 'error'); return false; }
+  if (typeof confirm === 'function'
+      && !confirm('要把本章正文清空吗？\n\n当前正文会先存为一条历史版本（可在「历史版本」里恢复），然后本章正文变为空。')) {
+    return false;
+  }
+  const title = $('#editor-title');
+  const verdict = await writeChapterBody(id, {
+    content: editor ? editor.innerHTML : '',
+    title: title ? title.value : '',
+    confirmEmpty: true
+  });
+  if (verdict !== 'saved') { toast('清空未完成：内容没有被改动', 'error'); return false; }
+  state.editorEmptyBlocked = null;
+  state.editorSaveFailedSnapshot = null;
+  const box = document.getElementById('chapter-recovery');
+  const cur = state.chapters.find((c) => c.id === id);
+  if (box && cur) box.innerHTML = recoveryBarHtml(cur);
+  toast('已清空本章正文（原正文已存为历史版本，可随时恢复）', 'success');
+  return true;
+}
+
+/** 空内容暂停时的一键救济：取回本页之外最近一次保存过的正文。 */
+async function restoreLastSavedVersion() {
+  const editor = $('#editor-content');
+  const id = Number(editor?.dataset.chapterId) || Number(state.editorEmptyBlocked?.id) || 0;
+  if (!id) { toast('没有正在编辑的章节', 'error'); return false; }
+  let list = [];
+  try {
+    list = await api(`/chapter_versions?chapter_id=${id}`);
+  } catch (e) {
+    toast('读取历史版本失败：' + e.message, 'error');
+    return false;
+  }
+  const usable = (Array.isArray(list) ? list : []).filter((v) => readableCharCount(v.content) > 0);
+  if (!usable.length) { toast('这一章还没有可恢复的历史版本', 'error'); return false; }
+  const latest = usable[0];
+  if (typeof confirm === 'function'
+      && !confirm(`取回最近一次保存过的正文吗？\n\n版本时间：${String(latest.created_at || '').replace('T', ' ').slice(0, 16)} · ${readableCharCount(latest.content)} 字\n当前正文会先自动备份为一条历史版本。`)) {
+    return false;
+  }
+  return restoreSaveVersion(latest.id);
+}
+
+// ---------- 版本基线的同步（2026-10-02）----------
+/**
+ * 本页之外有通道写了某一章正文之后，把**本地基线**（state.chapters[].updated_at / content）
+ * 拉回服务端真值。
+ *
+ * 为什么必须有：编辑器保存用的是乐观锁 `_if_updated_at`，而批量生成写回、取回生成稿、
+ * 确认清空、历史版本恢复这几条通道都不经编辑器 —— 它们写完正文就会推进 updated_at，
+ * 本地那一行却还停在旧值。于是**下一次自动保存必然 409**，作者看到的是"保存冲突"，
+ * 而冲突的另一方其实就是他自己刚刚做的那个动作（真实事故的形状，服务端注释里也记过一次）。
+ *
+ * 什么时候**不**同步：编辑器里还有未保存的稿子、或有写入在途。那正是乐观锁要保护的场景，
+ * 此时同步等于替作者把"别人改过"这件事抹掉 —— 真冲突仍然必须由作者选一版。
+ * 拉取失败静默返回 null：它只是为了让下一次保存更顺，不该阻塞任何主流程。
+ */
+async function refreshChapterBaselineAfterForeignWrite(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return null;
+  const sameChapter = (snap) => snap && Number(snap.id) === id;
+  if (state.editorConflictSnapshot || sameChapter(state.editorSaveSnapshot) || sameChapter(state.editorEmptyBlocked)) return null;
+  const editor = $('#editor-content');
+  if (editor && Number(editor.dataset.chapterId) === id && state.editorSaveInFlight.has(id)) return null;
+  try {
+    const row = await api(`/chapters/${id}`);
+    if (!row || Number(row.id) !== id) return null;
+    const idx = state.chapters.findIndex((c) => c.id === id);
+    if (idx >= 0) state.chapters[idx] = row;
+    else state.chapters.push(row);
+    return row;
+  } catch (_) {
+    return null; // 拉不到就保持现状：宁可下一次保存再撞一次乐观锁，也不假装基线已同步
+  }
+}
+
 async function openSaveHistory() {
   const editor = $('#editor-content');
   const id = editor ? Number(editor.dataset.chapterId) : state.currentChapterId;
@@ -3709,14 +4136,21 @@ async function openSaveHistory() {
     toast('读取历史失败：' + e.message, 'error');
     return;
   }
+  // 空快照要看得懂：正文为空的历史版本只可能来自"当时编辑器是空的"（多为清空后自动保存），
+  // 它是合法记录、不该删，但也不该让作者以为"这一版有内容可以恢复"（2026-10-02 实测遇到）。
+  const isEmptySnapshot = (v) => wordCount(v.content) === 0;
   const body = versions.length ? versions.map((v) => `
     <div class="version-item">
       <div class="row">
         <b>${esc(v.title || '未命名章节')}</b>
         <span class="muted grow" style="font-size:12px">${esc((v.created_at || '').replace('T', ' ').slice(0, 16))}</span>
-        <span class="muted" style="font-size:12px">${wordCount(v.content)}字</span>
+        ${isEmptySnapshot(v)
+          ? '<span class="muted" style="font-size:12px" title="这一版正文为空（当时编辑器没有文字，通常是清空后自动保存留下的）">空快照</span>'
+          : `<span class="muted" style="font-size:12px">${wordCount(v.content)}字</span>`}
         <button class="btn small secondary" data-action="view-version" data-id="${v.id}">查看</button>
-        <button class="btn small" data-action="restore-version" data-id="${v.id}">恢复</button>
+        ${isEmptySnapshot(v)
+          ? '<button class="btn small" disabled title="这一版正文为空，恢复它等于清空本章正文">恢复</button>'
+          : `<button class="btn small" data-action="restore-version" data-id="${v.id}">恢复</button>`}
       </div>
       <div class="muted" style="font-size:12px;padding-top:4px">${esc(v.summary || '暂无摘要')}</div>
     </div>
@@ -3734,16 +4168,21 @@ async function viewSaveVersion(id) {  const editor = $('#editor-content');
   const versions = await api(`/chapter_versions?chapter_id=${chapterId}`);
   const v = versions.find((x) => x.id === Number(id));
   if (!v) return;
+  // 空快照的预览要说清它是什么，而不是只给一句"（空内容）"——否则作者不知道这是故障还是记录。
+  const empty = wordCount(v.content) === 0;
   openModal({
     title: `历史版本 · ${v.title || '未命名章节'}`,
-    body: `<div class="version-preview">${v.content ? sanitizeEditorHtml(v.content) : '<span class="muted">（空内容）</span>'}</div>`,
-    footer: `<button class="btn secondary" data-close-modal>关闭</button>${v.content ? `<button class="btn" data-action="restore-version" data-id="${v.id}">恢复此版本</button>` : ''}`,
+    body: empty
+      ? '<div class="muted">（空快照：这一版正文是空的。通常是当时编辑器被清空后由自动保存留下的记录，不是正文丢失。）</div>'
+      : `<div class="version-preview">${sanitizeEditorHtml(v.content)}</div>`,
+    footer: `<button class="btn secondary" data-close-modal>关闭</button>${empty ? '' : `<button class="btn" data-action="restore-version" data-id="${v.id}">恢复此版本</button>`}`,
     large: true
   });
 }
 
 async function restoreSaveVersion(id) {
-  if (!confirm('确定恢复该历史版本吗？当前内容会自动备份为一条新的历史记录。')) return;
+  if (!confirm('确定恢复该历史版本吗？当前内容会自动备份为一条新的历史记录。')) return false;
+
   try {
     const data = await api(`/chapter_versions/${id}/restore`, {
       method: 'POST',
@@ -3754,11 +4193,24 @@ async function restoreSaveVersion(id) {
     if (idx >= 0) state.chapters[idx] = updated;
     state.currentChapterId = updated.id;
     state.loadedWorkId = null;
+    // 恢复是"从历史换回正文"：被换掉的正文已经备份，残留的暂停/失败/冲突态随之失效，
+    // 否则下一次自动保存仍会以为自己处在"待处理"状态。
+    state.editorEmptyBlocked = null;
+    state.editorSaveFailedSnapshot = null;
+    state.editorConflictSnapshot = null;
+    state.editorSaveSnapshot = null;
+    clearTimeout(state.editorSaveTimer);
+    state.editorSaveTimer = null;
     closeModal();
     await render();
+    // 恢复这条通道直接改了正文：把本地基线拉回服务端真值（含推进后的 updated_at），
+    // 否则紧接着的第一次编辑保存会因为标记过期而误报冲突 —— 冲突的另一方就是刚做的恢复。
+    await refreshChapterBaselineAfterForeignWrite(updated.id);
     toast('已恢复历史版本', 'success');
+    return true;
   } catch (e) {
     toast('恢复失败：' + e.message, 'error');
+    return false;
   }
 }
 
@@ -3790,14 +4242,103 @@ async function restoreChapterDraft() {
     const isHtml = /<\/?(p|br|div|h[1-6]|blockquote|ul|ol|li|b|strong|i|em|u|span|a)\b[^>]*>/i.test(String(d.content || ''));
     const content = isHtml ? d.content : textToParagraphsHtml(d.content || '');
     await api('/novel/chapter_save', { method: 'POST', body: { chapter_id: chapterId, content } });
+    // 这份草稿的内容已经进正文了：标记为已应用，恢复条不再把它当成"未应用的生成稿"
+    // （2026-10-02：正文与草稿逐字相同、界面却还在提示未应用）。标记失败只影响提示，不影响写入。
+    await api('/novel/draft/consume', { method: 'POST', body: { chapter_id: chapterId, draft_id: Number(d.id) || 0 } }).catch(() => { /* 提示层，失败可忽略 */ });
     state.chapterDraft = null;
     state.loadedWorkId = null;
     closeModal();
     await loadWorkData(true);
     await render();
+    // 取回这条通道自己推进了该章 updated_at：把本地基线拉回服务端真值，
+    // 否则接下来第一次编辑保存会因为标记过期而误报冲突（本人刚做的取回被当成别人改的）。
+    await refreshChapterBaselineAfterForeignWrite(chapterId);
     toast('已取回生成稿（旧稿已存历史版本）', 'success');
   } catch (e) {
     toast('取回失败：' + e.message, 'error');
+  }
+}
+
+/**
+ * 关闭一份生成稿的提示：作者明确表示"这一版我不要了"。
+ * 只做一件事——让这条提示以后不再出现；正文一个字都不动，内容也不删除
+ * （服务端只打标记，见 dismissDraft）。因此它不属于任何写路径，失败也不影响写作。
+ */
+async function dismissChapterDraft() {
+  const d = state.chapterDraft;
+  const chapterId = Number(d?.chapter_id) || Number(state.currentChapterId) || 0;
+  if (!d || !chapterId) return;
+  if (!confirm('关闭这份生成稿的提示吗？\n\n· 正文不会改动；\n· 这一版以后不再出现在编辑器上方；\n· 内容不会被删除，但界面上也不再提供取回入口。')) return;
+  try {
+    const res = await api('/novel/draft/dismiss', {
+      method: 'POST',
+      body: { chapter_id: chapterId, draft_id: Number(d.id) || 0 }
+    });
+    // 本地与服务端同步：服务端返回"关掉之后还剩的那一份"（可能是更早的未应用草稿，也可能没有）。
+    // 只改服务端、不动本地的话，这条提示会一直挂在屏幕上直到切章 —— 上一轮就犯过
+    // 「标记与展示不同步」的错（见 markJobApplied 的注释）。
+    state.chapterDraft = res?.draft || null;
+    refreshRecoveryBar();
+    toast(res?.draft ? '已关闭这一版；这一章还有更早的一份未应用生成稿' : '已关闭这份生成稿的提示', 'success');
+  } catch (e) {
+    toast('关闭失败：' + e.message, 'error');
+  }
+}
+
+/**
+ * 关闭一条长任务的结果提示（作者："这些结果我永远也不想要了"）。
+ *
+ * 复用既有机制：服务端 `POST /harness/mark_applied` 把该行 kind 追加 ':applied'，
+ * 恢复条查询（`kind NOT LIKE '%:applied'`）据此排除。它与"结果已应用"共用同一个开关，
+ * 因为两者对界面的意义相同：**这条产出不用再提示了**。产出内容不删除（仍在 harness_jobs.output），
+ * 正文一个字都不动。
+ *
+ * 与自动标记 markJobApplied 的唯一差别：**先等服务端确认，再收起本地那一行**。
+ * 自动路径是"打开弹窗顺手标一下"，失败无所谓；而作者亲手点的关闭若只改本地，
+ * 刷新后那条提示会自己回来 —— 那比不关更糟。
+ */
+async function dismissJobResult(jobId) {
+  const id = String(jobId || '');
+  if (!id) return;
+  const job = (Array.isArray(state.chapterJobs) ? state.chapterJobs : []).find((j) => String(j.id) === id);
+  const what = job?.stage || '这次 AI 产出';
+  if (!confirm(`关闭「${what}」这条结果提示吗？\n\n· 本章正文不会改动；\n· 以后不再提示这条结果；\n· 任务记录与产出内容仍留在库里（不会被删除）。`)) return;
+  try {
+    await api('/harness/mark_applied', { method: 'POST', body: { job_id: id } });
+  } catch (e) {
+    // 服务端没记下来就绝不移除本地那一行：否则作者看到"关掉了"，刷新后它又回来。
+    toast('关闭失败：' + e.message, 'error');
+    return;
+  }
+  state.chapterJobs = (Array.isArray(state.chapterJobs) ? state.chapterJobs : []).filter((j) => String(j.id) !== id);
+  refreshRecoveryBar();
+  toast('已关闭这条结果提示', 'success');
+}
+
+/**
+ * 关闭「上次审稿」那条提示（2026-10-04，与草稿/任务两处同一个形状：那一行也只有"要它"的出口）。
+ *
+ * 只做一个标记：服务端把该条 review 标 dismissed=1，恢复条不再显示它。
+ * **不删审稿报告**（GET /novel/review 照常返回该行），也不动正文 —— 这个动作只关于提示。
+ * 与 dismissJobResult 同理：等服务端确认再收起本地那一行，失败就保留并报错。
+ */
+async function dismissChapterReview() {
+  const r = state.chapterReview;
+  const chapterId = Number(r?.chapter_id) || Number(state.currentChapterId) || 0;
+  if (!r || !chapterId) return;
+  if (!confirm('关闭「上次审稿」这条提示吗？\n\n· 正文不会改动；\n· 以后不再提示这一份审稿；\n· 报告内容不会被删除，仍留在库里。')) return;
+  try {
+    const res = await api('/novel/review/dismiss', {
+      method: 'POST',
+      body: { chapter_id: chapterId, review_id: Number(r.id) || 0 }
+    });
+    // 服务端返回的是"关闭之后的真值"（同一份记录，dismissed=1）：本地照它更新，
+    // 恢复条那一条随即消失（判据是 reviewOk 里的 !r.dismissed），不必自己猜。
+    state.chapterReview = res?.review || null;
+    refreshRecoveryBar();
+    toast('已关闭「上次审稿」的提示', 'success');
+  } catch (e) {
+    toast('关闭失败：' + e.message, 'error');
   }
 }
 
@@ -6593,6 +7134,23 @@ function startElapsedTicker(el, prefix = '已用时') {
 // D7：提供「停止」按钮，可中止正在运行的 harness 任务。
 let aiTaskSeq = 0;
 let activeAITask = null; // { seq, cancel } —— 当前进度卡对应的中止回调
+// 当前进度卡对象（含 runCancel）：取消动作**不再依赖"某条路径注册过回调"**，见下面的 track。
+let currentProgressCard = null;
+/**
+ * 「谁在跑谁登记」的取消句柄集合（2026-10-02 晚）。
+ *
+ * 为什么需要：进度卡里的「停止」按钮原本只在调用方显式 setCancel 时才显示，
+ * 而审稿/修稿管线与质检阶段各自 new 了卡却从没注册 —— 那些阶段卡片在转、却没有停止按钮
+ * （作者原话："给我个停止按钮啊"）。现在改成登记制：任何在跑的活儿（harness job / 直连流式 /
+ * 管线里的某一步）把自己的取消动作登记进来，卡片据此显示按钮并调用。
+ */
+const trackRunnerCancel = { handles: new Set() };
+/** 登记"这段活儿可取消"；返回注销函数（调用方放 finally）。 */
+function trackAICancel(cancelFn) {
+  return currentProgressCard && typeof currentProgressCard.track === 'function'
+    ? currentProgressCard.track(cancelFn)
+    : () => {};
+}
 
 // 把 dsh 内核原始输出行清洗成人话：去 ANSI 转义、盒线字符，过滤协议片段与内部提示词（D6）。
 function sanitizeAITailLine(raw) {
@@ -6624,7 +7182,28 @@ function showAITaskProgress(stageLabel) {
     const s = Math.floor((Date.now() - start) / 1000);
     if (timeEl) timeEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   }, 1000);
-  return {
+
+  // ── 「停止」按钮的可见性：只要当前有**任何**在跑的活儿，它就该出现 ──────────────
+  //
+  // 2026-10-02 晚（作者报"给我个停止按钮啊"）：按钮一直在卡片里，但默认 hidden，只有调用方
+  // **显式** setCancel 时才显示 —— 而注册的只有 runHarnessJob 与直连流式两条路；
+  // 审稿/修稿管线与成文管线里的质检阶段各自 new 了一张卡却从没注册，于是那些阶段
+  // **卡片在转、却没有停止按钮**（作者撞到的正是这个）。
+  // 现在改成"登记制"：谁在跑谁登记（job id 或 abort 句柄），卡片据此显示按钮；
+  // setCancel 仍然可用（它表达的是"这条主路径自己的取消动作"），两者取或。
+  let explicitCancel = null;
+  const refreshStop = () => {
+    if (!stopBtn) return;
+    stopBtn.hidden = !(explicitCancel || trackRunnerCancel.handles.size > 0);
+  };
+  const runAllTracks = () => {
+    for (const fn of [...trackRunnerCancel.handles]) {
+      try { fn(); } catch (_) { /* 单个句柄取消失败不影响其它 */ }
+    }
+  };
+
+  // 计时器与卡片必须在同一个生命周期里收：close() 之外被替换的卡（新 stage 覆盖旧卡）也会 clearInterval。
+  const card = {
     seq,
     update(tail, extraLabel) {
       if (aiTaskSeq !== seq) return; // 已被更新任务卡替换，旧任务不再写屏
@@ -6641,8 +7220,16 @@ function showAITaskProgress(stageLabel) {
       if (aiTaskSeq === seq && tailEl) tailEl.textContent = msg;
     },
     setCancel(fn) {
-      if (aiTaskSeq === seq) activeAITask = fn ? { seq, cancel: fn } : null;
-      if (stopBtn) stopBtn.hidden = !fn;
+      explicitCancel = fn || null;
+      if (aiTaskSeq === seq) activeAITask = fn ? { seq, cancel: runCancel } : null;
+      refreshStop();
+    },
+    /** 登记一个"在跑的活儿"（job id 或 abort 句柄）；返回注销函数，调用方在 finally 里调它。 */
+    track(cancelFn) {
+      if (typeof cancelFn !== 'function') return () => {};
+      trackRunnerCancel.handles.add(cancelFn);
+      refreshStop();
+      return () => { trackRunnerCancel.handles.delete(cancelFn); refreshStop(); };
     },
     close() {
       clearInterval(timer);
@@ -6653,6 +7240,16 @@ function showAITaskProgress(stageLabel) {
       }
     }
   };
+
+  function runCancel() {
+    if (explicitCancel) { explicitCancel(); return; }
+    runAllTracks();
+  }
+
+  card.runCancel = runCancel;
+  currentProgressCard = card;
+  refreshStop();
+  return card;
 }
 
 // 提交 harness 任务并轮询状态直到结束。返回 { output, scan }。
@@ -6709,6 +7306,17 @@ async function pollHarnessJob(jobId, progress, { timeoutMs = 720000 } = {}) {
     progress.note('正在取消任务…');
     api('/harness/cancel', { method: 'POST', body: { job_id: jobId } }).catch(() => { /* 服务端取消失败时轮询仍会读到终态 */ });
   });
+  // 2026-10-02 晚：**再登记一次**（登记制，与上面那条显式回调并存且等价）。
+  // 为什么要两条：显式回调只对"这张卡"生效，而审稿/修稿管线与成文管线的质检阶段各自 new 了
+  // 一张卡（`showAITaskProgress` 在 11121/11236/11406 附近），它们没有 setCancel ——
+  // 于是那些阶段**画面在转、却没有停止按钮**（作者报的正是这个）。
+  // 登记是**进程级**的：任何在跑的 harness job 都会把自己挂进这张表，当前可见的那张卡
+  // 一按「停止」就会把表里所有句柄都调一遍，因此"哪张卡在显示"不再决定"能不能停"。
+  const untrackJob = trackAICancel(() => {
+    cancelled = true;
+    progress.note('正在取消任务…');
+    api('/harness/cancel', { method: 'POST', body: { job_id: jobId } }).catch(() => { /* 同上 */ });
+  });
   // F-10：轮询总超时 = 任务 timeout + 固定余量（120s）；轮询间隔做简单退避（1.5s 起）。
   //
   // ⏱ 上限 3s（2026-09-25 从 10s 收紧）。为什么是"收紧一个常量"而不是"新增 SSE 推送端点"：
@@ -6722,6 +7330,7 @@ async function pollHarnessJob(jobId, progress, { timeoutMs = 720000 } = {}) {
   //   回退办法：把下面两个数字改回 10000 即可，没有别的耦合。
   const startedAt = Date.now();
   let pollDelay = 1500;
+  try {
   for (;;) {
     await new Promise((r) => setTimeout(r, pollDelay));
     pollDelay = Math.min(3000, pollDelay + 1000);
@@ -6764,6 +7373,11 @@ async function pollHarnessJob(jobId, progress, { timeoutMs = 720000 } = {}) {
       if (job.tail) err.tail = job.tail;
       throw err;
     }
+  }
+  } finally {
+    // 无论成功、失败、取消还是超时，都要把这条 job 从"可取消句柄"表里摘掉，
+    // 否则停下来的任务会一直让后面那张卡显示一个按了没用的「停止」。
+    untrackJob();
   }
 }
 
@@ -6971,6 +7585,9 @@ async function streamAIDirectWrite(body, stageLabel) {
   // 这两段的优化手段完全不同（前者靠上下文/前缀缓存，后者靠输出长度），混成一个总时长就分不清该改哪。
   const startedAt = Date.now();
   let ttftMs = null;
+  // 思考期起点（首次收到 phase:'thinking' 时置位）：只用于把"已思考 Ns"显示出来，
+  // 服务端每次心跳都自带 elapsed_ms，所以它只是本地兜底。
+  let thinkingStartedAt = 0;
   let cancelled = false;
   // 🔁 已经收到的正文（逐字追加）。取消 / 超时 / 断流时，界面此前把这部分**连同进度卡一起丢掉**——
   // 错误文案自己都写着"白等"，而这是口径 B（点击 → 拿到能用的稿子）上最贵的一种损失。
@@ -6986,8 +7603,18 @@ async function streamAIDirectWrite(body, stageLabel) {
     return err;
   };
   const controller = new AbortController();
+  // ⚠️ 登记句柄必须在 try 之外声明：finally 里要调它，而 try 块内声明的 const 在 finally 里
+  // 是不可见的（旧写法曾把它写在 try 内，于是 finally 抛 ReferenceError，把"取消"整条路带崩）。
+  let untrackStream = () => {};
   try {
     progress.setCancel(() => {
+      cancelled = true;
+      progress.note('正在停止生成…');
+      controller.abort();
+    });
+    // 再登记一次（登记制）：这条是**流式**请求，没有 job id 可取消，所以登记的是 abort 句柄。
+    // 好处是"停止"不再依赖这张卡是不是当前卡 —— 管线换了卡、或卡片被后一阶段覆盖，按钮照样停得掉。
+    untrackStream = trackAICancel(() => {
       cancelled = true;
       progress.note('正在停止生成…');
       controller.abort();
@@ -7039,7 +7666,20 @@ async function streamAIDirectWrite(body, stageLabel) {
             // 模型在思考、正文还没开始吐。此前这段时间客户端一帧都收不到，进度卡上一直是"已 0 字"，
             // 长时间思考（10–30s）看起来就是卡死。这里把这一秒真正在做的事说出来。
             // 纯展示：不改额度、不改思考强度、不改任何生成参数。
-            progress.update('模型正在思考（正文还没开始输出）…', 'AI 写作（2/3 成文）· 模型正在思考…');
+            //
+            // 2026-10-02：服务端现在会在思考期每 2.5s 发一次心跳（heartbeat=true，带
+            // elapsed_ms / reasoning_chars）。文案因此升级为"已思考 Ns / 思考 M 字"——
+            // 否则 25 秒的首字延迟里，卡片上"模型正在思考…"是静止的，仍然像卡死。
+            if (evt.heartbeat) {
+              thinkingStartedAt = thinkingStartedAt || Date.now();
+              const secs = Math.max(1, Math.round((Number(evt.elapsed_ms) || (Date.now() - thinkingStartedAt)) / 1000));
+              const rChars = Number(evt.reasoning_chars) || 0;
+              progress.update(
+                `模型正在思考（正文还没开始输出）…已思考 ${secs}s${rChars ? ` · 思考已写 ${rChars} 字` : ''}`,
+                `AI 写作（2/3 成文）· 模型正在思考（${secs}s）…`);
+            } else {
+              progress.update('模型正在思考（正文还没开始输出）…', 'AI 写作（2/3 成文）· 模型正在思考…');
+            }
           }
           else if (evt.done) {
             if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
@@ -7100,6 +7740,7 @@ async function streamAIDirectWrite(body, stageLabel) {
     // ⚠️ 这不放松任何质量纪律：函数仍然抛错、仍然不把残缺正文当成品返回，只是不再把它销毁。
     throw withPartial(e);
   } finally {
+    untrackStream();
     progress.close();
     state.aiTaskRunning = false;
   }
@@ -7118,6 +7759,9 @@ async function saveInterruptedDraft(text, chapterId) {
   if (!chapterId || clean.length < MIN_SALVAGE_CHARS) return 0;
   try {
     const r = await api('/novel/draft', { method: 'POST', body: { chapter_id: chapterId, content: clean }, timeout: 5000 });
+    // 落库成功即刷新恢复条：中断/失败后作者最需要马上看到"这些字还在哪"
+    //（此前要手动刷新整页才出现，见 2026-10-02 事故）。
+    await refreshChapterRecovery(chapterId).catch(() => { /* 只是提示层 */ });
     return Number(r && r.chars) || clean.length;
   } catch (_) {
     // 兜底落库失败不影响主流程（与结果弹窗的草稿落库同一条纪律），只是这次真的没保住。
@@ -7143,7 +7787,7 @@ function buildAIWriteQualityPrompt(article, blueprint, opts = {}) {
   const prompt = [
     '你是严格的小说质检员。请核对下面这篇刚生成的章节正文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"verdict":"pass 或 issues","issues":["硬伤描述，逐条可执行"]}',
-    '只标记真正的硬伤：与本章蓝图要点明显不符/重要场景遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句、提前消费未来章内容（大纲中标注【未来章·禁止写入】或后续章节摘要的内容）、新增未登记的具名角色/地点/妖兽、有效场景不足 3 个或场景缺少空间与身体动作。轻微瑕疵不判 issues。',
+    '只标记真正的硬伤：与本章蓝图要点明显不符/重要场景遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句（万能比喻、「不是X。是Y。」式短语判断、连续三短句总结、为呼应而呼应）、提前消费未来章内容（大纲中标注【未来章·禁止写入】或后续章节摘要的内容）、新增未登记的具名角色/地点/妖兽、有效场景不足 3 个或场景缺少空间与身体动作。轻微瑕疵不判 issues。',
     '',
     '【本章蓝图 · 写作必须遵守】',
     bpText,
@@ -7893,7 +8537,12 @@ async function loadAIContext(options = {}) {
     ? options.libraryRecallPhase
     : 'default';
   const directionHash = direction ? directionKeyHashOf(direction) : '';
-  const key = `${workId}:${chapterId}:${libraryRecallPhase}:${directionHash || '-'}`;
+  // 规划轮跳层（2026-10-04）：`omitLayers: ['blueprint']` = 这一轮是在**重新规划**，
+  // 上下文里不要带上一版蓝图（层标题「本章蓝图（写作必须遵守）」会让模型复述旧计划）。
+  // 进 key 是必需的：规划轮与成文轮的 assembled 不同，不进 key 就会命中同一份缓存。
+  const omitLayers = Array.isArray(options.omitLayers) ? options.omitLayers.filter((s) => typeof s === 'string' && s) : [];
+  const omitSuffix = omitLayers.length ? `:omit=${[...omitLayers].sort().join('+')}` : '';
+  const key = `${workId}:${chapterId}:${libraryRecallPhase}:${directionHash || '-'}${omitSuffix}`;
   if (aiContextInflight && aiContextInflight.key === key) return aiContextInflight.promise;
   const fresh = () => state.currentChapterId === chapterId && (state.workId || state.work?.id || 0) === workId;
   // GET 参数一律走 URLSearchParams（direction 可能含中文/空格；上限 400 码点由规范化保证）。
@@ -7902,6 +8551,7 @@ async function loadAIContext(options = {}) {
     if (direction) qs.set('direction', direction);
     if (libraryRecallPhase !== 'default') qs.set('library_recall_phase', libraryRecallPhase);
     if (direction && options.directionSource) qs.set('direction_source', String(options.directionSource));
+    if (omitLayers.length) qs.set('omit_layers', omitLayers.join(','));
     // P1-07：直连通道的请求体里**没有 tools**，模型调不到任何工具。而截断提示语默认会写
     // "可用 novel_lookup 查证" —— 那条提示在直连通道上是指向一个不存在的工具（模型照着查会一无所获）。
     // 因此装配时如实声明本次通道没有工具，装配器会把提示语降级为"当前没有查回路径（已知缺口）"。
@@ -7922,6 +8572,7 @@ async function loadAIContext(options = {}) {
           if (direction) qs.set('direction', direction);
           if (libraryRecallPhase !== 'default') qs.set('library_recall_phase', libraryRecallPhase);
           if (direction && options.directionSource) qs.set('direction_source', String(options.directionSource));
+          if (omitLayers.length) qs.set('omit_layers', omitLayers.join(','));
           const assembledCtx = await api(`/novel/context?${qs.toString()}`);
           ctx = assembledCtx || ctx;
         } catch (_) { /* 回退失败时保留 /ai_context 的结构化字段供界面预览 */ }
@@ -8097,11 +8748,19 @@ function showLongTextIncomplete(label, run, retry, alt) {
 }
 
 // 应用润色/扩写结果：先备份当前版本，再替换原文。
+// ⚠️ 空产出必须在这里就被拦住（2026-10-02 事故复盘补的一道）：一次"模型返回空串/只有标签"
+// 的结果如果被照直替换进编辑器，编辑器随即变空 —— 而 800ms 后就是自动保存。
+// 现在：空产出直接报错、编辑器一个字都不动，绝不把"空"当成一次可应用的 AI 结果。
 async function applyAIReply(editor, reply, range) {
+  if (editorSnapIsBlank(reply)) {
+    toast('AI 这次没有产出任何正文：编辑器未被改动（可重试或在结果弹窗里查看原文）', 'error');
+    return false;
+  }
   await manualSaveChapter();
   replaceEditorContent(editor, textToParagraphsHtml(reply), range);
   scheduleSave();
   toast('已应用 AI 结果', 'success');
+  return true;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -8545,12 +9204,29 @@ const AI_WRITING_CLARIFY_PROMPT = `请你在回答前先向我提问
 const WRITING_DISCIPLINE = [
   '【写作纪律（务必遵守）】',
   '1. 上面的【当前小说上下文】就是你的资料。若某处标注「已按预算截断」，只依据现有信息作答，并在相应字段注明不确定；不要编造与既有设定冲突的内容。',
-  '2. 严格避开【写作风格红线】里的词句：用具体动作、感官细节、对话潜台词替代「嘴角勾起一抹冷笑」式的万能模板；克制形容词与排比，保留网文节奏但拒绝 AI 腔。'
+  '2. 严格避开【写作风格红线】里的词句：用具体动作、感官细节、对话潜台词替代「嘴角勾起一抹冷笑」式的万能模板；克制形容词与排比，保留网文节奏但拒绝 AI 腔。',
+  // 2026-10-02：下面三条针对**词表测不到的三类密度型痕迹**（红线 0 命中、读者仍判成 AI 的那部分）。
+  // 依据是 work#18 第三章实测：短句占比 27.5%、"三秒"复现 11 次、几乎每个前文元素都被二次利用，
+  // 以及作者逐句指认的「不是轻。是没有重量。」「把那句话放在桌面上，让它自己立住。」这类句式。
+  '3. 不要写"金句化"的短语判断：禁止「不是 X。是 Y。」这种先否定、再给一个更精准说法的收束，也不要连续用三个短句当总结（例如"条款成立。协议有效。他自己签的字。"）。该说清楚的地方，用正常句子说完。',
+  '4. 不要给抽象判断配一个视觉化动作或比喻（例如"把那句话放在桌面上，让它自己立住"）；比喻只在真正有力时用一次，不要保持均匀的比喻密度——大多数段落应该是普通叙述，而不是每段都有一句漂亮的比喻。',
+  '5. 回扣前文元素要有叙事必要：不要为了让出现过的意象、数字、颜色或口头禅再出现一次而写。允许有些细节全章只出现一次，也允许人物的想法在章内没有想通——不要每次都给出完整的认知闭环。',
+  '5b. 不要把普通场景写成分镜脚本：除非叙事确实处在转播/拍摄视角，否则少用“镜头、画面、远景、切回、推到”等调度词。也不要用“像……或者只是……”或“其实……根本……”替读者反复校正你刚写的画面；选定人物此刻真正看到的一件东西即可。',
+  // 2026-10-02（作者第三轮逐句意见）：下面四条针对**词表测不到的另一类痕迹**——不是用词问题，
+  // 而是"叙述者在场"与"场景自洽"的问题。前三类在旧纪律里**完全没有对应项**（旧纪律只管
+  // "仿佛/似乎/淡淡的"这类词面），这正是它们会被稳定反复写出来的直接原因。
+  // ⚠️ 加这些是**给模型避坑**，不是要求把文字写得更"素"：作者明确说过，再往"去 AI 化"方向改
+  // 很容易把已经建立起来的节奏弄平，接下来要做的是编辑意义上的精修（删重复、校逻辑、控信息释放）。
+  '6. 叙述者不要越界（两类）：不要写"这句话/这个念头在他心里怎么被磨到能说出口"（如"他在心里把这句话转了很多遍，转顺了，顺到张嘴就能说出来"）——直接给那句话或那个念头本身；也不要让叙述者站到人物外面替他按年龄/常理解释（"这个年纪遇到这种事…""换了谁都会…""正常人都会…"），改成他此刻的动作，或让他自己把那句话说出口。',
+  '7. 过渡动作（慢慢点头 / 沉默片刻 / 深吸一口气 / 皱眉 / 苦笑这一级）本身没错，但不能当节拍器用：一需要"停一下"就来一个，节奏会显得是按模板补拍的。同一个动作在本章写到第二遍基本不再提供新信息；要保留两处，第二处换一件与当下目标有关的具体事，而不是换个副词。判断法：删掉它，读者得到的信息没有减少、只是少了一次停顿——那它就是填充。',
+  '7b. 身体小动作不是情绪词库：手、嘴、眼、后颈、裤腿等部位不要轮流各来一次。一个动作只有在改变信息、关系或选择时才保留；否则直接写结果或潜台词。',
+  '8. 物件方位要自洽：一件道具在章内只允许有一个明确位置（哪个包、哪一层、哪个口袋）。写了"再往里摸 / 更深的地方"，就要先交代那一层是什么（例如"主袋里侧还有个夹层"），后文一律按这个位置说，不要在两层之间漂移。',
+  '9. 细节经济：同一个编号/纸条/道具不要被反复"调出来用"。首次出现可以写足（材质、笔画、毛边都行），之后每次回想只保留**关键连接**（"纸条上那四个数字，和短信前面那四个一样"就够了），不要重新描述一遍外观。'
 ].join('\n');
 
 // 蓝图专用的一条：`references` 是蓝图 JSON 的字段，审稿报告的字段集里没有它 ——
 // 重审发现早先把它并进通用纪律，于是审稿提示词里出现"需要回扣的写进 references"这种对不上的指示。
-const BLUEPRINT_EXTRA_DISCIPLINE = '3. 与既有设定/伏笔保持一致；需要回扣的写进 references，没有依据就留空。';
+const BLUEPRINT_EXTRA_DISCIPLINE = '3. 与既有设定/伏笔保持一致；只在叙事必须时回扣（本章 references 最多 1～2 条），没有依据就留空——不要为了呼应而呼应，也不要罗列所有还能再出现的元素。';
 
 function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = false) {
   const lines = [];
@@ -8573,7 +9249,7 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = fal
   "conflicts": "冲突与转折",
   "character_changes": "出场角色状态变化",
   "hook": "下一章钩子（收尾悬念）",
-  "references": "需要回扣的既有设定/伏笔（没有就留空字符串）"
+  "references": "本章确实必须回扣的既有设定/伏笔（最多 1～2 条；没有就留空字符串）。这不是呼应清单：不要罗列所有还能再出现的意象、数字或口头禅"
 }
 - ${auto ? '直接输出【蓝图】。' : '每轮最多只能问一个问题。'}`);
   lines.push(``);
@@ -8586,6 +9262,9 @@ function buildAIWritingBlueprintPrompt(initial, history, targetWords, auto = fal
   lines.push(`- 不得为后续章节做动机前置；不得提前释放后续章节的悬念、身份曝光类线索或设定升级（例如妖兽阶位、组织介入、城市危机等级）。`);
   lines.push(`- 不得引入未登记的具名角色/地点/妖兽。确需新名字时，只能写进 references 并标注"待作者确认的提案"，不得直接写进情节点。`);
   lines.push(`- 大纲里标注【未来章·禁止写入】的条目只用于规划与避免矛盾，正文不得提前消费其中任何一条。`);
+  // 2026-10-02：回扣从"越多越好"改成"能少则少"——第三章蓝图的 references 列了 6 条回扣，
+  // 成文时被逐条兑现，读起来像"作者在检查前文元素有没有被再次利用"。
+  lines.push(`- references 只列本章确实必须回扣的 1～2 条；不要求"每个前文元素都再出现一次"，本章允许有只出现一次、之后不再被利用的细节。`);
   lines.push(``);
   lines.push(`【当前小说上下文】`);
   lines.push(aiContextBlock() || '无');
@@ -8713,19 +9392,10 @@ function buildWritingDirectionFromBlueprint(blueprint, fallback = '') {
   return normalizeWritingDirectionText(pieces.join(' '));
 }
 
-// 当前章**已保存**蓝图的保守判据：只认本章 blueprint_json 可解析且至少一个已知字段非空。
-// 不追溯其它章节的蓝图，也不把无法解析的字符串当作方向。
-function savedBlueprintForChapter(chapterId) {
-  const id = Number(chapterId) || 0;
-  if (!id) return null;
-  const chapter = (state.chapters || []).find((c) => Number(c.id) === id);
-  if (!chapter || !chapter.blueprint_json) return null;
-  let obj = null;
-  try { obj = JSON.parse(chapter.blueprint_json); } catch (_) { return null; }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
-  const hasContent = WRITING_DIRECTION_FIELD_ORDER.some((k) => String(obj[k] || '').trim());
-  return hasContent ? obj : null;
-}
+// 说明（2026-10-04）：这里原有 `savedBlueprintForChapter()` —— 写作入口用它判断"本章已有蓝图"
+// 并据此**跳过蓝图轮**。作者报障后这条捷径被整个移除（每次点「AI 写作」都要先出蓝图），
+// 函数随之删除，而不是留成无人调用的死代码（要回看这段历史见
+// docs/blueprint-regenerate-20261004.md）。
 
 // in-flight 键用的轻量方向哈希（FNV-1a，仅前端去重用；服务器缓存键用 sha256 前 16 位）。
 function directionKeyHashOf(text) {
@@ -9026,7 +9696,11 @@ function askAIQuestion(question, title = 'AI · 需要向你确认', placeholder
       footer: `
         <button class="btn secondary" data-close-modal>取消</button>
         <button class="btn secondary" data-action="ai-writing-skip">跳过提问直接生成</button>
-        <button class="btn" data-action="ai-writing-answer">提交回答</button>`
+        <button class="btn" data-action="ai-writing-answer">提交回答</button>`,
+      // ⚠️ 点遮罩不关（2026-10-04 作者报障）：提问窗口里正等着他回答，鼠标一滑点到窗口外面就会
+      // 被当成"取消"——整次写作随即中断（pending 被 resolve 成 null），而他什么都没表达。
+      // 这类框的关闭必须走明确动作：右上角 ✕、或「取消」按钮。
+      protectedBackdrop: true
     });
     const input = $('#ai-writing-answer');
     if (input) input.focus();
@@ -9248,7 +9922,11 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
     }
 
     if (draftChapterId && String(article || '').trim()) {
-      api('/novel/draft', { method: 'POST', body: { chapter_id: draftChapterId, content: article } })
+      // 草稿落库是异步兜底，但**恢复条要跟着刷新**（2026-10-02 事故：草稿早在库里，
+      // 界面却要手动刷新整页才显示"有未应用的生成稿"——render() 里的拉取有"每章只拉一次"闸门）。
+      // 落库失败不影响主流程；恢复条刷新失败同样只影响提示。
+      Promise.resolve(api('/novel/draft', { method: 'POST', body: { chapter_id: draftChapterId, content: article } }))
+        .then(() => refreshChapterRecovery(draftChapterId))
         .catch(() => { /* 草稿落库失败不影响主流程，但会少一层兜底 */ });
     }
     if (jobId) {
@@ -10381,7 +11059,141 @@ async function handleImportFile(file) {
   }
 }
 
+/**
+ * 采纳（/novel/adopt）的并发基线：**现读服务端**，不读内存里的章节行（2026-10-02 事故）。
+ *
+ * 为什么必须现读：`state.chapters[].updated_at` 只在 loadWorkData / 编辑保存成功后更新，
+ * 而"替换当前正文"这条路会先 manualSaveChapter（把 AI 正文直接写进库、推进 updated_at）、
+ * 再发采纳 —— 采纳拿着旧标记去对账，必然被判成"其它窗口改过"而整次回滚，
+ * 界面于是弹出"写入失败"，而作者看到的正文其实已经写进去了（真实事故的形状）。
+ *
+ * 拿的是服务端给的 `content_hash`（存库原文的指纹，口径见 Approvals.chapterBaselineHash）：
+ * 内容没变（只是时间戳被本页自己推进）→ 闸门放行；内容真被改过 → 仍然拒绝。
+ * 失败时返回 null：调用方如实处理，绝不假装"基线已知"。
+ */
+async function readChapterBaseline(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return null;
+  try {
+    const row = await api(`/chapters/${id}`);
+    if (!row || Number(row.id) !== id) return null;
+    return { content_hash: String(row.content_hash || ''), updated_at: String(row.updated_at || '') };
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 采纳成功之后的本地收口：清掉待保存快照 / 反映新版本 / 收起草稿提示 / 刷新恢复条。 */
+async function afterAdoptApplied(targetChapterId, html, newUpdatedAt = '') {
+  clearTimeout(state.editorSaveTimer);
+  state.editorSaveTimer = null;
+  state.editorSaveSnapshot = null;
+  state.editorEmptyBlocked = null;
+  state.editorSaveFailedSnapshot = null;
+  const chapter = (state.chapters || []).find((c) => Number(c.id) === Number(targetChapterId));
+  if (chapter) {
+    chapter.content = html;
+    // 用服务端回包里的真实版本标记（不是本地 new Date()）：编辑保存的乐观锁
+    //（_if_updated_at）以它为准，本地时钟与服务端不同口径会让下一次保存白白 409。
+    if (newUpdatedAt) chapter.updated_at = newUpdatedAt;
+  }
+  state.chapterDraft = null;
+  await refreshChapterRecovery(targetChapterId).catch(() => { /* 恢复条刷新失败不影响已成功的写入 */ });
+}
+
+/**
+ * 真并发冲突时给作者一个明确的出口（旧实现只有一句 toast + 编辑器回滚）。
+ * 返回 true = 以编辑器当前内容覆盖服务端那一版；false/null = 这次不写。
+ * 安全前提：覆盖时服务端会把被覆盖的正文存成一条历史版本，所以不是不可逆操作。
+ */
+function showAdoptConflictDialog(chapterId, serverHash) {
+  return new Promise((resolve) => {
+    state.pendingAdoptConflict = { chapterId: Number(chapterId) || 0, serverHash: String(serverHash || ''), resolve };
+    openModal({
+      title: '这一章在别处被改过了',
+      body: `<div class="muted">这一章的正文在我确认之后发生了变化，为避免静默覆盖更新的内容，本次采纳已被拒绝（你的编辑器内容仍在，没有被清掉）。</div>
+        <div class="muted mt-8">选择「以我的当前内容覆盖」会把服务端那一版存成一条历史版本后再写入；选择「先不写」可以稍后手动重试。</div>`,
+      footer: `<button class="btn secondary" data-action="adopt-conflict-cancel">先不写</button>
+        <button class="btn" data-action="adopt-conflict-force">以我的当前内容覆盖</button>`,
+      // 点遮罩不关：这个框的答案决定"要不要覆盖正文"，误触关闭等于把选择丢掉。
+      protectedBackdrop: true
+    });
+  });
+}
+
+/**
+ * 采纳的失败出口：409（版本闸门拒绝）走确认框，其余按原文案报错。
+ * 被拒绝的那一次**什么都没写**（服务端整次事务回滚），所以这里只需要如实告知 + 让作者选。
+ */
+async function handleAdoptFailure(e, chapterId, contextText) {
+  const msg = String((e && e.message) || '未知错误');
+  if (e && e.status === 409 && /采纳失败/.test(msg)) {
+    const fresh = await readChapterBaseline(chapterId);
+    if (await showAdoptConflictDialog(chapterId, fresh && fresh.content_hash)) return 'retry';
+    toast('已取消本次采纳：正文没有被改动（编辑器内容仍保留）', 'error');
+    return 'cancel';
+  }
+  toast(`${contextText}：${msg}`, 'error');
+  return 'cancel';
+}
+
+/**
+ * 把编辑器当前内容（+ 本次勾选的入账提案）作为**一次**原子采纳提交给服务端。
+ *
+ * 时序（2026-10-02 事故驱动的修正，顺序本身就是修复的一部分）：
+ *   1) await flushSave()：本页待落的编辑器快照先落库 —— 否则服务端的版本标记会被
+ *      "稍后才到的自动保存"推进，采纳随即撞上版本闸门（真实事故：同一秒内先保存后采纳）；
+ *   2) 现读服务端权威基线（content_hash）—— 不再用内存里可能过期的 updated_at；
+ *   3) POST /novel/adopt：正文 + 提案 + 历史版本 + 投影 outbox 同一事务；
+ *   4) 成功后才清定时器/快照（旧实现顺序相同，但没有第 1、2 步），并收起草稿提示。
+ *
+ * 真并发（第 2 步之后别人写了正文）→ 服务端 409 → 由调用方弹确认框，让作者显式选择覆盖。
+ * 返回 { adopted, draftAppliedId }；抛出的错误带 .status 供调用方区分冲突与普通失败。
+ */
+async function adoptEditorContentImpl(options = {}) {
+  const { targetChapterId, html, selectionIds = [], forceContentHash = '', adoptKind = 'ai_result' } = options;
+  const opKey = `aw-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // 1) 先落本页待保存的内容（只等待落盘，**不弹任何提示**）。
+  // ⚠️ 这里刻意用 flushEditorSaves 而不是 flushSave（2026-10-02 晚）：采纳/合并这条路的正文
+  // 来自 `html` 参数（调用方算好的最终稿），**不依赖编辑器**；而 flushSave 会在编辑器为空时
+  // 弹出"本章编辑器是空的，已暂停保存"——作者看到的却是"修稿无法合并到正文"（真实报障）。
+  // 提示只属于导航，不属于任何"内部等待落盘"的调用点。
+  await flushEditorSaves();
+  // 2) 权威基线：content_hash 优先（服务端口径），拿不到就退回读取到的 updated_at
+  const baseline = forceContentHash
+    ? { content_hash: forceContentHash, updated_at: '' }
+    : await readChapterBaseline(targetChapterId);
+  const expected = {};
+  if (baseline && baseline.content_hash) expected.content_hash = baseline.content_hash;
+  else if (baseline && baseline.updated_at) expected.updated_at = baseline.updated_at;
+  const res = await api('/novel/adopt', {
+    method: 'POST',
+    body: {
+      work_id: state.workId || state.work?.id || null,
+      chapter_id: targetChapterId,
+      content: html,
+      legacy_proposal_ids: Array.isArray(selectionIds) ? selectionIds : [],
+      operation_key: opKey,
+      adopt_kind: adoptKind,
+      expected,
+    }
+  });
+  await afterAdoptApplied(targetChapterId, html, res && res.adopt ? String(res.adopt.chapter_updated_at || '') : '');
+  // 服务端没带回版本标记时（老服务端/异常回包）**补读一次**：采纳已经把正文与 updated_at
+  // 都推进了，本地若还停在旧标记，下一次编辑保存必然 409 —— 而"冲突的另一方"就是本人刚做的采纳。
+  await refreshChapterBaselineAfterForeignWrite(targetChapterId);
+  const adopted = (res && res.adopt && res.adopt.legacy) ? (Number(res.adopt.legacy.events || 0) + Number(res.adopt.legacy.memories || 0)) : 0;
+  const draftAppliedId = res && res.adopt ? (Number(res.adopt.draft_applied_id) || null) : null;
+  return { adopted, draftAppliedId };
+}
+
 async function applyAIWritingArticle(mode, article, chapterId = null) {
+  // 空产出不是"可以应用的结果"（2026-10-02 事故复盘补）：替换/追加一条空产出会让编辑器变空，
+  // 而 800ms 后就是自动保存。这里在动编辑器**之前**就拦下，正文一个字都不动。
+  if (mode !== 'insert' && editorSnapIsBlank(article)) {
+    toast('AI 这次没有产出任何正文：正文未被改动（结果仍留在弹窗/草稿里，可重试）', 'error');
+    return;
+  }
   const editor = $('#editor-content');
   if (!editor) {
     // N1：此前这里直接 return —— 结果弹窗关掉、什么都不发生、也没有任何提示，
@@ -10406,63 +11218,55 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
   state.pendingProposalSelection = null;
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   const beforeHtml = editor.innerHTML;
-  const adoptEditorContent = async () => {
-    const html = editor.innerHTML;
-    const opKey = `aw-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    // P1-10：带上并发基线（本次采纳基于哪一版正文）。旧实现不传 `expected`，而服务端闸门
-    // 只在收到该字段时才生效 —— 于是"两个窗口同时采纳"时后提交者静默覆盖先提交者。
-    // 这里用的 `updated_at` 就是编辑保存乐观锁用的同一个版本标记，服务端两种形态都认。
-    const chapterRow = (state.chapters || []).find((c) => Number(c.id) === Number(targetChapterId));
-    const expectedUpdatedAt = chapterRow ? String(chapterRow.updated_at || '') : '';
-    const res = await api('/novel/adopt', {
-      method: 'POST',
-      body: {
-        work_id: state.workId || state.work?.id || null,
-        chapter_id: targetChapterId,
-        content: html,
-        legacy_proposal_ids: (selection && Array.isArray(selection.ids)) ? selection.ids : [],
-        operation_key: opKey,
-        adopt_kind: 'ai_result',
-        expected: expectedUpdatedAt ? { updated_at: expectedUpdatedAt } : {},
+  const selectionIds = (selection && Array.isArray(selection.ids)) ? selection.ids : [];
+  const adoptEditorContent = async (forceContentHash = '') => {
+    return adoptEditorContentImpl({ targetChapterId, html: editor.innerHTML, selectionIds, forceContentHash });
+  };
+  // 采纳失败收敛到一处：409 由作者在确认框里决定（覆盖 / 先不写），其余如实报错。
+  // 无论哪种结局都要刷新恢复条：服务端此时可能已经有一份新草稿（这条路径此前完全不刷新，
+  // 于是"有未应用的生成稿"要等手动刷新页面才出现）。
+  const settleAdoptFailure = async (e) => {
+    const verdict = await handleAdoptFailure(e, targetChapterId, '写入失败（已还原编辑器内容，库中未改动）');
+    if (verdict === 'retry') {
+      try {
+        const baseline = await readChapterBaseline(targetChapterId);
+        const again = await adoptEditorContent(baseline && baseline.content_hash ? baseline.content_hash : '');
+        toast(again.adopted ? `已按你的选择覆盖服务端版本，并采纳 ${again.adopted} 条提案` : '已按你的选择覆盖服务端版本', 'success');
+        return again;
+      } catch (e2) {
+        toast('覆盖仍未成功（正文没有被改动）：' + e2.message, 'error');
       }
-    });
-    // 服务端已落库：取消 800ms 自动保存，避免再写一版（否则每次采纳都多一条历史版本）。
-    clearTimeout(state.editorSaveTimer);
-    state.editorSaveTimer = null;
-    state.editorSaveSnapshot = null;
-    const chapter = state.chapters.find((c) => Number(c.id) === Number(targetChapterId));
-    if (chapter) { chapter.content = html; chapter.updated_at = new Date().toISOString(); }
-    const adopted = (res && res.adopt && res.adopt.legacy) ? (Number(res.adopt.legacy.events || 0) + Number(res.adopt.legacy.memories || 0)) : 0;
-    return adopted;
+    }
+    // 先不写 / 覆盖失败：保留编辑器现状，让作者看得到"还有一份未应用的生成稿"。
+    editor.innerHTML = beforeHtml;
+    await refreshChapterRecovery(targetChapterId).catch(() => { /* 辅助提示失败不影响写作 */ });
+    return null;
   };
   if (mode === 'insert') {
     insertHtmlAtCursor(editor, textToParagraphsHtml(article));
     try {
-      const adopted = await adoptEditorContent();
+      const { adopted } = await adoptEditorContent();
       toast(adopted ? `已插入 AI 写作内容，并采纳 ${adopted} 条提案` : '已插入 AI 写作内容', 'success');
     } catch (e) {
-      editor.innerHTML = beforeHtml;
-      toast('写入失败（已还原编辑器内容，库中未改动）：' + e.message, 'error');
+      await settleAdoptFailure(e);
     }
   } else if (mode === 'replace') {
     const sel = getEditorSelection(editor);
     await applyAIReply(editor, article, sel?.range || null);
     try {
-      const adopted = await adoptEditorContent();
+      const { adopted } = await adoptEditorContent();
       if (adopted) toast(`已采纳 ${adopted} 条提案`, 'success');
     } catch (e) {
-      editor.innerHTML = beforeHtml;
-      toast('写入失败（已还原编辑器内容，库中未改动）：' + e.message, 'error');
+      await settleAdoptFailure(e);
     }
   } else if (mode === 'append') {
     editor.focus();
     editor.insertAdjacentHTML('beforeend', textToParagraphsHtml(article));
     try {
-      const adopted = await adoptEditorContent();
+      const { adopted } = await adoptEditorContent();
       toast(adopted ? `已追加 AI 写作内容，并采纳 ${adopted} 条提案` : '已追加 AI 写作内容', 'success');
     } catch (e) {
-      editor.innerHTML = beforeHtml;
-      toast('写入失败（已还原编辑器内容，库中未改动）：' + e.message, 'error');
+      await settleAdoptFailure(e);
     }
   }
 }
@@ -10521,7 +11325,10 @@ function showBlueprintConfirm(blueprint) {
         <button class="btn secondary" data-close-modal>取消</button>
         <button class="btn secondary" data-action="blueprint-skip-prose">跳过蓝图直接成文</button>
         <button class="btn" data-action="blueprint-confirm">按此蓝图成文</button>`,
-      large: true
+      large: true,
+      // 点遮罩不关（2026-10-04 作者报障同一类）：这是一个要填/要改的表单，而且"关掉"等于
+      // 放弃这次写作。误触遮罩不该等同于"我不写了"——要么改完点「按此蓝图成文」，要么明确点「取消」。
+      protectedBackdrop: true
     });
   });
 }
@@ -10539,23 +11346,93 @@ function aiContextTruncated() {
   return Number(stats.truncatedLayers) > 0;
 }
 
+/**
+ * 给"装配上下文"这类**没有进度出口**的服务端往返配一张进度卡（2026-10-02）。
+ *
+ * 为什么必须补：点「按此蓝图成文」之后，界面要等 `loadAIContext` 返回才开始弹成文进度卡。
+ * 那次装配是 10–30 秒的服务端往返，期间界面上**什么都没有**——作者看到的就是"点了没反应"。
+ * 卡上只显示阶段文案 + 每秒计时（由 showAITaskProgress 自带），不伪造百分比。
+ * 完成后再补一行"装配完成（用时 Ns）"，让作者知道刚才那段时间花在哪。
+ */
+async function withContextProgress(work, label) {
+  const card = showAITaskProgress(label);
+  const t0 = Date.now();
+  try {
+    const r = await work();
+    const ms = Math.round((Date.now() - t0) / 1000);
+    card.note(`上下文装配完成（用时 ${ms}s），正在进入下一步…`);
+    return r;
+  } catch (e) {
+    card.note(`上下文装配失败（用时 ${Math.round((Date.now() - t0) / 1000)}s）：${e && e.message ? e.message : e}`);
+    throw e;
+  } finally {
+    // 留 400ms 让"完成/失败"那行能被看见：这张卡马上会被下一步（蓝图或成文）的卡替换。
+    setTimeout(() => card.close(), 400);
+  }
+}
+
+/**
+ * 「重写本章」跳层集合（作者 2026-10-04 决定）。
+ *
+ * 点「AI 写作」= 把这一章重写一遍：**本章既有记录一概不看** —— 上一版蓝图、本章摘要
+ * （当前场景）、长期记忆、事件账本、未闭合伏笔、本作章节的语义召回。保留的是"这本书的设定"：
+ * 作品简介、角色卡、世界观、词条、大纲与剧情线、写作纪律/编辑规则。
+ *
+ * 为什么成文轮（PROSE）少一项 blueprint：规划轮要的是"重新规划"，所以旧蓝图必须不可见；
+ * 而成文轮发生在作者**确认新蓝图之后**，那一层此时装的就是新蓝图 —— 留着它才对。
+ * 两张表都由服务端白名单校验（见 server.js 的 OMITTABLE_LAYERS），拼错的名字会被忽略而不是报错。
+ */
+const REWRITE_OMIT_LAYERS = ['blueprint', 'scene', 'memory', 'events', 'foreshadows', 'recall'];
+const REWRITE_OMIT_LAYERS_PROSE = REWRITE_OMIT_LAYERS.filter((x) => x !== 'blueprint');
+
+/**
+ * 记一条客户端日志，**但绝不让日志本身影响业务**（2026-10-04）。
+ * 为什么要这个包装：失败路径里加日志时，我第一版把 `proseRoute`（它声明在更里层的块里）写进了
+ * context → catch 块自己抛 `ReferenceError` → **错误弹窗与"落草稿"整段被跳过**，
+ * 表现为"任务失败但什么都没显示"。日志是旁路，它绝不能有能力改变被记录的那件事；
+ * 同步异常与 promise 拒绝都要吞掉。加日志后必须重跑回归（这次的 108q/115e 就是它抓到的）。
+ */
+function reportClientLogSafe(payload) {
+  try { Promise.resolve(reportClientLog(payload)).catch(() => { /* 日志失败只影响可观测性 */ }); }
+  catch (_) { /* 同上 */ }
+}
+
 async function performToolbarAIWrite(requirement) {
   const editor = $('#editor-content');
   if (!editor) return;
-  // C3：装配阶段由「本章是否已有有效蓝图」决定，保证一次写作任务**最多一次真实资料召回**：
-  //   · 已有有效蓝图 → 按它的方向做唯一一次 direction 装配，并跳过蓝图生成（不新增模型调用）；
-  //   · 无蓝图 → 初始 phase=defer（不查资料、不插占位），作者确认蓝图后再做一次 direction 装配；
-  //   · 跳过蓝图/方向为空 → 正文前走一次 default 或确定性 fallback 召回。
-  // 判据保守：只认当前章 blueprint_json 可解析且至少一个已知字段非空（见 savedBlueprintForChapter）。
-  const savedBlueprint = savedBlueprintForChapter(state.currentChapterId);
-  const currentChapterTitle = (state.chapters || []).find((c) => Number(c.id) === Number(state.currentChapterId))?.title || '';
-  const entryDirection = savedBlueprint ? buildWritingDirectionFromBlueprint(savedBlueprint, requirement || currentChapterTitle) : '';
-  if (entryDirection) {
-    if (savedBlueprint) toast('检测到本章已有蓝图：按已保存蓝图的方向写作（资料只召回一次）', 'info');
-    await loadAIContext({ direction: entryDirection, directionSource: 'saved_blueprint', libraryRecallPhase: 'direction' });
-  } else {
-    await loadAIContext({ libraryRecallPhase: 'defer' });
+  // F-43 同款互斥：**入口就置位**。旧实现直到蓝图轮才由 runHarnessJob 置位，而入口的
+  // 上下文装配是十几秒的静默期 —— 那段时间连点两次会真的发起两次写作（付费 + 双份草稿）。
+  // 入口互斥（2026-10-02）：旧实现直到蓝图轮才由 runHarnessJob 置位，而入口的上下文装配
+  // 是十几秒的静默期 —— 那段时间连点两次会真的发起两次写作（付费 + 双份草稿）。
+  // 用**管线专用**标志位，不复用 aiTaskRunning（见 state 里的说明）。
+  if (state.aiWritePipelineRunning) {
+    // 这条静默 return 同样要留痕：它表现为"点了没反应"，事后没有任何线索（2026-10-04）。
+    reportClientLogSafe({
+      level: 'warn', kind: 'ai_write_rejected_busy',
+      message: '[AI] 写作入口被拒：上一次写作仍在进行中（管线互斥）',
+      context: { work_id: state.workId || null, chapter_id: Number(state.currentChapterId) || null }
+    });
+    toast('本次写作还在进行中，请等它结束或先点进度卡上的「停止」', 'error');
+    return;
   }
+  state.aiWritePipelineRunning = true;
+  // 本次写作的章节标题（`buildWritingDirectionFromBlueprint` 的兜底文案要用它）：
+  // 在**入口**读一次，之后切章也不影响这一轮（与 writeChapterId 同一个理由）。
+  const currentChapterTitle = (state.chapters || []).find((c) => Number(c.id) === Number(state.currentChapterId))?.title || '';
+  // 🧭 入口装配：**每次点「AI 写作」都先出蓝图**（作者 2026-10-04 要求）。
+  //
+  // 旧实现在"本章已有 blueprint_json"时静默沿用旧蓝图、跳过蓝图轮：作者因为前文改动、
+  // 或对上一版蓝图不满意而再点一次（包括结果弹窗里的「重新生成」）时，AI 仍按那份旧蓝图
+  // 写正文，界面上只留一句"检测到本章已有蓝图" —— 他既没有机会改，也看不出为什么没重新规划。
+  //
+  // 现在一律 phase=defer（不查资料、不插占位），并显式带上「重写本章」跳层集合：
+  // 上一版蓝图与"前面发生过什么"（记忆/事件/伏笔/召回/本章摘要）**都不进这一轮上下文**。
+  // 必要性有实测依据 —— 蓝图层标题是「本章蓝图（写作必须遵守）」，留着它，模型会把
+  // "重新规划"做成"复述旧计划"；其余几层则是它拿旧事实来反问作者的来源
+  // （证据见 docs/blueprint-regenerate-20261004.md）。作者确认新蓝图后再做唯一一次方向召回。
+  await withContextProgress(
+    () => loadAIContext({ libraryRecallPhase: 'defer', omitLayers: REWRITE_OMIT_LAYERS }),
+    'AI 写作（0/3 准备）· 正在装配上下文（资料召回 + 分层装配，通常 10–30 秒）…');
   const btn = $('[data-action="toolbar-ai-write"]');
   if (btn) btn.disabled = true;
   // 🐞 运行追踪：记录本次写作是被取消还是正常结束，用于收尾时的操作状态。
@@ -10591,18 +11468,10 @@ async function performToolbarAIWrite(requirement) {
     const timing = newWriteTiming();
 
     // 阶段 A：澄清 → 章节蓝图
-    // C3：已有有效蓝图时**跳过蓝图生成**（不新增模型调用、不产生第二次召回），
-    // 直接把已保存蓝图送进下面的「确认 → 成文」流程（作者无需二次确认）。
-    let pendingConfirmedBlueprint = savedBlueprint;
+    // 每一次写作都从这里开始：不再有"沿用已保存蓝图"的分支（2026-10-04）。
     while (maxTurns-- > 0) {
       let jobMeta = null;
       let parsed;
-      let fromSavedBlueprint = false;
-      if (pendingConfirmedBlueprint) {
-        parsed = { blueprint: pendingConfirmedBlueprint };
-        pendingConfirmedBlueprint = null;
-        fromSavedBlueprint = true;
-      } else {
       const lastMsg = history.length ? history[history.length - 1] : null;
       const stageLabel = !history.length
         ? 'AI 写作（1/3 蓝图）· 正在阅读章节与设定，准备提问…'
@@ -10635,7 +11504,20 @@ async function performToolbarAIWrite(requirement) {
         }
       }
       if (!raw.trim()) {
-        jobMeta = await runHarnessJob({ ...jobBase, prompt: blueprintPrompt }, stageLabel);
+        // 🧭 规划轮的慢通道任务带上「本次是重新规划」标记（2026-10-04）：
+        // 慢通道的模型**带着检索工具**（novel_context / novel_lookup），那两条路会各自
+        // 去服务端取上下文与搜索结果 —— 不带这个标记，工具就能把上一版蓝图原文端出来，
+        // 于是"重新规划"又变成"照着旧计划提问/复述"。环境变量透传到子进程，插件按标记
+        // 追加 omit_layers 并跳过检索结果里的蓝图摘要（见 harness-plugins/novel-writing/novel-tools.mjs）。
+        // 成文轮**不带**这个标记：那时新蓝图已确认，必须能被查到。
+        jobMeta = await runHarnessJob(
+          {
+            ...jobBase,
+            prompt: blueprintPrompt,
+            env: { ...(jobBase.env || {}), NOVEL_OMIT_LAYERS: REWRITE_OMIT_LAYERS.join(',') }
+          },
+          stageLabel
+        );
         raw = jobMeta.output || '';
       }
       if (!raw.trim()) {
@@ -10662,19 +11544,15 @@ async function performToolbarAIWrite(requirement) {
       } else {
         parsed = parseAIWritingOutput(raw);
       }
-      }
 
       if (parsed.blueprint) {
-        // 已保存蓝图保留它自己的目标字数；新生成的蓝图沿用本次目标字数（旧行为）。
-        parsed.blueprint.target_words = fromSavedBlueprint ? (Number(savedBlueprint?.target_words) || targetWords) : targetWords;
-        // 已保存蓝图不再弹确认框（它是作者上一轮已确认过的）；方向装配已在入口完成，
-        // 因此这里不会产生第二次资料召回。
-        const confirmed = fromSavedBlueprint ? { ...parsed.blueprint, skip: false } : await showBlueprintConfirm(parsed.blueprint);
+        // 目标字数一律用本次的值（不再有"沿用旧蓝图自带字数"这条分支）。
+        parsed.blueprint.target_words = targetWords;
+        // 每一次都让作者确认：这正是"先出蓝图"的意义 —— 他能改、能重规划、也能跳过。
+        const confirmed = await showBlueprintConfirm(parsed.blueprint);
         if (confirmed === null) return; // 作者取消
-        // 已保存蓝图来自章节的 blueprint_json（数据库里就有），不需要也不应该再提示"未保存"——
-        // 否则界面会自相矛盾："按已保存蓝图写作" + "本章蓝图未保存"。
-        let blueprintSaved = fromSavedBlueprint;
-        if (!fromSavedBlueprint && !confirmed.skip && state.currentChapterId) {
+        let blueprintSaved = false;
+        if (!confirmed.skip && state.currentChapterId) {
           try {
             await api('/novel/chapter_blueprint', {
               method: 'PUT',
@@ -10693,18 +11571,29 @@ async function performToolbarAIWrite(requirement) {
         }
         const target = Number(confirmed.target_words) || targetWords;
         const blueprintForProse = confirmed.skip ? null : confirmed;
-        // C3：作者刚确认的蓝图 = 本次写作方向。生成正文前执行一次方向相关刷新
-        //（这是本任务的唯一一次真实资料召回；defer 阶段不搜索资料）。
-        // 已保存蓝图路径在入口已按同一方向装配过，这里不重复刷新（避免两次召回）。
-        if (!fromSavedBlueprint) {
+        // 作者刚确认的蓝图 = 本次写作方向。生成正文前执行一次方向相关刷新
+        //（这是本次唯一的真实资料召回；defer 阶段不搜索资料，规划轮也不带旧蓝图层）。
+        //
+        // 2026-10-02：这次装配此前是**静默**的（点完「按此蓝图成文」后界面十几秒没有任何反馈），
+        // 现在用 withContextProgress 配进度卡，并把这段耗时单独记进成文账本（此前账本里根本没有它）。
+        {
           const confirmedDirection = buildWritingDirectionFromBlueprint(blueprintForProse, requirement || currentChapterTitle);
+          const ctxStartedAt = Date.now();
+          // 「重写本章」同样作用于成文轮：这一轮的上下文也不带"前面发生过什么"。
+          // 唯一区别是不跳 blueprint 层 —— 它现在装的是**作者刚确认的新蓝图**（PROSE 集合少一项）。
+          const proseOmit = { omitLayers: REWRITE_OMIT_LAYERS_PROSE };
           try {
             if (confirmedDirection) {
-              await loadAIContext({ direction: confirmedDirection, directionSource: confirmed.skip ? 'fallback' : 'confirmed_blueprint', libraryRecallPhase: 'direction' });
+              await withContextProgress(
+                () => loadAIContext({ direction: confirmedDirection, directionSource: confirmed.skip ? 'fallback' : 'confirmed_blueprint', libraryRecallPhase: 'direction', ...proseOmit }),
+                'AI 写作（2/3 准备）· 正在按确认蓝图装配上下文（资料召回 + 分层装配，通常 10–30 秒）…');
             } else {
-              await loadAIContext({ libraryRecallPhase: 'default' });
+              await withContextProgress(
+                () => loadAIContext({ libraryRecallPhase: 'default', ...proseOmit }),
+                'AI 写作（2/3 准备）· 正在装配上下文（资料召回 + 分层装配，通常 10–30 秒）…');
             }
           } catch (_) { /* 方向刷新失败不阻断写作：使用已取得正典上下文，资料层视为暂时不可用 */ }
+          timing.round('context', Date.now() - ctxStartedAt, { via: 'assembler' });
         }
         const prosePrompt = buildAIWritingProsePrompt(initial, blueprintForProse, target);
         // 阶段 B（2/3）：按蓝图成文——质量优先模式：直连流式（快，正文逐字可见）+ flash 质检轮（保质量）。
@@ -10735,7 +11624,11 @@ async function performToolbarAIWrite(requirement) {
         }
         if (!proseData) {
           proseRoute = 'harness';
-          proseData = await runHarnessJob({ ...jobBase, prompt: prosePrompt }, 'AI 写作（2/3 成文）· 精写内核生成中（这一步最慢，通常 2–6 分钟）…');
+          // 成文轮走慢通道时也带「重写本章」标记（少 blueprint 一项：新蓝图此刻应可见）。
+          proseData = await runHarnessJob(
+            { ...jobBase, prompt: prosePrompt, env: { ...(jobBase.env || {}), NOVEL_OMIT_LAYERS: REWRITE_OMIT_LAYERS_PROSE.join(',') } },
+            'AI 写作（2/3 成文）· 精写内核生成中（这一步最慢，通常 2–6 分钟）…'
+          );
         }
         let article = parseAIWritingOutput(proseData.text ?? proseData.output ?? '').finalText || '';
         // ⏱ 成文轮如实记账：TTFT 只有流式直连测得出来，慢通道记 null（不假装有数）。
@@ -10777,11 +11670,32 @@ async function performToolbarAIWrite(requirement) {
           }
         }
         // 直连路径没有代理现场入账 → 交付后后台补提案；harness 路径已按纪律入账。
+        // ⚠️ 「重写本章」**不**在这里强行补入账（写这一行时先想当然加过，随后撤掉）：
+        // 慢通道的精写内核本来就会调 novel_event_add / novel_memory_update 提交入账提案
+        //（见下方"修复走 harness → needsLedger=false"那条注释），直连通道才需要前端补一次。
+        // 强行在重写模式下置 true，会让走慢通道的那一轮**提交两套提案**，作者得逐条去重。
         let needsLedger = proseData.via === 'direct';
         let blockedDraft = false;
         if (proseData.via === 'direct') {
           // flash 轻量质检轮：核对蓝图达成与一致性硬伤（秒级，替代部分 novel_consistency 职责）
-          const verdict = await verifyAIDraft(blueprintForProse, article, target);
+          //
+          // 2026-10-02：这一轮此前**既没有进度卡、也没有耗时记账**——成文轮结束后界面会静默
+          // 十几到几十秒（账本里 225.6s 中有约 85s 无法归因，这就是其中一段）。现在配卡 + 记一笔。
+          const verifyStartedAt = Date.now();
+          const verifyCard = showAITaskProgress('AI 写作（2/3 质检）· 正在核对蓝图达成与一致性…');
+          let verdict;
+          try {
+            verdict = await verifyAIDraft(blueprintForProse, article, target);
+          } finally {
+            verifyCard.close();
+          }
+          timing.round('verify', Date.now() - verifyStartedAt, {
+            pass: !!verdict.pass,
+            skipped: !!verdict.skipped,
+            // 只记"有几条硬伤"这个规模量，不记硬伤内容（与其它埋点同一条纪律）。
+            issues: Math.min(99, Array.isArray(verdict.issues) ? verdict.issues.length : 0),
+            reason: verdict.skipped ? String(verdict.reason || '') : ''
+          });
           if (verdict.skipped && verdict.reason) {
             // 显式说出"这次没质检"，并说明是体积原因——不冒充"已核对"。
             const why = verdict.reason === 'over_single_request_limit'
@@ -10891,7 +11805,16 @@ async function performToolbarAIWrite(requirement) {
           ms: writeTiming.total_ms,
           timing: writeTiming
         });
-        if (mode === null) return;
+        if (mode === null) {
+          // 作者自己关掉了结果弹窗：不是失败，但**必须留痕**——否则日志里这次写作就等于
+          // "消失了"，事后无法区分"他没看"和"系统没给"（2026-10-04 静默失败排查）。
+          reportClientLogSafe({
+            level: 'info', kind: 'ai_write_result_closed',
+            message: '[AI] 结果弹窗被关闭，未写入正文（作者自己关的）',
+            context: { work_id: state.workId || null, chapter_id: writeChapterId, chars: String(article || raw || '').length }
+          });
+          return;
+        }
         if (mode === 'regenerate') return performToolbarAIWrite(requirement);
         await applyAIWritingArticle(mode, article, writeChapterId);
         if (needsLedger) scheduleLedgerProposalJob(article); // 不阻塞交付，后台整理提案
@@ -10924,6 +11847,11 @@ async function performToolbarAIWrite(requirement) {
       }
 
       if (parsed.question) {
+        // ⚠️ 提问轮的**产出是一句问句，不是稿子**：问句已经被下面这个弹窗展示给作者了，
+        // 这一轮任务就算交付完毕 —— 必须立刻标记已应用，否则它会一直挂在恢复条上显示
+        // 「AI 写作：已完成，结果待应用 · 产出 144 字符」+「取回结果并应用」，
+        // 点下去取回的是一句问句（2026-10-04 作者截图报障："任务完成但是没显示？"）。
+        if (jobMeta && jobMeta.job_id) markJobApplied(jobMeta.job_id);
         const answer = await askAIQuestion(parsed.question, 'AI 写作 · 需要向你确认');
         if (answer === null) return;
         if (answer.type === 'skip') {
@@ -10950,6 +11878,11 @@ async function performToolbarAIWrite(requirement) {
       return;
     }
 
+    reportClientLogSafe({
+      level: 'warn', kind: 'ai_write_question_limit',
+      message: '[AI] 追问次数已达上限（10 轮），本次写作结束且没有产出正文',
+      context: { work_id: state.workId || null, chapter_id: writeChapterId }
+    });
     toast('AI 追问次数已达上限，请重试', 'error');
   } catch (e) {
     if (e.cancelled) {
@@ -10963,8 +11896,40 @@ async function performToolbarAIWrite(requirement) {
     } else {
       // N-02：失败必须可见。弹窗说明原因并回显 AI 原始输出尾部，替代此前一闪而过的 toast。
       const detail = e.rawOutput || e.tail || e.message || '未知错误';
+      // 📝 失败也要进日志（2026-10-04 作者报障："这种报错弹窗为什么日志不记录，要去记录"）：
+      // 那次 19:41 的空产出在日志里只留下"任务完成"，事后完全查不出失败发生在哪一环。
+      // 这条日志把「哪一章 / 哪一环 / 什么错误 / 拿到了多少字 / 原始输出开头」一次记全。
+      reportClientLogSafe({
+        level: 'error', kind: 'ai_write_failed',
+        message: `[AI] 写作管线失败：${String(e.message || '未知错误').slice(0, 160)}`,
+        context: {
+          work_id: state.workId || state.work?.id || null,
+          chapter_id: writeChapterId,
+          stage: 'write', chars: Number(e.chars) || 0,
+          head: String(detail).slice(0, 120)
+        }
+      });
       // 断流/超时同理：已经写出来的部分不销毁，只说清它在哪里（弹窗仍然照旧弹出、原因仍照旧展示）。
-      const kept = await saveInterruptedDraft(e.partialText || interruptedPartial, writeChapterId);
+      //
+      // ⚠️ 顺序与兜底（2026-10-04「静默失败」排查）：**落草稿是一次网络写入，它自己会失败** ——
+      // 旧写法是 `const kept = await saveInterruptedDraft(...)` 直接接 `openModal(...)`，
+      // 于是这次写入一旦抛错，**弹窗永远不会打开**：作者看到的是"任务结束但什么都没显示"，
+      // 日志里也只有"任务完成"。现在把副作用包起来：失败也要照样弹窗，并在弹窗里如实说明。
+      let kept = 0;
+      let keptFailed = false;
+      try {
+        kept = await saveInterruptedDraft(e.partialText || interruptedPartial, writeChapterId);
+      } catch (saveErr) {
+        keptFailed = true;
+        reportClientLogSafe({
+          level: 'error', kind: 'ai_write_draft_save_failed',
+          message: `[AI] 失败后保存中断草稿也失败了：${String(saveErr && saveErr.message || saveErr).slice(0, 120)}`,
+          context: { work_id: state.workId || null, chapter_id: writeChapterId, chars: Number(e.partialText && e.partialText.length) || 0 }
+        });
+      }
+      const keptNote = kept
+        ? `已经写出来的 ${kept} 字没有丢：已存为草稿，可在章节里「取回生成稿」。`
+        : (keptFailed ? '（想把这半截存成草稿时失败了 —— 它只存在于内存里，若需要请立刻截图或复制下面的原文）' : '');
       // 失败**原因**必须原文进弹窗，不能被"常见原因"那种泛化清单盖掉：交付闸门拦下"返回的是规划
       // 而不是正文"时（2026-10-01 事故），作者唯一能看懂的就是这句话本身；只给通用清单等于没说。
       openModal({
@@ -10972,13 +11937,14 @@ async function performToolbarAIWrite(requirement) {
         body: `
           <div class="mb-8"><b>${esc(String(e.message || '未知错误'))}</b></div>
           <div class="muted mb-8">常见原因：AI 拒绝执行、创作内核通道异常（如中文需求在传输中被损坏）、或返回内容无法解析。下方是原始输出尾部，可复制反馈排查：</div>
-          ${kept ? `<div class="muted mb-8">已经写出来的 ${kept} 字没有丢：已存为草稿，可在章节里「取回生成稿」。</div>` : ''}
+          ${keptNote ? `<div class="muted mb-8">${esc(keptNote)}</div>` : ''}
           <pre style="white-space:pre-wrap;word-break:break-all;max-height:240px;overflow:auto;background:rgba(0,0,0,.25);padding:10px;border-radius:6px;font-size:12px">${esc(String(detail).slice(-2000))}</pre>`,
         footer: '<button class="btn" data-close-modal>知道了</button>'
       });
     }
   } finally {
     if (btn) btn.disabled = false;
+    state.aiWritePipelineRunning = false; // 入口互斥的释放点（只由本函数置位，见 state 里的说明）
     // 🐞 运行追踪：整条「AI 写本章」管线（蓝图→成文→质检→补足）收尾时，
     // 才把长流程操作关闭——阶段函数内不 flush，否则多阶段管线会被切碎成多条操作。
     if (typeof traceFlushLong === 'function') traceFlushLong(traceWriteCancelled ? 'cancelled' : 'done');
@@ -11135,6 +12101,9 @@ async function batchGenerateChapters(count) {
         method: 'POST',
         body: { chapter_id: ch.id, content: textToParagraphsHtml(article), summary: (bp?.scene_goal || '').slice(0, 200) }
       });
+      // 写回推进了该章的 updated_at：把本地基线拉回来，否则这一轮结束后打开该章编辑，
+      // 第一次自动保存会因为"本地标记过期"而误报冲突（本人刚做的写回被当成别人改的）。
+      await refreshChapterBaselineAfterForeignWrite(ch.id);
       toast(`第 ${done}/${targets.length} 章已写入：${ch.title}`, 'success');
       chapterMs.push(Date.now() - chapterStartedAt);
     } catch (e) {
@@ -12371,10 +13340,14 @@ document.addEventListener('click', async (e) => {
     // 刻意只拦"点遮罩"这一条路径：点 ✕ / 点"取消"**仍然立即关闭**。
     // 理由：那两个动作本身就是明确的"放弃修改"，再拦一次等于把决定权又丢回给用户；
     // 而点遮罩更可能是误触（尤其长表单里想滚页面/点空白处），代价不对称。
+    //
+    // 2026-10-04：默认**全部**弹窗都走这条路（openModal 的 protectedBackdrop 默认 true）。
+    // 起因是作者连续撞到三处同类缺口（提问窗口 / 蓝图确认框 / AI 写作需求框）：
+    // 一次误触就丢掉正在填的需求或取消一次付费生成 —— 这是不对称代价，默认该偏安全侧。
     if (state.modalProtected) {
-      // AI 交互弹窗：关闭等于把 pending* resolve 成 null（取消任务/丢弃结果），
-      // 而这类弹窗已去掉"取消"按钮——用户若真想取消，走 ✕（明确表达意图）。
-      toast('这是 AI 交互弹窗，请用右上角 ✕ 或按钮关闭', 'error');
+      // 关闭这类弹窗等于：把 pending* resolve 成 null（取消任务/丢弃输入）。
+      // 因此只提示、不关闭 —— 作者若真想取消，走 ✕（明确表达意图）。
+      toast('点窗口外面不会关闭：请用右上角 ✕ 或「取消」按钮', 'error');
       return;
     }
     if (modalDirty()) {
@@ -12805,10 +13778,15 @@ async function handleAction(action, actionEl, e) {
 
       // D7：取消当前正在运行的 AI 任务（harness 慢通道）
       case 'ai-task-cancel': {
-        const task = activeAITask;
-        if (task && task.cancel) {
+        // 取消目标 = **当前**进度卡（不再依赖 activeAITask 是否被某条路径 setCancel 过）：
+        // 卡片自己知道该调谁（显式回调优先，否则调所有已登记的句柄）。
+        const card = currentProgressCard;
+        if (card && typeof card.runCancel === 'function') {
           if (actionEl) { actionEl.disabled = true; actionEl.textContent = '停止中…'; }
-          task.cancel();
+          card.runCancel();
+        } else if (activeAITask && activeAITask.cancel) {
+          if (actionEl) { actionEl.disabled = true; actionEl.textContent = '停止中…'; }
+          activeAITask.cancel();
         }
         break;
       }
@@ -12835,6 +13813,24 @@ async function handleAction(action, actionEl, e) {
         state.pendingAIApply = null;
         closeModal();
         if (pending?.onApply) await pending.onApply();
+        break;
+      }
+
+      // 采纳冲突的两个出口（2026-10-02）：先不写 / 以我的当前内容覆盖。
+      // 覆盖时由调用方重取服务端权威基线再提交一次，被覆盖的那一版仍会进历史版本。
+      case 'adopt-conflict-force': {
+        const pending = state.pendingAdoptConflict;
+        state.pendingAdoptConflict = null;
+        closeModal();
+        if (pending?.resolve) pending.resolve(true);
+        break;
+      }
+
+      case 'adopt-conflict-cancel': {
+        const pending = state.pendingAdoptConflict;
+        state.pendingAdoptConflict = null;
+        closeModal();
+        if (pending?.resolve) pending.resolve(false);
         break;
       }
 
@@ -12983,6 +13979,16 @@ async function handleAction(action, actionEl, e) {
         await manualSaveChapter();
         break;
 
+      // 空内容暂停的两条出路（见 recoveryBarHtml 的 🛡 条）：都必须是**一次点击**能走完的动作，
+      // 否则作者只会看到"暂停了"而没有出口（2026-10-02 事故复盘）。
+      case 'editor-empty-restore':
+        await restoreLastSavedVersion();
+        break;
+
+      case 'editor-empty-clear':
+        await clearChapterBodyExplicit();
+        break;
+
       case 'editor-conflict-local':
         await resolveEditorConflict('local');
         break;
@@ -13007,8 +14013,16 @@ async function handleAction(action, actionEl, e) {
         previewChapterDraft();
         break;
 
+      case 'dismiss-draft':
+        await dismissChapterDraft();
+        break;
+
       case 'open-last-review':
         await openLastReview();
+        break;
+
+      case 'dismiss-review':
+        await dismissChapterReview();
         break;
 
       case 'resume-job':
@@ -13017,6 +14031,10 @@ async function handleAction(action, actionEl, e) {
 
       case 'fetch-job':
         await fetchHarnessJobResult(actionEl.dataset.id);
+        break;
+
+      case 'dismiss-job':
+        await dismissJobResult(actionEl.dataset.id);
         break;
 
       case 'restore-version':
@@ -14635,7 +15653,9 @@ window.addEventListener('resize', () => {
 });
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.editorSaveSnapshot || state.editorSaveInFlight.size || state.editorConflictSnapshot || state.editorSaveFailedSnapshot) {
+  // editorEmptyBlocked 也算"未保存内容"：它是被空内容护栏暂停的一版稿子，
+  // 直接放行离开等于让护栏白做（刷新后那版被清空的编辑就真没了）。
+  if (state.editorSaveSnapshot || state.editorSaveInFlight.size || state.editorConflictSnapshot || state.editorSaveFailedSnapshot || state.editorEmptyBlocked) {
     e.preventDefault();
     e.returnValue = '当前章节还有未保存内容';
   }

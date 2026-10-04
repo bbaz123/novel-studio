@@ -106,8 +106,10 @@ function sendJSON(res, status, data) {
   res.end(body);
 }
 
-function sendError(res, status, message) {
-  sendJSON(res, status, { error: message || 'Internal error' });
+function sendError(res, status, message, extra = null) {
+  // 出错时除了人话，还要给调用方一个**机器可判的 code**（如 EMPTY_OVERWRITE_BLOCKED）：
+  // 客户端据此显示"怎么补救"，而不是把一句中文再拿去正则匹配。纯附加字段，老调用方不受影响。
+  sendJSON(res, status, { error: message || 'Internal error', ...(extra && typeof extra === 'object' ? extra : {}) });
 }
 
 // ── 整库备份 / 还原（P1-01）───────────────────────────────────────────────
@@ -1241,7 +1243,15 @@ async function callAIStream(config, messages, options = {}, onDelta) {
     // 🧠 "模型正在思考"每个流只报一次：DeepSeek 的思考是以 `delta.reasoning_content` 分片下发的，
     // 此前这些帧被整个忽略 —— 于是长时间思考期间客户端一帧都收不到，界面上看起来就是卡死。
     // 只上报"进入思考"这一个相位，**不转发思考内容本身**（不外泄推理过程，也不增加传输量）。
+    //
+    // 2026-10-02 补充：只报一次还不够 —— 实测成文轮的首字延迟 25s（思考 4362 tokens），
+    // 这 25 秒里进度卡停在"模型正在思考…"一动不动，看起来仍然是卡死。现在在思考期间
+    // **按秒数下发心跳**（同样不转发思考内容，只带"已思考 N 秒 / 思考了 M 字"这种规模量），
+    // 让作者能看出任务在推进。心跳只在思考阶段存在，首个正文 delta 到达即自行停止。
     let thinkingNotified = false;
+    let thinkingStartedAt = 0;
+    let reasoningChars = 0;
+    let thinkingHeartbeat = null;
     const timeout = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
     const onAbort = () => controller.abort();
     if (options.signal) options.signal.addEventListener('abort', onAbort);
@@ -1286,12 +1296,25 @@ async function callAIStream(config, messages, options = {}, onDelta) {
             if (evt?.usage) streamUsage = evt.usage;
             // 思考相位：这一帧带 reasoning_content 且还没报过就报一次（内容本身不转发）。
             const reasoning = evt?.choices?.[0]?.delta?.reasoning_content;
-            if (!thinkingNotified && typeof reasoning === 'string' && reasoning) {
-              thinkingNotified = true;
-              if (typeof options.onThinking === 'function') options.onThinking();
+            if (typeof reasoning === 'string' && reasoning) {
+              reasoningChars += reasoning.length;
+              if (!thinkingNotified) {
+                thinkingNotified = true;
+                thinkingStartedAt = Date.now();
+                if (typeof options.onThinking === 'function') options.onThinking({ reasoning_chars: reasoningChars });
+                // 思考期心跳：每 2.5 秒一次，只带"已思考多久 / 思考了多少字"。
+                // unref 保证它绝不会把进程吊住；首个正文 delta 到达时立刻清除（正文期间不再刷这条）。
+                thinkingHeartbeat = setInterval(() => {
+                  if (typeof options.onThinkingTick === 'function') {
+                    options.onThinkingTick({ elapsed_ms: Date.now() - thinkingStartedAt, reasoning_chars: reasoningChars });
+                  }
+                }, 2500);
+                if (typeof thinkingHeartbeat.unref === 'function') thinkingHeartbeat.unref();
+              }
             }
             const delta = evt?.choices?.[0]?.delta?.content;
             if (typeof delta === 'string' && delta) {
+              if (thinkingHeartbeat) { clearInterval(thinkingHeartbeat); thinkingHeartbeat = null; }
               full += delta;
               if (typeof onDelta === 'function') onDelta(delta, full);
             }
@@ -1305,6 +1328,9 @@ async function callAIStream(config, messages, options = {}, onDelta) {
       return full;
     } finally {
       clearTimeout(timeout);
+      // 思考期心跳必须在这里兜底清除：正常路径由首个正文 delta 清掉，
+      // 但"全程只思考不给正文"或抛错/中断时不会走到那一行。
+      if (thinkingHeartbeat) { clearInterval(thinkingHeartbeat); thinkingHeartbeat = null; }
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
     }
   };
@@ -1375,7 +1401,15 @@ async function handleAIWriteStream(req, res, body, config) {
       onUsage: (u) => { usage = u; },
       // 思考相位随流下发：客户端据此把"已 0 字"换成"模型正在思考…"。
       // 纯附加信号（老客户端忽略即可），不改任何生成参数。
-      onThinking: () => send({ phase: 'thinking' })
+      onThinking: (info) => send({ phase: 'thinking', reasoning_chars: Number(info && info.reasoning_chars) || 0 }),
+      // 思考期心跳（每 2.5s）：只带"已思考 N 秒 / 思考 M 字"，让进度卡在首字到来之前也在动。
+      // 同样不转发思考内容；老客户端收到未知 phase 也只是忽略。
+      onThinkingTick: (info) => send({
+        phase: 'thinking',
+        heartbeat: true,
+        elapsed_ms: Number(info && info.elapsed_ms) || 0,
+        reasoning_chars: Number(info && info.reasoning_chars) || 0
+      })
     }, (delta, acc) => {
       full = acc;
       send({ delta });
@@ -1491,6 +1525,53 @@ function contentToEditorHtml(text) {
   return textToHtml(s);
 }
 
+// ── 空正文覆盖护栏（2026-10-02 事故驱动；唯一权威的那一道）────────────────────
+// 事故形状（已取证）：第三章 #121 原本 3982 字，某次写入把它整章写成了 `<div><br></div>`。
+// 客户端**当时也有**一道"编辑器为空则暂停保存"的护栏，但它判据是内存里的 `state.chapters[].content`：
+//   ① 那一份内存稿一旦被刷新成空（例如已经发生过一次空写），护栏就永久失效，还会继续放行；
+//   ② 它只看得见编辑器自动保存（PUT /chapters/:id）这一条通道，另外两条真正在写正文的通道
+//      （POST /novel/chapter_save、POST /novel/adopt）它根本管不到。
+// 结论：判据必须放在**服务端每一个会写正文章节的入口**上，并且以**库里的现正文**为准，
+// 而不是以任何一份客户端状态为准 —— 客户端状态可以是空的、过期的或属于另一章。
+//
+// 语义（刻意保守，理由见下）：
+//   · "空"= 去掉全部 HTML 标签后没有任何非空白字符（`<p><br></p>`、`<div>&nbsp;</div>` 都算空）；
+//   · "有正文"= 现正文的可读字符数 ≥ EMPTY_OVERWRITE_MIN_CHARS。
+//     **可读字符数**（汉字/字母/数字）而不是"去空白后的长度"：只有标点、空行、零宽字符的稿子
+//     救不回来，不该再用它们把真正的正文挡在门外。
+//   · 触发时**拒绝写入**并返回带 `code: 'EMPTY_OVERWRITE_BLOCKED'` 的 409，调用方据此
+//     引导作者显式确认；`confirm_empty: true` 才放行（清空章节重写是合法操作，但不该是默认行为）。
+//   · 为什么宁可得罪"我就是要清空"的少数场景，也不放行：误清空的代价是整章正文，
+//     而误拦一次的全部代价是作者多按一次「确认清空」——两者不对称，判据就必须偏向不写。
+//   · 只挡"有→无"（正文被抹掉）。空→空、无→有、有→有 一律照原样放行，正常写作路径零变化。
+const EMPTY_OVERWRITE_MIN_CHARS = 50;
+const EMPTY_OVERWRITE_CODE = 'EMPTY_OVERWRITE_BLOCKED';
+/** 去标签后的可读字符数（与编辑器字数口径同源：汉字/字母/数字，不含标点与空白）。 */
+function readableChars(text) {
+  return (String(text == null ? '' : text).match(/[\p{Script=Han}\p{L}\p{N}]/gu) || []).length;
+}
+/** 正文是否"空"：去掉全部标签后没有可读字符（也未提供 confirm_empty）。 */
+function isBlankBody(html) {
+  return readableChars(plainText(html)) === 0;
+}
+/**
+ * 写入前的空正文裁决。`confirmEmpty` 为真时直接放行（作者已显式确认）。
+ * @returns {null|{status:number, message:string, code:string, current_chars:number}} null = 放行
+ */
+function checkEmptyOverwrite(currentContent, nextContent, { confirmEmpty = false, what = '本章正文' } = {}) {
+  if (confirmEmpty) return null;
+  const current = readableChars(plainText(currentContent));
+  if (current < EMPTY_OVERWRITE_MIN_CHARS) return null;
+  if (!isBlankBody(nextContent)) return null;
+  return {
+    status: 409,
+    code: EMPTY_OVERWRITE_CODE,
+    current_chars: current,
+    message: `${what}现有 ${current} 字，这次写入的内容是空的——已拒绝，未改动任何内容。`
+      + `（若编辑器确实被清空：用「历史版本 / 取回生成稿」找回原稿；确实要清空本章请显式确认后再保存）`,
+  };
+}
+
 /**
  * 把一行**草稿版本**的 content 归一化为编辑器 HTML。
  * 写入、读取、以及表结构演进时都走这里 —— 三处各写一份必然漂移，
@@ -1499,6 +1580,28 @@ function contentToEditorHtml(text) {
 function normalizeDraftRow(row) {
   if (!row) return row;
   return { ...row, content: contentToEditorHtml(row.content) };
+}
+
+/**
+ * 「这看起来是写作规划（蓝图），不是章节正文」的判据（2026-10-04）。
+ *
+ * 为什么必须由**服务端**兜这一道：草稿有三个写入通道（长任务产出回填 / finalize 回填 /
+ * 界面直接 POST /novel/draft），而"这是不是正文"的判断此前只做在前端成文轮那一处
+ * （`detectNonProseOutput`）。于是计划轮的蓝图文本可以作为**生成稿草稿**落库，
+ * 恢复条上就出现「有未应用的生成稿（1589 字）」——点开一看是一段【蓝图】JSON。
+ * 作者 2026-10-04 据此报障（"这个是蓝图，不是正文"），而同类事故 2026-10-01 已经发生过一次。
+ *
+ * 判据保守：只认过程头【蓝图】/【规划】开头，或 JSON 里出现 ≥3 个蓝图专有字段名。
+ * 正常正文里出现"场景目标"这类词不会命中（要同时满足多字段名）。
+ */
+const BLUEPRINT_FIELD_NAMES = ['scene_goal', 'plot_points', 'conflicts', 'character_changes', 'hook', 'references'];
+function looksLikeBlueprintText(text) {
+  const raw = String(text || '');
+  if (!raw.trim()) return false;
+  const plain = plainText(raw);
+  if (/^\s*【\s*(蓝图|规划|写作规划)\s*】/.test(plain)) return true;
+  const hits = BLUEPRINT_FIELD_NAMES.filter((k) => raw.includes(k)).length;
+  return hits >= 3;
 }
 
 // ---------- chapter manual save versions ----------
@@ -1510,9 +1613,11 @@ function saveChapterVersion(chapterId, title, summary, content, kind = 'manual')
   // 草稿是**纯文本来源**（AI 成文正文、中断时的半章片段），落库即转成编辑器 HTML：
   // 取回草稿会直接写进正文，若这里存的是裸文本，正文就会丢掉全部段落结构。
   const stored = kind === 'draft' ? contentToEditorHtml(content) : asString(content);
+  // draft_applied 显式写 0：新草稿一律是"还没进正文"，只有正文真被写入后才标记
+  //（见 markDraftsApplied；不依赖建表默认值，避免迁移顺序影响语义）。
   const info = prepare(`
-    INSERT INTO chapter_save_versions (chapter_id, title, summary, content, created_at, kind)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO chapter_save_versions (chapter_id, title, summary, content, created_at, kind, draft_applied)
+    VALUES (?, ?, ?, ?, ?, ?, 0)
   `).run(chapterId, asString(title), asString(summary), stored, now(), kind === 'draft' ? 'draft' : 'manual');
   pruneChapterVersions(chapterId);
   return normalizeDraftRow(prepare('SELECT * FROM chapter_save_versions WHERE id = ?').get(Number(info.lastInsertRowid)));
@@ -1528,12 +1633,16 @@ function listChapterVersions(chapterId) {
   `).all(chapterId);
 }
 
-/** 最近一份 AI 生成稿草稿（关闭结果弹窗后仍可取回）。 */
+/**
+ * 最近一份"还没进正文"、并且**没被作者关掉**的 AI 生成稿草稿（关闭结果弹窗后仍可取回）。
+ * 为什么这里要排除 draft_dismissed：作者一旦选「关闭」，这一版就不该再出现在恢复条上
+ * ——界面上没有第二个出口，若这里仍返回它，"关闭"就变成了一句空话（反复提示 = 没关掉）。
+ */
 function getLatestDraft(chapterId) {
   const row = prepare(`
     SELECT id, chapter_id, title, content, created_at
     FROM chapter_save_versions
-    WHERE chapter_id = ? AND kind = 'draft'
+    WHERE chapter_id = ? AND kind = 'draft' AND draft_applied = 0 AND draft_dismissed = 0
     ORDER BY created_at DESC, id DESC
     LIMIT 1
   `).get(chapterId);
@@ -1551,6 +1660,77 @@ function getLatestDraft(chapterId) {
   return { ...normalized, chars: plainText(row.content).length };
 }
 
+/**
+ * 把某章"还没进正文"的草稿标记为已应用（2026-10-02）。
+ * 调用时机：正文真正被写入该章之后（采纳事务内 / 取回生成稿成功后）。
+ * 为什么是标记而不是删除：草稿是历史记录的一部分（作者可能还想回看那一版），
+ * 但"已进正文的稿子"不能再被当成「未应用的生成稿」反复提示。
+ *
+ * 两种模式（差别只在"哪些更早的草稿也算被消费过"）：
+ *   · mode='one'（默认）：只标指定的这一份。适用于"取回生成稿"这种明确只消费一份的动作。
+ *   · mode='up-to'：标 **早于等于** 这一份的所有未应用草稿。适用于采纳 ——
+ *     作者采纳的是最新那一版，此前那些更早、从未采纳的稿子代表的是"已经被后一版取代的中间态"。
+ *     若只标最新一份，下一份更早的旧稿会立刻顶上来变成"有未应用的生成稿"，
+ *     于是作者刚采纳完就看到一条几周前的旧草稿（实测撞到：采纳 id=42 后弹出 id=10）。
+ *     这不叫保守，叫误导 —— 提示只有"确实还有一版没进正文"时才有意义。
+ * 不传 ids 时先取该章最新一份未应用草稿作为目标；没有则不做任何事。
+ * 返回被标记的行数（0 表示本来就没有可标记的草稿）。
+ */
+function markDraftsApplied(chapterId, ids = null, { mode = 'one' } = {}) {
+  const cid = Number(chapterId) || 0;
+  if (!cid) return 0;
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter((n) => n > 0);
+  if (!list.length) {
+    const latest = prepare(`SELECT id FROM chapter_save_versions WHERE chapter_id = ? AND kind = 'draft' AND draft_applied = 0 ORDER BY created_at DESC, id DESC LIMIT 1`).get(cid);
+    if (!latest) return 0;
+    list.push(Number(latest.id));
+  }
+  const marks = list.map(() => '?').join(',');
+  const sql = mode === 'up-to'
+    ? `UPDATE chapter_save_versions SET draft_applied = 1 WHERE chapter_id = ? AND kind = 'draft' AND draft_applied = 0 AND id <= ?`
+    : `UPDATE chapter_save_versions SET draft_applied = 1 WHERE chapter_id = ? AND kind = 'draft' AND draft_applied = 0 AND id IN (${marks})`;
+  const args = mode === 'up-to' ? [cid, Math.max(...list)] : [cid, ...list];
+  const info = prepare(sql).run(...args);
+  return Number(info.changes) || 0;
+}
+
+/**
+ * 作者「关闭」一份生成稿（2026-10-04）：只是**不再提示**，不删除内容、不改正文。
+ *
+ * 为什么要有这个动作：恢复条上的「有未应用的生成稿」只有「取回 / 预览」两个出口，
+ * 作者明确不想要这一版时无处可点，那条提示就永远挂在编辑器上方（实测报障）。
+ *
+ * 为什么只标记不删除（与 markDraftsApplied 同一取舍）：内容删除是不可逆的，
+ * 而"关闭"这个动作的语义是**关于提示的**，不是关于内容的；误点一次不该让几万字的产出消失。
+ * 关闭后 getLatestDraft 不再返回它 → 恢复条不再显示；该行仍留在版本表里。
+ *
+ * 只作用于一章里的**这一份**：更早的草稿不动（作者可能正想回退到那一版，
+ * 静默替他把旧版也一起关掉会误伤）。真正更新的草稿（id 更大）自然也不受影响。
+ *
+ * 传入 draft_id 时只关那一份；不传则关"当前显示的那一份"（最新未应用未关闭的草稿）。
+ * 已关闭过的行不会被重复计数（幂等），返回被标记的行数（0 = 没有可关的草稿）。
+ */
+function dismissDraft(chapterId, draftId = 0) {
+  const cid = Number(chapterId) || 0;
+  if (!cid) return 0;
+  const did = Number(draftId) || 0;
+  const info = did
+    ? prepare(`
+        UPDATE chapter_save_versions SET draft_dismissed = 1
+        WHERE chapter_id = ? AND kind = 'draft' AND draft_dismissed = 0 AND id = ?
+      `).run(cid, did)
+    : prepare(`
+        UPDATE chapter_save_versions SET draft_dismissed = 1
+        WHERE chapter_id = ? AND kind = 'draft' AND draft_dismissed = 0 AND id = (
+          SELECT id FROM chapter_save_versions
+          WHERE chapter_id = ? AND kind = 'draft' AND draft_applied = 0 AND draft_dismissed = 0
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        )
+      `).run(cid, cid);
+  return Number(info.changes) || 0;
+}
+
 // 自动快照的节流：编辑器每次停手都会 PUT（800ms 防抖），若不节流，一小时写作会产出
 // 上百份整章副本，把历史版本面板冲垮、库也白胖一圈。策略（P1-04）：
 //   · 距上一份 auto 快照 ≥ AUTO_SNAPSHOT_MIN_GAP_MS 才留新的一份（同窗口内的连续保存共享同一份兜底）；
@@ -1562,16 +1742,26 @@ function getLatestDraft(chapterId) {
 // 为什么用 app_settings 而不是新表：它已经是现成的 key-value 存储，且这条状态是纯运维性数据。
 const AUTO_SNAPSHOT_MIN_GAP_MS = 90 * 1000;
 const AUTO_SNAPSHOT_MIN_KEEP = 20;
-function shouldAutoSnapshot(chapterId) {
+/**
+ * 这个窗口里还能不能再留一份 auto 快照（**只读**，不推进节流标记）。
+ *
+ * 为什么拆成"只看"与"记账"两步（2026-10-02）：旧实现是**一个**函数先写时间戳再返回 true，
+ * 而它被调用在写入事务内部 —— 事务一旦回滚（时态锁冲突、唯一约束、磁盘错误…），
+ * 这份"兜底已经留过了"的记账却不会跟着回滚：接下来 90 秒里作者的手改**没有任何快照兜底**，
+ * 而界面/日志里看不出这件事（安全网被静默吃掉一次）。
+ */
+function autoSnapshotAllowed(chapterId) {
   try {
     const key = `auto_snapshot_at:${Number(chapterId)}`;
     const last = Date.parse(String(getAppSettingDb(key, '') || ''));
-    if (Number.isFinite(last) && Date.now() - last < AUTO_SNAPSHOT_MIN_GAP_MS) return false;
-    setAppSettingDb(key, now());
-    return true;
+    return !(Number.isFinite(last) && Date.now() - last < AUTO_SNAPSHOT_MIN_GAP_MS);
   } catch (_) {
     return true;   // 节流状态读写失败时宁可多留一份，也不要静默丢掉兜底能力
   }
+}
+/** 记账：一份 auto 快照**真的**落库之后才推进节流窗口（失败只影响节流精度，不影响写入）。 */
+function markAutoSnapshotTaken(chapterId) {
+  try { setAppSettingDb(`auto_snapshot_at:${Number(chapterId)}`, now()); } catch (_) { /* 见上：宁可多留一份 */ }
 }
 
 function pruneChapterVersions(chapterId) {
@@ -2827,6 +3017,43 @@ function buildNovelIndexDictionary(workId, allCharacters) {
   return dict;
 }
 
+/**
+ * 可被调用方显式跳过的上下文层（白名单）。
+ *
+ * 为什么是白名单而不是"任意 omit"：上下文层是契约（layers.mjs 是单一来源，清单/预算/审计
+ * 都按它算）。做成通用开关，等于给这条参数开了一个静默绕过契约的后门。
+ *
+ * 两组真实需求，都由作者 2026-10-04 提出：
+ *   · 第一轮（`blueprint`）：点「AI 写作」要求**重新规划**时，上一版蓝图（层标题
+ *     「本章蓝图（写作必须遵守）」）会让模型复述旧计划 —— 作者原话"我都点了重新生成，
+ *     怎么还在讲旧蓝图"。
+ *   · 第二轮（`scene`/`memory`/`events`/`foreshadows`/`recall`）：作者决定把每次 AI 写作
+ *     当作**重写本章** —— 本章既有记录（章节摘要、长期记忆、事件账本、未闭合伏笔、
+ *     本作章节的语义召回）一概不看，只保留作品简介/角色卡/世界观/词条/大纲与剧情线；
+ *     逐层实测证据见 docs/blueprint-regenerate-20261004.md。
+ *
+ * 注意：`work`/`outline`/`characters`/`world`/`terms`/`redlines`/`edit_rules`/`library`
+ * 不在白名单里 —— 它们是"这本书的设定与资料"，不是"前面发生过什么"，砍掉会让新稿与全书脱节。
+ */
+const OMITTABLE_LAYERS = new Set(['blueprint', 'scene', 'memory', 'events', 'foreshadows', 'recall']);
+
+/** `omit_layers=blueprint` → ['blueprint']；未知值一律忽略（不报错、不静默扩权）。 */
+function normalizeOmitLayers(value) {
+  return String(value || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => OMITTABLE_LAYERS.has(s));
+}
+
+/**
+ * 跳过层进缓存键（默认无 → 键与旧版逐字节相同）。
+ * ⚠️ 必须进键：规划轮（无蓝图层）与成文轮（带蓝图层）的 assembled 文本不同，
+ * 不进键就会互相误命中——作者会拿到"上一轮的上下文"，而这正是本轮要修的东西。
+ */
+function omitLayersCacheSuffix(layers) {
+  return Array.isArray(layers) && layers.length ? `|omit=${[...layers].sort().join('+')}` : '';
+}
+
 async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts = {}) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
@@ -3214,6 +3441,12 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
   // 注意：旧注释写的「三层合计最多省 ~6,700 字/轮」是三层 **cap 之和**，不是实际节省；
   // 实际节省取决于这三层当时的真实长度，可能远小于上限。
   const isSettingsMode = mode === 'settings';
+  // 规划轮的上下文：作者点「AI 写作」要求**重新规划**时，不把上一版蓝图喂进去
+  //（2026-10-04 作者报障：改了前文 / 对上一版蓝图不满意再点一次，AI 仍按旧蓝图写）。
+  // 为什么必须在这一层挡：`blueprint` 那一层的标题是「本章蓝图（写作必须遵守）」，
+  // 在"重新规划"的轮次里它与任务直接矛盾，模型会照着复述旧计划。
+  // 只在显式传 omitLayers 时生效（默认行为逐字节不变）；白名单见 OMITTABLE_LAYERS。
+  const omitLayerIds = new Set(Array.isArray(contextOpts.omitLayers) ? contextOpts.omitLayers : []);
   const specById = new Map(CONTEXT_LAYER_SPEC.map((l) => [l.id, l]));
   // 按 spec 的 id 组装一层：cap 与 kind 一律取自 layers.mjs（单一来源），
   // 这里只负责把该层的正文准备好。
@@ -3339,19 +3572,23 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     log({ level: 'warn', layer: 'ai', kind: 'author_intent_error', message: `作者意图层构建失败（work ${workId}）：${e.message}`, context: { work_id: workId } });
   }
 
+  // 「重写本章」跳层（2026-10-04 作者决定）：见 OMITTABLE_LAYERS 的说明。
+  // 写法统一为 `...(omitLayerIds.has(x) ? [] : [L(x, …)])`：不传该参数时数组内容与顺序逐字节不变。
   const layers = [
     L('work', `${work.title}${work.description ? `\n${work.description.slice(0, 600)}` : ''}\n${workConfigText}`, { sourceIds: [work.id] }),
     L('outline', outlineText, { sourceIds: shownChapterIds, note: cursorUsable ? cursorNote : '' }),
-    memoryPolicy.included
+    memoryPolicy.included && !omitLayerIds.has('memory')
       ? L('memory', memoryBody, { sourceIds: memoryRowId ? [memoryRowId] : null, note: storyMemory ? `${storyMemory.length} 字` : '无记忆' })
       : null,
-    recallLayer
-      ? L('recall', recallLayer.text, {
-          sourceIds: (semanticRecall.hits || []).map((h) => h.uri).filter(Boolean),
-          scores: recallScores,
-          note: cursorUsable ? withCursorNote('score 口径 = 相关度百分比（0-100）') : 'score 口径 = 相关度百分比（0-100）',
-        })
-      : (recallGapText ? L('recall', recallGapText, { note: cursorUsable ? withCursorNote(`缺口占位：${recallGap}`) : `缺口占位：${recallGap}` }) : null),
+    omitLayerIds.has('recall')
+      ? null
+      : (recallLayer
+        ? L('recall', recallLayer.text, {
+            sourceIds: (semanticRecall.hits || []).map((h) => h.uri).filter(Boolean),
+            scores: recallScores,
+            note: cursorUsable ? withCursorNote('score 口径 = 相关度百分比（0-100）') : 'score 口径 = 相关度百分比（0-100）',
+          })
+        : (recallGapText ? L('recall', recallGapText, { note: cursorUsable ? withCursorNote(`缺口占位：${recallGap}`) : `缺口占位：${recallGap}` }) : null)),
     (libraryRecall && libraryRecall.status === 'ok' && libraryRecall.text)
       ? L('library', libraryRecall.text, {
           sourceIds: (libraryRecall.hits || []).map((h) => h.uri).filter(Boolean),
@@ -3359,11 +3596,15 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
           note: cursorUsable ? withCursorNote('资料非本书事实；score 口径 = 相关度百分比（0-100）') : '资料非本书事实；score 口径 = 相关度百分比（0-100）',
         })
       : null,
-    L('events', eventsText, { sourceIds: events.map((e) => e.id), note: cursorUsable ? withCursorNote(`事件账本（${events.length} 条）`) : '' }),
-    L('foreshadows', foreshadowText, { sourceIds: openForeshadows.map((e) => e.id), note: cursorUsable ? withCursorNote(`未闭合伏笔（${openForeshadows.length} 条）`) : '' }),
+    ...(omitLayerIds.has('events') ? [] : [L('events', eventsText, { sourceIds: events.map((e) => e.id), note: cursorUsable ? withCursorNote(`事件账本（${events.length} 条）`) : '' })]),
+    ...(omitLayerIds.has('foreshadows') ? [] : [L('foreshadows', foreshadowText, { sourceIds: openForeshadows.map((e) => e.id), note: cursorUsable ? withCursorNote(`未闭合伏笔（${openForeshadows.length} 条）`) : '' })]),
     ...(isSettingsMode ? [] : [
-      L('scene', sceneBody, { sourceIds: chapter ? [chapter.id] : null, note: cursorUsable ? cursorNote : '' }),
-      L('blueprint', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', { sourceIds: chapter && blueprintText ? [chapter.id] : null, note: cursorUsable ? cursorNote : '' }),
+      ...(omitLayerIds.has('scene') ? [] : [L('scene', sceneBody, { sourceIds: chapter ? [chapter.id] : null, note: cursorUsable ? cursorNote : '' })]),
+      // 规划轮（omitLayers 含 blueprint）跳过这一层：见上面 omitLayerIds 的说明。
+      // 不传该参数时数组与顺序完全不变（与接入前逐字节一致）。
+      ...(omitLayerIds.has('blueprint') ? [] : [
+        L('blueprint', blueprintText || '（暂无蓝图，可在工坊里用「AI 写作」自动生成，或直接成文）', { sourceIds: chapter && blueprintText ? [chapter.id] : null, note: cursorUsable ? cursorNote : '' }),
+      ]),
       L('story_tail', storyTail, { sourceIds: storyTailSource ? [storyTailSource.id] : null, note: storyTailSource ? `${storyTailSource.which}（${storyTail.length} 字）` : '' }),
     ]),
     L('characters', charCardsText, {
@@ -3756,7 +3997,51 @@ function getLatestReview(chapterId) {  const row = prepare('SELECT * FROM chapte
   let report = {}; let checklist = {};
   try { report = JSON.parse(row.report_json || '{}'); } catch (_) {}
   try { checklist = JSON.parse(row.checklist_json || '{}'); } catch (_) {}
-  return { id: row.id, chapter_id: row.chapter_id, report, checklist, status: row.status, created_at: row.created_at };
+  // dismissed：作者是否已经把「上次审稿」那条提示关掉（2026-10-04）。
+  // **这里不过滤**：关闭只影响恢复条那条提示，审稿报告本身仍要能查（作者可能从别处回看）。
+  return { id: row.id, chapter_id: row.chapter_id, report, checklist, status: row.status, created_at: row.created_at, dismissed: Number(row.dismissed) || 0 };
+}
+
+/**
+ * 审稿记录 → 界面要的形状（GET /novel/review 与关闭动作共用一份）。
+ * 为什么抽出来：两处各写一份必然漂移，而漂移的后果是"关闭后界面拿到的形状和平时不一样"。
+ */
+function reviewForClient(review) {
+  if (!review) return null;
+  const report = review.report || {};
+  return {
+    ...review,
+    // 让界面不必自己判断可信度：解析成功与否、能否直接走「按清单修稿」。
+    parsed: !!(asString(report.summary, '').trim() || asArray(report.issues).length),
+    issue_count: asArray(report.issues).length,
+    strength_count: asArray(report.strengths).length,
+    // 原文可能高达 200KB，回看列表不需要全量——只带预览，完整原文仍在库里可查。
+    raw_text: asString(report.raw_text, '').slice(0, 20000),
+  };
+}
+
+/**
+ * 作者「关闭」上次审稿那条提示（2026-10-04）：只标记 dismissed，不删除审稿记录、不改正文。
+ *
+ * 与草稿/任务两处关闭同一取向：这个动作是关于**提示**的，不是关于内容的。
+ * 删除报告是不可逆的，而误点"关闭"应当是便宜的；报告留在 chapter_reviews 里，
+ * GET /novel/review 照常返回（带 dismissed=1），只有恢复条那一条不再显示。
+ *
+ * 只关"当前这一份"：传 review_id 时只关它，不传则关该章最新那一份（幂等，返回改动行数）。
+ */
+function dismissReview(chapterId, reviewId = 0) {
+  const cid = Number(chapterId) || 0;
+  if (!cid) return 0;
+  const rid = Number(reviewId) || 0;
+  const info = rid
+    ? prepare(`UPDATE chapter_reviews SET dismissed = 1 WHERE chapter_id = ? AND dismissed = 0 AND id = ?`).run(cid, rid)
+    : prepare(`
+        UPDATE chapter_reviews SET dismissed = 1
+        WHERE chapter_id = ? AND dismissed = 0 AND id = (
+          SELECT id FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 1
+        )
+      `).run(cid, cid);
+  return Number(info.changes) || 0;
 }
 
 function setReviewChecklist(reviewId, checklist) {
@@ -5305,14 +5590,18 @@ async function handleAPI(req, res, pathname, query) {
     const temporalParams = temporalContextParamsOf(query);
     // P1-07：与 /api/novel/context 同口径的通道能力参数（默认有工具；tools=0 表示直连通道）。
     const noTools = String(query.tools || '') === '0';
+    // 规划轮跳层（2026-10-04）：omit_layers=blueprint 表示"这一轮是在重新规划"。
+    const omitLayers = normalizeOmitLayers(query.omit_layers);
     const cacheKey = contextCacheKeyOf({ workId, chapterId, mode: 'full', phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
       + temporalCacheSuffixOf(workId, temporalParams)
-      + (noTools ? '|notools' : '');
+      + (noTools ? '|notools' : '')
+      + omitLayersCacheSuffix(omitLayers);
     let budgeted = cacheGetContext(cacheKey, workId);
     if (budgeted === undefined) {
       budgeted = await buildNovelContext(workId, chapterId, 'full', {
         direction, directionSource, libraryRecallPhase, requestId,
         toolsAvailable: !noTools,
+        omitLayers,
         boundary: temporalParams.boundary || undefined,
         commitId: temporalParams.commitId || undefined,
         worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
@@ -6804,13 +7093,22 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         if (contentProvided && chapterId && expected.content_hash && expected.content_hash !== contentHashBefore) {
           throw new Error('本章正文在确认之后被修改过（基线 hash 不一致），为避免覆盖新内容已拒绝采纳；请重新审阅');
         }
-        // P1-10：`expected.updated_at` 是同一个并发基线的**第二形态**（见上面 norm.expected 的字段注释）。
+        // P1-10：`expected.updated_at` 是并发基线的**第二形态**（见上面 norm.expected 的字段注释）。
         // 旧实现只认 content_hash，而 AI 采纳这条路径从不传它 —— 于是这道闸门**恒不成立**：
         // 两个窗口（或一窗 + 一次 AI 采纳）同时提交时，后提交者静默覆盖先提交者。
         // 旧稿仍会进历史版本（所以不是不可逆），但这不该发生，且作者不会收到任何提示。
+        //
+        // 2026-10-02 事故修正（本轮）：改成**只有确实存在并发覆盖风险时才拒绝**。
+        //   · content_hash 是正文的**内容基线**：调用方先取一次权威基线再提交，只要这期间
+        //     没有别人的写入落地，hash 必然一致 —— 于是本页自己的保存（点"替换当前正文"时
+        //     applyAIReply 先 manualSaveChapter、再采纳）只会推进 updated_at，不会改变内容，
+        //     不再被误判成"其它窗口改过"而把整次采纳回滚。
+        //   · 真并发（别人写入且内容确实变了）仍被上一道 hash 闸门拦下 —— 保护没有被削弱。
+        //   · 未带 content_hash 的老客户端保持原 temporal 判据（updated_at），语义不变。
+        // 判据顺序有意如此：先认内容，再退回时间戳；两者都在事务内用**重读后的行**比对。
         if (contentProvided && chapterId && !expected.content_hash && expected.updated_at && freshChapter
             && String(freshChapter.updated_at) !== String(expected.updated_at)) {
-          throw new Error('本章正文在确认之后被其它窗口修改过（版本不一致），为避免覆盖新内容已拒绝采纳；请刷新后重新确认');
+          throw new Error('本章正文在本页保存之后版本已推进（很可能就是本页上一次自动保存，版本标记已过期），为避免覆盖更新的内容已拒绝采纳；请直接重试这次采纳');
         }
         // 1) 状态提案：内核自带的陈旧检查会拒绝 stale 项（这里直接让整次采纳回滚）
         const stateApplied = [];
@@ -6840,8 +7138,19 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         // 3) 正文（旧稿进历史版本）
         let contentVersionId = null;
         let contentHashAfter = contentHashBefore;
+        let draftAppliedId = null;
         if (contentProvided && freshChapter) {
           const content = String(body.content);
+          // 空正文覆盖护栏（同 checkEmptyOverwrite）：采纳这条通道同样能整章覆盖正文，
+          // 而它此前只看 `body.content.trim() !== ''` —— 一串标签同样能通过。
+          // 采纳不接受 confirm_empty（没有"采纳一版空稿"这种正当意图）。
+          const block = checkEmptyOverwrite(freshChapter.content, content, { what: '本章正文' });
+          if (block) {
+            const err = new Error(block.message);
+            err.status = block.status;
+            err.code = block.code;
+            throw err;
+          }
           const title = body.title !== undefined ? asString(body.title, freshChapter.title) : freshChapter.title;
           const summary = body.summary !== undefined ? asString(body.summary, freshChapter.summary) : freshChapter.summary;
           const v = saveChapterVersion(chapterId, freshChapter.title, freshChapter.summary, freshChapter.content);
@@ -6851,6 +7160,13 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           afterTemporalContentSave(workId, chapterId, content, 'adopt');
           contentVersionId = Number(v.id);
           contentHashAfter = Approvals.chapterBaselineHash(content);
+          // 3b) 本次采纳消费掉的生成稿草稿：同一事务里标记为已应用（2026-10-02）。
+          // mode='up-to'：连更早的未应用草稿一起标 —— 作者采纳的是最新那一版，更早那些
+          // 已被它取代；只标最新一份的话，下一份几周前的旧稿会立刻顶上来变成
+          // 「有未应用的生成稿」（实测撞到）。真正更新的草稿（id 更大）不受影响。
+          // 放在正文事务内：正文写成功而标记失败会留下"已进正文却仍提示未应用"的假象。
+          const latestDraft = prepare(`SELECT id FROM chapter_save_versions WHERE chapter_id = ? AND kind = 'draft' AND draft_applied = 0 ORDER BY created_at DESC, id DESC LIMIT 1`).get(chapterId);
+          if (latestDraft) draftAppliedId = markDraftsApplied(chapterId, [Number(latestDraft.id)], { mode: 'up-to' }) ? Number(latestDraft.id) : null;
         }
         // 4) 投影 outbox（与正文同一事务；外部调用在提交后由 worker 执行）
         const projections = [];
@@ -6868,6 +7184,9 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
             adopt_kind: asString(body.adopt_kind, ''),
             content_version_id: contentVersionId,
             content_hash_before: contentHashBefore, content_hash_after: contentHashAfter,
+            // 本次采纳消费掉的生成稿草稿 id（null = 本来就没有待应用草稿）：
+            // 让界面能据此刷新「取回生成稿」提示，而不是等下次整页刷新才发现状态已变。
+            draft_applied_id: draftAppliedId,
             state_proposals: stateApplied, legacy: legacyApplied,
             projection_ids: projections, replayed: false,
           },
@@ -6877,13 +7196,20 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         return out;
       });
     } catch (e) {
-      return sendError(res, 409, `采纳失败（已整体回滚，未写入任何内容）：${e.message}`);
+      return sendError(res, Number(e.status) || 409, `采纳失败（已整体回滚，未写入任何内容）：${e.message}`, e.code ? { code: e.code } : null);
     }
     touchWork(workId);
     notifyChange('chapters', { workId, id: chapterId || 0 });
     if (legacySel.length) notifyChange('events', { workId, id: workId });
     maybeAutoCompressMemory(workId);
     drainProjectionOutbox().catch(() => { /* 失败保留 failed，界面可见可重试 */ });
+    // 把提交后的真实版本标记随回包下发（2026-10-02）：界面用它更新本地章节行，
+    // 后续的编辑保存乐观锁（_if_updated_at）才不会拿一个过期值去写。
+    // 纯附加字段，老客户端忽略即可。
+    if (contentProvided && chapterId) {
+      const written = prepare('SELECT updated_at FROM chapters WHERE id = ?').get(chapterId);
+      if (written) result.adopt.chapter_updated_at = String(written.updated_at || '');
+    }
     return sendJSON(res, 200, result);
   }
   // 投影状态 / 恢复入口（R03/R04）：不是第二个调度器，只是 outbox 的查看与 retry。
@@ -7702,14 +8028,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     // 不进键就会互相误命中（作者先点直连再走慢通道时，会拿到"没有查回路径"的旧文本）。
     // 默认（未显式传 tools=0）与旧键逐字节相同，避免影响既有缓存行为。
     const noTools = String(query.tools || '') === '0';
+    // 规划轮跳层（2026-10-04）：与 /api/ai_context 同口径、同缓存后缀。
+    const omitLayers = normalizeOmitLayers(query.omit_layers);
     const cacheKey = contextCacheKeyOf({ workId, chapterId, mode, phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
       + temporalCacheSuffixOf(workId, temporalParams)
-      + (noTools ? '|notools' : '');
+      + (noTools ? '|notools' : '')
+      + omitLayersCacheSuffix(omitLayers);
     let ctx = cacheGetContext(cacheKey, workId);
     if (ctx === undefined) {
       ctx = await buildNovelContext(workId, chapterId, mode, {
         direction, directionSource, libraryRecallPhase, requestId,
         toolsAvailable: !noTools,
+        omitLayers,
         boundary: temporalParams.boundary || undefined,
         commitId: temporalParams.commitId || undefined,
         worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
@@ -8273,19 +8603,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const review = getLatestReview(chapterId);
     if (!review) return sendJSON(res, 200, { ok: true, review: null });
-    const report = review.report || {};
-    // 让界面不必自己判断可信度：解析成功与否、能否直接走「按清单修稿」。
-    return sendJSON(res, 200, {
-      ok: true,
-      review: {
-        ...review,
-        parsed: !!(asString(report.summary, '').trim() || asArray(report.issues).length),
-        issue_count: asArray(report.issues).length,
-        strength_count: asArray(report.strengths).length,
-        // 原文可能高达 200KB，回看列表不需要全量——只带预览，完整原文仍在库里可查。
-        raw_text: asString(report.raw_text, '').slice(0, 20000),
-      }
-    });
+    return sendJSON(res, 200, { ok: true, review: reviewForClient(review) });
+  }
+  // 关闭「上次审稿」那条提示（2026-10-04）：作者点了恢复条上的「关闭」。
+  // 只标记不删除：审稿报告仍可查（GET /novel/review 照常返回，带 dismissed=1），正文不动。
+  // 返回 review = 关闭之后的**真值**（同一份记录，dismissed=1），让界面直接照它刷新那一条。
+  if (resource === 'novel' && segments[2] === 'review' && segments[3] === 'dismiss' && method === 'POST') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    if (!prepare('SELECT id FROM chapters WHERE id = ?').get(chapterId)) return sendError(res, 404, '章节不存在');
+    const dismissed = dismissReview(chapterId, Number(body.review_id) || 0);
+    return sendJSON(res, 200, { ok: true, dismissed, review: reviewForClient(getLatestReview(chapterId)) });
   }
 
   // 长任务产出回填：刷新页面或重启服务后，前端拿回输出再交给这里解析落地，
@@ -8315,13 +8644,20 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!chapterId) return sendError(res, 400, '成文回填缺少 chapter_id');
     const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
     if (!chapter) return sendError(res, 404, '章节不存在');
+    // 规划不是稿子（2026-10-04）：蓝图/规划文本不得落成「生成稿草稿」——
+    // 否则恢复条会显示"有未应用的生成稿（N 字）"，点开却是【蓝图】JSON。
+    if (looksLikeBlueprintText(output)) {
+      return sendError(res, 400, '这是写作规划（蓝图），不是章节正文：已拒绝存成生成稿（正文未被改动）');
+    }
     const version = saveChapterVersion(chapterId, chapter.title, '', output, 'draft');
     if (jobId) markHarnessJobApplied(jobId);
     return sendJSON(res, 201, { ok: true, kind, draft_id: Number(version.id), chars: plainText(output).length });
   }
 
   // 生成稿草稿：AI 成文结果在结果弹窗出现时即落库，关闭弹窗不再等于丢失。
-  if (resource === 'novel' && segments[2] === 'draft' && method === 'POST') {
+  // ⚠️ `!segments[3]` 是必需的路由条件：/novel/draft/consume 也是 POST，
+  // 少了它就会被这条更宽的匹配先接走（2026-10-02 实测撞到：consume 报"草稿内容为空"）。
+  if (resource === 'novel' && segments[2] === 'draft' && !segments[3] && method === 'POST') {
     const body = await readBody(req);
     const chapterId = Number(body.chapter_id);
     const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
@@ -8329,6 +8665,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const content = asString(body.content, '');
     if (!plainText(content).trim()) return sendError(res, 400, '草稿内容为空');
+    // 同上：界面这条通道也要挡（它的调用方可能没做这层判断）。
+    if (looksLikeBlueprintText(content)) {
+      return sendError(res, 400, '这是写作规划（蓝图），不是章节正文：已拒绝存成生成稿（正文未被改动）');
+    }
     const version = saveChapterVersion(chapterId, chapter.title, '', content, 'draft');
     return sendJSON(res, 201, { ok: true, draft_id: Number(version.id), chars: plainText(content).length });
   }
@@ -8336,6 +8676,31 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const chapterId = Number(query.chapter_id);
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     return sendJSON(res, 200, { ok: true, draft: getLatestDraft(chapterId) });
+  }
+  // 草稿消费标记（2026-10-02）：正文确实被写入该章之后，把这份生成稿标记为"已应用"，
+  // 「取回生成稿」/恢复条不再把已经进正文的稿子当成未应用反复提示。
+  // 只标记不删除（草稿仍留在版本表可查）；带 draft_id 时只标那一份，否则标最新那一份。
+  if (resource === 'novel' && segments[2] === 'draft' && segments[3] === 'consume' && method === 'POST') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    if (!prepare('SELECT id FROM chapters WHERE id = ?').get(chapterId)) return sendError(res, 404, '章节不存在');
+    const draftId = Number(body.draft_id) || 0;
+    // 取回生成稿只消费它自己那一份（mode='one'）。
+    const applied = markDraftsApplied(chapterId, draftId ? [draftId] : null);
+    return sendJSON(res, 200, { ok: true, applied, draft: getLatestDraft(chapterId) });
+  }
+  // 关闭一份生成稿（2026-10-04）：作者点了恢复条上的「关闭」，这一版以后不再提示。
+  // 只标记不删除；不动正文、不碰编辑器，也不影响之后新生成的草稿（那是新的一行，照常提示）。
+  // 返回 draft = 关闭之后**还剩的**那一份（可能是一份更早的未应用草稿，也可能为 null），
+  // 让界面直接按真值刷新那一条，而不是自己猜。
+  if (resource === 'novel' && segments[2] === 'draft' && segments[3] === 'dismiss' && method === 'POST') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    if (!prepare('SELECT id FROM chapters WHERE id = ?').get(chapterId)) return sendError(res, 404, '章节不存在');
+    const dismissed = dismissDraft(chapterId, Number(body.draft_id) || 0);
+    return sendJSON(res, 200, { ok: true, dismissed, draft: getLatestDraft(chapterId) });
   }
   if (resource === 'novel' && segments[2] === 'review' && segments[3] === 'checklist' && method === 'PUT') {
     const body = await readBody(req);
@@ -8363,7 +8728,12 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!chapter) return sendError(res, 404, '章节不存在');
     if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const content = asString(body.content, '');
-    if (!content.trim()) return sendError(res, 400, '缺少 content');
+    // ⚠️ 路由层的"缺少 content"判据不能用 `!content.trim()`（2026-10-02 复核）：
+    // 编辑器被清空时发来的正是 `<p><br></p>` 这类"只有标签、没有一个可读字符"的正文 ——
+    // 它 trim 后非空，于是畅通无阻地一路走到写入；而真正空到没有字节的请求反而在这里被挡。
+    // 现在只挡"连字节都没有"的请求；"空正文该不该落库"交给下面的空正文护栏裁决
+    //（它才看得见库里现正文有多少字），避免两处各有一套"什么算空"的口径。
+    if (content === '' && readableChars(content) === 0) return sendError(res, 400, '缺少 content');
     // R02.2：模型侧写入（X-Novel-Agent）必须引用作者创建的、绑定到**该章当前正文基线**的
     // 一次性审批；作者界面（同源浏览器）不带该标记，语义与之前完全一致。
     const guard = guardAgentWrite(req, {
@@ -8375,10 +8745,22 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!guard.ok) return sendError(res, guard.status, guard.message);
     const title = body.title !== undefined ? asString(body.title, chapter.title) : chapter.title;
     const summary = body.summary !== undefined ? asString(body.summary, chapter.summary) : chapter.summary;
+    // 空正文覆盖护栏（见 checkEmptyOverwrite）：本通道此前只挡 trim 后为空串的请求，
+    // 而 `<div><br></div>` 这类"看着有标签、其实一个字都没有"的正文能一路写进库 —— 事故正是这个形状。
+    // `confirm_empty` 只在本通道被显式读取（通用 PUT 会把它从写入字段里剔掉）。
+    const confirmEmpty = body.confirm_empty === true;
     // 旧稿先入历史版本（可恢复），再覆盖正文；消费审批与两次写入同一事务、失败整体回滚。
     let version;
     try {
       version = withTx(() => {
+        // 护栏放在消费审批**之前**：被拦下的请求不该吃掉一次性审批（作者确认后可以原样重试）。
+        const block = checkEmptyOverwrite(chapter.content, content, { confirmEmpty });
+        if (block) {
+          const err = new Error(block.message);
+          err.status = block.status;
+          err.code = block.code;
+          throw err;
+        }
         if (guard.approval) {
           const verdict = Approvals.consumeApproval(guard.approval.id, {
             op: 'chapter_save', workId: chapter.work_id, chapterId,
@@ -8395,7 +8777,9 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         return v;
       });
     } catch (e) {
-      return sendError(res, 403, `写入已回滚：${e.message}`);
+      // 空正文护栏的拒绝要带上 code（客户端据此给"找回原稿 / 显式清空"两条出路），
+      // 其余失败仍是"写入已回滚：<原因>"。e.status 存在时以它为准（409 而不是 403）。
+      return sendError(res, Number(e.status) || 403, `写入已回滚：${e.message}`, e.code ? { code: e.code } : null);
     }
     touchWork(chapter.work_id);
     notifyChange('chapters', { workId: chapter.work_id, id: chapterId });
@@ -8695,6 +9079,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           version.content || '',
           chapter.id
         );
+        // ⚠️ 这里**不推进 updated_at**，而编辑保存的乐观锁（PUT 的 `_if_updated_at`）正是比它 ——
+        // 于是"恢复历史版本之后，第一次自动保存必然 409"（客户端注释里记的同一形状）。
+        // 现在推进它：恢复确实换掉了正文，版本标记就该跟着走，客户端再同步一次基线即可对上。
+        prepare('UPDATE chapters SET updated_at = ? WHERE id = ?').run(now(), chapter.id);
         // T2（W5）：恢复历史版本同样是正文事实变化。
         afterTemporalContentSave(chapter.work_id, chapter.id, version.content || '', 'restore');
         db.exec('COMMIT');
@@ -8825,7 +9213,13 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       }
       if (method === 'GET' && id) {
         const row = prepare(`SELECT * FROM ${resource === 'relations' ? 'character_relations' : resource} WHERE id = ?`).get(id);
-        return row ? sendJSON(res, 200, maskRow(row)) : sendError(res, 404, 'Not found');
+        if (!row) return sendError(res, 404, 'Not found');
+        // 单章读取附带**权威内容基线**（2026-10-02）：采纳（/novel/adopt）的并发判据需要
+        // "我这一版正文的内容指纹"，而该指纹的口径是服务端存库的原始 content（见
+        // Approvals.chapterBaselineHash）。让客户端自己算必然与这个口径漂移，所以由服务端给。
+        // 纯附加字段：老客户端忽略即可，读取语义不变。
+        if (resource === 'chapters') return sendJSON(res, 200, { ...maskRow(row), content_hash: Approvals.chapterBaselineHash(row.content) });
+        return sendJSON(res, 200, maskRow(row));
       }
       if (method === 'POST') {
         if (isAgentRequest(req)) return sendError(res, 403, '通用资源写入只能由作者通道执行；模型请使用受审批保护的专用工具');
@@ -8884,6 +9278,14 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
             return sendError(res, 409, '内容已在其他窗口被修改，请刷新后重试');
           }
         }
+        // 空正文覆盖护栏（唯一权威的一道，见 checkEmptyOverwrite 上方长注释）：
+        // 编辑器自动保存这条通道此前完全不受保护 —— 一次误触/一次状态错位就能把整章清成
+        // 空白并静默落库，而旧稿只留在历史版本里。这里以**库里的现正文**为准拒绝。
+        // `confirm_empty` 是作者显式确认（客户端在"确实要清空本章"时才会带上）。
+        if (resource === 'chapters' && old && typeof body.content === 'string') {
+          const block = checkEmptyOverwrite(old.content, body.content, { confirmEmpty: body.confirm_empty === true });
+          if (block) return sendError(res, block.status, block.message, { code: block.code });
+        }
         if (old) {
           const lock = temporalLegacyStateWrite(resource, old, body);
           if (lock && lock.blocked) return sendError(res, 409, lock.message);
@@ -8900,9 +9302,11 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         const putResult = withTx(() => {
           const changes = updateRow(resource, id, body);
           if (changes === 0) return { notFound: true };
-          if (contentChanged && shouldAutoSnapshot(id)) {
+          if (contentChanged && autoSnapshotAllowed(id)) {
             saveChapterVersion(id, old.title, old.summary, old.content, 'auto');
             pruneChapterVersions(id);
+            // 记账放在**真的插进去之后**：事务回滚（时态锁/唯一约束…）不该吃掉这 90 秒的兜底窗口。
+            markAutoSnapshotTaken(id);
           }
           // T2（W1/W2）：编辑器自动保存 / 手动保存都经过这里；正文变化才记录修订并排队分析。
           if (resource === 'chapters' && old?.work_id && typeof body.content === 'string' && body.content !== old.content) {
