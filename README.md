@@ -19,7 +19,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.0.0** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.0.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.0.0).
+> 📌 Version **v1.1.1** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.1](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.1).
 
 <details>
 <summary><b>Contents</b></summary>
@@ -368,4 +368,4 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ## 📝 Changelog
 
-Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.0.0** (experimental channel, branch `Experimental-Version-v1.0`) — a high-leverage fix round on top of v0.9.6: the AI quality gate no longer silently passes when its reply fails to parse, editor autosave now keeps version history, 9 offline gates that had been failing on a stale spawn environment are green again, and the per-chapter contract is back in the prompt. Recent feature work: story-state kernel, cross-work reference library, direction-driven retrieval, and index layering.
+Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.1.1** (experimental channel, branch `Experimental-Version-v1.0`) — the chapter-delivery chain closed end to end. Drafts and finished-but-unapplied results can finally be dismissed (`✕`) with no content deleted, both front-end gates moved to the server so a blueprint or a question can no longer be stored as prose, 「重写本章」 re-plans with a layer-skip whitelist, an empty editor keeps its saved copy reachable, and auto-save now leaves version history.
