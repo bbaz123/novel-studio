@@ -819,6 +819,19 @@ async function main() {
         && Number(pol.json?.long_ai_timeout_ms) >= 30 * 60 * 1000,
         `models=${JSON.stringify(pol.json?.models)} effort=${JSON.stringify(pol.json?.effort_by_tier)} timeout=${pol.json?.long_ai_timeout_ms}`);
 
+      // M32 写作策略快照（去 AI 味 P0，2026-10-06）：规则的单点真源是 ai/writing/policy.mjs，
+      // 必须经 HTTP 下发给前端；且快照里不得再带回任何全局硬配额（3～5 场景 / 系统 5～15 次）。
+      const wpol = await api('GET', '/api/ai/writing-policy');
+      const wrules = Array.isArray(wpol.json?.rules) ? wpol.json.rules : [];
+      record('M32 写作策略快照下发且不含全局硬配额',
+        wpol.status === 200
+        && typeof wpol.json?.version === 'string' && wpol.json.version.length > 0
+        && wrules.some((r) => r.id === 'scene_count_no_quota')
+        && wrules.some((r) => r.id === 'system_airtime_no_quota')
+        && wrules.some((r) => r.id === 'length_is_advisory')
+        && !/3～5\s*个场景|5～15\s*次|有效场景不足/.test(JSON.stringify(wrules)),
+        `version=${wpol.json?.version} rules=${wrules.length}`);
+
     } finally {
       // 无条件还原：还原失败只打印，不再抛 —— 否则会顶掉真正的失败原因。
       try { await api('PUT', '/api/novel/openviking', { body: { endpoint: origEndpoint } }); }

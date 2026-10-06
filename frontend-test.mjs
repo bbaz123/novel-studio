@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { writingPolicySnapshot } from './ai/writing/policy.mjs';
 
 const APP = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public', 'app.js');
 const src = fs.readFileSync(APP, 'utf8');
@@ -937,6 +938,8 @@ globalThis.__probe = {
   newWriteTiming,
   withThinkingHeadroom,
   verifyAIDraft,
+  contentHashOf, classifyChapterLength, writingPolicyLines,
+  WRITING_POLICY_FALLBACK_RULES, WRITING_POLICY_FALLBACK_VERSION,
   pollHarnessJob, showAITaskProgress, runHarnessJob, handleAction,
   ATTRIBUTIONS, renderThanks, AI_TABS,
   loadEditRules, renderEditRulesCard, collectEditSelection, saveEditRules, scanEditRules, renderEditScanHtml,
@@ -3024,7 +3027,7 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       }
       return { ok: true };
     };
-    // harness 侧：蓝图一次 + 成文一次 + 补足一次（补足是为了验证"扫的是合并后的全文"）
+    // harness 侧：蓝图一次 + 成文一次（P0-1 起不再有按字数补足轮）
     let harnessCalls = 0;
     sandbox.runHarnessJob = async (body) => {
       harnessCalls += 1;
@@ -3033,7 +3036,6 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       // ⚠️ 按**提示词特征**分派，不按调用序号：蓝图改走直连后，harness 的第一次调用就是"成文"，
       //    序号派发会让下面所有断言跟着错位（顺序一变就假通过）。
       if (isBlueprintPrompt(prompt)) return { output: '【蓝图】{"scene_goal":"开场","target_words":8}' };
-      if (isContinuationPrompt(prompt)) return { output: '【成文】续写片段。' };
       return { output: '【成文】正文第一段。' };
     };
     sandbox.loadWorkData = async () => {};
@@ -3049,12 +3051,15 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   // 蓝图提示词与续写提示词的判别串（分别取自 buildAIWritingBlueprintPrompt 的 auto 分支与
   // buildAIWritingContinuationPrompt 的首行）——用结构特征而不是"第几次调用"，避免顺序一变就假通过。
   const isBlueprintPrompt = (p) => p.includes('【蓝图】') && p.includes('批量自动模式');
-  const isContinuationPrompt = (p) => p.includes('继续写本章正文');
+  const isContinuationPrompt = (p) => p.includes('继续写本章正文'); // P0-1 后应为恒 false（保留以钉住'不再出现'）
 
   const hit = await runBatch({ scanTotal: 2 });
-  check('109a 批量生成会对**合并后的全文**跑红线自检（成文+补足都在）',
-    String(hit.scannedText || '').includes('正文第一段') && String(hit.scannedText || '').includes('续写片段'),
+  check('109a 批量生成对成文全文跑红线自检，且不再自动补足字数（无续写片段）',
+    String(hit.scannedText || '').includes('正文第一段') && !String(hit.scannedText || '').includes('续写片段'),
     JSON.stringify(hit.scannedText));
+  check('109a2 批量路径不再出现任何续写补足轮（直连与慢通道都没有）',
+    !hit.directPrompts.some(isContinuationPrompt) && !hit.harnessPrompts.some(isContinuationPrompt),
+    JSON.stringify({ direct: hit.directPrompts.length, harness: hit.harnessPrompts.length }));
   check('109b 命中时收尾 toast 如实报出命中数与章名',
     hit.finalToast.includes('红线自检命中 2 处') && hit.finalToast.includes('第107章'), hit.finalToast);
   check('109c 命中时仍保留提案去处指路', hit.finalToast.includes('待确认提案'), hit.finalToast);
@@ -3103,10 +3108,10 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('110c 直连不可用（空回复）时蓝图回退慢通道，且回退路径恰好比直连路径多占用一次慢通道',
     blueprintFallback.harnessPrompts.some(isBlueprintPrompt)
       && blueprintFallback.harnessCalls === blueprintViaDirect.harnessCalls + 1
-      && blueprintFallback.harnessCalls >= 3,
+      && blueprintFallback.harnessCalls >= 2,
     JSON.stringify({
       fallback: blueprintFallback.harnessCalls, viaDirect: blueprintViaDirect.harnessCalls,
-      kinds: blueprintFallback.harnessPrompts.map((p) => (isBlueprintPrompt(p) ? 'bp' : isContinuationPrompt(p) ? 'cont' : 'prose'))
+      kinds: blueprintFallback.harnessPrompts.map((p) => (isBlueprintPrompt(p) ? 'bp' : 'prose'))
     }));
 
   const truncatedRun = await runBatch({ scanTotal: 0, truncated: true, directReply: () => directBlueprint });
@@ -3114,14 +3119,16 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     !truncatedRun.directPrompts.some(isBlueprintPrompt) && truncatedRun.harnessPrompts.some(isBlueprintPrompt),
     JSON.stringify({ direct: truncatedRun.directPrompts.length }));
 
+  // 110e：旧用例钉的是"小缺口补足走直连"。P0-1 取消机械补字后这个行为**不应再存在**——
+  // 用例反过来钉住"无论直连还是慢通道，都不再出现续写补足轮"。
   const contDirect = await runBatch({
     scanTotal: 0,
-    directReply: (p) => (isBlueprintPrompt(p) ? directBlueprint : (isContinuationPrompt(p) ? '【成文】直连续写片段。' : null))
+    directReply: (p) => (isBlueprintPrompt(p) ? directBlueprint : null)
   });
-  check('110e 小缺口补足走直连，且扫描的是"成文+直连续写"合并后的全文',
-    !contDirect.harnessPrompts.some(isContinuationPrompt)
-      && contDirect.directPrompts.some(isContinuationPrompt)
-      && String(contDirect.scannedText || '').includes('直连续写片段'),
+  check('110e 已成文后不再按字数续写（直连/慢通道都不出现续写轮）',
+    !contDirect.directPrompts.some(isContinuationPrompt)
+      && !contDirect.harnessPrompts.some(isContinuationPrompt)
+      && String(contDirect.scannedText || '').includes('正文第一段'),
     JSON.stringify({ harnessPrompts: contDirect.harnessPrompts.length, scanned: String(contDirect.scannedText || '').slice(0, 40) }));
 
   check('110f 收尾 toast 报出本批实际耗时（让"提速有没有生效"当场可核对）',
@@ -3316,10 +3323,82 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('113f 思考余量函数本身：只抬上限、封顶 16384（不凭空产生 token）',
     P.withThinkingHeadroom(1500) === 9692 && P.withThinkingHeadroom(8000) === 16192 && P.withThinkingHeadroom(100000) === 16384 && P.withThinkingHeadroom(0) === 8192,
     [P.withThinkingHeadroom(1500), P.withThinkingHeadroom(8000), P.withThinkingHeadroom(100000), P.withThinkingHeadroom(0)].join(','));
-  check('113g 两个补足点（交互 + 批量）都换成了带思考余量的额度，且旧写法已不存在',
-    (src.split('withThinkingHeadroom(Math.ceil(gap * 2 + 1000))').length - 1) === 2
-      && src.indexOf('maxTokens: Math.min(16384, Math.ceil(gap * 2 + 1000))') === -1,
+  // ── 去 AI 味 P0（2026-10-06）回归 ──────────────────────────────────────────
+  check('113g 已取消按字数机械补足：续写提示词/两处补足轮/旧函数都不再存在',
+    src.indexOf('withThinkingHeadroom(Math.ceil(gap * 2 + 1000))') === -1
+      && src.indexOf('function buildAIWritingContinuationPrompt') === -1
+      && src.indexOf('继续写本章正文') === -1,
     'hit=' + (src.split('withThinkingHeadroom(Math.ceil(gap * 2 + 1000))').length - 1));
+
+  // P0-2：质检严格三态。空对象 / 无证据的 issues / 覆盖声明含 false 一律 unknown，绝不静默 pass。
+  {
+    const apiBackup = sandbox.api;
+    const logBackup = sandbox.reportClientLog;
+    sandbox.reportClientLog = () => {};
+    const runVerify = async (reply) => {
+      sandbox.api = async (p) => {
+        if (String(p).startsWith('/ai/write')) return { reply, raw: { choices: [{ finish_reason: 'stop' }], usage: {} } };
+        return {};
+      };
+      return P.verifyAIDraft(null, '正文正文', 3000);
+    };
+    const vEmpty = await runVerify('{}');
+    check('P0-2a 质检返回空对象 → unknown（不再算 pass）',
+      vEmpty.verdict === 'unknown' && vEmpty.pass === false, JSON.stringify({ v: vEmpty.verdict, pass: vEmpty.pass }));
+    const vNoEvidence = await runVerify('{"verdict":"issues","issues":[]}');
+    check('P0-2b verdict=issues 但 issues 为空 → unknown（有问题却无证据）',
+      vNoEvidence.verdict === 'unknown' && vNoEvidence.pass === false, JSON.stringify({ v: vNoEvidence.verdict }));
+    const vCov = await runVerify('{"verdict":"pass","coverage":{"story_state":false}}');
+    check('P0-2c coverage 明确为 false → unknown（覆盖不全不算通过）',
+      vCov.verdict === 'unknown' && vCov.pass === false, JSON.stringify({ v: vCov.verdict }));
+    const vPass = await runVerify('{"verdict":"pass"}');
+    check('P0-2d 显式 pass 仍是唯一"通过"态',
+      vPass.verdict === 'pass' && vPass.pass === true, JSON.stringify({ v: vPass.verdict }));
+    const vIssues = await runVerify('{"verdict":"issues","issues":["中段时间线矛盾"]}');
+    check('P0-2e 有证据的 issues 正常成立',
+      vIssues.verdict === 'issues' && vIssues.pass === false && vIssues.issues.length === 1, JSON.stringify({ v: vIssues.verdict }));
+    sandbox.api = apiBackup;
+    sandbox.reportClientLog = logBackup;
+  }
+
+  // P0-1/P0-3：篇幅只做诊断；提示词不再含全局硬配额。
+  {
+    const st = P.classifyChapterLength('一二三', 100, null);
+    check('P0-1 篇幅不足但无漏写证据 → short_but_complete（不触发续写）',
+      st.status === 'short_but_complete' && st.gap === 97, JSON.stringify(st));
+    const stMiss = P.classifyChapterLength('一二三', 100, { issues: ['重要情节点遗漏：主角检测后的反应没写'] });
+    check('P0-1b 质检指出漏写 → missing_content（交作者决定，不自动补）',
+      stMiss.status === 'missing_content', JSON.stringify(stMiss));
+    const bpPrompt = P.buildAIWritingBlueprintPrompt('续写本章', [], 2000, true);
+    const prosePrompt = P.buildAIWritingProsePrompt('需求', { scene_goal: '开场' }, 2000);
+    const reviewPrompt = P.buildAIReviewPrompt('正文');
+    const allPrompts = [bpPrompt, prosePrompt, reviewPrompt].join('\n');
+    check('P0-3 提示词不再出现全局硬配额（3～5 场景 / 系统 5～15 次 / 有效场景不足 3 个）',
+      !/3～5\s*个场景/.test(allPrompts) && !/5～15/.test(allPrompts) && !/有效场景不足/.test(allPrompts),
+      JSON.stringify({ bp: /3～5/.test(bpPrompt), prose: /5～15/.test(prosePrompt) }));
+    check('P0-4 提示词使用统一策略源的无配额规则文本',
+      bpPrompt.includes('场面数量按剧情需要决定') && prosePrompt.includes('目标字数是范围参考，不是配额')
+        && reviewPrompt.includes('叙述诊断项'),
+      JSON.stringify({ bp: bpPrompt.includes('场面数量按剧情需要决定') }));
+  }
+
+  // P0-4：前端兜底规则必须与 ai/writing/policy.mjs 真源逐条一致（防两侧漂移）。
+  {
+    const snap = writingPolicySnapshot();
+    const norm = (r) => JSON.stringify({ id: r.id, type: r.type, scopes: [...r.scopes].sort(), priority: r.priority, text: r.text });
+    const server = snap.rules.map(norm).sort();
+    const front = [...P.WRITING_POLICY_FALLBACK_RULES].map(norm).sort();
+    check('P0-4b 前端兜底规则与策略源真源逐条一致（id/type/scopes/priority/text）',
+      snap.version === P.WRITING_POLICY_FALLBACK_VERSION
+        && server.length === front.length && server.every((x, i) => x === front[i]),
+      JSON.stringify({ server: server.length, front: front.length, version: snap.version }));
+    // 服务端已编译分区优先：有 compiled 时不再本地编译（两端编译逻辑同源）。
+    const savedWP = P.state.writingPolicy;
+    P.state.writingPolicy = { version: 'x', rules: [], compiled: { preference: { draft: ['- 来自服务端'] }, diagnostic: {} } };
+    check('P0-4c 有服务端已编译分区时优先使用（本地编译只作兜底）',
+      P.writingPolicyLines('draft')[0] === '- 来自服务端', JSON.stringify(P.writingPolicyLines('draft')));
+    P.state.writingPolicy = savedWP;
+  }
 
   sandbox.api = savedApi;
   sandbox.reportClientLog = savedReport;

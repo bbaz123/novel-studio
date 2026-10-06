@@ -129,7 +129,7 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 - 落库后蓝图随 `/api/novel/context` 与 `/api/ai_context` 进入写作上下文，`novel_consistency`
   以其为核对锚点；dsh GUI 会话可用 `novel_blueprint` 工具保存；
 - 目标字数优先级：章节 `target_words` > 作品 `default_chapter_words`（默认 2000）> 兜底 2000；
-  成文不足时工坊自动续写补足（≤2 轮拼稿），结果弹窗按目标字数对比提示。
+  只作范围参考，**不再自动续写补足**（剧情完整而篇幅偏短属正常），结果弹窗按目标做诊断提示。
 
 ### 4. 多关键词加权检索（/api/search）
 
@@ -147,7 +147,7 @@ dsh headless / dsh 会话（工具与人设同源：harness-plugins/novel-writin
 
 ### 4c. 批量章节生成 / 伏笔面板 / 导入导出
 
-- 批量生成：从第一个无正文的顶层章节开始顺序生成 N 章（≤10），每章自动蓝图→成文→字数补足→写回；
+- 批量生成：从第一个无正文的顶层章节开始顺序生成 N 章（≤10），每章自动蓝图→成文→写回；
   暂停/取消/失败即停（已完成章节保留）；事件/记忆走提案模式，结束统一提示确认；
 - 伏笔面板：写作页右侧参考面板「伏笔」页签——未闭合/已回收/已废弃分组、跳转埋设章节、
   标记回收/废弃/恢复（`POST /api/novel/foreshadows/:id/status`）；

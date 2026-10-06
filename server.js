@@ -62,6 +62,7 @@ import { editDistance } from './ai/edit-distance.mjs';
 import { findingKey } from './ai/continuity-guard.mjs';
 import { computeContinuityGuard, CONTINUITY_EXEMPTIONS_PREFIX, CONTINUITY_THRESHOLDS_PREFIX } from './ai/continuity-guard-source.mjs';
 import { MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, effortForTier, LONG_AI_TIMEOUT_MS, policySnapshot } from './ai/policy.mjs';
+import { writingPolicyPayload } from './ai/writing/compile.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
 import {
   traceRequest, traceFn, traceEvent, traceAI, bumpTool, prepareTraced,
@@ -9148,6 +9149,11 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   // 必须放在下面 /api/ai/* 的 POST 分支之前——它是 GET。
   if (resource === 'ai' && segments[2] === 'policy' && method === 'GET') {
     return sendJSON(res, 200, { ok: true, ...policySnapshot() });
+  }
+  // 写作策略快照（去 AI 味 P0）：规则的**单点真源**在 ai/writing/policy.mjs。
+  // 前端据此渲染蓝图/成文/诊断提示里的偏好与诊断项，不再各自硬编码配额文本。
+  if (resource === 'ai' && segments[2] === 'writing-policy' && method === 'GET') {
+    return sendJSON(res, 200, { ok: true, ...writingPolicyPayload() });
   }
   if (resource === 'ai' && segments[2]) {
     const action = segments[2];

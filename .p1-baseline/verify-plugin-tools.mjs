@@ -62,6 +62,27 @@ if (onlyDeclared.length) console.log(`✗ plugin.json 声明但未注册：${onl
 if (!versionOk) console.log(`✗ 版本不一致：${JSON.stringify(versions)}`);
 if (undeclaredCalls.length) console.log(`✗ 代码调用了但 engineEndpoints 未声明：${undeclaredCalls.join(', ')}`);
 
-const ok = !onlyActual.length && !onlyDeclared.length && versionOk && !undeclaredCalls.length && registered.length > 0;
+// ── 去 AI 味 P0（2026-10-06）：人设与工具描述不得再把"字数/场面/系统出场"写成配额，
+//    也不得再承诺"自动续写补足"——那正是把文本推向工整填充（AI 味）的结构性来源。
+const agentYml = fs.readFileSync(path.join(pluginDir, 'agent.cordis.yml'), 'utf8');
+const patchYml = fs.readFileSync(path.join(pluginDir, 'cordis.patch.yml'), 'utf8');
+const noQuotaText = [src, agentYml, patchYml].join('\n');
+const quotaPatterns = [
+  /3～5\s*个场景/,
+  /系统出现\s*5～15/,
+  /有效场景不足/,
+  /不要输出千字以下的残章/,
+  /不要交出\s*1000\s*字以下的残章/,
+  /自动续写补足/,
+  /字数补足/,
+];
+const quotaHits = quotaPatterns.filter((re) => re.test(noQuotaText)).map((re) => String(re));
+if (quotaHits.length) console.log(`✗ 插件人设/工具仍残留配额或机械补字措辞：${quotaHits.join('、')}`);
+// 两处人设都必须声明"目标字数不是配额"，并保留"允许略写/跳过"的取舍余地。
+const advisoryOk = (t) => /范围参考/.test(t) && /不是/.test(t) && /配额/.test(t) && /允许略写/.test(t);
+if (!advisoryOk(agentYml) || !advisoryOk(patchYml)) console.log('✗ 人设未同时声明"目标字数不是配额"与"允许略写/跳过"（两文件都要）');
+
+const ok = !onlyActual.length && !onlyDeclared.length && versionOk && !undeclaredCalls.length
+  && registered.length > 0 && !quotaHits.length && advisoryOk(agentYml) && advisoryOk(patchYml);
 console.log(ok ? `✓ 工具面／版本／端点声明三者一致（${registered.length} 个工具）` : '✗ 存在漂移');
 process.exitCode = ok ? 0 : 1;
