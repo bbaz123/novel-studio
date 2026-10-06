@@ -30,8 +30,8 @@ body:
     id: version
     attributes:
       label: 版本 / 分支
-      description: 例如 v1.1.1（Experimental-Version-v1.0）；不确定就写「不确定」
-      placeholder: v1.1.1 (Experimental-Version-v1.0)
+      description: 例如 v1.1.2（Experimental-Version-v1.0）；不确定就写「不确定」
+      placeholder: v1.1.2 (Experimental-Version-v1.0)
   - type: textarea
     id: what
     attributes:

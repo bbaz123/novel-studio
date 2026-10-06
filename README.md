@@ -19,7 +19,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.1.1** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.1](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.1).
+> 📌 Version **v1.1.2** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.2](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.2).
 
 <details>
 <summary><b>Contents</b></summary>
@@ -368,4 +368,4 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ## 📝 Changelog
 
-Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.1.1** (experimental channel, branch `Experimental-Version-v1.0`) — the chapter-delivery chain closed end to end. Drafts and finished-but-unapplied results can finally be dismissed (`✕`) with no content deleted, both front-end gates moved to the server so a blueprint or a question can no longer be stored as prose, 「重写本章」 re-plans with a layer-skip whitelist, an empty editor keeps its saved copy reachable, and auto-save now leaves version history.
+Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.1.2** (experimental channel, branch `Experimental-Version-v1.0`) — the first anti-AI-flavour batch (P0). The generation chain no longer pads a chapter to a word quota or counts scenes per quota, the quality gate is strictly `pass / issues / unknown`, writing preferences now come from a single policy source (`ai/writing/` + `GET /api/ai/writing-policy`), and the plugin persona was updated to match (word count is a range, not a quota).
