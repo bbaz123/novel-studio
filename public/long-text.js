@@ -381,12 +381,14 @@
   }
 
   /** 语义审稿的分片报告合并：每条问题都带片号，作者能在"哪一片、哪一句"上定位。
-   *  输出形态与单请求审稿一致（issues/strengths 是字符串数组），另有 attribution 记录片号归属。 */
+   *  输出形态与单请求审稿一致（issues/strengths 是字符串数组，deferred 是 {text,type,recheck} 数组），
+   *  另有 attribution 记录片号归属。deferred（待后续核验的疑似伏笔/未知设定）不进入修稿清单。 */
   function mergeReviewReports(spec) {
     const { plan, results } = spec || {};
     const summary = [];
     const issues = [];
     const strengths = [];
+    const deferred = [];
     const attribution = [];
     const segments = [];
     for (const seg of (plan && plan.segments) || []) {
@@ -398,8 +400,15 @@
       if (report.summary) summary.push(report.summary + where);
       for (const it of report.issues || []) { attribution.push({ kind: 'issue', index: issues.length, segment_id: seg.segment_id }); issues.push(String((it && it.text) || it) + where); }
       for (const st of report.strengths || []) { attribution.push({ kind: 'strength', index: strengths.length, segment_id: seg.segment_id }); strengths.push(String((st && st.text) || st) + where); }
+      for (const df of report.deferred || []) {
+        deferred.push({
+          text: String((df && df.text) || df) + where,
+          type: String((df && df.type) || ''),
+          recheck_within_chapters: Number(df && df.recheck_within_chapters) || 0,
+        });
+      }
     }
-    return { summary: summary.join(' '), issues, strengths, segments, attribution };
+    return { summary: summary.join(' '), issues, strengths, deferred, segments, attribution };
   }
 
   /** UI 摘要：原文版本、目标范围、片数、完成/失败/过期、覆盖结果、未解决项。 */

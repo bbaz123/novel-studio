@@ -281,7 +281,15 @@ try {
     assert.equal(list.data.proposals.length, 2);
     const apply = await jfetch('/api/novel/proposals/apply', {
       method: 'POST',
-      body: { work_id: workId, ids: list.data.proposals.map((p) => p.id) }
+      // 2026-10-06：事件提案与长期记忆提案是**两张表、各自从 1 开始**的 id 序列 —— 只送裸数字时
+      // "事件 #1"与"记忆 #1"在请求体里是同一个值，服务端只能按"事件优先"解析成唯一一行
+      //（见 server.js 的 normalizeProposalRefs）。所以这里与界面同口径送**带类型**的 refs，
+      // 裸 ids 仍一并带上，顺带覆盖旧客户端的兼容路径。
+      body: {
+        work_id: workId,
+        refs: list.data.proposals.map((p) => `${p.type === 'memory' ? 'memory' : 'event'}:${p.id}`),
+        ids: list.data.proposals.map((p) => p.id)
+      }
     });
     assert.equal(apply.data.applied.events, 1);
     assert.equal(apply.data.applied.memories, 1);

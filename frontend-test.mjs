@@ -928,6 +928,8 @@ globalThis.__probe = {
   saveChapterSnapshot, resolveEditorConflict, flushSave, flushEditorSaves, scheduleSave,
   writeChapterBody, editorSnapIsBlank, readableCharCount, recoveryBarHtml, knownChapterBodyChars, clearChapterBodyExplicit, restoreLastSavedVersion,
   adoptEditorContentImpl,
+  settleOldContentBeforeOverwrite, reportLegacyGuardFailures, pendingEditorSnapshotFor, discardPendingEditorWorkFor, discardSupersededEditorWorkFor,
+  proposalRefOf, collectCheckedProposalRefs, proposalIdsOfRefs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
   WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
   continuityGuardSummaryHtml,
@@ -2585,6 +2587,12 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     check('107g3 不再出现"先正文后提案"的两次请求（旧路径必须消失）',
       !calls.some((c) => c.url.includes('/novel/chapter_save')) && !calls.some((c) => c.url.includes('/novel/proposals/apply')),
       calls.map((c) => c.url).join(','));
+    // F1（2026-10-06）：裸 id 在两表之间会撞号（事件 #71 与记忆 #71 是不同行的同号提案），
+    // 所以采纳必须同时把**带来源类型**的引用交给服务端；裸 ids 只为向后兼容保留。
+    check('107g4 整次采纳同时携带带来源类型的提案引用（event:71 / event:72）',
+      !!mergeCall && Array.isArray(mergeCall.body.legacy_proposal_refs)
+        && mergeCall.body.legacy_proposal_refs.join(',') === 'event:71,event:72',
+      JSON.stringify(mergeCall && mergeCall.body && mergeCall.body.legacy_proposal_refs));
     check('107h 跨章合并后明确告知写到了哪一章', msgs.some((m) => m.includes('第107章')), msgs.join(' | ').slice(0, 70));
 
     // R02.3：预览期间原文被改 → 拒绝合并（绝不覆盖更新的正文）
@@ -4847,6 +4855,161 @@ P.traceStopStream();
   temporalStub.temporalPuts.length = 0; temporalStub.stepPosts.length = 0;
   temporalStub.confirmPosts.length = 0; temporalStub.bootstrapPosts.length = 0;
   temporalStub.temporalFail = false; temporalStub.temporalBroken = false;
+}
+
+// --- F3（2026-10-06）：「旧内容是否保存？」是/否弹窗 -------------------------------
+// 现场：正文被新内容覆盖前，作者手里那一版**还没落盘**的旧内容被静默处理（悄悄落盘或悄悄丢弃），
+// 作者无从选择。作者要求：未保存的内容弹窗告知「旧内容是否保存？」，是/否两个答案都继续写入新内容。
+{
+  const saved = {
+    workId: P.state.workId, chapters: P.state.chapters, currentChapterId: P.state.currentChapterId,
+    snap: P.state.editorSaveSnapshot, pendingMap: P.state.editorPendingByChapter,
+    conflict: P.state.editorConflictSnapshot, failed: P.state.editorSaveFailedSnapshot,
+    emptyBlocked: P.state.editorEmptyBlocked, pendingOld: P.state.pendingOldContent,
+    api: sandbox.api, toast: sandbox.toast, closeModal: sandbox.closeModal,
+    lastProposals: P.state.pendingProposalSelection,
+  };
+  const prevEditor = containers['#editor-content'];
+  const prevTitle = containers['#editor-title'];
+  const editor = mkEl('editor-content', 'div');
+  editor.dataset.chapterId = '107';
+  editor.innerHTML = '<p>作者手里的旧稿</p>';
+  const titleEl = mkEl('editor-title', 'input'); titleEl.value = '第107章';
+  containers['#editor-content'] = editor;
+  containers['#editor-title'] = titleEl;
+  P.state.workId = 1;
+  P.state.currentChapterId = 107;
+  P.state.chapters = [{ id: 107, title: '第107章', content: '<p>库里的旧稿</p>', summary: 's', updated_at: 'v1' }];
+  const versionPosts = [];
+  const adoptBodies = [];
+  sandbox.api = async (p, o = {}) => {
+    const url = String(p);
+    if (url.includes('/chapter_versions')) { versionPosts.push(o && o.body); return { id: 9, created_at: 't' }; }
+    if (url.includes('/novel/adopt')) {
+      adoptBodies.push(o && o.body);
+      return { ok: true, adopt: { legacy: { events: 1, memories: 0, guard_failed: [] }, chapter_updated_at: 'v2' } };
+    }
+    if (/\/chapters\/107$/.test(url)) return { id: 107, content_hash: 'h1', updated_at: 'v1' };
+    return { ok: true };
+  };
+  sandbox.toast = () => {};
+  // ⚠️ 本套件的 DOMParser 桩 parseFromString 返回**空 body**（见文件上方的桩定义），
+  // 于是真实的 sanitizeEditorHtml 在这个环境里必然消毒成空串 —— 那是桩的限制，不是被测行为。
+  // 这里换成"身份消毒 + 计数"，才能同时断言两件真事：①旧内容确实经消毒路径交出 ②内容没有被吞掉。
+  const realSanitize = sandbox.sanitizeEditorHtml;
+  let sanitizeCalls = 0;
+  sandbox.sanitizeEditorHtml = (h) => { sanitizeCalls += 1; return String(h); };
+  const withUnsavedOld = () => {
+    P.state.editorSaveSnapshot = { id: 107, content: '<p>作者手里的旧稿</p>', title: '第107章' };
+    P.state.editorPendingByChapter = new Map();
+    P.state.editorConflictSnapshot = null;
+    P.state.editorSaveFailedSnapshot = null;
+    P.state.editorEmptyBlocked = null;
+    P.state.pendingOldContent = null;
+  };
+  const modalHtml = () => String(containers['#modal-root'].innerHTML);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  // ① 有未保存内容 → 必须问，且只给是/否两个出口 + 遮罩不关
+  withUnsavedOld(); versionPosts.length = 0; sanitizeCalls = 0; containers['#modal-root'].innerHTML = '';
+  const pYes = P.settleOldContentBeforeOverwrite(107);
+  await tick();
+  check('F3-1 正文即将被覆盖且这一章有未落盘的旧内容 → 弹出「旧内容是否保存？」',
+    !!P.state.pendingOldContent && Number(P.state.pendingOldContent.chapterId) === 107,
+    JSON.stringify(P.state.pendingOldContent && P.state.pendingOldContent.chapterId));
+  check('F3-2 弹窗只给是/否两个出口，且遮罩不关（误触关闭等于把选择丢掉）',
+    modalHtml().includes('旧内容是否保存？') && modalHtml().includes('save-old-content-yes')
+      && modalHtml().includes('save-old-content-no') && P.state.modalProtected === true,
+    JSON.stringify({ protected: P.state.modalProtected, html: modalHtml().replace(/<[^>]*>/g, ' ').slice(0, 80) }));
+  // 标题里必须出现"旧内容是否保存"这七个字，而不是含糊的"是否继续"
+  check('F3-3 弹窗文案区分"旧那一版怎么处理"与"要不要继续"（不问是否继续）',
+    modalHtml().includes('旧内容是否保存？') && !modalHtml().includes('是否继续'));
+  await P.handleAction('save-old-content-yes', { dataset: { action: 'save-old-content-yes' } });
+  const verdictYes = await pYes;
+  check('F3-4 选「是」：旧内容经白名单消毒路径存进本章历史版本，且真的落到服务端',
+    verdictYes === 'save' && versionPosts.length === 1 && Number(versionPosts[0].chapter_id) === 107
+      && String(versionPosts[0].content).includes('作者手里的旧稿') && sanitizeCalls === 1,
+    JSON.stringify({ verdictYes, posts: versionPosts.length, sanitizeCalls, body: versionPosts[0] }));
+  check('F3-5 选「是」之后它从本地待保存队列撤下（否则自动重试会把新正文倒回旧稿）',
+    !P.state.editorSaveSnapshot && !P.state.editorPendingByChapter.has(107) && !P.state.editorConflictSnapshot);
+
+  // ② 选「否」：不为这一版额外留档，同样撤下；仍然不拦操作
+  withUnsavedOld(); versionPosts.length = 0;
+  const pNo = P.settleOldContentBeforeOverwrite(107);
+  await tick();
+  await P.handleAction('save-old-content-no', { dataset: { action: 'save-old-content-no' } });
+  const verdictNo = await pNo;
+  check('F3-6 选「否」：不为这一版额外留档（不发 /chapter_versions），队列照样撤下',
+    verdictNo === 'discard' && versionPosts.length === 0 && !P.state.editorSaveSnapshot,
+    JSON.stringify({ verdictNo, posts: versionPosts.length }));
+
+  // ③ ✕ 关掉也必须有个结局，且默认按「是」收口（误触关闭最不该丢作者那一版）
+  withUnsavedOld(); versionPosts.length = 0;
+  const pClose = P.settleOldContentBeforeOverwrite(107);
+  await tick();
+  sandbox.closeModal();
+  const verdictClose = await pClose;
+  check('F3-7 ✕ 关掉弹窗不会让这次写入永远挂着：默认按「是」收口并保存旧内容',
+    verdictClose === 'save' && versionPosts.length === 1,
+    JSON.stringify({ verdictClose, posts: versionPosts.length }));
+  containers['#modal-root'].innerHTML = '';
+
+  // ④ 没有未保存内容 → 不打扰（不回退 2026-10-05「提示只属于导航」的修正）
+  P.state.editorSaveSnapshot = null;
+  P.state.editorPendingByChapter = new Map();
+  P.state.pendingOldContent = null;
+  const pNone = await P.settleOldContentBeforeOverwrite(107);
+  check('F3-8 这一章没有未落盘内容时不弹窗、不问任何问题',
+    pNone === '' && !P.state.pendingOldContent);
+
+  // ⑤ 接线：「替换当前正文」这条覆盖路径在写入前必须先问过（问的是被覆盖的那一章）
+  const seenIds = [];
+  const realSettle = sandbox.settleOldContentBeforeOverwrite;
+  sandbox.settleOldContentBeforeOverwrite = async (id) => { seenIds.push(Number(id)); return 'discard'; };
+  withUnsavedOld();
+  P.state.pendingProposalSelection = { workId: 1, refs: ['event:71', 'memory:71'], ids: [71] };
+  await sandbox.applyAIWritingArticle('replace', '<p>AI 新稿</p>', 107);
+  check('F3-9 「替换当前正文」在写入前先问过「旧内容是否保存？」（按目标章）',
+    seenIds.join(',') === '107', JSON.stringify(seenIds));
+  sandbox.settleOldContentBeforeOverwrite = realSettle;
+
+  // ⑥ F1：交给服务端的提案引用必须带来源类型（裸 id 在两表之间会撞号）
+  const lastAdopt = adoptBodies[adoptBodies.length - 1];
+  check('F3-10 采纳把带类型的提案引用交给服务端（event:71 / memory:71，不再只有裸 id）',
+    !!lastAdopt && Array.isArray(lastAdopt.legacy_proposal_refs)
+      && lastAdopt.legacy_proposal_refs.join(',') === 'event:71,memory:71',
+    JSON.stringify(lastAdopt && lastAdopt.legacy_proposal_refs));
+
+  // ⑦ F2：被零损失护栏拦下的记忆提案要如实说出来，但不谎报整次失败
+  const guardMsgs = [];
+  sandbox.toast = (m) => { guardMsgs.push(String(m)); };
+  P.reportLegacyGuardFailures([{ proposal_id: 1, reasons: ['实体覆盖率 56% 低于下限 100%（丢失 7/16）：夜鸦、陈牧野'] }]);
+  check('F3-11 护栏拦下时如实告知（正文已写入 + 缺哪些实体），不谎报"整次失败"',
+    guardMsgs.length === 1 && guardMsgs[0].includes('正文已写入') && guardMsgs[0].includes('夜鸦'),
+    JSON.stringify(guardMsgs));
+  guardMsgs.length = 0;
+  P.reportLegacyGuardFailures([]);
+  check('F3-12 没有被拦提案时不发任何提示（阴性对照，不误报护栏）', guardMsgs.length === 0);
+  sandbox.toast = () => {};
+
+  // ⑧ F1：复选框携带带类型引用，读取点据此产出 refs
+  check('F3-13 提案复选框带 data-proposal-ref（event:7 / memory:9），裸 id 仅作兼容保留',
+    P.proposalRefOf({ id: 7, type: 'event' }) === 'event:7'
+      && P.proposalRefOf({ id: 9, type: 'memory' }) === 'memory:9'
+      && P.proposalIdsOfRefs(['event:7', 'memory:9', 'event:7']).join(',') === '7,9',
+    JSON.stringify([P.proposalRefOf({ id: 7, type: 'event' }), P.proposalRefOf({ id: 9, type: 'memory' })]));
+
+  // 恢复现场
+  sandbox.api = saved.api; sandbox.toast = saved.toast; sandbox.closeModal = saved.closeModal;
+  sandbox.sanitizeEditorHtml = realSanitize;
+  if (prevEditor) containers['#editor-content'] = prevEditor; else delete containers['#editor-content'];
+  if (prevTitle) containers['#editor-title'] = prevTitle; else delete containers['#editor-title'];
+  P.state.workId = saved.workId; P.state.chapters = saved.chapters; P.state.currentChapterId = saved.currentChapterId;
+  P.state.editorSaveSnapshot = saved.snap; P.state.editorPendingByChapter = saved.pendingMap;
+  P.state.editorConflictSnapshot = saved.conflict; P.state.editorSaveFailedSnapshot = saved.failed;
+  P.state.editorEmptyBlocked = saved.emptyBlocked; P.state.pendingOldContent = saved.pendingOld;
+  P.state.pendingProposalSelection = saved.lastProposals;
+  containers['#modal-root'].innerHTML = '';
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

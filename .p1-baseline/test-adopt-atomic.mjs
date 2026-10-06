@@ -5,9 +5,11 @@
  * 覆盖矩阵：
  *   A. 正文与提案同事务落库；旧稿进历史版本；提案状态流转；投影 outbox 与提交同事务
  *   B. 幂等：同 key + 同 payload → 原样重放（不重复写）；同 key + 不同 payload → 409
- *   C. 全有或全无：选中项里有一条应用不了（陈旧/已处理/护栏拦截）→ 整次回滚
+ *   C. 完整性：选中项里有一条取不到 / 状态已变（陈旧、已处理）→ 整次回滚
  *   D. 基线绑定：正文 hash / 提案版本 hash 不符 → 409（不覆盖新内容）
  *   E. 模型侧（X-Novel-Agent）不得调用整次采纳 → 403
+ *   G. 提案 id 跨两表同号（2026-10-06）：带类型引用精确命中，裸 id 只解析成唯一一行
+ *   H. 零损失护栏不得挡住正文（2026-10-06）：被拦的记忆提案保留 pending + 如实回包，正文照写
  *   F. 投影可见 + restart 恢复：提交后进程重启，只凭 outbox 记录续跑（attempts 递增）
  *
  * 隔离配方：NOVELSTUDIO_DATA_DIR=<tmp> / PORT=<random> / NOVELSTUDIO_OV_DISABLED=1。
@@ -179,7 +181,7 @@ try {
     ok('B5 冲突未覆盖正文', (await getChapter(ch1)).content.includes('采纳后的正文甲'));
   }
 
-  // ── C. 全有或全无 ───────────────────────────────────────────────────────
+  // ── C. 完整性（真正的"全有或全无"只剩这一类）────────────────────────────
   {
     // 已处理过的提案（A 已入账）混在选中集合里 → 预检 409
     const ev2 = await req('/api/novel/events', { method: 'POST', body: { work_id: work1, summary: '事件·待用', proposed: true } });
@@ -248,6 +250,118 @@ try {
     ok('E2 正文未被写入', !(await getChapter(ch1)).content.includes('模型整次采纳'));
     const noKey = await req('/api/novel/adopt', { method: 'POST', body: { work_id: work1, chapter_id: ch1, content: '<p>x</p>' } });
     ok('E3 缺 operation_key → 400', noKey.status === 400, `实际 ${noKey.status}`);
+  }
+
+  // ── G. 提案 id 在两表之间同号（2026-10-06 事故的根因）──────────────────
+  // 事件提案与长期记忆提案是**两张表、各自独立的 id 序列**，都从 1 开始。旧实现拿裸 id
+  // 去两张表各查一遍，于是作者勾的 13 条事件提案把同号的 2 条记忆提案一起卷进采纳，
+  // 计数变成"达标 14/13"自相矛盾的值 → 整次回滚 → 正文一个字都没写进去。
+  {
+    const mkPair = async (tag) => {
+      const ev = await req('/api/novel/events', { method: 'POST', body: { work_id: work1, summary: `事件·同号 ${tag}`, proposed: true } });
+      const id = Number(ev.data.proposal_id);
+      dbExec('DELETE FROM story_memory_proposals WHERE id = ?', id);
+      dbExec(`INSERT INTO story_memory_proposals (id, work_id, summary, delta, note, guard, status) VALUES (?, ?, ?, '', '', '', 'pending')`, id, work1, `记忆·同号 ${tag}`);
+      return id;
+    };
+    const idA = await mkPair('A');
+    const opG1 = `adopt-G1-${Date.now().toString(36)}`;
+    const g1 = await req('/api/novel/adopt', {
+      method: 'POST',
+      body: { work_id: work1, chapter_id: ch1, content: '<p>G1 裸 id</p>', legacy_proposal_ids: [idA], operation_key: opG1 },
+    });
+    const lg1 = (g1.data && g1.data.adopt && g1.data.adopt.legacy) || {};
+    ok('G1 裸 id 只解析成一行（事件优先）：事件 +1、记忆 +0',
+      g1.status === 200 && Number(lg1.events) === 1 && Number(lg1.memories) === 0,
+      `${g1.status} ${JSON.stringify(lg1)}`);
+    ok('G2 同号记忆提案仍 pending（作者没勾它就不许被卷进来）',
+      !!dbGet(`SELECT id FROM story_memory_proposals WHERE id = ? AND status = 'pending'`, idA));
+
+    const opG2 = `adopt-G2-${Date.now().toString(36)}`;
+    const g2 = await req('/api/novel/adopt', {
+      method: 'POST',
+      body: { work_id: work1, chapter_id: ch1, content: '<p>G2 指定记忆</p>', legacy_proposal_refs: [`memory:${idA}`], operation_key: opG2 },
+    });
+    const lg2 = (g2.data && g2.data.adopt && g2.data.adopt.legacy) || {};
+    ok('G3 带类型引用「记忆」只动记忆（事件 +0、记忆 +1）',
+      g2.status === 200 && Number(lg2.events) === 0 && Number(lg2.memories) === 1,
+      `${g2.status} ${JSON.stringify(lg2)}`);
+    ok('G4 该号记忆提案已入账（不再 pending）',
+      !dbGet(`SELECT id FROM story_memory_proposals WHERE id = ? AND status = 'pending'`, idA));
+
+    const idB = await mkPair('B');
+    const opG3 = `adopt-G3-${Date.now().toString(36)}`;
+    const g3 = await req('/api/novel/adopt', {
+      method: 'POST',
+      body: {
+        work_id: work1, chapter_id: ch1, content: '<p>G3 refs 优先</p>',
+        legacy_proposal_ids: [idB], legacy_proposal_refs: [`memory:${idB}`], operation_key: opG3,
+      },
+    });
+    const lg3 = (g3.data && g3.data.adopt && g3.data.adopt.legacy) || {};
+    ok('G5 refs 与裸 ids 同时给出 → 以 refs 为准（不求并集、不多勾一条）',
+      g3.status === 200 && Number(lg3.events) === 0 && Number(lg3.memories) === 1,
+      `${g3.status} ${JSON.stringify(lg3)}`);
+    ok('G6 该号事件提案仍 pending（未被裸 ids 多带走一条）',
+      !!dbGet(`SELECT id FROM story_event_proposals WHERE id = ? AND status = 'pending'`, idB));
+
+    const idC = await mkPair('C');
+    const opG4 = `adopt-G4-${Date.now().toString(36)}`;
+    const g4 = await req('/api/novel/adopt', {
+      method: 'POST',
+      body: {
+        work_id: work1, chapter_id: ch1, content: '<p>G4 去重</p>',
+        legacy_proposal_refs: [`event:${idC}`, `event:${idC}`, `memory:${idC}`], operation_key: opG4,
+      },
+    });
+    const lg4 = (g4.data && g4.data.adopt && g4.data.adopt.legacy) || {};
+    ok('G7 重复引用去重：事件 +1、记忆 +1（计数不因重复失真）',
+      g4.status === 200 && Number(lg4.events) === 1 && Number(lg4.memories) === 1,
+      `${g4.status} ${JSON.stringify(lg4)}`);
+  }
+
+  // ── H. 零损失护栏不得挡住正文（2026-10-06 作者要求）─────────────────────
+  // 判据：正文写入与"提案入账"解耦。被护栏拦下的记忆提案留在 pending、原因如实回包，
+  // 但**不许**再让整次采纳回滚 —— 作者点的那一次写入必须留在正文里。
+  let work3 = 0; let ch3 = 0; let memProposalId = 0;
+  {
+    const w3 = await req('/api/works', { method: 'POST', body: { title: '采纳测试·护栏书' } });
+    work3 = w3.data.id;
+    const c3 = await req('/api/chapters', { method: 'POST', body: { work_id: work3, title: '护栏章' } });
+    ch3 = c3.data.id;
+    await req('/api/novel/chapter_save', { method: 'POST', body: { chapter_id: ch3, content: '<p>林晚走进拾线坊，把线轴放在柜台上。</p>' } });
+    dbExec(`INSERT INTO characters (work_id, name) VALUES (?, ?)`, work3, '林晚');
+    dbExec(`INSERT INTO world_entries (work_id, title) VALUES (?, ?)`, work3, '拾线坊');
+    // guard='agent' = 模型自压缩来源标记 → 采纳时会过零损失护栏；摘要短到必然丢实体。
+    dbExec(`INSERT INTO story_memory_proposals (work_id, summary, delta, note, guard, status) VALUES (?, ?, '', '模型自压缩', 'agent', 'pending')`, work3, '他们见面了。');
+    memProposalId = Number(dbGet(`SELECT id FROM story_memory_proposals WHERE work_id = ? ORDER BY id DESC LIMIT 1`, work3).id);
+    const memBefore = String((dbGet('SELECT summary FROM story_memories WHERE work_id = ?', work3) || {}).summary || '');
+    const versionsBefore = (await versionsOf(ch3)).length || 0;
+    const opH = `adopt-H-${Date.now().toString(36)}`;
+    const h = await req('/api/novel/adopt', {
+      method: 'POST',
+      body: {
+        work_id: work3, chapter_id: ch3, content: '<p>改好之后的护栏章正文</p>',
+        legacy_proposal_refs: [`memory:${memProposalId}`], operation_key: opH,
+      },
+    });
+    const lh = (h.data && h.data.adopt && h.data.adopt.legacy) || {};
+    const gf = Array.isArray(lh.guard_failed) ? lh.guard_failed : [];
+    ok('H1 记忆提案被零损失护栏拦下时，整次采纳仍 200（不再 409 回滚）',
+      h.status === 200 && h.data && h.data.ok === true, `${h.status} ${JSON.stringify(h.data).slice(0, 200)}`);
+    ok('H2 正文已写回（作者执行的内容完整出现在正文里）',
+      (await getChapter(ch3)).content.includes('改好之后的护栏章正文'));
+    ok('H3 旧稿进历史版本（版本数 +1）', ((await versionsOf(ch3)).length || 0) === versionsBefore + 1);
+    ok('H4 被拦原因如实回包（含提案号与原因，不谎报成功）',
+      gf.length === 1 && Number(gf[0].proposal_id) === memProposalId && (gf[0].reasons || []).length > 0,
+      JSON.stringify(gf).slice(0, 240));
+    ok('H5 被拦的记忆提案仍 pending（保留待处理，可修正后再采纳）',
+      !!dbGet(`SELECT id FROM story_memory_proposals WHERE id = ? AND status = 'pending'`, memProposalId));
+    ok('H6 长期记忆未被改写（护栏的初衷没有被削弱）',
+      String((dbGet('SELECT summary FROM story_memories WHERE work_id = ?', work3) || {}).summary || '') === memBefore);
+    ok('H7 采纳记录已落库（事务是提交，不是回滚）',
+      !!dbGet('SELECT idempotency_key FROM adoption_operations WHERE idempotency_key = ?', opH));
+    ok('H8 不再出现"达标 x/y"这类自相矛盾的计数文案', !/达标/.test(String((h.data && h.data.message) || '')));
   }
 
   // ── F. 重启恢复（只凭 outbox 续跑）──────────────────────────────────────

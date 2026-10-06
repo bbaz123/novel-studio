@@ -145,6 +145,9 @@ const state = {
   chapterBodyPeak: new Map(),
   // 采纳冲突（2026-10-02）：服务端正文在本次采纳期间真的变了，等作者选择如何处理。
   pendingAdoptConflict: null,
+  // 「旧内容是否保存？」（F3 · 2026-10-06）：正文即将被新内容覆盖，而这一章还有一版没落盘时，
+  // 等作者在是/否之间选一个（两个答案都会继续写入新内容，它不是操作闸门）。
+  pendingOldContent: null,
   editorComposing: false,
   imeComposing: false,
   aiTaskRunning: false, // F-43：harness 任务互斥锁（单个 harness 任务用；成文管线有自己的一把，见下）
@@ -789,6 +792,14 @@ function closeModal() {
     const pendingConflict = state.pendingAdoptConflict;
     state.pendingAdoptConflict = null;
     try { if (pendingConflict.resolve) pendingConflict.resolve(false); } catch (_) { /* 收口失败不影响关弹窗 */ }
+  }
+  // F3（2026-10-06）「旧内容是否保存？」同一个道理：被 ✕ 关掉时也必须有个结局，
+  // 否则这次正文写入会永远挂着（作者看到的是"点了却没反应"）。
+  // 默认按**「是，先保存」**收口：误触关闭时最不该发生的事，就是把作者手里那一版弄丢。
+  if (state.pendingOldContent) {
+    const pendingOld = state.pendingOldContent;
+    state.pendingOldContent = null;
+    try { if (pendingOld.resolve) pendingOld.resolve(true); } catch (_) { /* 收口失败不影响关弹窗 */ }
   }
   // 弹窗关闭闸的状态同理：必须在同一处清空，否则下一个弹窗会继承上一个的快照/保护位。
   state.modalBaseline = null;
@@ -3738,6 +3749,145 @@ function unsavedEditorWorkLabel() {
   if (state.editorSaveSnapshot || state.editorPendingByChapter.size || state.editorSaveInFlight.size) return '这一章的改动还没落盘';
   return null;
 }
+
+/**
+ * 该章"只在编辑器里、还没落盘"的那一版内容（没有则 null）。
+ *
+ * F3（2026-10-06 作者要求）：把新内容写进正文之前，如果作者手里还压着一版没落盘的旧内容，
+ * 必须先问一句「旧内容是否保存？」—— 既不静默替作者落盘，也不静默丢掉。
+ */
+function pendingEditorSnapshotFor(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return null;
+  const mine = (snap) => (snap && Number(snap.id) === id ? snap : null);
+  return mine(state.editorSaveSnapshot)
+    || mine(state.editorPendingByChapter.get(id))
+    || mine(state.editorConflictSnapshot)
+    || mine(state.editorSaveFailedSnapshot)
+    || null;
+}
+
+/**
+ * 作者明确选择"旧内容不保存"时，把该章手里那一版**丢掉**。
+ *
+ * 为什么必须真的丢：留着它，自动重试随后还会把它落盘 —— 而那已经是"新内容写完之后"了，
+ * 旧稿会反过来盖掉刚写进去的新正文。作者选「否」就是选了不要它。
+ */
+function discardPendingEditorWorkFor(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return;
+  const keep = (snap) => (snap && Number(snap.id) === id ? null : snap);
+  state.editorSaveSnapshot = keep(state.editorSaveSnapshot);
+  state.editorPendingByChapter.delete(id);
+  state.editorConflictSnapshot = keep(state.editorConflictSnapshot);
+  state.editorSaveFailedSnapshot = keep(state.editorSaveFailedSnapshot);
+  state.editorEmptyBlocked = keep(state.editorEmptyBlocked);
+  state.editorUnsavedNoticeKey = '';
+  if (!hasUnsavedEditorWork()) {
+    clearTimeout(state.editorSaveRetryTimer);
+    state.editorSaveRetryTimer = null;
+    state.editorSaveRetryStep = 0;
+  }
+}
+
+/**
+ * 采纳写成功后，丢掉该章**已被取代**的旧在途稿子。
+ *
+ * 为什么必要：作者选了「是，先保存」但那一版没存上（409/空稿暂停）时，它仍然留在手里；
+ * 之后自动重试把它落盘，就会把刚采纳的新正文**倒回旧稿**。判据是确定性的 ——
+ * 与本次写入的 html 不逐字相同，就一定是采纳前那一版（被覆盖的那一版服务端已存历史版本，不会丢）。
+ */
+function discardSupersededEditorWorkFor(chapterId, html) {
+  const id = Number(chapterId) || 0;
+  if (!id) return;
+  const superseded = (snap) => (snap && Number(snap.id) === id && String(snap.content) !== String(html) ? null : snap);
+  state.editorSaveSnapshot = superseded(state.editorSaveSnapshot);
+  const pending = state.editorPendingByChapter.get(id);
+  if (pending && String(pending.content) !== String(html)) state.editorPendingByChapter.delete(id);
+  state.editorConflictSnapshot = superseded(state.editorConflictSnapshot);
+  state.editorSaveFailedSnapshot = superseded(state.editorSaveFailedSnapshot);
+}
+
+/**
+ * 「旧内容是否保存？」（F3 · 2026-10-06 作者要求）。
+ *
+ * 返回 true = 先保存旧内容；false = 不保存旧内容，直接写入新内容。
+ * **两个答案都不拦操作**：无论选哪个，紧接着的新内容写入都必须完成 ——
+ * 这个框问的是"旧那一版怎么处理"，不是"要不要继续"。
+ * 遮罩点击不关闭：这个答案决定旧内容存不存，误触关闭等于把选择丢掉（作者明确要求过的口径）。
+ */
+function askSaveOldContent(chapterId, chars) {
+  return new Promise((resolve) => {
+    state.pendingOldContent = { chapterId: Number(chapterId) || 0, resolve };
+    openModal({
+      title: '旧内容是否保存？',
+      body: `<div class="muted">这一章还有 <b>${Number(chars) || 0} 字</b>只在编辑器里、还没保存。接下来会把新内容写进这一章。</div>
+        <div class="muted mt-8">选「是」：先把这一版存进本章历史版本，再写入新内容。<br>
+        选「否」：不为这一版额外留档，直接写入新内容。<br>
+        两种选择都会把新内容完整写进正文，不会中断你的操作。覆盖前把库里那一版另存为历史版本是服务端的固定安全底线，两者都保留。</div>`,
+      footer: `<button class="btn secondary" data-action="save-old-content-no">否，不保存直接写入</button>
+        <button class="btn" data-action="save-old-content-yes">是，先保存旧内容</button>`,
+      protectedBackdrop: true
+    });
+  });
+}
+
+/**
+ * 把"作者手里那一版还没落盘的旧内容"存成一条**历史版本**（不改正文）。
+ *
+ * 为什么用 chapter_versions 而不是先 flush 写正文：正文马上就会被新内容替换，
+ * 先写正文再覆盖只会多绕一圈、还会把采纳的并发基线推来推去；而"保存旧内容"这件事
+ * 本来就等于"这一版要能找回来"，历史版本正是它该去的地方。
+ */
+async function snapshotOldContentAsVersion(chapterId, snap) {
+  const id = Number(chapterId) || 0;
+  if (!id || !snap) return false;
+  const chapter = (state.chapters || []).find((c) => Number(c.id) === id);
+  try {
+    await api('/chapter_versions', {
+      method: 'POST',
+      body: {
+        chapter_id: id,
+        title: snap.title || chapter?.title || '未命名章节',
+        summary: chapter?.summary || '',
+        content: sanitizeEditorHtml(snap.content)   // 与其它历史版本写入同一条消毒路径
+      }
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * F3 的统一入口：正文即将被覆盖时，处理"这一章手里那一版没落盘的旧内容"。
+ *
+ * @returns {'save'|'discard'|''} 作者的选择（'' = 本来就没有未保存内容，不必问）
+ *
+ * 无论选哪个，都会把那一版从"本地待保存队列"里撤下来：正文马上要被作者自己的这一版新内容替换，
+ * 留着一份更旧的稿子在队列里，只会在自动重试时把刚写进去的新正文**倒回旧稿**。
+ * 选「否」＝不要这一版；选「是」＝它已经进历史版本、可以放心撤下来。
+ * 若采纳随后失败，编辑器会被还原成 beforeHtml，作者的字仍在眼前，不会凭空消失。
+ */
+async function settleOldContentBeforeOverwrite(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return '';
+  // 写入在途 = 这一版正在落盘，等同"保存"，不必打扰。
+  if (state.editorSaveInFlight.has(id)) return 'save';
+  const snap = pendingEditorSnapshotFor(id);
+  const chars = snap ? readableCharCount(snap.content) : 0;
+  if (!snap || chars <= 0) return '';
+  const keep = await askSaveOldContent(id, chars);
+  if (keep) {
+    const saved = await snapshotOldContentAsVersion(id, snap);
+    discardPendingEditorWorkFor(id);
+    if (saved) toast('旧内容已存进本章历史版本，接着写入新内容', 'success');
+    else toast('旧内容这一版没能存进历史版本（保存在编辑器里的那一版仍在，采纳失败时会还原到编辑器）；仍会继续写入新内容', 'error');
+    return 'save';
+  }
+  discardPendingEditorWorkFor(id);
+  return 'discard';
+}
 /**
  * 有未保存内容时提醒。
  *
@@ -6581,10 +6731,10 @@ async function settleProposalsFromModal(action) {
   const workId = state.workId || state.work?.id;
   if (!workId) return;
   const modalEl = document.querySelector('.modal');
-  const checked = [...(modalEl ? modalEl.querySelectorAll('.proposal-box [data-proposal-id]:checked') : [])]
-    .map((el) => Number(el.dataset.proposalId));
+  const refs = collectCheckedProposalRefs(modalEl || document);
+  const checked = proposalIdsOfRefs(refs);
   try {
-    const data = await api(`/novel/proposals/${action}`, { method: 'POST', body: { work_id: workId, ids: checked } });
+    const data = await api(`/novel/proposals/${action}`, { method: 'POST', body: { work_id: workId, ids: checked, refs } });
     closeModal();
     const n = action === 'apply'
       ? ((data.applied?.events || 0) + (data.applied?.memories || 0))
@@ -7980,7 +8130,8 @@ function buildAIWriteQualityPrompt(article, blueprint, opts = {}) {
     : '（无蓝图）';
   const prompt = [
     '你是严格的小说质检员。请核对下面这篇刚生成的章节正文，输出 JSON 对象（不要 Markdown 代码块）：',
-    '{"verdict":"pass 或 issues 或 unknown","issues":["硬伤描述，逐条可执行"],"coverage":{"story_state":true,"space":true,"timeline":true,"world_rules":true,"chapter_boundary":true,"style_structure":true}}',
+    '{"verdict":"pass 或 issues 或 unknown","issues":["硬伤描述，逐条可执行"],"deferred":[{"type":"possible_foreshadowing","text":"疑似伏笔或暂未解释的异常（引用正文具体位置）","recheck_within_chapters":5}],"coverage":{"story_state":true,"space":true,"timeline":true,"world_rules":true,"chapter_boundary":true,"style_structure":true}}',
+    'deferred 是“待后续核验”通道：疑似伏笔、未知等级、暂未解释的异常、可能故意留下的缺口，一律写进 deferred，不要写进 issues，也不要为了给出结论而判成硬伤。deferred 不计入 verdict——它有内容时 verdict 仍可以是 pass；拿不准“是伏笔还是假神秘”时同样放这里，不要建议删除。',
     'verdict 三态，必须如实：pass=已经检查且所查范围内没有发现硬伤；issues=找到有证据的硬伤（issues 必须非空）；unknown=无法判断、覆盖不全或证据不足（issues 可为空）。拿不准时写 unknown，不要为了给出结论而臆造硬伤，也不要在未完成检查时写 pass。',
     '只标记真正的硬伤：与本章蓝图要点明显不符/重要情节点遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句（万能比喻、「不是X。是Y。」式短语判断、连续三短句总结、为呼应而呼应）、提前消费未来章内容（大纲中标注【未来章·禁止写入】或后续章节摘要的内容）、新增未登记的具名角色/地点/妖兽、场景缺少空间与身体动作。轻微瑕疵不判 issues。',
     '',
@@ -8022,9 +8173,18 @@ async function verifyAIDraft(blueprint, article, targetWords) {
   // 旧写法 `String(parsed.verdict) !== 'issues' || issues.length === 0` 会把空对象、未知结论、
   // "有问题但问题列表为空"全部判成通过——质量门形同虚设。
   const REQUIRED_COVERAGE = ['story_state', 'space', 'timeline', 'world_rules', 'chapter_boundary', 'style_structure'];
+  // 文本归一化：issue 与 deferred 共用（字符串 / {text} 两种形态都接受）。
+  const textsOf = (arr) => (Array.isArray(arr)
+    ? arr.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).filter(Boolean)
+    : []);
   const judge = (parsed) => {
-    const issues = Array.isArray(parsed.issues)
-      ? parsed.issues.map((x) => (typeof x === 'string' ? x : String(x?.text || ''))).filter(Boolean)
+    const issues = textsOf(parsed.issues);
+    // deferred = 待后续核验通道（疑似伏笔 / 未知设定 / 暂未解释的异常）。它**不**计入 verdict：
+    // 放进 deferred 就是明确表示“现在不判它”，不能因为 deferred 非空把它算成 issues。
+    const deferred = Array.isArray(parsed.deferred)
+      ? parsed.deferred.map((x) => (x && typeof x === 'object'
+        ? { text: String(x.text || ''), type: String(x.type || ''), recheck_within_chapters: Number(x.recheck_within_chapters) || 0 }
+        : { text: String(x || ''), type: '', recheck_within_chapters: 0 })).filter((d) => d.text)
       : [];
     const raw = String(parsed.verdict || '').trim().toLowerCase();
     let verdict = ['pass', 'issues', 'unknown'].includes(raw) ? raw : 'unknown';
@@ -8035,7 +8195,7 @@ async function verifyAIDraft(blueprint, article, targetWords) {
     if (verdict !== 'issues' && cov && typeof cov === 'object'
         && REQUIRED_COVERAGE.some((k) => cov[k] === false)) verdict = 'unknown';
     const blocked = issues.some((x) => /未来章|禁止写入|未登记|具名角色|具名地点|妖兽/.test(x));
-    return { pass: verdict === 'pass', verdict, issues, skipped: false, blocked };
+    return { pass: verdict === 'pass', verdict, issues, deferred, skipped: false, blocked };
   };
   // 质检通道不可用：不阻塞成文交付（但**必须带 reason**，否则调用侧的告警分支不会触发）。
   if (!reply) return { pass: false, verdict: 'unknown', skipped: true, reason: 'channel_unavailable' };
@@ -8058,7 +8218,7 @@ async function verifyAIDraft(blueprint, article, targetWords) {
   {
     const fix = await directAIWrite([
       { role: 'system', content: '你是 JSON 修复器：把用户给的内容整理成一个 JSON 对象。只输出 JSON 本身，不要解释、不要 Markdown 代码块。' },
-      { role: 'user', content: `把下面内容整理为 {"verdict":"pass"或"issues"或"unknown","issues":["硬伤描述",…]}，不要新增未出现的问题，无法判断时用 "unknown"：\n${String(reply).slice(0, 4000)}` }
+      { role: 'user', content: `把下面内容整理为 {"verdict":"pass"或"issues"或"unknown","issues":["硬伤描述",…],"deferred":[{"type":"possible_foreshadowing","text":"待后续核验的疑点"}]}，不要新增未出现的问题，无法判断时用 "unknown"：\n${String(reply).slice(0, 4000)}` }
     ], { model: policyModel('fast'), maxTokens: 512, temperature: 0, reasoningEffort: 'low' });
     repaired = fix ? extractJSONFromText(fix) : null;
   }
@@ -9407,20 +9567,27 @@ const AI_WRITING_CLARIFY_PROMPT = `请你在回答前先向我提问
 // 真源在服务端 `ai/writing/policy.mjs`，经 GET /api/ai/writing-policy 下发。
 // 浏览器脚本无法 import 模块、且本仓库没有构建步骤，因此这里保留**同文兜底**；
 // frontend-test.mjs 有断言逐条比对两侧文本，只改一侧会直接测试失败（防漂移）。
-const WRITING_POLICY_FALLBACK_VERSION = '2026-10-06.1';
+const WRITING_POLICY_FALLBACK_VERSION = '2026-10-06.2';
 const WRITING_POLICY_FALLBACK_RULES = [
   { id: 'length_is_advisory', type: 'preference', scopes: ['blueprint', 'draft', 'expand', 'rewrite'], priority: 70, text: '目标字数是范围参考，不是配额。篇幅不足但剧情已经完整时，允许按已成立的章尾收笔，不要为凑字数强行往下续写。' },
   { id: 'scene_count_no_quota', type: 'preference', scopes: ['blueprint', 'draft'], priority: 65, text: '场面数量按剧情需要决定：可以只有一个值得展开的场面，也可以有多个；不要靠增加场景或情节点凑字数，也不要把篇幅平均分配给每个场面。' },
   { id: 'avoid_repeated_full_mechanism', type: 'preference', scopes: ['draft', 'rewrite', 'expand'], priority: 60, text: '同一机制已经完整展示过后，再次出现时优先写差异、结果或人物反应，不要自动完整复现一遍。' },
   { id: 'system_airtime_no_quota', type: 'preference', scopes: ['draft'], priority: 55, text: '系统按本章剧情需要出场，不设次数配额；每次发言都应带来新信息或改变人物处境，纯播报式【】不要占多数。' },
   { id: 'allow_omission', type: 'preference', scopes: ['blueprint', 'draft'], priority: 50, text: '存在一个事件不等于必须形成完整场景；存在一个情绪不等于必须配一个动作；存在群众不等于必须给群众反应；存在重要角色不等于登场时必须突出。允许略写、跳过、沉默与突然结束。' },
+  { id: 'scene_detail_budget', type: 'preference', scopes: ['blueprint', 'draft'], priority: 63, text: '动笔前先回答“这个场景值得把叙述资源花在哪里”：先定它的主要功能（建立哪条信息、哪段关系、哪种处境），次要项可以略写或跳过；不设细节数量、字数比例或固定配比。' },
+  { id: 'protect_high_identity', type: 'preference', scopes: ['rewrite'], priority: 68, text: '修稿只做最小改动：优先删除或合并低价值的重复证据、去掉含义已由动作或对白表达之后的总结句，不要全文重写；承担多项功能、有辨识度的人物选择与对白（例如从安慰自然转到“饭吃了没有”）保持原样，不要润色成更完整、更煽情或更工整的版本。' },
   { id: 'diag_state_regression', type: 'diagnostic', scopes: ['verify_fact'], priority: 80, text: '已完成的任务/移动/持有物，是否在没有任何新事件的情况下回退成"未完成"？' },
   { id: 'diag_space_gap', type: 'diagnostic', scopes: ['verify_fact'], priority: 60, text: '人物是否从一个地点直接出现在另一个地点而缺少必要过渡？当前视点是否看得见所描写的东西？' },
   { id: 'diag_world_boundary', type: 'diagnostic', scopes: ['verify_fact'], priority: 55, text: '新出现的等级/术语/制度，与既有设定是"冲突"还是"未知"？没有明确闭集证据时只标记待核对，不要自行补设定。' },
   { id: 'diag_repeated_mechanism', type: 'diagnostic', scopes: ['verify_style'], priority: 60, text: '同一种流程是否被完整复现第二次，而新增信息主要来自人物反应？' },
   { id: 'diag_over_explanation', type: 'diagnostic', scopes: ['verify_style'], priority: 55, text: '含义已经由动作/对白/结果表达之后，是否又补了一句总结或解释？' },
   { id: 'diag_crowd_rotation', type: 'diagnostic', scopes: ['verify_style'], priority: 50, text: '是否存在连续多段只承担布景任务、不改变任何人物路线或信息的匿名群众反应？' },
-  { id: 'diag_voice_convergence', type: 'diagnostic', scopes: ['verify_style'], priority: 45, text: '去掉姓名后，不同人物的对白是否还能区分？情绪是否总靠小动作翻译？' }
+  { id: 'diag_voice_convergence', type: 'diagnostic', scopes: ['verify_style'], priority: 45, text: '去掉姓名后，不同人物的对白是否还能区分？情绪是否总靠小动作翻译？' },
+  { id: 'diag_information_saturation', type: 'diagnostic', scopes: ['verify_style'], priority: 62, text: '某项信息是否已经被足够强的证据建立，后面还在用功能相同的细节继续证明（例如住宅老旧已由“六层无电梯 + 外墙掉瓷砖”建立，之后接连写多个坏灯）？只提示疑点，不规定同一信息最多出现几次——高潮、恐怖、压迫、喜剧都可能故意累积。' },
+  { id: 'diag_functional_redundancy', type: 'diagnostic', scopes: ['verify_style'], priority: 61, text: '句子虽然不同，是否承担完全相同的叙事功能（有人摇头 / 有人议论 / 有人惋惜，都在证明“大家觉得可惜”）？按功能判断，不要只查重复句式。' },
+  { id: 'diag_false_foreshadow', type: 'diagnostic', scopes: ['verify_fact'], priority: 58, text: '疑似伏笔、未知等级、暂未解释的异常，是“有意留白”还是“为显得神秘而塞入、却没有后续意义”？本章判不出来就归入 deferred 待后续章节核验，不要写成硬伤、也不要当作设定冲突。' },
+  { id: 'diag_negative_explanation', type: 'diagnostic', scopes: ['verify_style'], priority: 52, text: '“没说 / 没问 / 没解释 / 没有别的 / 没再看”这类否定式短句，是否连续承担“作者不直接总结、但仍在解释人物心理”的功能？只在明显重复时提示，不设禁词。' },
+  { id: 'diag_detail_function_density', type: 'diagnostic', scopes: ['verify_style'], priority: 48, text: '这个细节除了当前作用，是否还有第二作用（同时推进人物、关系或处境）？只有“功能单一且已被别处证明”的细节才提示为可删或可合并，不要机械打分。' }
 ];
 
 // 取规则：优先用服务端快照，取不到时退回同文兜底。规则里 `text` 是唯一展示源。
@@ -9843,6 +10010,14 @@ function salvageJSONList(src, key) {
  *
  * @returns {{report: {summary,issues,strengths}|null, stage: 'strict'|'salvaged'|'raw'}}
  */
+// 审稿报告里的 deferred（待后续核验）归一化：疑似伏笔/未知设定只提示、不判 issue，
+// 因此它不是 issues 的一部分，也不会进入修稿清单（见 showReviewReport 的独立分区）。
+function reviewDeferredItems(arr) {
+  return (Array.isArray(arr) ? arr : []).map((x) => (x && typeof x === 'object'
+    ? { text: String(x.text || ''), type: String(x.type || ''), recheck_within_chapters: Number(x.recheck_within_chapters) || 0 }
+    : { text: String(x || ''), type: '', recheck_within_chapters: 0 })).filter((d) => d.text);
+}
+
 function parseReviewText(text) {
   const s = String(text || '');
   const start = s.indexOf('{');
@@ -9860,7 +10035,8 @@ function parseReviewText(text) {
         report: {
           summary: String(obj.summary || ''),
           issues: Array.isArray(obj.issues) ? obj.issues.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [],
-          strengths: Array.isArray(obj.strengths) ? obj.strengths.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : []
+          strengths: Array.isArray(obj.strengths) ? obj.strengths.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [],
+          deferred: reviewDeferredItems(obj.deferred)
         }
       };
     }
@@ -9869,7 +10045,8 @@ function parseReviewText(text) {
   const salvaged = {
     summary: salvageJSONString(body, 'summary'),
     issues: salvageJSONList(body, 'issues'),
-    strengths: salvageJSONList(body, 'strengths')
+    strengths: salvageJSONList(body, 'strengths'),
+    deferred: reviewDeferredItems(salvageJSONList(body, 'deferred'))
   };
   if (salvaged.summary || salvaged.issues.length) return { stage: 'salvaged', report: salvaged };
   return { stage: 'raw', report: null };
@@ -10047,6 +10224,36 @@ function buildContinuityGuardText(guard) {
 }
 
 // 入账提案（headless 任务里 AI 提交的事件/记忆，未写入作品账本）渲染。
+/**
+ * 提案的**带类型引用**（2026-10-06）。
+ *
+ * 事件提案与长期记忆提案是两张表、各自独立的 id 序列，都从 1 开始 —— 只写裸 id 时，
+ * "事件 #1"与"记忆 #1"在界面上、在请求体里都是同一个数字，服务端无从知道作者勾的是哪一条。
+ * 真实事故：结果弹窗里 13 条事件提案 + 同号的 2 条记忆提案一起被卷进一次采纳，
+ * 计数变成"达标 14/13"自相矛盾的值，整次采纳被回滚、**正文一个字都没写进去**。
+ * 所以界面从源头就带上来源类型。
+ */
+function proposalRefOf(p) {
+  const type = p && p.type === 'memory' ? 'memory' : 'event';
+  const id = Number(p && p.id) || 0;
+  return id ? `${type}:${id}` : '';
+}
+
+/** 勾选集合里的带类型引用（界面唯一读取点，三处调用共用）。 */
+function collectCheckedProposalRefs(scope) {
+  const root = scope || document;
+  return [...root.querySelectorAll('.proposal-box [data-proposal-ref]:checked')]
+    .map((el) => String(el.dataset.proposalRef || ''))
+    .filter((r) => /^(event|memory):\d+$/.test(r));
+}
+
+/** 由带类型引用取裸 id 集合（让 legacy_proposal_ids 这条旧字段继续可用）。 */
+function proposalIdsOfRefs(refs) {
+  return [...new Set((Array.isArray(refs) ? refs : [])
+    .map((r) => Number(String(r).split(':')[1]))
+    .filter((n) => Number.isInteger(n) && n > 0))];
+}
+
 function proposalItemHtml(p) {
   const icon = p.type === 'memory' ? '🧠' : (p.kind === 'foreshadow' ? '🎯' : '📌');
   const kindLabel = p.type === 'memory' ? '长期记忆' : (p.kind === 'foreshadow' ? '伏笔' : '事件');
@@ -10054,7 +10261,8 @@ function proposalItemHtml(p) {
   const source = p.type === 'memory' ? '记忆提案' : '事件提案';
   const impact = p.note || (p.type === 'memory' ? '会更新长期记忆摘要' : '会写入事件账本');
   const created = p.created_at ? formatWorkTime(p.created_at) : '时间未知';
-  return `<label class="proposal-item"><input type="checkbox" data-proposal-id="${Number(p.id)}" checked>
+  // data-proposal-ref 是新口径（带来源类型）；data-proposal-id 保留给旧断言/旧代码读。
+  return `<label class="proposal-item"><input type="checkbox" data-proposal-id="${Number(p.id)}" data-proposal-ref="${proposalRefOf(p)}" checked>
     <span class="proposal-item-copy"><span><b>${icon} ${kindLabel}</b> <span class="chip">待确认</span></span>
       <span>${esc(String(text).slice(0, 180))}</span>
       <small class="muted">来源：${esc(source)} · 创建于 ${esc(created)} · 影响：${esc(impact)}</small>
@@ -10083,6 +10291,19 @@ function articleLengthHint(article, targetWords, lengthStatus = null) {
     return `<div class="redline-scan warn">⚠️ 成文 ${n} 字，距目标 ${target} 字还差 ${gap} 字，且质检指出有情节遗漏：建议用「扩写」补齐必要内容（改已有段落），不要靠章尾续写凑字数。</div>`;
   }
   return `<div class="redline-scan warn">📏 成文 ${n} 字，未达目标 ${target} 字（短 ${gap} 字）。已按"剧情完整即收笔"保留短稿，不再自动续写；如需加长，请点「扩写」并指明要展开的场面。</div>`;
+}
+
+// 待后续核验（deferred）：只告知作者"这里留了疑点/疑似伏笔，留给后面章节看"，
+// **不**算问题、不进修复清单、不驱动任何改写——把疑似伏笔当问题删掉，正是第二轮要消除的失误。
+function deferredNoteHtml(deferred) {
+  const items = Array.isArray(deferred) ? deferred : [];
+  const texts = items.map((d) => (typeof d === 'string' ? d : String((d && d.text) || ''))).filter(Boolean);
+  if (!texts.length) return '';
+  const shown = texts.slice(0, 5);
+  return `<div class="redline-scan"><b>🕒 待后续核验（${texts.length} 条，不算问题、不驱动改写）</b><ul class="muted" style="margin:6px 0 0 18px">`
+    + shown.map((x) => `<li>${esc(x)}</li>`).join('')
+    + (texts.length > shown.length ? `<li>…等共 ${texts.length} 条</li>` : '')
+    + '</ul></div>';
 }
 
 // 弹窗展示最终文章，让用户选择如何应用。
@@ -10222,6 +10443,7 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
         <div class="ai-candidate-banner"><span class="chip">Candidate · 待确认</span><span class="muted">这份内容只是一版候选草稿，不会自动写入正文或故事状态。</span></div>
         <div class="ai-apply-preview">${esc(article).replace(/\n/g, '<br>')}</div>
         ${articleLengthHint(article, targetWords, meta.lengthStatus)}
+        ${deferredNoteHtml(meta.deferred)}
         ${redlineScanSummaryHtml(scan)}
         <div id="continuity-guard-slot"></div>
         ${proposalsSummaryHtml(proposals)}
@@ -10252,19 +10474,18 @@ function showAIWritingResult(article, scan, proposals, targetWords, jobId, meta 
 function captureProposalSelection() {
   const info = state.pendingAIProposals;
   if (!info || !info.workId) return null;
-  const ids = [...document.querySelectorAll('.proposal-box [data-proposal-id]:checked')]
-    .map((el) => Number(el.dataset.proposalId)).filter((n) => n > 0);
-  return { workId: Number(info.workId) || 0, ids };
+  const refs = collectCheckedProposalRefs(document);
+  return { workId: Number(info.workId) || 0, refs, ids: proposalIdsOfRefs(refs) };
 }
 
 async function applySelectedProposals() {
   const info = state.pendingAIProposals;
   if (!info || !info.workId) return;
   state.pendingAIProposals = null;
-  const checked = [...document.querySelectorAll('.proposal-box [data-proposal-id]:checked')]
-    .map((el) => Number(el.dataset.proposalId));
+  const refs = collectCheckedProposalRefs(document);
+  const checked = proposalIdsOfRefs(refs);
   try {
-    const data = await api('/novel/proposals/apply', { method: 'POST', body: { work_id: info.workId, ids: checked } });
+    const data = await api('/novel/proposals/apply', { method: 'POST', body: { work_id: info.workId, ids: checked, refs } });
     const count = (data.applied?.events || 0) + (data.applied?.memories || 0);
     if (count) toast(`已采纳 ${count} 条入账提案`, 'success');
     else {
@@ -10312,8 +10533,9 @@ function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText 
   const segment = opts.segment || null;
   return [
     '你是严格的中文网络小说审稿编辑。请审读下面这篇章节正文，并对照小说上下文，输出 JSON 对象（不要 Markdown 代码块）：',
-    '{"summary":"总评（两三句）","issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"strengths":[{"text":"写得好的地方"}]}',
+    '{"summary":"总评（两三句）","issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"deferred":[{"text":"待后续核验的疑点（含位置）","type":"possible_foreshadowing","recheck_within_chapters":5}],"strengths":[{"text":"写得好的地方"}]}',
     'issues 覆盖：剧情逻辑/与既有设定冲突/人物言行一致/AI 腔与模板句/节奏与钩子/篇幅；strengths 1-3 条。',
+    'deferred 是“待后续核验”通道：疑似伏笔、未知等级、暂未解释的异常、可能故意留下的缺口，写进 deferred，不要写进 issues；判不出“是伏笔还是假神秘”时也放这里，不要擅自判成问题、更不要建议删除。deferred 不会进入修稿清单。',
     // 叙述诊断项来自统一写作策略源（ai/writing/policy.mjs）。它们是**疑点提示**，不是正文禁令：
     // 只有能引用正文具体位置、且属于上面 issues 覆盖范围的问题才写进 issues。
     '叙述诊断项（只提示疑点，必须引用正文具体位置；判断不成立就不要写进 issues）：',
@@ -10359,6 +10581,7 @@ function buildAIRevisionPrompt(article, issues, opts = {}) {
   const list = (issues || []).map((x, i) => `${i + 1}. ${x}`).join('\n') || '（无）';
   return [
     '你是资深中文网络小说修稿编辑。请按下面的“作者确认的问题清单”逐条修改正文；清单之外的内容尽量保持原样，不要擅自大改。',
+    '只做最小改动：优先删除或合并低价值的重复证据、去掉含义已由动作或对白表达之后的总结句；高辨识度段落（人物独特的应答方式、从安慰自然转到日常关心的对白等）保持原样，不要改写成更完整、更煽情或更工整的版本。',
     '',
     '【作者确认的问题清单】',
     list,
@@ -10524,6 +10747,15 @@ function showReviewReport(review) {
     body: `
       <div class="review-summary">${esc(review.summary || '（无总评）')}</div>
       ${(review.strengths || []).length ? `<div class="ref-group-title">优点</div>${review.strengths.map((s) => `<div class="review-item strength">✓ ${esc(s)}</div>`).join('')}` : ''}
+      ${(review.deferred || []).length ? '<div class="ref-group-title">待后续核验（不算问题，不会进入修稿清单）</div>' + review.deferred.map((d) => {
+        const text = String((d && d.text) || d);
+        const type = String((d && d.type) || '');
+        const recheck = Number(d && d.recheck_within_chapters) || 0;
+        return '<div class="review-item muted">🕒 ' + esc(text)
+          + (type ? ' <span class="chip">' + esc(type) + '</span>' : '')
+          + (recheck ? ' <span class="muted">建议 ' + recheck + ' 章内核验</span>' : '')
+          + '</div>';
+      }).join('') : ''}
       <div class="ref-group-title">问题（勾选 = 确认修稿；取消勾选 = 忽略）</div>
       ${issues.length ? issues.map((x, i) => `
         <label class="review-item issue"><input type="checkbox" data-review-issue="${i}" checked>
@@ -10688,7 +10920,8 @@ function buildAIRevisionPatchPrompt(article, issues, opts = {}) {
     '2. anchor 必须能在【待修正文】里**原样找到**（逐字复制整段），否则这条修改会作废。',
     '3. revised 只写改后的段落本身，不要编号、不要解释、不要引号包裹。',
     '4. 某条问题不需要改动就不必为它输出 patch；没有要改的就输出 {"patches":[]}。',
-    ...(segment ? ['5. patch 的 anchor 只能在【待修正文】（target ' + segment.segment_id + '）里取；不要把上文/下文（context-only）的段落当成 anchor。'] : [])
+    '5. 只做最小改动：优先删除或合并低价值的重复证据、去掉含义已由动作或对白表达之后的总结句，不要顺手润色高辨识度段落（人物独特的应答方式、从安慰自然转到日常关心的对白等），也不要把它们改写成更完整、更煽情或更工整的版本。',
+    ...(segment ? ['6. patch 的 anchor 只能在【待修正文】（target ' + segment.segment_id + '）里取；不要把上文/下文（context-only）的段落当成 anchor。'] : [])
   ].join('\n');
 }
 
@@ -10832,10 +11065,26 @@ function textFingerprint(text) {
   return `fnv1a:${h.toString(16)}:${s.length}`;
 }
 
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null, proposalIds = null, baseFingerprint = null } = {}) {
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null } = {}) {
   // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
   // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
+  // R03：整次采纳要用到的两样东西，都在**弹窗打开时**固化：
+  //   · proposalRefs / proposalIds —— 结果弹窗里勾选的入账提案（弹窗关掉后 DOM 就没了）。
+  //     refs 带来源类型（event:/memory:）是权威形式；只有裸 id 的旧调用点按"事件优先"补 refs
+  //     （与服务端对裸 id 的解析顺序一致）。
+  //   · operationKey（见下）—— 幂等键：重复点击「合并到正文」不会重复写库/重复计费
+  const keptSelection = (() => {
+    const sel = state.pendingProposalSelection || {};
+    const pickedRefs = (Array.isArray(proposalRefs) ? proposalRefs : (Array.isArray(sel.refs) ? sel.refs : []))
+      .map((r) => String(r)).filter((r) => /^(event|memory):\d+$/.test(r));
+    const pickedIds = (Array.isArray(proposalIds) ? proposalIds.map(Number) : (Array.isArray(sel.ids) ? sel.ids.map(Number) : []))
+      .filter((n) => n > 0);
+    return {
+      proposalRefs: pickedRefs.length ? pickedRefs : pickedIds.map((n) => `event:${n}`),
+      proposalIds: pickedIds.length ? pickedIds : proposalIdsOfRefs(pickedRefs),
+    };
+  })();
   // R02.3：同时绑定**生成这份差异时的原文指纹**。预览期间原文被改（作者手改 / 另一任务写回 /
   // 章节被删）时，合并必须拒绝，而不是拿旧差异稿覆盖更新的正文。
   state.pendingReviewDiff = {
@@ -10843,11 +11092,8 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
     // 默认按差异"原文"取指纹；草稿链由调用方传入"章节正文在审稿启动时"的指纹（见 runArticleReview）。
     baseFingerprint: baseFingerprint || textFingerprint(oldText),
     baseExcerpt: String(oldText || '').trim().slice(0, 60),
-    // R03：整次采纳要用到的两样东西，都在**弹窗打开时**固化：
-    //   · proposalIds —— 结果弹窗里勾选的入账提案（弹窗关掉后 DOM 就没了）
-    //   · operationKey —— 幂等键：重复点击「合并到正文」不会重复写库/重复计费
-    proposalIds: Array.isArray(proposalIds) ? proposalIds.map(Number).filter((n) => n > 0)
-      : ((state.pendingProposalSelection && state.pendingProposalSelection.ids) || []),
+    proposalRefs: keptSelection.proposalRefs,
+    proposalIds: keptSelection.proposalIds,
     operationKey: `merge-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   };
   // 勾选集合已转存进 pendingReviewDiff（本次差异预览的一部分）；清掉暂存，避免串到下一次操作。
@@ -10878,7 +11124,7 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
 
 async function mergeReviewDiff() {
   const pending = state.pendingReviewDiff;
-  const { newText, chapterId, baseFingerprint, proposalIds, operationKey } = pending || {};
+  const { newText, chapterId, baseFingerprint, proposalIds, proposalRefs, operationKey } = pending || {};
   // 合并目标 = 差异预览绑定的那一章（不再是"当前打开的章"）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   if (!newText || !targetChapterId) return;
@@ -10896,9 +11142,13 @@ async function mergeReviewDiff() {
   // 只处理**被合并这一章**：编辑器开着别的章时，那一章与本次合并无关，一个字节都不动它
   //（待落盘快照的章号恒等于编辑器当前章，所以这个判据就是"这份稿子属于被合并的这一章"）。
   // 它也不参与合并的成败判定：正文来自 newText，与编辑器无关。
+  // F3（2026-10-06 作者要求）：合并会把这一章正文整段换掉 —— 作者手里若还压着一版没落盘的旧内容，
+  // 先问「旧内容是否保存？」（是/否），而不是静默替作者落盘或静默丢掉。两个答案都继续合并。
+  const oldContentDecision = await settleOldContentBeforeOverwrite(targetChapterId).catch(() => '');
   const editorForMerge = $('#editor-content');
   const editorIsTarget = Boolean(editorForMerge) && Number(editorForMerge.dataset.chapterId) === targetChapterId;
-  if (editorIsTarget || state.editorSaveInFlight.has(targetChapterId)) {
+  // 作者选了「是」→ 必须真的把那一版落盘；选「否」→ 手里那一版已被丢掉，这次 flush 对它无操作。
+  if (oldContentDecision || editorIsTarget || state.editorSaveInFlight.has(targetChapterId)) {
     try { await flushEditorSaves(); } catch (_) { /* 落盘失败不阻塞合并 */ }
   }
   try {
@@ -10925,6 +11175,7 @@ async function mergeReviewDiff() {
         chapter_id: targetChapterId,
         content: mergedHtml,
         legacy_proposal_ids: Array.isArray(proposalIds) ? proposalIds : [],
+        legacy_proposal_refs: Array.isArray(proposalRefs) ? proposalRefs : [],
         operation_key: operationKey || `merge-${targetChapterId}-${Date.now().toString(36)}`,
         adopt_kind: 'review_merge',
       }
@@ -10985,6 +11236,9 @@ async function settleReviewMergeLocally(targetChapterId, html, adoptResult = nul
   if (mine(state.editorEmptyBlocked)) state.editorEmptyBlocked = null;
   if (mine(state.editorSaveFailedSnapshot)) state.editorSaveFailedSnapshot = null;
   if (mine(state.editorConflictSnapshot)) state.editorConflictSnapshot = null;
+  // F3 补充（2026-10-06）：与本次写入不一致的该章在途稿子都是**合并前那一版**，一并撤下 ——
+  // 否则自动重试随后会把它落盘，把刚合并进来的正文倒回旧稿（与 afterAdoptApplied 同一条理由）。
+  discardSupersededEditorWorkFor(id, html);
   const chapter = (state.chapters || []).find((c) => Number(c.id) === id);
   if (chapter) {
     chapter.content = html;
@@ -11431,9 +11685,18 @@ async function readChapterBaseline(chapterId) {
 async function afterAdoptApplied(targetChapterId, html, newUpdatedAt = '') {
   clearTimeout(state.editorSaveTimer);
   state.editorSaveTimer = null;
-  state.editorSaveSnapshot = null;
-  state.editorEmptyBlocked = null;
-  state.editorSaveFailedSnapshot = null;
+  const id = Number(targetChapterId) || 0;
+  // ⚠️ 只清**这一章**的槽位：单槽里的快照可能属于作者刚切过去的另一章，
+  // 无条件清掉等于把那一章还没落盘的字丢掉（这些槽位是"作者的东西"，不是本次采纳的附属品）。
+  const keepOther = (snap) => (snap && Number(snap.id) === id ? null : snap);
+  state.editorSaveSnapshot = keepOther(state.editorSaveSnapshot);
+  state.editorEmptyBlocked = keepOther(state.editorEmptyBlocked);
+  state.editorSaveFailedSnapshot = keepOther(state.editorSaveFailedSnapshot);
+  state.editorConflictSnapshot = keepOther(state.editorConflictSnapshot);
+  // F3 补充（2026-10-06）：这一章任何"与本次写入不一致"的在途稿子都是采纳前那一版。
+  // 不撤掉它，自动重试随后会把它落盘，把刚采纳的新正文倒回旧稿 ——
+  // 作者点的这一次写入必须**留在**正文里（覆盖掉的那些服务端已存历史版本，不会丢内容）。
+  discardSupersededEditorWorkFor(id, html);
   const chapter = (state.chapters || []).find((c) => Number(c.id) === Number(targetChapterId));
   if (chapter) {
     chapter.content = html;
@@ -11466,12 +11729,36 @@ function showAdoptConflictDialog(chapterId, serverHash) {
 }
 
 /**
- * 采纳的失败出口：409（版本闸门拒绝）走确认框，其余按原文案报错。
+ * 采纳被拒时，什么才算"真的并发冲突"（见 handleAdoptFailure）。
+ * 服务端这几句才是并发/基线冲突：正文基线 hash 不一致、版本标记已推进、提案在采纳过程中被改。
+ * 其它拒绝（完整性、护栏、空正文…）有各自的原因，不该被塞进"这一章在别处被改过了"这个框里。
+ */
+const ADOPT_CONFLICT_RE = /基线|版本已推进|在采纳过程中被修改|在界面确认后发生了变化|并发/;
+
+/**
+ * F2（2026-10-06）：被零损失护栏拦下的记忆提案必须**说出来**。
+ *
+ * 正文此刻已经写进去了，所以这句只讲"哪条记忆提案没入账、为什么"——不假装整次失败，
+ * 也不让作者以为"什么都没发生"。提案仍留在待处理里，可修正后再采纳。
+ */
+function reportLegacyGuardFailures(guardFailed) {
+  const list = Array.isArray(guardFailed) ? guardFailed : [];
+  if (!list.length) return;
+  const why = list.map((g) => (g.reasons || []).join('；')).filter(Boolean).join(' ／ ');
+  toast(`正文已写入；有 ${list.length} 条长期记忆提案未通过零损失护栏（已保留待处理，可修正后再采纳）：${why.slice(0, 180)}`, 'error');
+}
+
+/**
+ * 采纳的失败出口：真并发 409 走确认框，其余按原文案报错。
  * 被拒绝的那一次**什么都没写**（服务端整次事务回滚），所以这里只需要如实告知 + 让作者选。
  */
 async function handleAdoptFailure(e, chapterId, contextText) {
   const msg = String((e && e.message) || '未知错误');
-  if (e && e.status === 409 && /采纳失败/.test(msg)) {
+  // ⚠️ 只有**真的并发/基线冲突**才进"以我的当前内容覆盖"那个框。旧判据是"409 + 文案含『采纳失败』"，
+  // 于是任何被服务端拒绝的采纳（此前正是零损失护栏那条）都被报成"这一章在别处被改过了"；
+  // 作者点「覆盖」再失败一次，看到的仍是同一句「覆盖仍未成功（正文没有被改动）」
+  //（2026-10-06 报障的形状：一条护栏错误被包装成并发冲突，把作者引到错误的出口上）。
+  if (e && e.status === 409 && /采纳失败/.test(msg) && ADOPT_CONFLICT_RE.test(msg)) {
     const fresh = await readChapterBaseline(chapterId);
     if (await showAdoptConflictDialog(chapterId, fresh && fresh.content_hash)) return 'retry';
     toast('已取消本次采纳：正文没有被改动（编辑器内容仍保留）', 'error');
@@ -11492,10 +11779,10 @@ async function handleAdoptFailure(e, chapterId, contextText) {
  *   4) 成功后才清定时器/快照（旧实现顺序相同，但没有第 1、2 步），并收起草稿提示。
  *
  * 真并发（第 2 步之后别人写了正文）→ 服务端 409 → 由调用方弹确认框，让作者显式选择覆盖。
- * 返回 { adopted, draftAppliedId }；抛出的错误带 .status 供调用方区分冲突与普通失败。
+ * 返回 { adopted, draftAppliedId, guardFailed }；抛出的错误带 .status 供调用方区分冲突与普通失败。
  */
 async function adoptEditorContentImpl(options = {}) {
-  const { targetChapterId, html, selectionIds = [], forceContentHash = '', adoptKind = 'ai_result' } = options;
+  const { targetChapterId, html, selectionIds = [], selectionRefs = [], forceContentHash = '', adoptKind = 'ai_result' } = options;
   const opKey = `aw-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   // 1) 先落本页待保存的内容（只等待落盘，**不弹任何提示**）。
   // ⚠️ 这里刻意用 flushEditorSaves 而不是 flushSave（2026-10-02 晚）：采纳/合并这条路的正文
@@ -11517,6 +11804,9 @@ async function adoptEditorContentImpl(options = {}) {
       chapter_id: targetChapterId,
       content: html,
       legacy_proposal_ids: Array.isArray(selectionIds) ? selectionIds : [],
+      // 带来源类型的引用才是权威形式（见 proposalRefOf）：裸 id 在两表同号时，
+      // 服务端会把作者没勾的那几条一起卷进来。
+      legacy_proposal_refs: Array.isArray(selectionRefs) ? selectionRefs : [],
       operation_key: opKey,
       adopt_kind: adoptKind,
       expected,
@@ -11526,9 +11816,13 @@ async function adoptEditorContentImpl(options = {}) {
   // 服务端没带回版本标记时（老服务端/异常回包）**补读一次**：采纳已经把正文与 updated_at
   // 都推进了，本地若还停在旧标记，下一次编辑保存必然 409 —— 而"冲突的另一方"就是本人刚做的采纳。
   await refreshChapterBaselineAfterForeignWrite(targetChapterId);
-  const adopted = (res && res.adopt && res.adopt.legacy) ? (Number(res.adopt.legacy.events || 0) + Number(res.adopt.legacy.memories || 0)) : 0;
+  const legacy = (res && res.adopt && res.adopt.legacy) ? res.adopt.legacy : null;
+  const adopted = legacy ? (Number(legacy.events || 0) + Number(legacy.memories || 0)) : 0;
+  // F2（2026-10-06）：被零损失护栏拦下的记忆提案不再让整次采纳失败 —— 它留在 pending 待作者修正，
+  // 原因随回包上来，由调用方如实告知。正文已经写进去了。
+  const guardFailed = (legacy && Array.isArray(legacy.guard_failed)) ? legacy.guard_failed : [];
   const draftAppliedId = res && res.adopt ? (Number(res.adopt.draft_applied_id) || null) : null;
-  return { adopted, draftAppliedId };
+  return { adopted, draftAppliedId, guardFailed };
 }
 
 async function applyAIWritingArticle(mode, article, chapterId = null) {
@@ -11563,8 +11857,17 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   const beforeHtml = editor.innerHTML;
   const selectionIds = (selection && Array.isArray(selection.ids)) ? selection.ids : [];
+  const selectionRefs = (selection && Array.isArray(selection.refs)) ? selection.refs : [];
+  // F3（2026-10-06 作者要求）：替换当前正文 = 把这一章正文整段换掉。作者手里若还压着一版
+  // **没落盘**的旧内容，先问「旧内容是否保存？」（是/否），而不是静默替作者落盘。
+  // ⚠️ 必须问在 applyAIReply 之前：它会先 manualSaveChapter（把旧内容静默写库）再替换编辑器，
+  // 到采纳那一步再问，状态槽里已经是新内容 —— 分不清新旧，也来不及。
+  // 两个答案都继续写入：它问的是旧那一版怎么处理，不是"要不要继续"。
+  if (mode === 'replace') {
+    await settleOldContentBeforeOverwrite(targetChapterId).catch(() => '');
+  }
   const adoptEditorContent = async (forceContentHash = '') => {
-    return adoptEditorContentImpl({ targetChapterId, html: editor.innerHTML, selectionIds, forceContentHash });
+    return adoptEditorContentImpl({ targetChapterId, html: editor.innerHTML, selectionIds, selectionRefs, forceContentHash });
   };
   // 采纳失败收敛到一处：409 由作者在确认框里决定（覆盖 / 先不写），其余如实报错。
   // 无论哪种结局都要刷新恢复条：服务端此时可能已经有一份新草稿（这条路径此前完全不刷新，
@@ -11576,6 +11879,7 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
         const baseline = await readChapterBaseline(targetChapterId);
         const again = await adoptEditorContent(baseline && baseline.content_hash ? baseline.content_hash : '');
         toast(again.adopted ? `已按你的选择覆盖服务端版本，并采纳 ${again.adopted} 条提案` : '已按你的选择覆盖服务端版本', 'success');
+        reportLegacyGuardFailures(again.guardFailed);
         return again;
       } catch (e2) {
         toast('覆盖仍未成功（正文没有被改动）：' + e2.message, 'error');
@@ -11589,8 +11893,9 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
   if (mode === 'insert') {
     insertHtmlAtCursor(editor, textToParagraphsHtml(article));
     try {
-      const { adopted } = await adoptEditorContent();
+      const { adopted, guardFailed } = await adoptEditorContent();
       toast(adopted ? `已插入 AI 写作内容，并采纳 ${adopted} 条提案` : '已插入 AI 写作内容', 'success');
+      reportLegacyGuardFailures(guardFailed);
     } catch (e) {
       await settleAdoptFailure(e);
     }
@@ -11598,8 +11903,9 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
     const sel = getEditorSelection(editor);
     await applyAIReply(editor, article, sel?.range || null);
     try {
-      const { adopted } = await adoptEditorContent();
+      const { adopted, guardFailed } = await adoptEditorContent();
       if (adopted) toast(`已采纳 ${adopted} 条提案`, 'success');
+      reportLegacyGuardFailures(guardFailed);
     } catch (e) {
       await settleAdoptFailure(e);
     }
@@ -11607,8 +11913,9 @@ async function applyAIWritingArticle(mode, article, chapterId = null) {
     editor.focus();
     editor.insertAdjacentHTML('beforeend', textToParagraphsHtml(article));
     try {
-      const { adopted } = await adoptEditorContent();
+      const { adopted, guardFailed } = await adoptEditorContent();
       toast(adopted ? `已追加 AI 写作内容，并采纳 ${adopted} 条提案` : '已追加 AI 写作内容', 'success');
+      reportLegacyGuardFailures(guardFailed);
     } catch (e) {
       await settleAdoptFailure(e);
     }
@@ -12043,6 +12350,7 @@ async function performToolbarAIWrite(requirement) {
             skipped: !!verdict.skipped,
             // 只记"有几条硬伤"这个规模量，不记硬伤内容（与其它埋点同一条纪律）。
             issues: Math.min(99, Array.isArray(verdict.issues) ? verdict.issues.length : 0),
+            deferred: Math.min(99, Array.isArray(verdict.deferred) ? verdict.deferred.length : 0),
             reason: verdict.skipped ? String(verdict.reason || '') : ''
           });
           if (verdict.skipped && verdict.reason) {
@@ -12141,7 +12449,8 @@ async function performToolbarAIWrite(requirement) {
           model: policyModel('fast'),
           ms: writeTiming.total_ms,
           timing: writeTiming,
-          lengthStatus
+          lengthStatus,
+          deferred: (verdict && verdict.deferred) || []
         });
         if (mode === null) {
           // 作者自己关掉了结果弹窗：不是失败，但**必须留痕**——否则日志里这次写作就等于
@@ -14152,6 +14461,23 @@ async function handleAction(action, actionEl, e) {
       case 'adopt-conflict-cancel': {
         const pending = state.pendingAdoptConflict;
         state.pendingAdoptConflict = null;
+        closeModal();
+        if (pending?.resolve) pending.resolve(false);
+        break;
+      }
+
+      // F3（2026-10-06）「旧内容是否保存？」的两个出口：都继续写入新内容，只是旧那一版怎么处理不同。
+      case 'save-old-content-yes': {
+        const pending = state.pendingOldContent;
+        state.pendingOldContent = null;
+        closeModal();
+        if (pending?.resolve) pending.resolve(true);
+        break;
+      }
+
+      case 'save-old-content-no': {
+        const pending = state.pendingOldContent;
+        state.pendingOldContent = null;
         closeModal();
         if (pending?.resolve) pending.resolve(false);
         break;

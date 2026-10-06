@@ -19,7 +19,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.1.2** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.2](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.2).
+> 📌 Version **v1.1.3** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.3](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.3).
 
 <details>
 <summary><b>Contents</b></summary>
@@ -368,4 +368,4 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ## 📝 Changelog
 
-Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.1.2** (experimental channel, branch `Experimental-Version-v1.0`) — the first anti-AI-flavour batch (P0). The generation chain no longer pads a chapter to a word quota or counts scenes per quota, the quality gate is strictly `pass / issues / unknown`, writing preferences now come from a single policy source (`ai/writing/` + `GET /api/ai/writing-policy`), and the plugin persona was updated to match (word count is a range, not a quota).
+Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.1.3** (experimental channel, branch `Experimental-Version-v1.0`) — the second anti-AI-flavour batch (diagnostics). Building on v1.1.2 (no word-quota padding, no scene/system quotas, strict `pass / issues / unknown` quality gate, single policy source in `ai/writing/` + `GET /api/ai/writing-policy`), this round adds a **diagnostics-only** layer — information saturation, functional redundancy, negative self-explanation, detail function density — plus a **`deferred`** channel for suspected foreshadowing, unknown tiers and unexplained anomalies: they are neither issues nor repairs, never enter the revision checklist, and cannot be deleted by the reviewer. Revision prompts now enforce minimal edits and protect high-identity passages (plugin 0.17.0).

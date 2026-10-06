@@ -2807,27 +2807,97 @@ function addMemoryProposal(workId, { summary, delta, note, guard }) {
   return { proposed: true, proposal_id: Number(info.lastInsertRowid) };
 }
 
-// 采纳/拒绝提案：ids 为空 + all=true 时处理该作品全部 pending 提案。
-function settleProposals(workId, { ids, all, action, onConsumeApproval = null }) {
-  return withTx(() => settleProposalsInTx(workId, { ids, all, action, onConsumeApproval }));
+// 采纳/拒绝提案：all=true 时处理该作品全部 pending 提案；否则按 refs（带类型）/ ids（裸数字）指定。
+function settleProposals(workId, { ids, refs, all, action, onConsumeApproval = null }) {
+  return withTx(() => settleProposalsInTx(workId, { ids, refs, all, action, onConsumeApproval }));
 }
 
-function settleProposalsInTx(workId, { ids, all, action, onConsumeApproval = null }) {
+/**
+ * 提案引用的规范形式：`{ type: 'event' | 'memory' | 'auto', id }`（2026-10-06）。
+ *
+ * 为什么必须有类型：事件提案与长期记忆提案是**两张表、各自独立的 id 序列**，都从 1 开始。
+ * 只给裸数字时，"提案 #1"在两表里是两条不同的行；服务端拿一个裸 id 列表去两张表各查一遍，
+ * 就把作者根本没勾的那几条一起卷了进来。
+ *
+ * 2026-10-06 事故（本函数存在的理由）：作者在结果弹窗里勾了 13 条事件提案（界面送出的裸 id
+ * 去重后 13 个），记忆表的同号提案 #1、#2 也被命中并参与入账 —— #1 被零损失护栏拦下、
+ * #2 用 delta 合成摘要后写入，于是计数变成"达标 14/13"这种自相矛盾的值，
+ * 下面 adopt 的整次回滚被触发，**正文一个字都没写进去**。
+ *
+ * 解析规则：
+ *   · 'event:12' / { type:'event', id:12 }   → 只认事件表第 12 行
+ *   · 'memory:12' / { type:'memory', id:12 } → 只认记忆表第 12 行
+ *   · 裸 12（旧客户端）→ 标记为 'auto'，由 proposalRowOfRef **事件优先**解析成唯一一行，
+ *     不再扩散到另一张表的同号行。
+ *   · `refs` 是数组时**以 refs 为准**，不再与裸 ids 求并集 —— 否则"记忆 #1"配上裸 id 1
+ *     （auto 解析到事件 #1）会同时命中两行，等于又替作者多勾了一条。
+ */
+function normalizeProposalRefs(refs, ids) {
+  const typed = Array.isArray(refs);
+  const source = typed ? refs : (Array.isArray(ids) ? ids : []);
+  const out = [];
+  const seen = new Set();
+  const push = (type, id) => {
+    const n = Number(id) || 0;
+    if (!n) return;
+    const t = type === 'memory' ? 'memory' : (type === 'event' ? 'event' : 'auto');
+    const key = `${t}:${n}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ type: t, id: n });
+  };
+  for (const r of source) {
+    if (typeof r === 'string') {
+      const m = /^\s*(event|memory)\s*:\s*(\d+)\s*$/i.exec(r);
+      if (m) push(m[1].toLowerCase(), m[2]);
+      else push('auto', r);
+      continue;
+    }
+    if (r && typeof r === 'object') { push(r.type, r.id); continue; }
+    push('auto', r);
+  }
+  return out;
+}
+
+/**
+ * 把一条提案引用解析成"哪张表的哪一行"，预检与入账共用同一个解析点。
+ * type='auto'（旧客户端的裸 id）按**事件优先**取，只取一行 —— 与旧代码的取值顺序一致。
+ */
+function proposalRowOfRef(workId, ref) {
+  const type = ref && ref.type;
+  const id = Number(ref && ref.id) || 0;
+  if (!id) return null;
+  const eventRow = () => prepare(`SELECT *, 'event' AS source_table FROM story_event_proposals WHERE id = ? AND work_id = ?`).get(id, workId);
+  const memoryRow = () => prepare(`SELECT *, 'memory' AS source_table FROM story_memory_proposals WHERE id = ? AND work_id = ?`).get(id, workId);
+  if (type === 'memory') return memoryRow();
+  if (type === 'event') return eventRow();
+  return eventRow() || memoryRow();
+}
+
+function settleProposalsInTx(workId, { ids, refs, all, action, onConsumeApproval = null }) {
   const mark = (table, id) => prepare(`UPDATE ${table} SET status = ? WHERE id = ? AND work_id = ? AND status = 'pending'`).run(action, id, workId);
   const applied = { events: 0, memories: 0 };
   const rejected = { events: 0, memories: 0 };
   const guardFailed = [];
   let eventRows = [];
   let memoryRows = [];
+  // 请求的引用条数（去重后）。调用方用它做完整性判据："每一条都要有明确结局"。
+  const wantRefs = all ? [] : normalizeProposalRefs(refs, ids);
   if (all) {
     eventRows = prepare(`SELECT * FROM story_event_proposals WHERE work_id = ? AND status = 'pending' ORDER BY id ASC`).all(workId);
     memoryRows = prepare(`SELECT * FROM story_memory_proposals WHERE work_id = ? AND status = 'pending' ORDER BY id ASC`).all(workId);
   } else {
-    const list = Array.isArray(ids) ? ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
-    if (list.length) {
-      eventRows = prepare(`SELECT * FROM story_event_proposals WHERE work_id = ? AND id IN (${list.map(() => '?').join(',')})`).all(workId, ...list);
-      memoryRows = prepare(`SELECT * FROM story_memory_proposals WHERE work_id = ? AND id IN (${list.map(() => '?').join(',')})`).all(workId, ...list);
+    // 逐条按**带类型的引用**取行：一张表只认属于它的那一条（见 normalizeProposalRefs 的说明）。
+    // 取不到行（不存在 / 不属于该作品）不在这里报错 —— 调用方按"请求数 vs 实际处理数"的
+    // 完整性判据发现它，而不是在这里吞掉。
+    for (const ref of wantRefs) {
+      const row = proposalRowOfRef(workId, ref);
+      if (!row) continue;
+      if (row.source_table === 'memory') memoryRows.push(row);
+      else eventRows.push(row);
     }
+    eventRows.sort((a, b) => Number(a.id) - Number(b.id));
+    memoryRows.sort((a, b) => Number(a.id) - Number(b.id));
   }
   // R02.2 修复：审批消费必须发生在**任何写入之前**。审批基线是提案行的内容指纹
   // （legacyProposalHash 含 status 字段），而下面的 mark() 会把 status 从 pending 改成 apply/reject；
@@ -2879,7 +2949,13 @@ function settleProposalsInTx(workId, { ids, all, action, onConsumeApproval = nul
     }
     mark('story_memory_proposals', p.id);
   }
-  return { ok: true, work_id: workId, action, applied, rejected, guard_failed: guardFailed, pending: listProposals(workId).length };
+  // selected = 本次**请求**的引用条数（all 时为实际待处理的 pending 行数）。
+  // 调用方据此判断"每一条都有明确结局"：applied + rejected + guard_failed === selected。
+  return {
+    ok: true, work_id: workId, action, applied, rejected,
+    selected: all ? (eventRows.length + memoryRows.length) : wantRefs.length,
+    guard_failed: guardFailed, pending: listProposals(workId).length,
+  };
 }
 
 function safeParseJSON(text) {
@@ -4016,6 +4092,8 @@ function reviewForClient(review) {
     parsed: !!(asString(report.summary, '').trim() || asArray(report.issues).length),
     issue_count: asArray(report.issues).length,
     strength_count: asArray(report.strengths).length,
+    // 待后续核验的疑点（疑似伏笔/未知设定）：只计数、不进"问题"这类必答项。
+    deferred_count: asArray(report.deferred).length,
     // 原文可能高达 200KB，回看列表不需要全量——只带预览，完整原文仍在库里可查。
     raw_text: asString(report.raw_text, '').slice(0, 20000),
   };
@@ -7025,7 +7103,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!contentProvided && !chapterId) return sendError(res, 400, 'adopt 需要 content（新正文）或 chapter_id 之一');
     const dedupe = (list) => [...new Set(list)];
     const stateSel = dedupe((Array.isArray(body.state_proposal_ids) ? body.state_proposal_ids : []).map(Number).filter((n) => n > 0));
-    const legacySel = dedupe((Array.isArray(body.legacy_proposal_ids) ? body.legacy_proposal_ids : []).map(Number).filter((n) => n > 0));
+    // 2026-10-06：旧提案引用**带类型**（'event:1' / {type,id}），不再用裸 id 去两张表各查一遍。
+    // 传了 refs 就以 refs 为准（旧客户端的 legacy_proposal_ids 仍被接受，按"事件优先"解析成唯一一行）。
+    const legacyRefs = normalizeProposalRefs(body.legacy_proposal_refs, body.legacy_proposal_ids);
+    const legacySel = dedupe(legacyRefs.map((r) => r.id));
     const expected = body.expected && typeof body.expected === 'object' ? body.expected : {};
     const opKey = asString(body.operation_key, '').trim();
     if (opKey.length < 8) return sendError(res, 400, '缺少 operation_key（整次采纳的幂等键，至少 8 个字符）');
@@ -7037,6 +7118,9 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       summary: contentProvided && body.summary !== undefined ? asString(body.summary, '') : '',
       state_proposal_ids: stateSel,
       legacy_proposal_ids: legacySel,
+      // 幂等键要把"作者勾的到底是哪几行"也钉进去：光有裸 id 时，event:1 与 memory:1 的
+      // 指纹会一样，同一个 operation_key 配不同选择会被误判成"原样重放"。
+      legacy_proposal_refs: legacyRefs.map((r) => `${r.type}:${r.id}`),
       expected: {
         content_hash: asString(expected.content_hash, ''),
         // P1-10：并发基线的**第二形态**。`content_hash` 要求调用方拿到服务端正文原文才能算，
@@ -7067,12 +7151,15 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       stateHashes[String(id)] = Approvals.proposalHash(p);
     }
     const legacyHashes = {};
-    for (const id of legacySel) {
-      const r = prepare(`SELECT *, 'event' AS source_table FROM story_event_proposals WHERE id = ? AND work_id = ?`).get(id, workId)
-        || prepare(`SELECT *, 'memory' AS source_table FROM story_memory_proposals WHERE id = ? AND work_id = ?`).get(id, workId);
-      if (!r) return sendError(res, 404, `提案 #${id} 不存在或不属于该作品`);
-      if (String(r.status) !== 'pending') return sendError(res, 409, `提案 #${id} 已处理过（状态 ${r.status}）`);
-      legacyHashes[String(id)] = Approvals.legacyProposalHash(r);
+    for (const ref of legacyRefs) {
+      const r = proposalRowOfRef(workId, ref);
+      const label = ref.type === 'memory' ? '长期记忆提案' : '提案';
+      if (!r) return sendError(res, 404, `${label} #${ref.id} 不存在或不属于该作品`);
+      if (String(r.status) !== 'pending') return sendError(res, 409, `提案 #${ref.id} 已处理过（状态 ${r.status}）`);
+      // 两套键都记：带类型的键给新客户端，裸 id 键保持旧客户端的 legacy_hashes 口径可用
+      //（有同号时以"事件优先"为准，因为裸 id 本身就是这么解析的）。
+      legacyHashes[`${ref.type}:${ref.id}`] = Approvals.legacyProposalHash(r);
+      if (legacyHashes[String(ref.id)] === undefined) legacyHashes[String(ref.id)] = Approvals.legacyProposalHash(r);
     }
     if (stateSel.length && !StoryState.isEnabled(workId)) return sendError(res, 400, '该作品未开启确定性故事状态，不能采纳状态提案');
     for (const [id, wantHash] of Object.entries(expected.state_hashes || {})) {
@@ -7125,16 +7212,30 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           if (!r || r.ok !== true) throw new Error(`状态提案 #${id} 未应用：${(r && (r.reason || r.decision)) || '未知原因'}`);
           stateApplied.push({ proposal_id: id, snapshot_id: r.snapshot_id, state_hash_after: r.state_hash_after });
         }
-        // 2) 旧提案（事件/长期记忆）：全有或全无——有任一被护栏拦下/状态不符就整次回滚
+        // 2) 旧提案（事件/长期记忆）：按**作者实际勾选的带类型引用**入账。
+        //
+        // 2026-10-06 两处口径修正（作者要求：护栏不得挡住正文写入）：
+        //   · 完整性判据从"落地条数 === 勾选条数"改成"**每一条引用都有明确结局**"。
+        //     旧判据把 applied 当成受理解，而空提案（summary/delta 都空）本来是走 rejected 的、
+        //     却照样被 mark 成已处理 —— 于是它的计数永远凑不齐，与护栏拦下叠加后一起把整次采纳回滚。
+        //   · 被零损失护栏拦下的记忆提案**不再回滚本次采纳**：它留在 pending 待作者修正，
+        //     原因如实回包（legacy.guard_failed）。长期记忆的实体完整性仍不许静默破坏，
+        //     但"这条记忆提案没进账"不该连累与它无关的正文。
+        // 仍会让整次回滚的只剩真正的完整性失败：引用指向的行取不到、或状态已不是 pending。
         let legacyApplied = { events: 0, memories: 0 };
-        if (legacySel.length) {
-          const settled = settleProposalsInTx(workId, { ids: legacySel, action: 'apply' });
-          const failed = (settled.guard_failed || []).map((g) => g.proposal_id);
-          const appliedCount = Number(settled.applied && settled.applied.events || 0) + Number(settled.applied && settled.applied.memories || 0);
-          if (failed.length || appliedCount !== legacySel.length) {
-            throw new Error(`旧提案未全部入账（达标 ${appliedCount}/${legacySel.length}${failed.length ? `，护栏拦下 #${failed.join('、#')}` : ''}）——已整次回滚`);
+        let legacyGuardFailed = [];
+        if (legacyRefs.length) {
+          const settled = settleProposalsInTx(workId, { refs: legacyRefs, action: 'apply' });
+          legacyGuardFailed = Array.isArray(settled.guard_failed) ? settled.guard_failed : [];
+          const a = settled.applied || {};
+          const r = settled.rejected || {};
+          const accounted = Number(a.events || 0) + Number(a.memories || 0)
+            + Number(r.events || 0) + Number(r.memories || 0) + legacyGuardFailed.length;
+          const wanted = Number(settled.selected || 0);
+          if (accounted !== wanted) {
+            throw new Error(`旧提案未全部处理（已处理 ${accounted}/${wanted}）——已整次回滚`);
           }
-          legacyApplied = { events: Number(settled.applied.events || 0), memories: Number(settled.applied.memories || 0) };
+          legacyApplied = { events: Number(a.events || 0), memories: Number(a.memories || 0) };
         }
         // 3) 正文（旧稿进历史版本）
         let contentVersionId = null;
@@ -7171,7 +7272,7 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         }
         // 4) 投影 outbox（与正文同一事务；外部调用在提交后由 worker 执行）
         const projections = [];
-        if (contentProvided || stateApplied.length || legacySel.length) {
+        if (contentProvided || stateApplied.length || legacyRefs.length) {
           const proj = enqueueProjectionInTx(workId, {
             chapterId, kind: 'ov_work_sync', dedupKey: `adopt:${opKey}`,
             payload: { reason: 'adopt', operation_key: opKey, chapter_id: chapterId, adopt_kind: asString(body.adopt_kind, '') },
@@ -7188,7 +7289,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
             // 本次采纳消费掉的生成稿草稿 id（null = 本来就没有待应用草稿）：
             // 让界面能据此刷新「取回生成稿」提示，而不是等下次整页刷新才发现状态已变。
             draft_applied_id: draftAppliedId,
-            state_proposals: stateApplied, legacy: legacyApplied,
+            state_proposals: stateApplied,
+            // guard_failed：被零损失护栏拦下的记忆提案（**已保留 pending**，可修正后再采纳）。
+            // 它不再是整次采纳的失败原因 —— 正文照常写入，这里如实把原因交给界面。
+            legacy: { ...legacyApplied, guard_failed: legacyGuardFailed },
             projection_ids: projections, replayed: false,
           },
         };
@@ -7201,7 +7305,7 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     }
     touchWork(workId);
     notifyChange('chapters', { workId, id: chapterId || 0 });
-    if (legacySel.length) notifyChange('events', { workId, id: workId });
+    if (legacyRefs.length) notifyChange('events', { workId, id: workId });
     maybeAutoCompressMemory(workId);
     drainProjectionOutbox().catch(() => { /* 失败保留 failed，界面可见可重试 */ });
     // 把提交后的真实版本标记随回包下发（2026-10-02）：界面用它更新本地章节行，
@@ -8469,7 +8573,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     try {
       // 单条 id 与 ids 都接受：旧路由只读 body.ids，于是带 `id` 的调用被静默当成"没有要处理的提案"，
       // 返回 200 + applied:0 —— 属于任务书禁止的"悄悄跳过还提示成功"（本轮隔离探针实测）。
+      // 2026-10-06：接受带类型的 refs（'event:12' / {type,id}）。裸 ids 与两张表同号时，
+      // 旧实现会把作者没勾的那几条一起卷进来；见 normalizeProposalRefs。
       result = settleProposals(workId, {
+        refs: Array.isArray(body.refs) ? body.refs : (Array.isArray(body.legacy_proposal_refs) ? body.legacy_proposal_refs : undefined),
         ids: Array.isArray(body.ids) ? body.ids : (Number(body.id) > 0 ? [Number(body.id)] : undefined),
         all: body.all === true, action: segments[3], onConsumeApproval: agentConsume,
       });

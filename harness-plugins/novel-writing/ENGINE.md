@@ -343,6 +343,9 @@ dsh 用途解耦。用哪个 profile 由 `harness.js` 的 `NOVELSTUDIO_DSH_PROFI
   语义压缩由模型在调用 `novel_memory_update` 时完成，**并受零损失护栏核对**（见 §二.6）。
   直接 `PUT /api/story_memory` 传 delta（不带 `guard:'agent'`）会得到待压缩的追加文本。
 - `novel_consistency` 只做确定性清单装配，冲突判断由模型在同一轮内完成（工具返回清单文本）。
+- 2026-10-06（去 AI 味第二轮）：自检清单新增"信息饱和度 / 功能重复 / 否定式解释"三问，并把疑似伏笔 /
+  未知等级 / 暂未解释的异常归入待后续核验（deferred）——它们不是冲突项，不得建议删除；篇幅、场面密度与
+  deferred 都只提示疑点，不设配额、不设禁词。
 - 提案表暂无自动过期策略：pending 提案长期不处理会累积；后续可在 UI 加“一键清理”。
 
 ## 六、验证
