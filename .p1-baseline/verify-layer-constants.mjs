@@ -19,6 +19,8 @@
  *   C. 前文衔接的取文长度必须来自规格（`capOfId('story_tail','continuation')`），
  *      且不得有等于该值的字面量出现在取文调用里；
  *   D. 规格自洽：entity 层必须有有限 `entityCap`；声明 `capContinuation` 的层必须 ≥ 其 `cap`。
+ *   E. 层规格 ↔ 优先级带（`LAYER_BAND`）：两个方向都核——每一层都要有归属，
+ *      带表里也不得残留规格中已不存在的层。
  *
  * 用法: node .p1-baseline/verify-layer-constants.mjs
  */
@@ -26,6 +28,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LAYERS, capOfId, entityCapOfId } from '../ai/context/layers.mjs';
+// E 组：层规格 ↔ 优先级带。判据（含反向核对用的 LAYER_BAND）来自语义上下文模块——
+// 它此前**零调用点**，于是 LAYER_BAND 停在 14 层而规格已到 18 层，无人发现。
+import { LAYER_BAND, verifyBandCoverage } from '../ai/story-state/semantic-context.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -96,6 +101,17 @@ const contLayers = LAYERS.filter((l) => l.capContinuation != null);
 check('D. 声明 capContinuation 的层，其 continuation 上限 ≥ 常规 cap',
   contLayers.every((l) => l.capContinuation >= l.cap),
   contLayers.map((l) => `${l.id}: ${l.cap}→${l.capContinuation}`).join(', '));
+
+// ── E. 层规格 ↔ 优先级带：两个方向都要核 ────────────────────────────────
+// 为什么挂在这里：本文件管的就是"规格类常量不得各写一份"，而优先级带是层规格的**第二张表**。
+// 判据本身（verifyBandCoverage）早就写好了，只是从来没有调用点——护栏不接线等于没写：
+// 实测它一被接上，就报出 LAYER_BAND 停在 14 层、而规格已到 18 层（缺 library/edit_rules/author_intent）。
+const bandCheck = verifyBandCoverage(LAYERS.map((l) => l.id));
+check('E. 每一层都有优先级带归属（缺一层即失败）', bandCheck.ok,
+  bandCheck.problems.map((p) => `${p.code}:${(p.ids || []).join('/')}`).join('; '));
+// 反向核对：带表里不得残留规格中已不存在的层（删层后忘删归属，判据会开始描述一个不存在的世界）
+const staleBands = Object.keys(LAYER_BAND).filter((id) => !LAYERS.some((l) => l.id === id));
+check('E. 优先级带里没有规格中已不存在的层（反向核对）', staleBands.length === 0, staleBands.join(', '));
 
 console.log(`\n══════════════════════════════`);
 console.log(`层规格常量单点核对：通过 ${pass} / 失败 ${fail}`);

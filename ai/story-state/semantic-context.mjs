@@ -33,7 +33,15 @@ export const PRIORITY_BANDS = [
 export const BAND_IDS = PRIORITY_BANDS.map((b) => b.id);
 const RANK = Object.fromEntries(PRIORITY_BANDS.map((b) => [b.id, b.rank]));
 
-/** 既有 14 层 → 优先级带。**每个既有层都必须有归属**（缺一个会在单元测试里报出来）。 */
+/**
+ * 层规格里的每一层 → 优先级带。**每一层都必须有归属**——缺一个会被
+ * `.p1-baseline/verify-layer-constants.mjs` 的 E 组派生断言当场报出来。
+ *
+ * ⚠️ 2026-10-08 订正：这张表此前停在 14 层，而 `layers.mjs` 早已加到 18 层，
+ * 缺的 `library` / `edit_rules` / `author_intent` 三层**长期无人发现**——
+ * 因为唯一能发现它的判据 `verifyBandCoverage()` 从来没有被调用过
+ * （"实现了没启用"的典型；同一条教训：护栏写了不接线，等于没写）。
+ */
 export const LAYER_BAND = {
   work: 'current_state',
   outline: 'background',
@@ -50,6 +58,11 @@ export const LAYER_BAND = {
   terms: 'background',
   redlines: 'hard_constraint',
   story_state: 'chapter_contract',
+  // 门控层（作品显式打开开关后才存在）同样要有归属，否则"带序表与层表脱节"
+  // 会等到开关被打开的那一刻才暴露。
+  library: 'high_relevance_recall',   // 只在命中时才占位置，与召回同性质
+  edit_rules: 'hard_constraint',      // 保护规则/档位：写错就是违反作者意图
+  author_intent: 'hard_constraint',   // 作者长期方向与本章意图；hard_constraint 的定义即"写错就是违反作者意图"
 };
 
 /** story_state 层的子块（顺序即渲染顺序，内部按带序排列）。 */

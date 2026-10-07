@@ -236,6 +236,20 @@ async function main() {
     record('F17 不给章号时只跑作品级检查（不产出空章号键）',
       g9.status === 200 && !(g9.json?.findings || []).some((f) => String(f.entity_id || '').endsWith(':')),
       `findings=${(g9.json?.findings || []).map((f) => f.key).join(',') || '（无）'}`);
+    // 2026-10-08 审计：`continuity_thresholds:<workId>` 此前**只有读、没有写**，
+    // 而 docs 一直告诉作者"改它就行、不需要改代码"——承诺与产品不一致。这里钉住写入口的语义与边界。
+    const g10 = await api('POST', '/api/novel/continuity_thresholds', { body: { work_id: wid, thresholds: { plotlineStallChapters: 2, systemMentionMax: 6 } } });
+    record('F18 阈值写入生效，且回传清洗后的落库值',
+      g10.status === 200 && g10.json?.thresholds?.plotlineStallChapters === 2 && g10.json?.thresholds?.systemMentionMax === 6,
+      JSON.stringify(g10.json?.thresholds));
+    const g11 = await api('POST', '/api/novel/continuity_thresholds', { body: { work_id: wid, thresholds: { plotlineStallChapters: 0, systemMentionMax: -5, 未登记键: 9 } } });
+    record('F19 只收白名单键与 >0 整数（0 / 负数 / 未登记键一律丢弃）',
+      g11.status === 200 && Object.keys(g11.json?.thresholds || {}).length === 0,
+      JSON.stringify(g11.json?.thresholds));
+    const g12 = await api('POST', '/api/novel/continuity_thresholds', { body: { work_id: wid, thresholds: { systemMentionMax: 6 } }, headers: { 'X-Novel-Agent': '1' } });
+    record('F20 模型通道改判据一律 403（阈值是作者口径）', g12.status === 403, `status=${g12.status}`);
+    const g13 = await api('POST', '/api/novel/continuity_thresholds', { body: { thresholds: { systemMentionMax: 6 } } });
+    record('F21 阈值缺 work_id 400', g13.status === 400);
   }
 
   console.log('\n== G. 搜索 / 统计 / 导入导出 ==');

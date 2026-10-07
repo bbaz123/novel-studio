@@ -104,6 +104,14 @@ POST /api/novel/continuity_exemption
      body: { work_id, key, action: 'exempt'|'restore', reason? }
      resp: { ok, action, key, keys }
      400：缺 work_id / 缺 key
+
+POST /api/novel/continuity_thresholds            # 作者口径；模型通道一律 403
+     body: { work_id, thresholds: { plotlineStallChapters?, systemMentionMax? } }
+     resp: { ok, work_id, thresholds }           # 回传**清洗后**的实际落库值
+     400：缺 work_id
+     # 只白名单判据真正消费的两个键，且只接受 >0 的整数——与 ai/continuity-guard.mjs 的
+     # "Number(x) > 0 才算覆盖、否则回默认值"同一口径，避免把永远不生效的值写进设置。
+     # ⚠️ 诚实标注：本版**只有接口、没有界面入口**（作者要改仍需手动发一次请求）。
 ```
 
 `key` 由**服务端**算好下发（`findingKey`）：键的定义只在 `ai/continuity-guard.mjs` 一处，

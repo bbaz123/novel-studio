@@ -2804,6 +2804,23 @@ function setContinuityExemptions(workId, map) {
   setAppSettingDb(`${CONTINUITY_EXEMPTIONS_PREFIX}${Number(workId)}`, JSON.stringify(map && typeof map === 'object' ? map : {}));
 }
 function getContinuityThresholds(workId) { return readWorkScopedSetting(CONTINUITY_THRESHOLDS_PREFIX, workId); }
+// 阈值与豁免**必须成对**：豁免（作者判定"这条是故意的"）一直有写入口，阈值却只有读——
+// 而 `docs/continuity-guard.md` 与 `docs/pending-decisions.md` 都告诉作者
+// "改 continuity_thresholds:<workId> 就行，**不需要改代码**"。文档承诺了、产品没有入口，
+// 于是"改口径"实际只剩手工改 SQLite 一条路（2026-10-08 审计发现的唯一确诊死开关）。
+// 只白名单判据真正消费的两个键，且只接受 >0 的整数——与 `ai/continuity-guard.mjs` 的
+// "Number(x) > 0 才算覆盖、否则回默认"同一口径，避免存进一个永远不生效的值。
+const CONTINUITY_THRESHOLD_KEYS = ['plotlineStallChapters', 'systemMentionMax'];
+function setContinuityThresholds(workId, input) {
+  const src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const clean = {};
+  for (const key of CONTINUITY_THRESHOLD_KEYS) {
+    const n = Number(src[key]);
+    if (Number.isFinite(n) && n > 0) clean[key] = Math.round(n);
+  }
+  setAppSettingDb(`${CONTINUITY_THRESHOLDS_PREFIX}${Number(workId)}`, JSON.stringify(clean));
+  return clean;
+}
 
 // 预检模块要的是"两个查询函数"（不 import db，保持可离线单测）；这里就是唯一接线点。
 // 签名与 node:sqlite 的 prepare().all/get 一致，于是脚本侧能直接塞只读连接的同名函数。
@@ -8563,6 +8580,17 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     else map[key] = { reason: asString(body.reason, '').slice(0, 200), at: now() };
     setContinuityExemptions(workId, map);
     return sendJSON(res, 200, { ok: true, work_id: workId, action: body.action === 'restore' ? 'restore' : 'exempt', key, keys: Object.keys(map) });
+  }
+  // 阈值：与豁免同口径（作者口径，模型通道一律 403）。读路径不新增——`continuity_guard`
+  // 的响应里已经带 `thresholds`（作者界面因此本来就能看到当前值），这里只补上写入口。
+  if (resource === 'novel' && segments[2] === 'continuity_thresholds' && method === 'POST') {
+    if (isAgentRequest(req)) return sendError(res, 403, '连续性阈值是作者口径：不接受 X-Novel-Agent（模型不能自行改判据）');
+    const body = await readBody(req);
+    const workId = Number(body.work_id);
+    if (!workId) return sendError(res, 400, '缺少 work_id');
+    // 只回传清洗后的实际落库值：让调用方看得见"哪些键被丢了、为什么"，
+    // 而不是回一个假的 ok 让它以为设置生效了。
+    return sendJSON(res, 200, { ok: true, work_id: workId, thresholds: setContinuityThresholds(workId, body.thresholds) });
   }
   if (resource === 'novel' && segments[2] === 'events' && method === 'GET') {
     const workId = Number(query.work_id);
