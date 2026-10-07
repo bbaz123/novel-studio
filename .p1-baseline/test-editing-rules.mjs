@@ -289,10 +289,47 @@ try {
     'character-voice': '能力·角色声音',
     'chapter-hook': '能力·章末钩子',
     'style-density': '能力·结构密度',
+    // 2026-10-08 第四批新增三项（同一次错误又发生了一遍：
+    // 加了能力没加 fixture → C0 报"少一项"、三条 C 断言以"能力没进块"的假象变红）。
+    'number-lock': '能力·数值一致性',
+    'scene-bridge': '能力·转场桥',
+    'promise-identity': '能力·体系辨识度',
+    // 2026-10-08 第五批新增一项 —— 这是同一个错误在**同一个文件里第三次**发生
+    // （2026-10-02、2026-10-08 第四批、2026-10-08 第五批）。注释拦不住人，靠下面的 C0b/C0c：
+    // 前两次只留了注释，第三次照样漏。真正起作用的是"派生式护栏 + 跑一遍"。
+    'story-shape': '能力·叙事结构',
   };
   ok('C0 逐项 fixture 覆盖目录全部能力（少一项就会以"没进块"的假象变红）',
     ABILITIES.every((a) => typeof abilityTexts[a.id] === 'string') && Object.keys(abilityTexts).length === ABILITIES.length,
     JSON.stringify({ abilities: ABILITIES.length, fixtures: Object.keys(abilityTexts).length }));
+  // C0c（2026-10-08 第五批）：目录里的 `id` 与它的规则正文必须对得上。
+  // C0b 只能验证"fixture 的文案在正文里"，验不了"正文里的能力名与 id 一致"——
+  // 若有人把 `rule` 写成 `能力·叙事结构` 但 id 取 `story-shape-2`，C0b 照样绿。
+  // ⚠️ 口径必须比"name 前缀完全相等"松：目录里有两条既有能力的 name 带后缀或长于正文
+  //（`去 AI 腔（Humanizer）` 对正文 `能力·去 AI 腔`、`结构密度审视` 对正文 `能力·结构密度`），
+  // 用相等口径会把它们误判成漂移（本条护栏第一版就是这么错的，用 14 项真实目录当场抓出）。
+  // 正确的本意是：**正文里的能力名前 2 字必须与 name 的前 2 字一致**。
+  // 逐个放宽到"完全包含"会再次误判（`结构密度审视` 不在正文 `能力·结构密度` 里——
+  // 第二版口径就是这么错的），所以取"最短可辨前缀"这个更诚实的判据：
+  // 它挡得住 id/名字/正文三者真正错位，又不强求两处文案逐字相同。
+  const idNameMismatch = ABILITIES.filter((a) => {
+    const name = String(a.name).replace(/（[^）]*）|\([^)]*\)/g, '').trim();
+    const head = (String(a.rule).match(/^能力·([^：:（(]{2,})/) || [])[1] || '';
+    return name.length < 2 || head.slice(0, 2) !== name.slice(0, 2);
+  }).map((a) => `${a.id}: name「${a.name}」与规则正文开头对不上`);
+  ok('C0c 每条能力的「能力·<name>」真的出现在它自己的规则正文开头（防止 id/名字/正文三者漂移）',
+    idNameMismatch.length === 0, JSON.stringify(idNameMismatch));
+  // C0b（2026-10-08 加的**派生式**护栏，专治"手写清单漏项"这一类反复出现的缺陷）：
+  // 不再只数条数，而是要求 fixture 值真的出现在**真实目录**的能力规则正文里。
+  // 这样"加了能力忘了加 fixture"会当场变红，而且不会因为两份手写清单**恰好同样漏了一项**而假绿
+  // （那正是 C0 只比长度时的失效方式：abilities=13 / fixtures=10 能红，但如果两边都漏同一项就没事）。
+  // ⚠️ 口径是**包含**而不是相等：目录里有的规则名带括号说明（`能力·叙述距离（谁的视角、…）`），
+  // 而 `【${ability.name}】` 用的是短名 `叙述距离` —— 相等口径会把两条既有能力误判成不一致
+  //（本条判据的第一版就是这么错的，用 13 项真实目录当场抓出）。
+  const notInRule = ABILITIES.filter((a) => !String(a.rule).includes(abilityTexts[a.id] || '\u0000'))
+    .map((a) => `${a.id}: fixture「${abilityTexts[a.id]}」不在规则正文里`);
+  ok('C0b fixture 的文案真的出现在目录里对应能力的规则正文中（派生自查，防两份手写清单同时漏项）',
+    notInRule.length === 0, JSON.stringify(notInRule));
   // 只挂 review 的能力：C 段必须用 review 任务跑，否则决策是 task_not_applicable（那是 A8 的管辖范围）
   const reviewOnly = new Set(ABILITIES.filter((a) => !(a.tasks || []).includes('write')).map((a) => a.id));
   for (const ability of ABILITIES) {

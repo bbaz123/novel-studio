@@ -8789,7 +8789,14 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       story_memory: memoryForChecklist,
       style_positive: asString(work?.style_positive, ''),
       registered_names: registeredNames,
-      style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) }
+      style_scan: { total: scan.reduce((s, h) => s + h.count, 0), hits: scan.slice(0, 20) },
+      // 2026-10-08（第五批）：叙事结构诊断 —— **只追加字段**，现有字段与输出契约不变。
+      // 与 style_scan 的区别：style_scan 数的是"红线词命中几次"，这个字段回答的是
+      // "本章的**结构**有没有机械化"（同形流程在第几段、时间锚点几个、谁在当布景、镜头词有没有越界）。
+      style_diagnosis: narrativeStyleDiagnosis(text, {
+        characters: allCharRows.map((c) => ({ id: c.id, name: c.name })),
+        genre: String(work?.genre || 'general'),
+      }),
     };
     if (cursor) {
       checklist.story_memory_note = '启用时态引擎：无章节归属的全书摘要不进核对清单（可只读查看，或经存量重建后再用）';
@@ -9782,6 +9789,47 @@ setInterval(() => {
     sweepIdleOperations();
   } catch (_) { /* 收尾失败不影响服务 */ }
 }, 200).unref();
+
+/**
+ * 叙事结构诊断（2026-10-08 第五批）：把"结构层机械感"从**能力文本**变成**可定位的事实**。
+ *
+ * 为什么单独做（而不是直接复用 /api/novel/editing/scan 的 abilities 输出）：
+ *   · 那个端点只扫描**作者已启用**的能力；结构判据在默认状态下是关闭的，于是这里会永远返回空；
+ *   · 而"本章有几段同形流程、在哪几段"是一个**描述性事实**，与作者开没开某个能力无关
+ *     （与 scanned.promise / scanned.style_shape 同一条纪律）。
+ * 因此这里显式打开 story-shape 跑一次，把结果**只报告**出去：不返回"应当改成什么"。
+ * 解释句 / 否定式解释两项刻意留 `null` —— 它们需要语义判断，由 novel_consistency 的清单项
+ * 交给模型回答，机器不越权（这正是本仓库一直坚持的确定性 / 语义分工）。
+ *
+ * ⚠️ 必须定义在模块作用域（不是某个 handler 块内部）：它同时被 consistency 端点使用，
+ * 放在 handler 里会变成非法嵌套（第一次改就是这么错的）。
+ */
+function narrativeStyleDiagnosis(text, { characters = [], genre = 'general' } = {}) {
+  const scanned = scanEditing(String(text || ''), { abilities: ['story-shape'], genre, task: 'review', characters });
+  const pick = (id) => scanned.findings
+    .filter((f) => f.rule_id === id)
+    .map((f) => ({ paragraph: f.paragraph, message: f.message, excerpt: f.excerpt }));
+  const ss = scanned.scanned.style_shape || {};
+  return {
+    // 与能力开关无关的测量值：界面/工具可以直接显示，不需要作者先开能力。
+    measurements: {
+      timeline_anchors: (ss.timeline && ss.timeline.anchors) || [],
+      timeline_period_count: (ss.timeline && ss.timeline.period_count) || 0,
+      process_shape_clusters: ss.process_shapes || [],
+      crowd_reaction_paragraphs: ss.crowd_reactions || [],
+      camera: ss.camera || { total: 0, outside_media: [] },
+      pov: ss.pov || null,
+    },
+    repeated_mechanism: pick('deterministic:process-shape-repeat'),
+    functional_redundancy: pick('deterministic:crowd-function-repeat'),
+    timeline_density: pick('deterministic:timeline-density'),
+    camera_narration: pick('deterministic:camera-outside-media'),
+    over_explanation: null,
+    negative_explanation: null,
+    note: '本字段只报结构事实与位置（同形流程 / 时间锚点 / 匿名群众反应 / 非转播上下文的分镜词），'
+      + '不返回"应当改成什么"；解释句与否定式解释需要语义判断，不在确定性层。',
+  };
+}
 
 const server = http.createServer(async (req, res) => {
   const startedAt = performance.now();

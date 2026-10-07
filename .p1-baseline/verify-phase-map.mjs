@@ -1107,6 +1107,125 @@ export const PHASES = [
       + ' `public/app.js`、`public/index.html`、`frontend-test.mjs` 与其它阶段共用，故 `rollback = shared`；'
       + ' `public/patch-safety.js` 与交付文档本身可以单独撤回（删文件即回到旧行为）。',
   },
+  {
+    id: 'SE4',
+    title: '2026-10-08 第四批：一致性判据（事实锁 / 跨段整句重复 / 转场桥）+ 保护规则接线 + 允许人味',
+    files: [
+      // —— 本批新增的探针与交付文档（可独立撤回）——
+      '.p1-baseline/probe-fact-lock-20261008.mjs',
+      '.p1-baseline/probe-scan-round4-20261008.mjs',
+      'docs/deai-source-fix-round4-20261008.md',
+      // —— 判据与规则层（本批改动集中在这里；与 SE / R07 / P0 批次共享同一文件，按文件粒度整体回滚）——
+      'ai/editing/rules.mjs',
+      'ai/editing/scan.mjs',
+      'ai/writing/policy.mjs',
+      // —— 能力逐项 fixture 与派生护栏（加了能力必须同步这里，否则 C0 当场变红）——
+      '.p1-baseline/test-editing-rules.mjs',
+      // —— 接线点与版本号 ——
+      'public/patch-safety.js',
+      'public/app.js',
+      'frontend-test.mjs',
+      'package.json',
+      'README.md',
+      'README.zh-CN.md',
+      'docs/CHANGELOG.md',
+      // 阶段映射生成器自身：本阶段新增 SE4 条目（与 G2 / TT / SE 等共享同一文件）。
+      '.p1-baseline/verify-phase-map.mjs',
+    ],
+    evidence: [
+      'docs/deai-source-fix-round4-20261008.md',
+      '.p1-baseline/probe-fact-lock-20261008.mjs',
+      '.p1-baseline/probe-scan-round4-20261008.mjs',
+    ],
+    rollback: 'shared',
+    note: '**只加判据与规则，不改任何模型契约**：补丁 JSON 仍是 `{"patches":[{issue,anchor,revised}]}`，'
+      + ' 审稿 JSON 形状与提示词字段一字未动。本批做的事：'
+      + ' ① `public/patch-safety.js` 升 v1.1.0，新增 `fact_lock_conflict`（**进 HARD_CODES**：同一实体两个编号 /'
+      + ' 同一编号两个主人 / 补丁让有主人的编号整体消失）、`scene_bridge`、`cross_paragraph_duplicate`、'
+      + ' `percent_sum_mismatch`；'
+      + ' ② `ai/editing/scan.mjs` 新增四条判据（其中 `duplicate-sentence` **与能力开关无关**）'
+      + ' 与 `scanned.promise` 测量值；`ai/editing/rules.mjs` 升 v1.3.0，新增'
+      + ' `number-lock / scene-bridge / promise-identity` 三项**默认关闭、只报告**的能力，'
+      + ' `PROTECTION_RULES` 增第 8 条（数字锁）与第 9 条（转场桥）；'
+      + ' ③ **接线**：保护规则此前只被 `task:"write"` 的上下文层使用，润色与两条修稿提示词从没收到过它 ——'
+      + ' 现在注入 `buildAIPolishMessages / buildAIRevisionPatchPrompt / buildAIRevisionPrompt`，'
+      + ' 与 `edit_rules_enabled` 无关（保真底线不是创作偏好）；'
+      + ' ④ `ai/writing/policy.mjs` 增 `allow_human_slack`（成文/扩写）与 `protect_human_slack`（修稿）'
+      + ' 一对偏好，**不加配额**（配额化即 AI 味的结构性来源）；`public/app.js` 的兜底常量同文同步。'
+      + ' 证据：`node .p1-baseline/probe-fact-lock-20261008.mjs`（25/25）、'
+      + ' `node .p1-baseline/probe-scan-round4-20261008.mjs`（20/20，语料是作者真实的两版正文）、'
+      + ' `node frontend-test.mjs` ALL PASS（含新增 118a–118n）。'
+      + ' 本轮抓出并修掉七个自身缺陷（两遍 `labelFromWindow` 覆盖、编号前置式不认、后缀取错位置、'
+      + ' 百分比正则在小数上错配、稀有度词重叠计数、外景词含单字"下"、百分比容差过松），逐条留痕在交付文档里。'
+      + ' `public/app.js`、`frontend-test.mjs`、`ai/editing/*`、`ai/writing/policy.mjs` 与其它阶段共用，'
+      + ' 故 `rollback = shared`；两个探针脚本与交付文档本身可以单独撤回。',
+  },
+  {
+    id: 'SE5',
+    title: '2026-10-08 第五批：叙事结构机械感（同形流程 / 时间轴 / 群众反应 / 镜头越界）+ P0 场景要求矛盾修复',
+    files: [
+      // —— 本批新增的探针、语料与交付文档（可独立撤回）——
+      '.p1-baseline/probe-story-shape-20261008.mjs',
+      '.p1-baseline/calibrate-story-shape-20261008.mjs',
+      '.p1-baseline/fixtures/ch1-juexingri-v1.txt',
+      '.p1-baseline/fixtures/ch1-juexingri-v2.txt',
+      'docs/deai-source-fix-round5-20261008.md',
+      // —— 判据与规则层 ——
+      'ai/editing/scan.mjs',
+      'ai/editing/rules.mjs',
+      'ai/writing/policy.mjs',
+      // —— 能力逐项 fixture 与派生护栏 ——
+      '.p1-baseline/test-editing-rules.mjs',
+      // —— 提示词接线（P0 根因在这里）与接口字段 ——
+      'public/app.js',
+      'server.js',
+      'harness-plugins/novel-writing/agent.cordis.yml',
+      'harness-plugins/novel-writing/novel-tools.mjs',
+      'frontend-test.mjs',
+      'package.json',
+      'README.md',
+      'README.zh-CN.md',
+      'docs/CHANGELOG.md',
+      // 阶段映射生成器自身：本阶段新增 SE5 条目。
+      '.p1-baseline/verify-phase-map.mjs',
+    ],
+    evidence: [
+      'docs/deai-source-fix-round5-20261008.md',
+      '.p1-baseline/probe-story-shape-20261008.mjs',
+      '.p1-baseline/calibrate-story-shape-20261008.mjs',
+    ],
+    rollback: 'shared',
+    note: '**只加判据与字段、不改任何模型契约**：修稿补丁 JSON 仍是 `{"patches":[{issue,anchor,revised}]}`，'
+      + ' `novel_consistency` 的返回是**追加** `checklist.style_diagnosis`（现有字段一字未动）。本批做的事：'
+      + ' ① **P0 根因**：`buildAIWritingProsePrompt` 里"每个场面必须有明确地点/人物/动作/冲突，再补环境、动作、心理、对话与节奏"'
+      + ' 与写作策略源 `avoid_repeated_full_mechanism`（同一机制不要完整复现第二遍）**直接冲突** ——'
+      + ' 模型只能选后者，这就是"觉醒检测流程完整演示 4 次"的来源；改为**功能驱动**（关键场面展开／过渡场面可略写／'
+      + ' 同类流程第二次只写结果差异与反应／第一次要写足）。'
+      + ' ② `ai/editing/scan.mjs` 新增 `scanStoryShape` 与常驻测量值 `scanned.style_shape`（**与能力开关无关**）：'
+      + ' 时间锚点（含"绑定钟点才算推进""时长不算""纯参照不算"三条筛）、同形流程簇、匿名群众反应段、'
+      + ' 非转播上下文的镜头词、主视角看/听与主动动作比值；'
+      + ' `ai/editing/rules.mjs` 升 v1.4.0，新增 `story-shape`（默认关闭、只报告），`PROTECTION_RULES` 增第 10 条'
+      + '（同类机制只完整演示一次，**第一次必须保留**）；'
+      + ' ③ `ai/writing/policy.mjs` 升 2026-10-08.2，只补**真正缺的**三条（`first_showing_stays_complete`、'
+      + ' `prefer_progressive_revelation`、`prefer_result_over_repeated_process`）与 `diag_timeline_density`；'
+      + ' 方案原列的其余 6 条诊断与 3 条偏好**已存在**（`diag_repeated_mechanism`／`diag_functional_redundancy`／'
+      + ' `diag_negative_explanation`／`diag_over_explanation`／`allow_human_slack`／`protect_human_slack`／'
+      + ' `avoid_repeated_full_mechanism`），故不新建 —— 同一判据两份文本必然漂移；'
+      + ' ④ `server.js` 的 `/api/novel/consistency` 追加 `checklist.style_diagnosis`（自己显式打开 story-shape 跑一次，'
+      + ' 不依赖作者是否启用了该能力），`novel-tools.mjs` 渲染为第 ⑨ 项自检 + 结构诊断区块，'
+      + ' `agent.cordis.yml` 只追加**一条总原则**（控制规则数量，不加几十条）。'
+      + ' 证据：`node .p1-baseline/probe-story-shape-20261008.mjs`（41/41，语料是作者真实的两版正文，'
+      + ' 含正例/负例/静默姿态三类断言）、`node .p1-baseline/calibrate-story-shape-20261008.mjs`（阈值实测来源）、'
+      + ' `node .p1-baseline/test-editing-rules.mjs`（含新增派生护栏 C0c）。'
+      + ' 本轮在**真实语料上**抓出并修掉六处判据缺陷（时长守卫误删真锚点、`vagueOnlyRe` 被定义却从未使用、'
+      + ' 同段两时间词误判过密、镜头上下文只看前一段、`MEDIA_CONTEXT_RE` 自我实现、'
+      + ' 群众反应按动词分簇导致正例漏报），逐条留痕在交付文档里。'
+      + ' `public/app.js`、`server.js`、`frontend-test.mjs`、`ai/editing/*`、`ai/writing/policy.mjs`、'
+      + ' 两个 harness 插件文件与其它阶段共用，故 `rollback = shared`；探针、语料与交付文档可单独撤回。'
+      + ' ⚠️ 已知边界：本章可复算的"同形流程再现"只有 2 组（不是审稿人目测的 4 次完整复现），'
+      + ' 时间锚点 4–5 个、匿名群众反应 1 段、镜头越界 0 段 —— 即 S1/S3/S5 在本章是**倾向**而非硬性缺陷，'
+      + ' 判据据此保持静默（零误报纪律），这是刻意的能力边界而非漏检。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

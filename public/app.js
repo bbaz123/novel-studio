@@ -5248,7 +5248,7 @@ function renderEditRulesCard() {
         <button class="btn small secondary" data-action="scan-edit-rules" title="按已启用能力对当前章节做确定性检查（不调用模型、不花额度）">🔍 扫描本章</button>
         <button class="btn small" data-action="save-edit-rules">保存编辑规则</button>
       </div>
-      <div class="muted" style="font-size:12px">默认关闭；关闭时这些规则**不进入**发给模型的提示词（旧作品行为不变）。打开后规则块进入上下文，并在「运行追踪 / 上下文贡献记录」里留下版本与内容 hash。</div>
+      <div class="muted" style="font-size:12px">默认关闭；关闭时这些规则**不进入**发给模型的提示词（旧作品行为不变）。打开后规则块进入上下文，并在「运行追踪 / 上下文贡献记录」里留下版本与内容 hash。保护规则（保真底线）是例外：它**始终**会随润色 / 修稿提示词下发——"改错编号、删掉转场句"不属于创作偏好。</div>
       <label class="row mt-8"><input type="checkbox" id="edit-rules-enabled" ${sel.enabled ? 'checked' : ''}> 启用编辑规则块（会进入写作请求）</label>
       <div class="row mt-8" style="flex-wrap:wrap;gap:18px;align-items:flex-start">
         <div>
@@ -9600,9 +9600,49 @@ async function longTextRunTask(kind, opts) {
   };
 }
 
+/**
+ * 取「编辑保护规则」的正文（所有档位/能力共用的保真底线）。
+ *
+ * 为什么要有这个函数（2026-10-08，第四批 · 复核稿的第一号缺口）：
+ *   `ai/editing/rules.mjs` 的 PROTECTION_RULES 第 2 条明文保护"数字与专有名词"、
+ *   第 6 条"有功能的重复不得机械删除"，而它**只被 task:'write' 的上下文层使用**
+ *   （见 server.js 的 buildNovelContext）。也就是说：**润色与改稿这两条真正会改字的通道
+ *   上，保护规则从来没有下发过。** 这正是 `1738` 被单点改成 `1736`、整句被复制
+ *   却一路活到成稿的直接原因（规则写了，但没接到会改字的路上）。
+ *
+ * 取值走已有接口：state.editRules 优先，没有就现取一次（/novel/editing 对模型侧是只读开放的，
+ * 不新增接口、不改权限）。**与开关无关**：`edit_rules_enabled` 控制的是"规则块要不要进生成请求"，
+ * 而保真底线是"任何一次改字都不许改事实"，不存在"关掉就可以改错编号"这种状态。
+ */
+function editingProtectionText() {
+  const fromState = state.editRules && state.editRules.catalog && state.editRules.catalog.protection;
+  if (fromState && fromState.text) return String(fromState.text);
+  // 同步路径拿不到缓存时异步补取，并缓存进 state.editRules（本次调用先用空串，下次就有）。
+  Promise.resolve()
+    .then(() => api('/novel/editing'))
+    .then((data) => {
+      if (!data || !data.catalog) return;
+      const prev = state.editRules || {};
+      state.editRules = { catalog: data.catalog, selection: data.selection || prev.selection || null };
+    })
+    .catch(() => { /* 旧服务端没有该接口：如实降级为"本次没有保护规则"，不假装有 */ });
+  return '';
+}
+
+/** 把保护规则拼进一段提示词（没有规则时如实说明"这一版没有保护规则"）。 */
+function protectionRuleBlock() {
+  const text = editingProtectionText();
+  if (!text) return '【编辑保护规则】本轮未取到规则正文（服务端未提供目录）：按最小改动原则处理，不确定就保留原文。';
+  return text;
+}
+
 function buildAIPolishMessages(text, instruction = '', opts = {}) {
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || {};
-  const system = '你是资深中文网络小说润色编辑。请在不改变原意和剧情的前提下，优化语句通顺度、节奏感和表现力。只输出润色后的正文，不要输出解释。';
+  // ⚠️ 2026-10-08：system 里补上编辑保护规则（此前只有一句"不改变原意和剧情"，
+  // 而规则文件里那些**可执行的**约束——数字锁、有功能的重复不得删除、转场句不能删——
+  // 一条都没进这条通道）。这一段是"润色也会改错事实"这个问题的第一道防线。
+  const system = '你是资深中文网络小说润色编辑。请在不改变原意和剧情的前提下，优化语句通顺度、节奏感和表现力。只输出润色后的正文，不要输出解释。\n\n'
+    + protectionRuleBlock();
   const head = `当前作品：${state.work?.title || ''}
 当前章节：${chapter.title || ''}
 ${instruction ? `润色要求：${instruction}` : ''}`;
@@ -9691,11 +9731,20 @@ const AI_WRITING_CLARIFY_PROMPT = `请你在回答前先向我提问
 // 真源在服务端 `ai/writing/policy.mjs`，经 GET /api/ai/writing-policy 下发。
 // 浏览器脚本无法 import 模块、且本仓库没有构建步骤，因此这里保留**同文兜底**；
 // frontend-test.mjs 有断言逐条比对两侧文本，只改一侧会直接测试失败（防漂移）。
-const WRITING_POLICY_FALLBACK_VERSION = '2026-10-06.2';
+const WRITING_POLICY_FALLBACK_VERSION = '2026-10-08.2';
 const WRITING_POLICY_FALLBACK_RULES = [
   { id: 'length_is_advisory', type: 'preference', scopes: ['blueprint', 'draft', 'expand', 'rewrite'], priority: 70, text: '目标字数是范围参考，不是配额。篇幅不足但剧情已经完整时，允许按已成立的章尾收笔，不要为凑字数强行往下续写。' },
+  // 2026-10-08（作者明确要求）：允许 AI 带一点人工作者的坏习惯（与 ai/writing/policy.mjs 同文，P0-4b 逐条比对）。
+  { id: 'allow_human_slack', type: 'preference', scopes: ['draft', 'expand'], priority: 58, text: '允许保留人类作者会有的松弛：可以有一小段不推进剧情、只是过场或闲聊的内容；人物可以把已经表达过的立场再说一遍（真人会重复自己）；一段对话不必每句都承担信息。但这不是"必须注水"——**不要**为了凑这种效果刻意加水，也不要把每一段都拉长；松弛与紧凑的差别正是真人写作的节奏波动。判断标准是"这一段读起来像有人写的，还是像按功能清单填的"。' },
+  { id: 'protect_human_slack', type: 'preference', scopes: ['rewrite'], priority: 66, text: '修稿时不要把人味当冗余删掉：一段没有推进剧情但读起来自然的过场与闲聊、人物重复说过一次的立场、与主线无关的一句寒暄，可能正是这一章的节奏来源。只有当你**能指出**它前后已经用同样力道表达过同一件事、且删掉不影响读者理解时，才作为"低价值重复证据"处理；拿不准就保留。' },
   { id: 'scene_count_no_quota', type: 'preference', scopes: ['blueprint', 'draft'], priority: 65, text: '场面数量按剧情需要决定：可以只有一个值得展开的场面，也可以有多个；不要靠增加场景或情节点凑字数，也不要把篇幅平均分配给每个场面。' },
   { id: 'avoid_repeated_full_mechanism', type: 'preference', scopes: ['draft', 'rewrite', 'expand'], priority: 60, text: '同一机制已经完整展示过后，再次出现时优先写差异、结果或人物反应，不要自动完整复现一遍。' },
+  // 2026-10-08（第五批，与 ai/writing/policy.mjs 同文）：叙事结构层三条。
+  // 与上一条成对：上一条管"别再演示一遍"，这一条管"第一遍要留住"——缺了它，模型会在
+  // "避免重复"的压力下把首次完整展示一起压掉，读者就学不会这套机制了。
+  { id: 'first_showing_stays_complete', type: 'preference', scopes: ['draft', 'rewrite', 'expand'], priority: 62, text: '同类机制**第一次**出现时把过程写足（读者需要这一次才能理解规则），后面再出现只写变化；不要为了"避免重复"把第一次也压缩掉——那样第二次的差异就没有参照了。判断法：把第一遍压成一句话，读者还知不知道这套机制怎么运作？不知道就别压。' },
+  { id: 'prefer_progressive_revelation', type: 'preference', scopes: ['blueprint', 'draft'], priority: 57, text: '世界观随事件**渐进揭示**：等级、规则、术语优先让读者从当场发生的事里自己连线（谁出了什么等级、旁人怎么反应、屏幕打了什么字），而不是先集中解释一遍再让事件来印证。本章不出现的档位/设定就不必交代，留到它第一次真正出场时交给读者去感知。注意：这不是"不许解释"——当一条规则不解释读者就会误解时，解释是必要的；要避免的是"把整套体系一次性说明白"。' },
+  { id: 'prefer_result_over_repeated_process', type: 'preference', scopes: ['draft', 'rewrite', 'expand'], priority: 59, text: '同一类事第二次发生时，默认写**结果与差异**（这次和上次哪里不一样、人物因此怎么想），不复述过程步骤；只有当这一次带来新规则、新异常、新风险或新人物关系时，才重新展开过程。' },
   { id: 'system_airtime_no_quota', type: 'preference', scopes: ['draft'], priority: 55, text: '系统按本章剧情需要出场，不设次数配额；每次发言都应带来新信息或改变人物处境，纯播报式【】不要占多数。' },
   { id: 'allow_omission', type: 'preference', scopes: ['blueprint', 'draft'], priority: 50, text: '存在一个事件不等于必须形成完整场景；存在一个情绪不等于必须配一个动作；存在群众不等于必须给群众反应；存在重要角色不等于登场时必须突出。允许略写、跳过、沉默与突然结束。' },
   { id: 'scene_detail_budget', type: 'preference', scopes: ['blueprint', 'draft'], priority: 63, text: '动笔前先回答“这个场景值得把叙述资源花在哪里”：先定它的主要功能（建立哪条信息、哪段关系、哪种处境），次要项可以略写或跳过；不设细节数量、字数比例或固定配比。' },
@@ -9711,7 +9760,8 @@ const WRITING_POLICY_FALLBACK_RULES = [
   { id: 'diag_functional_redundancy', type: 'diagnostic', scopes: ['verify_style'], priority: 61, text: '句子虽然不同，是否承担完全相同的叙事功能（有人摇头 / 有人议论 / 有人惋惜，都在证明“大家觉得可惜”）？按功能判断，不要只查重复句式。' },
   { id: 'diag_false_foreshadow', type: 'diagnostic', scopes: ['verify_fact'], priority: 58, text: '疑似伏笔、未知等级、暂未解释的异常，是“有意留白”还是“为显得神秘而塞入、却没有后续意义”？本章判不出来就归入 deferred 待后续章节核验，不要写成硬伤、也不要当作设定冲突。' },
   { id: 'diag_negative_explanation', type: 'diagnostic', scopes: ['verify_style'], priority: 52, text: '“没说 / 没问 / 没解释 / 没有别的 / 没再看”这类否定式短句，是否连续承担“作者不直接总结、但仍在解释人物心理”的功能？只在明显重复时提示，不设禁词。' },
-  { id: 'diag_detail_function_density', type: 'diagnostic', scopes: ['verify_style'], priority: 48, text: '这个细节除了当前作用，是否还有第二作用（同时推进人物、关系或处境）？只有“功能单一且已被别处证明”的细节才提示为可删或可合并，不要机械打分。' }
+  { id: 'diag_detail_function_density', type: 'diagnostic', scopes: ['verify_style'], priority: 48, text: '这个细节除了当前作用，是否还有第二作用（同时推进人物、关系或处境）？只有“功能单一且已被别处证明”的细节才提示为可删或可合并，不要机械打分。' },
+  { id: 'diag_timeline_density', type: 'diagnostic', scopes: ['verify_style'], priority: 53, text: '时段型时间锚点（早上/上午/中午/下午/傍晚/天黑这类，含绑定的钟点）是否过密，以及**每个锚点是否承担了新的剧情功能**——如果某个锚点只是告诉读者"又换了个时段"而没有带来新事件，它是可以删掉的。只提示密度与位置，不设"最多几个"的上限：一整天的时间跨度本来就该有多个锚点。' }
 ];
 
 // 取规则：优先用服务端快照，取不到时退回同文兜底。规则里 `text` 是唯一展示源。
@@ -9759,7 +9809,14 @@ const WRITING_DISCIPLINE = [
   '7. 过渡动作（慢慢点头 / 沉默片刻 / 深吸一口气 / 皱眉 / 苦笑这一级）本身没错，但不能当节拍器用：一需要"停一下"就来一个，节奏会显得是按模板补拍的。同一个动作在本章写到第二遍基本不再提供新信息；要保留两处，第二处换一件与当下目标有关的具体事，而不是换个副词。判断法：删掉它，读者得到的信息没有减少、只是少了一次停顿——那它就是填充。',
   '7b. 身体小动作不是情绪词库：手、嘴、眼、后颈、裤腿等部位不要轮流各来一次。一个动作只有在改变信息、关系或选择时才保留；否则直接写结果或潜台词。',
   '8. 物件方位要自洽：一件道具在章内只允许有一个明确位置（哪个包、哪一层、哪个口袋）。写了"再往里摸 / 更深的地方"，就要先交代那一层是什么（例如"主袋里侧还有个夹层"），后文一律按这个位置说，不要在两层之间漂移。',
-  '9. 细节经济：同一个编号/纸条/道具不要被反复"调出来用"。首次出现可以写足（材质、笔画、毛边都行），之后每次回想只保留**关键连接**（"纸条上那四个数字，和短信前面那四个一样"就够了），不要重新描述一遍外观。'
+  '9. 细节经济：同一个编号/纸条/道具不要被反复"调出来用"。首次出现可以写足（材质、笔画、毛边都行），之后每次回想只保留**关键连接**（"纸条上那四个数字，和短信前面那四个一样"就够了），不要重新描述一遍外观。',
+  // 2026-10-08（第五批，作者对第一章结构层审稿的总原则）：
+  // "这一章的问题不是词汇层面的 AI 味，而是叙事结构层面的机械感 —— AI 太认真地把所有事情都交代清楚了。"
+  // 这条是**总原则**而不是又一条细则：它管的不是某个词、某个句式，而是"解释冲动"本身。
+  '10. 不要为了证明读者已经理解的事实，再换一种方式解释第二遍。一次强证据成立之后，后续默认只写变化：'
+    + '同类流程第二次出现时只写结果、差异与人物反应；同一件事不要用多个功能相同的细节反复证明；'
+    + '位置、等级、规则交代过一次就够。反过来，**第一次**要写足——读者需要那一次才能理解规则，'
+    + '不要为了"避免重复"把首次展示也一起压掉。'
 ].join('\n');
 
 // 蓝图专用的一条：`references` 是蓝图 JSON 的字段，审稿报告的字段集里没有它 ——
@@ -9853,7 +9910,20 @@ function buildAIWritingProsePrompt(initial, blueprint, targetWords) {
     // 2026-09-21：删掉“推进情节”。它是越界许可证——第 5 章只有一条摘要事件，目标 4000 字的
     // 压力加上这句授权，模型就去借第 7 章的转学动机与第 46～50 章的身份曝光钩子来填篇幅。
     // 缺料只允许在已有情节点内部补细节，不允许新增情节。
-    `【篇幅要求（重要）】整章正文以纯文本计约 ${targetWords} 字（区间 ${Math.max(2000, targetWords - 1000)}～${targetWords + 1000} 字，只作区间参考，不设配额）；把蓝图里的场面写完整：每个场面必须有明确地点、出场人物、身体动作和冲突/转折，再在场面内部补环境、动作、心理、对话与节奏（用具体动作、感官细节替换模板句）。**不得为凑字数新增场景或情节点**，不得引入后续章节的动机、悬念或身份曝光线索，不得新增未登记的具名角色/地点/妖兽；不要提前收尾，也不要注水。`,
+    `【篇幅要求（重要）】整章正文以纯文本计约 ${targetWords} 字（区间 ${Math.max(2000, targetWords - 1000)}～${targetWords + 1000} 字，只作区间参考，不设配额）。`,
+    // 2026-10-08（第五批，P0 根因）：这一句原先写的是"把蓝图里的场面写完整：**每个场面必须有**
+    // 明确地点、出场人物、身体动作和冲突/转折，再在场面内部补环境、动作、心理、对话与节奏"。
+    // 它与写作策略源里的 `avoid_repeated_full_mechanism`（同一机制不要完整复现第二遍）
+    // **直接冲突**：模型同时收到"不要重复机制"和"每个场面都要写完整"，只能选后者——
+    // 这正是作者看到的"觉醒检测流程完整演示 4 次"的来源。改成**功能驱动**：
+    // 场面按它在剧情里的功能决定展开程度，而不是按"是不是一个场面"决定。
+    `【场面写法：功能驱动（不是每个场面都要写满）】`,
+    `- 关键场面展开：写清"发生了什么 / 谁做了什么选择 / 什么发生了变化"。`,
+    `- 过渡场面允许略写、跳过、只写一个结果或一句反应。`,
+    `- 同类流程第二次出现时：不重新完整解释规则，不重新完整演示过程，优先写**结果、差异与人物反应**。`,
+    `- 只有当第二次出现带来新规则、新异常、新人物关系或新风险时，才重新展开过程。`,
+    `- 同一类机制**第一次**出现要写足（读者需要那一次）；不要为了"避免重复"把首次展示也压掉。`,
+    `- **不得为凑字数新增场景或情节点**，不得引入后续章节的动机、悬念或身份曝光线索，不得新增未登记的具名角色/地点/妖兽；不要提前收尾，也不要注水。`,
     // 篇幅/场面等偏好来自统一写作策略源（ai/writing/policy.mjs），不再硬编码在提示词里。
     ...writingPolicyLines('draft'),
     ``,
@@ -10707,6 +10777,8 @@ function buildAIRevisionPrompt(article, issues, opts = {}) {
     '你是资深中文网络小说修稿编辑。请按下面的“作者确认的问题清单”逐条修改正文；清单之外的内容尽量保持原样，不要擅自大改。',
     '只做最小改动：优先删除或合并低价值的重复证据、去掉含义已由动作或对白表达之后的总结句；高辨识度段落（人物独特的应答方式、从安慰自然转到日常关心的对白等）保持原样，不要改写成更完整、更煽情或更工整的版本。',
     '',
+    protectionRuleBlock(),
+    '',
     '【作者确认的问题清单】',
     list,
     '',
@@ -11044,6 +11116,8 @@ function buildAIRevisionPatchPrompt(article, issues, opts = {}) {
   return [
     '你是资深中文网络小说修稿编辑。**只修改下面「作者确认的问题清单」涉及的段落**，其它段落一个字都不要动、也不要输出。',
     '',
+    protectionRuleBlock(),
+    '',
     '【作者确认的问题清单】',
     list,
     '',
@@ -11063,7 +11137,14 @@ function buildAIRevisionPatchPrompt(article, issues, opts = {}) {
     '3. revised 只写改后的段落本身，不要编号、不要解释、不要引号包裹。',
     '4. 某条问题不需要改动就不必为它输出 patch；没有要改的就输出 {"patches":[]}。',
     '5. 只做最小改动：优先删除或合并低价值的重复证据、去掉含义已由动作或对白表达之后的总结句，不要顺手润色高辨识度段落（人物独特的应答方式、从安慰自然转到日常关心的对白等），也不要把它们改写成更完整、更煽情或更工整的版本。',
-    ...(segment ? ['6. patch 的 anchor 只能在【待修正文】（target ' + segment.segment_id + '）里取；不要把上文/下文（context-only）的段落当成 anchor。'] : [])
+    // 2026-10-08（第五批）：把"同类流程只演示一次"做成修稿器**可执行**的取舍。
+    // 只写"不要重复"是不够的——修稿器会连**第一次**那次完整展示也一起压掉，
+    // 而首展是读者学会这套机制的唯一机会（见 PROTECTION_RULES 第 10 条）。
+    '6. 同类机制只完整演示一次：问题清单指出"某类流程重复出现"时，改**第二次及以后**那些段落'
+      + '（只留结果、差异与人物反应），**第一次完整展示的段落必须原样保留**；'
+      + '判断不了哪一次是第一次就不要改这一处，在输出里说明。',
+    '7. 人物对白（尤其承担辨识度的应答）不适用"重复即删"：不得以"重复"为由把对白改平、改短或改成更工整的版本。',
+    ...(segment ? ['8. patch 的 anchor 只能在【待修正文】（target ' + segment.segment_id + '）里取；不要把上文/下文（context-only）的段落当成 anchor。'] : [])
   ].join('\n');
 }
 
@@ -11261,9 +11342,20 @@ function patchSafetyNotesHtml(blocked, findings) {
   const bs = Array.isArray(blocked) ? blocked : [];
   const fs = Array.isArray(findings) ? findings : [];
   if (!bs.length && !fs.length) return '';
-  const blockedHtml = bs.map((b) => `<div class="review-item issue">⛔ 未自动应用：${esc(String((b && b.reason) || ''))}`
-    + `<div class="muted">被拦下的原文：${esc(String((b && b.anchor) || '').slice(0, 50))}</div></div>`).join('');
-  const findHtml = fs.map((f) => `<div class="review-item muted">⚠️ ${esc(String((f && f.reason) || ''))}</div>`).join('');
+  // 事实锁冲突要把**两处位置并列**给作者看（2026-10-08，C2 裁决）：
+  // 只说"编号冲突"等于把排查工作丢回给作者，而复核稿里那次事故正是"1738 被改成 1736、
+  // 与后文 1736号王磊 撞号"——把两处并列出来，作者一眼就能决定改哪一处。
+  const blockedHtml = bs.map((b) => {
+    const conflict = String((b && b.conflict) || '').trim();
+    return `<div class="review-item issue">⛔ 未自动应用：${esc(String((b && b.reason) || ''))}`
+      + (conflict ? `<div class="muted">冲突位置：${esc(conflict)}</div>` : '')
+      + `<div class="muted">被拦下的原文：${esc(String((b && b.anchor) || '').slice(0, 50))}</div></div>`;
+  }).join('');
+  const findHtml = fs.map((f) => {
+    const conflict = String((f && f.conflict) || '').trim();
+    return `<div class="review-item muted">⚠️ ${esc(String((f && f.reason) || ''))}`
+      + (conflict ? `<div class="muted">位置：${esc(conflict)}</div>` : '') + '</div>';
+  }).join('');
   return `<div class="ref-group-title">安全门禁（这些改动没有进这一版正文）</div>${blockedHtml}${findHtml}`;
 }
 
@@ -16734,6 +16826,16 @@ async function init() {
     state.writingPolicy = await api('/ai/writing-policy');
   } catch (_) {
     state.writingPolicy = null;
+  }
+  // 2026-10-08（第四批）：启动时就把编辑规则目录取回来。
+  // 为什么必须在这里取：保护规则要随**润色 / 修稿**提示词下发，而这两条通道可以从编辑器工具栏
+  // 直接触发——作者根本不需要打开「编辑规则」页。此前目录只在 renderEditRulesPage() 里加载，
+  // 于是"开机后第一次润色"拿不到保护规则（编辑保护的真源就在这里），等于判据在那一刻不存在。
+  // 失败同样不阻塞启动：editingProtectionText() 会如实写"本轮未取到规则正文"并异步补取。
+  try {
+    await loadEditRules(true);
+  } catch (_) {
+    state.editRules = null;
   }
   $('#global-search').addEventListener('focus', () => {
     const q = $('#global-search').value.trim();

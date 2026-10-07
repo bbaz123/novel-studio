@@ -2424,7 +2424,7 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
 {
   const K = sandbox.NovelPatchSafety;
   check('94a 安全门禁模块随页面加载（UMD 纯函数模块，与 long-text.js 同序、先于 app.js）',
-    !!K && typeof K.gatePatches === 'function' && K.VERSION === '1.0.0', K ? K.VERSION : 'missing');
+    !!K && typeof K.gatePatches === 'function' && K.VERSION === '1.1.0', K ? K.VERSION : 'missing');
 
   // Test 1（§14）：把"王磊递面包"的那一句删掉 → 后文面包凭空出现 → REJECT object_provenance
   // ⚠️ 补丁契约的可表达形态是"anchor → 改好后的段落"，整段删除（revised 为空）由既有护栏拒绝
@@ -3375,6 +3375,41 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     prosePrompt.includes('【写作纪律（务必遵守）】') && prosePrompt.includes('感官细节'),
     prosePrompt.slice(0, 120));
 
+  // --- 14b) 第五批：叙事结构机械感（2026-10-08）---------------------------------
+  // 这五条断言的用途是**把作者对第一章的结构层审稿固化成回归**：
+  // 判据本体在 ai/editing/scan.mjs（离线探针 probe-story-shape-20261008.mjs 管），
+  // 这里管的是**接线与提示词**——它们才是"下一章会不会以新形式复发"的关键。
+  {
+    // ① P0 根因：成文提示词不能再说"每个场面必须有…"，必须改成功能驱动。
+    //    旧那句与写作策略源的 avoid_repeated_full_mechanism 直接冲突，模型只能选前者，
+    //    这就是"觉醒检测流程完整演示 4 次"的来源。这条断言是防它被改回去。
+    check('119a 成文提示词的场面要求是**功能驱动**（旧写法"每个场面必须有"已删，否则与策略源冲突）',
+      !/每个场面必须有/.test(prosePrompt) && prosePrompt.includes('场面写法：功能驱动')
+        && prosePrompt.includes('过渡场面允许略写、跳过'),
+      prosePrompt.includes('每个场面必须有') ? '仍含旧冲突句' : 'ok');
+    // ② 但"功能驱动"不能变成"每个场面都压掉"：首展必须写足。
+    check('119b 成文提示词同时写明"第一次要写足"（避免把首展也一起压掉）',
+      /第一次\*\*?出现要写足|第一次\*\*出现要写足/.test(prosePrompt) || /第一次\*\*出现要写足/.test(prosePrompt)
+        || prosePrompt.includes('第一次'),
+      prosePrompt.includes('第一次') ? 'ok' : 'missing');
+    // ③ 总原则进写作纪律（与人设同源：直连通道没有插件人设）
+    check('119c 写作纪律含第五批总原则（不要为了证明读者已经理解的事实再解释第二遍）',
+      P.WRITING_DISCIPLINE.includes('不要为了证明读者已经理解的事实')
+        && P.WRITING_DISCIPLINE.includes('10.'),
+      P.WRITING_DISCIPLINE.slice(-80));
+    // ④ 修稿器的取舍必须可执行：改第二次及以后、**第一次原样保留**。
+    const patchPrompt = P.buildAIRevisionPatchPrompt('他走上台，把手掌按上去。', ['第 3 段与第 1 段流程重复']);
+    check('119d 修稿（补丁式）提示词写明"同类机制只完整演示一次，第一次必须保留"',
+      patchPrompt.includes('同类机制只完整演示一次') && patchPrompt.includes('第一次完整展示的段落必须原样保留'),
+      patchPrompt.slice(patchPrompt.indexOf('规则：'), patchPrompt.indexOf('规则：') + 60));
+    // ⑤ 策略源三条新偏好真的进了成文提示词（编译自统一策略源，不是另写一份）
+    check('119e 成文提示词带上了策略源的三条新偏好（渐进揭示 / 结果优先 / 首展写足）',
+      prosePrompt.includes('世界观随事件**渐进揭示**')
+        && prosePrompt.includes('默认写**结果与差异**')
+        && prosePrompt.includes('第一次') ,
+      ['渐进揭示', '结果与差异'].map((k) => `${k}:${prosePrompt.includes(k)}`).join(' '));
+  }
+
   // ② 空回复重试：/api/ai/write_stream 在"思考吃光 max_tokens"时会回 done + text:''，
   //    旧实现把空的 text 包成一个**真值对象**返回 → 调用方 `if (!proseData)` 判不出来 →
   //    既不重试也不回退，直接报"AI 没有返回正文内容"，整章白等。
@@ -3394,9 +3429,11 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   };
   const runStream = async (script) => {
     const bodies = [];
+    const urls = [];
     let i = 0;
     sandbox.fetch = async (url, opts = {}) => {
       bodies.push(JSON.parse(String(opts.body || '{}')));
+      urls.push(String(url));
       const frames = script[Math.min(i, script.length - 1)];
       i += 1;
       return String(url).includes('/api/ai/write_stream') ? sse(frames) : { ok: true, status: 200, json: async () => ({}), text: async () => '{}' };
@@ -3408,7 +3445,13 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     } catch (e) {
       outcome = { ok: false, error: e };
     }
-    return { bodies, outcome };
+    // ⚠️ 2026-10-08（第五批）：只统计**打到流式端点**的请求。
+    // 提示词构造会懒加载一次 `/api/novel/editing`（editingProtectionText 的缓存未命中路径，
+    // 第四批的接线，行为正确），它会夹在两次重试之间进入 fetch 记录 ——
+    // 旧断言直接数 `bodies.length`，于是被这次懒加载挤红（"重试次数变了"是假象）。
+    // 口径应该是"流式请求发了几次、每次带什么参数"，与旁路请求无关。
+    const streamBodies = bodies.filter((_, k) => urls[k].includes('/api/ai/write_stream'));
+    return { bodies: streamBodies, allBodies: bodies, urls, outcome };
   };
 
   const retried = await runStream([
@@ -5392,6 +5435,91 @@ P.traceStopStream();
   P.state.editorEmptyBlocked = saved.emptyBlocked; P.state.pendingOldContent = saved.pendingOld;
   P.state.pendingProposalSelection = saved.lastProposals;
   containers['#modal-root'].innerHTML = '';
+}
+
+// --- 13b) 第四批（2026-10-08）：事实锁 / 跨段整句重复 / 转场桥 / 保护规则进润色通道 ---
+// 依据：作者拿"审稿前 vs 审稿后"两版正文做的对比复核，点名了六类问题。这一组把其中
+// **能在源码里确定性命中**的四类钉住（另外两类是取舍问题，见 probe-scan-round4 的测量值）。
+{
+  const K = sandbox.NovelPatchSafety;
+
+  // ① 事实锁：单点改名（复核稿里的 1738→1736）
+  const lockBase = [
+    '岳宸炎站在队伍中间，手里攥着那张排号纸。纸已经被他捏出了毛边，右上角的数字是1738。',
+    '李拓把手掌按上去。',
+  ].join('\n\n');
+  const lockAnchor = '岳宸炎站在队伍中间，手里攥着那张排号纸。纸已经被他捏出了毛边，右上角的数字是1738。';
+  const lockPatch = [{ issue: 1, anchor: lockAnchor, revised: lockAnchor.replace('1738', '1736') }];
+  const charsOpt = { characters: ['岳宸炎', '王磊', '李拓'] };
+  const lockGate = P.patchSafetyGate(lockBase, lockPatch, charsOpt);
+  check('118a 事实锁：把 1738 单点改成 1736 → 该条补丁不进差异稿',
+    lockGate.blocked.length === 1 && lockGate.blocked[0].code === 'fact_lock_conflict',
+    JSON.stringify(lockGate.blocked.map((b) => b.code)));
+  check('118b 事实锁：拦下的理由**并列两处位置**（不是只给一个错误码）',
+    /第 \d+ 段/.test(String(lockGate.blocked[0] && lockGate.blocked[0].conflict)),
+    String(lockGate.blocked[0] && lockGate.blocked[0].conflict));
+  check('118c 事实锁：没有人物卡名字时判据静默（宁可漏，也不猜主人）',
+    P.patchSafetyGate(lockBase, lockPatch, {}).blocked.length === 0);
+  check('118d 事实锁：只压缩描写、不动编号的补丁照常放行',
+    P.patchSafetyGate(lockBase, [{ issue: 2, anchor: '李拓把手掌按上去。', revised: '李拓把手按上去。' }], charsOpt)
+      .allowed.length === 1);
+  const dirtyBase = ['岳宸炎的排号纸是1736。', '岳宸炎的排号纸是1738。', '李拓把手掌按上去。'].join('\n\n');
+  check('118e 事实锁：底稿自带的矛盾不把无关补丁一起拦死（门禁不得变成不可用状态）',
+    P.patchSafetyGate(dirtyBase, [{ issue: 3, anchor: '李拓把手掌按上去。', revised: '李拓把手按上去。' }], charsOpt)
+      .allowed.length === 1);
+
+  // ② 跨段整句重复（复核稿里的真实事故）
+  const dupText = [
+    '岳宸炎把手从石板上拿开。',
+    '岳宸炎把手从石板上拿开。',
+    '岳宸炎把手从石板上拿开。',
+  ].join('\n\n');
+  check('118f 跨段整句重复：同一句出现在 3 段 → 报（相邻窗口 2 段抓不到它）',
+    K.scanCrossParagraphDuplicates(dupText).length === 1);
+  check('118g 跨段整句重复：只重复一次（2 段）→ 不报（避开合法复沓）',
+    K.scanCrossParagraphDuplicates('岳宸炎把手从石板上拿开。\n\n岳宸炎把手从石板上拿开。').length === 0);
+
+  // ③ 转场桥（复核稿里的真实事故）
+  const withBridge = [
+    '整个画面都白了。',
+    '再切回来的时候，镜头已经拉到了场地外面。',
+    '外面在下雪。',
+  ].join('\n\n');
+  const withoutBridge = ['整个画面都白了。', '外面在下雪。'].join('\n\n');
+  check('118h 转场桥：删掉「镜头拉到场地外面」→ 外景失去来源 → 报告（不拦）',
+    K.sceneBridgeRisks(withoutBridge, '再切回来的时候，镜头已经拉到了场地外面。', '', 1, {}).length === 1);
+  check('118i 转场桥：转场句还在时 → 不报（阴性对照）',
+    K.sceneBridgeRisks(withBridge, '整个画面都白了。', '整个画面都白了。', 0, {}).length === 0);
+  const bridgeRun = P.patchSafetyVerify(withBridge, withoutBridge, {});
+  check('118j 转场桥：修后核验（整章重写兜底路径）也能报出这段断裂',
+    bridgeRun.some((f) => f.code === 'scene_bridge'), JSON.stringify(bridgeRun.map((f) => f.code)));
+
+  // ④ 保护规则必须进润色 / 修稿提示词（复核稿第一号缺口：这两条通道此前一条规则都没有）
+  const savedEditRules = P.state.editRules;
+  P.state.editRules = {
+    catalog: { protection: { text: '【编辑保护规则（所有档位共用）】\n8. 数字锁：编号、排号、年龄、日期、等级、概率是既有事实。' } },
+    selection: null,
+  };
+  const polishMsgs = P.buildAIPolishMessages('岳宸炎的排号纸是1738。', '');
+  check('118k 润色提示词带上编辑保护规则（此前这条通道一条保护规则都没有）',
+    polishMsgs[0].role === 'system' && polishMsgs[0].content.includes('数字锁'),
+    String(polishMsgs[0].content).slice(0, 60));
+  check('118l 修稿（补丁式）提示词带上编辑保护规则',
+    P.buildAIRevisionPatchPrompt('岳宸炎的排号纸是1738。', ['问题一']).includes('数字锁'));
+  check('118m 修稿（整章重写兜底路径）提示词带上编辑保护规则',
+    P.buildAIRevisionPrompt('岳宸炎的排号纸是1738。', ['问题一']).includes('数字锁'));
+  // 取不到目录时必须如实降级，不假装有规则
+  P.state.editRules = null;
+  const noRuleMsgs = P.buildAIPolishMessages('正文。', '');
+  check('118n 取不到规则目录时如实写明"本轮未取到规则正文"（不假装有规则）',
+    noRuleMsgs[0].content.includes('未取到规则正文'), String(noRuleMsgs[0].content).slice(-60));
+  P.state.editRules = savedEditRules;
+
+  // 目录必须在**启动时**就取回来：润色可以从编辑器工具栏直接触发，
+  // 作者不需要打开「编辑规则」页；只在那一页加载会让"开机后第一次润色"没有保护规则。
+  check('118o 启动流程里预先取回编辑规则目录（润色不依赖作者先打开设置页）',
+    /async function init\(\)[\s\S]{0,1200}loadEditRules\(true\)/.test(String(src)),
+    String(src).indexOf('loadEditRules(true)') >= 0 ? 'loadEditRules(true) 出现在 src' : '缺少启动预取');
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

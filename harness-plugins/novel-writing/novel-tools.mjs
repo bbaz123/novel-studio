@@ -449,6 +449,47 @@ export function apply(ctx, config) {
     lines.push('⑥ 有没有同一条信息被多个功能相同的细节连续证明（不同细节其实都在说同一件事）？只提示，不设“最多证明几次”的上限。')
     lines.push('⑦ 有没有“没说 / 没问 / 没解释 / 没有别的”这类否定式短句连续替读者解释人物心理？只在明显重复时提示。')
     lines.push('⑧ 疑似伏笔、未知等级或暂未解释的异常，判不出来就标为待后续核验（deferred），不要当冲突、也不要建议删除。')
+    // 2026-10-08（第五批）：结构层自检。与前面几条的区别：⑤⑥⑦ 问的是"这一段值不值得这么写"，
+    // 这一条问的是**整章的结构**有没有机械化 —— 而下面 style_diagnosis 已经把可复算的部分
+    // （同形流程在第几段、时间锚点几个、谁在当布景、镜头词有没有越界）算好并列出来了，
+    // 模型要做的是**判断这些位置该不该改**，而不是自己重新去数一遍。
+    lines.push('⑨ 整章的结构有没有机械化？重点看下面【叙事结构诊断】：同一类流程是不是被完整演示了两次以上'
+      + '（若是，第一次完整保留、后面只留结果与人物反应）；时段型时间锚点是不是只在承担新事件时才给；'
+      + '匿名群众反应是不是在换着方式证明同一件事；非转播上下文里有没有出现镜头调度词。'
+      + '另外两件事机器判不了、必须你来答：① 含义已由动作/对白/结果表达之后，有没有再补一句总结或解释'
+      + '（over_explanation）；② "没说 / 没问 / 没解释 / 没有别的"这类否定式短句，是不是连续替读者解释人物心理（negative_explanation）。'
+      + '这两项**只在明显重复时提示**，不设禁词；拿不准就说"已核对、无问题"。')
+    // 结构诊断：把确定性测量值直接渲染给模型（它不需要自己数段号，只需要判断该不该改）。
+    const diag = c.style_diagnosis || null
+    if (diag) {
+      const m = diag.measurements || {}
+      const anchors = Array.isArray(m.timeline_anchors) ? m.timeline_anchors : []
+      lines.push('\n【叙事结构诊断（确定性测量，只列事实与位置，不替你决定改法）】')
+      lines.push(`- 时间锚点：${m.timeline_period_count || 0} 个时段型` + (anchors.length
+        ? `；${anchors.map((a) => `${a.value}（第${a.paragraph + 1}段）`).join('、')}`
+        : '（本章没有时段型锚点）'))
+      const shapes = Array.isArray(m.process_shape_clusters) ? m.process_shape_clusters : []
+      lines.push(shapes.length
+        ? `- 同形流程簇：${shapes.map((s) => `${s.shape} × ${s.count} 段（第 ${s.paragraphs.map((n) => n + 1).join('、')} 段）`).join('；')}`
+        : '- 同形流程簇：无（没有同类机制被完整演示第二遍）')
+      const crowd = Array.isArray(m.crowd_reaction_paragraphs) ? m.crowd_reaction_paragraphs : []
+      lines.push(`- 匿名群众反应段：${crowd.length ? crowd.map((n) => `第${n + 1}段`).join('、') : '无'}`)
+      const cam = m.camera || {}
+      lines.push(`- 镜头调度词：命中 ${cam.total || 0} 段，其中**不在转播/拍摄上下文里**的 ${(cam.outside_media || []).length} 段`
+        + ((cam.outside_media || []).length ? `（第 ${cam.outside_media.map((n) => n + 1).join('、')} 段）` : ''))
+      if (m.pov) {
+        lines.push(`- 主视角：看/听动作 ${(m.pov.perceive_paragraphs || []).length} 段，主动做事 ${(m.pov.active_paragraphs || []).length} 段`
+          + `（比值 ${m.pov.active_ratio}）`)
+      }
+      const show = (arr) => (Array.isArray(arr) && arr.length
+        ? arr.map((x) => `第${(x.paragraph ?? 0) + 1}段：${x.message}`).join('；')
+        : '无')
+      lines.push(`  · 判据命中（已具名到段）：同形流程＝${show(diag.repeated_mechanism)}；`
+        + `群众功能重复＝${show(diag.functional_redundancy)}；时间轴过密＝${show(diag.timeline_density)}；`
+        + `镜头越界＝${show(diag.camera_narration)}`)
+      lines.push('  以上都只说明"这里值得看一眼"，不说明必须改；改法由你判断，改动要最小，'
+        + '并且**第一次完整展示的那一处必须保留**。')
+    }
     if (events.length) {
       lines.push('\n最近事件账本（检查正文是否与此前发生的事冲突）：')
       events.forEach((e) => lines.push(`- [${e.kind ?? ''}] ${String(e.summary ?? '').slice(0, 160)}`))
