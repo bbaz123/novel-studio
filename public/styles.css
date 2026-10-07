@@ -1550,6 +1550,25 @@ mark.search-hit {
 }
 .recovery-item { display: flex; align-items: center; gap: 6px; }
 .recovery-item .btn { padding: 2px 8px; font-size: 12px; }
+/* 已保存蓝图那一行（2026-10-06）：摘要可能较长，允许换行但不把按钮挤散；
+   左侧一条细色带把它和同栏里的"生成稿 / 审稿 / 长任务"三类提示区分开。 */
+.recovery-item.bp-item {
+  flex-wrap: wrap;
+  border-left: 3px solid var(--accent, #6aa9ff);
+  padding-left: 8px;
+}
+.bp-view {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.8;
+  font-size: 13px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
 .raw-review {
   white-space: pre-wrap;
   word-break: break-word;

@@ -203,6 +203,9 @@ const state = {
   chapterDraft: null,
   chapterReview: null,
   chapterJobs: [],
+  // 已保存的章节蓝图（每章最多 2 份，最新在前）：与上面三项同一处展示（2026-10-06 作者要求）。
+  chapterBlueprints: [],
+  chapterBlueprintLimit: 2,
   recoveryForChapter: null,
   commandPalette: { open: false, query: '', items: [], active: 0, seq: 0, visibleItems: [], returnFocus: null, status: 'idle', error: '' },
   lastRenderedRoute: null,
@@ -1426,6 +1429,47 @@ async function render() {
 // 背景：AI 成文结果此前只活在结果弹窗的 state 里，用户点「先审稿再应用」或「取消」
 // 关掉弹窗，这版稿子就静默消失；审稿报告解析失败也会整份丢弃。现在生成稿在弹窗出现时
 // 即落成草稿、审稿报告一律落库，这里负责把它们重新暴露给用户。
+
+// 每章保留的蓝图份数（服务端 BLUEPRINT_HISTORY_LIMIT 的同名口径）。服务端返回 limit 时以它为准，
+// 这里只是拿不到响应时的兜底显示值（"1/2" 里那个 2）。
+const BLUEPRINT_LIMIT_FALLBACK = 2;
+// 蓝图六字段的用户面标签（`查看`/确认框共用；顺序即展示顺序）。
+const BLUEPRINT_FIELD_LABELS = [
+  ['scene_goal', '场景目标'],
+  ['plot_points', '情节点'],
+  ['conflicts', '冲突与转折'],
+  ['character_changes', '出场角色状态变化'],
+  ['hook', '下一章钩子'],
+  ['references', '参考设定（需要回扣的设定/伏笔）']
+];
+
+/** 蓝图一行摘要：优先场景目标，其次情节点 / 钩子；都没有就明说"没有可读内容"。 */
+function blueprintLineSummary(bp) {
+  const one = (v, n) => String(v || '').replace(/\s+/g, ' ').trim().slice(0, n);
+  return one(bp?.scene_goal, 46) || one(bp?.plot_points, 46) || one(bp?.hook, 46) || '（这份蓝图没有可读内容）';
+}
+
+/**
+ * 这一行长任务记录是不是"蓝图轮"。
+ * 新记录看 kind（蓝图轮落库时明确写 kind='blueprint'）；历史遗留行看服务端的 is_blueprint
+ * —— 那些行早年与成文轮共用 kind='prose'，只能按产出内容判定（server.js looksLikeBlueprintOutput）。
+ */
+function isBlueprintJob(job) {
+  return job?.kind === 'blueprint' || job?.is_blueprint === true;
+}
+
+/** 蓝图完整内容（供「查看」弹窗）：按六字段顺序拼成带小标题的纯文本段落。 */
+function blueprintFullText(bp) {
+  const b = bp && typeof bp === 'object' ? bp : {};
+  const blocks = BLUEPRINT_FIELD_LABELS
+    .map(([key, label]) => {
+      const v = String(b[key] || '').trim();
+      return v ? `【${label}】\n${v}` : '';
+    })
+    .filter(Boolean);
+  return blocks.length ? blocks.join('\n\n') : '（这份蓝图没有可读内容）';
+}
+
 function recoveryBarHtml(current) {
   const d = state.chapterDraft;
   const r = state.chapterReview;
@@ -1435,6 +1479,9 @@ function recoveryBarHtml(current) {
   // 别的入口（例如从审稿页回看）不该因此查不到报告。
   const reviewOk = r && Number(r.chapter_id) === Number(current.id) && !r.dismissed;
   const jobs = Array.isArray(state.chapterJobs) ? state.chapterJobs : [];
+  // 已保存的蓝图（每章最多 2 份）：只认本章那一批 —— 与草稿/审稿同一条判据。
+  const bps = (Array.isArray(state.chapterBlueprints) ? state.chapterBlueprints : [])
+    .filter((b) => Number(b.chapter_id) === Number(current.id));
   const saveFailed = state.editorSaveFailedSnapshot && Number(state.editorSaveFailedSnapshot.id) === Number(current.id);
   // 「编辑器被清空、自动保存已暂停」也是这一条恢复条要说话的状态：两条出路（取回原稿 / 明确清空）
   // 都只有这里能提供。事故复盘：旧实现只把暂停写进状态栏，作者看到"暂停了"却没有任何可点的动作。
@@ -1445,7 +1492,7 @@ function recoveryBarHtml(current) {
     && ((state.editorSaveSnapshot && Number(state.editorSaveSnapshot.id) === Number(current.id))
       || state.editorPendingByChapter.has(Number(current.id))
       || state.editorSaveInFlight.has(Number(current.id)));
-  if (!draftOk && !reviewOk && !jobs.length && !saveFailed && !bodyEmpty && !pendingUnsaved) return '';
+  if (!draftOk && !reviewOk && !jobs.length && !bps.length && !saveFailed && !bodyEmpty && !pendingUnsaved) return '';
   const items = [];
   if (bodyEmpty) {
     const held = knownChapterBodyChars(current.id);
@@ -1465,13 +1512,31 @@ function recoveryBarHtml(current) {
     items.push(`<span class="recovery-item">💾 这一章的改动还没保存 <button class="btn small" data-action="editor-save-now">立即保存</button>
       <span class="muted" style="font-size:12px">（后台已在自动重试，不会打断你现在的操作）</span></span>`);
   }
+  // 已保存的蓝图：**每一份都要显示出来**（作者 2026-10-06 要求），每条带「生成」「查看」「删除」。
+  // 为什么放在长任务之前：它是这一章"接下来要怎么行文"的现行计划，比"某次任务跑完了没"更该先看见。
+  if (bps.length) {
+    const limit = Number(state.chapterBlueprintLimit) || BLUEPRINT_LIMIT_FALLBACK;
+    bps.forEach((b, i) => {
+      const head = i === 0 ? `📐 已保存蓝图 ${i + 1}/${limit}（最新）` : `📐 蓝图 ${i + 1}/${limit}`;
+      items.push(`<span class="recovery-item bp-item">${head} · ${esc(blueprintLineSummary(b.blueprint))}
+        <span class="muted" style="font-size:12px">${esc(fmtTraceTime(b.created_at))}</span>
+        <button class="btn small" data-action="bp-generate" data-id="${Number(b.id)}" title="按这份蓝图生成正文：先打开蓝图确认框（可改），点「按此蓝图成文」后才开始生成">生成</button>
+        <button class="btn small secondary" data-action="bp-view" data-id="${Number(b.id)}" title="查看这份蓝图的完整内容">查看</button>
+        <button class="btn small secondary" data-action="bp-delete" data-id="${Number(b.id)}" title="删除这一份蓝图（只删蓝图，不动正文）">✕ 删除</button></span>`);
+    });
+  }
   // 长任务：刷新/重启后仍要看得出「还在跑」还是「跑完了没应用」。
   for (const j of jobs.slice(0, 4)) {
     const st = jobStatusLabel(j);
-    const what = j.stage || (j.kind === 'review' ? 'AI 审稿' : j.kind === 'revision' ? 'AI 修稿' : 'AI 写作');
+    // 蓝图轮**不是**「AI 写作」：整条写作管线里它的产物是一份计划，不是正文（作者 2026-10-06 要求
+    // 「蓝图生成的显示成『蓝图』，而不是『AI 写作』」）。历史遗留行由服务端 is_blueprint 兜住。
+    const isBp = isBlueprintJob(j);
+    const what = isBp ? '📐 蓝图' : (j.stage || (j.kind === 'review' ? 'AI 审稿' : j.kind === 'revision' ? 'AI 修稿' : 'AI 写作'));
     const actions = [];
     if (st.canResume) actions.push(`<button class="btn small" data-action="resume-job" data-id="${esc(j.id)}">接回进度</button>`);
-    if (st.canFetch) actions.push(`<button class="btn small" data-action="fetch-job" data-id="${esc(j.id)}">取回结果并应用</button>`);
+    // ⚠️ 蓝图不提供「取回结果并应用」：那会把一份【蓝图】JSON 当成正文写进章节（2026-10-01 /
+    // 2026-10-04 两次真实事故的同一形状）。蓝图的正路是下面的「已保存蓝图」块 →「生成」。
+    if (st.canFetch && !isBp) actions.push(`<button class="btn small" data-action="fetch-job" data-id="${esc(j.id)}">取回结果并应用</button>`);
     // 「关闭」只出现在**已经结束**的任务上（2026-10-04：作者截图里三条「已完成，结果待应用」同样没有出口，
     // 那些结果他永远不想要，提示却一直挂着）。判据直接用 canResume —— 还在跑的行只能停止/接回：
     // 把一条还在跑的任务"关掉"，等于把"它还在跑"这件事藏起来，那是误导，不是关闭。
@@ -1533,19 +1598,24 @@ async function refreshChapterRecovery(chapterId) {
   if (!id) {
     state.chapterDraft = null;
     state.chapterReview = null;
+    state.chapterBlueprints = [];
     refreshRecoveryBar();
     return;
   }
   state.recoveryForChapter = id;
   try {
-    const [draft, review, jobs] = await Promise.all([
+    const [draft, review, jobs, bps] = await Promise.all([
       api(`/novel/draft?chapter_id=${id}`).catch(() => null),
       api(`/novel/review?chapter_id=${id}`).catch(() => null),
-      api(`/harness/recoverable?chapter_id=${id}`).catch(() => null)
+      api(`/harness/recoverable?chapter_id=${id}`).catch(() => null),
+      api(`/novel/chapter_blueprints?chapter_id=${id}`).catch(() => null)
     ]);
     if (state.recoveryForChapter !== id) return; // 已切章：丢弃过期结果
     state.chapterDraft = draft?.draft || null;
     state.chapterReview = review?.review || null;
+    // 已保存的蓝图：**全部**列出来（服务端已按"最新在前、每章最多 limit 份"返回）。
+    state.chapterBlueprints = Array.isArray(bps?.blueprints) ? bps.blueprints : [];
+    state.chapterBlueprintLimit = Number(bps?.limit) || BLUEPRINT_LIMIT_FALLBACK;
     // 只留还有意义的：能续接的、有产出可取回的、或失败/中断需要告知的。
     // 「已完成且未应用」只对写作类任务提供「取回结果」按钮 —— pipeline 等其它 kind
     // 的产出是内部流程数据，用户取回后只会被当正文打开，纯属误导。
@@ -1553,12 +1623,17 @@ async function refreshChapterRecovery(chapterId) {
     state.chapterJobs = (jobs?.jobs || []).filter((j) => {
       if (j.resumable) return true;
       if (['failed', 'timeout', 'interrupted'].includes(j.status)) return true;
+      // 蓝图轮**已完成的产出不是可应用的结果**（把蓝图 JSON 当正文写进章节是两次真实事故的形状）：
+      // 它已经在上面「已保存蓝图」块里以可操作的形式显示，这里不再重复列成「AI 写作：结果待应用」。
+      // 还在跑 / 失败的蓝图轮仍要显示（能停止、能看到失败原因），所以这两个分支在它前面。
+      if (isBlueprintJob(j)) return false;
       return !!(j.has_output && APPLYABLE_KINDS.has(j.kind));
     });
   } catch (_) {
     state.chapterDraft = null;
     state.chapterReview = null;
     state.chapterJobs = [];
+    state.chapterBlueprints = [];
   }
   refreshRecoveryBar(id);
 }
@@ -4760,12 +4835,20 @@ async function resumeHarnessJob(jobId) {
         : '这条任务已经结束，请直接点「取回结果」', 'error');
       return;
     }
-    const label = job.stage || (job.kind === 'review' ? 'AI 审稿' : job.kind === 'revision' ? 'AI 修稿' : 'AI 写作');
+    const label = isBlueprintJob(job)
+      ? '📐 蓝图'
+      : (job.stage || (job.kind === 'review' ? 'AI 审稿' : job.kind === 'revision' ? 'AI 修稿' : 'AI 写作'));
     if (typeof traceLongOp === 'function') traceLongOp(label);
     const progress = showAITaskProgress(`${label} · 已接回进度，正在等待完成…`);
     try {
       const result = await pollHarnessJob(jobId, progress, { timeoutMs: 3600000 });
-      await finalizeHarnessOutput({ ...result, kind: result.kind || job.kind, chapter_id: result.chapter_id || job.chapter_id });
+      await finalizeHarnessOutput({
+        ...result,
+        kind: result.kind || job.kind,
+        chapter_id: result.chapter_id || job.chapter_id,
+        // 服务端按产出内容判定过"这是不是蓝图"（历史行的 kind 与成文轮同为 prose）。
+        is_blueprint: job.is_blueprint === true
+      });
     } catch (e) {
       if (e.interrupted) {
         toast(e.message, 'error');
@@ -4800,12 +4883,20 @@ async function fetchHarnessJobResult(jobId) {
     toast('这条任务没有可取回的产出', 'error');
     return;
   }
+  // 蓝图不是正文：即使通过旧界面/历史入口走到这里，也绝不把它当稿子应用
+  //（"一份【蓝图】JSON 被写进章节正文"是 2026-10-01 / 2026-10-04 两次真实事故的形状）。
+  if (isBlueprintJob(job)) {
+    toast('这是章节蓝图（写作计划），不是正文：请在编辑器上方的「已保存蓝图」里点「生成」按它成文', 'error');
+    await refreshChapterRecovery(state.currentChapterId);
+    return;
+  }
   await finalizeHarnessOutput({
     output: job.output,
     kind: job.kind,
     stage: job.stage,
     chapter_id: job.chapter_id,
-    job_id: job.id
+    job_id: job.id,
+    is_blueprint: job.is_blueprint === true
   });
 }
 
@@ -4831,7 +4922,12 @@ async function revisionBaseArticle(chapterId) {
   // 「接回进度」等待期间切视图正好命中这条路（第五轮重审抓到）。所以这里退回库里的正文。
   if (target === current && editor) return editorPlainText(editor.innerHTML);
   const row = await api(`/chapters/${target}`);
-  return row && row.content ? editorPlainText(row.content) : '';
+  // ⚠️ "读不到这一章"与"这一章没有正文"必须**分开**（本函数头注释的契约：取不到就抛错，不猜）：
+  // 下游（合并闸门）按指纹判断"正文有没有被动过"，而空正文是**合法**的底稿（AI 写作草稿链
+  // 合并的就是一个空章）。这里若把"取不到行"也返回空串，两者就再也分不出来，
+  // 闸门只能二选一：要么永远拦住空章（2026-10-06 报障的形状），要么把读失败当"正文没变"放行。
+  if (!row) throw new Error('读不到这一章的正文');
+  return row.content ? editorPlainText(row.content) : '';
 }
 
 // 章节标题查询（差异预览与提示文案用）。查不到时退回 `#id`，绝不显示 undefined。
@@ -4851,6 +4947,13 @@ function chapterTitleOf(id) {
 async function finalizeHarnessOutput(r) {
   const kind = String(r.kind || 'harness');
   const output = String(r.output || '');
+  // 蓝图轮不是成文轮（见 isBlueprintJob）：它的产出是一份计划，把它当稿子应用就是事故。
+  // 这里再兜一层 —— 历史入口（旧页面、接回进度）不该有能力把蓝图写进正文。
+  if (kind === 'blueprint' || isBlueprintJob({ kind, is_blueprint: r.is_blueprint })) {
+    toast('这是章节蓝图（写作计划），不是正文：请在编辑器上方的「已保存蓝图」里点「生成」按它成文', 'error');
+    await refreshChapterRecovery(Number(r.chapter_id) || state.currentChapterId);
+    return;
+  }
   if (!output.trim()) {
     toast('任务产出为空，无法应用', 'error');
     return;
@@ -4911,9 +5014,11 @@ async function finalizeHarnessOutput(r) {
     }
     // 修稿产出有两种形态：补丁式（新的默认，输出 JSON）与整章重写（兜底/历史任务）。
     // 这里必须两种都认——否则刷新后接回进度，会把 JSON 当成正文塞进差异预览。
-    const patched = tryApplyRevisionOutput(output, base);
+    const patched = tryApplyRevisionOutput(output, base, patchSafetyOptions(chapterId));
     let revised = '';
     let notes = [];
+    let safetyBlocked = [];
+    let safetyFindings = [];
     if (patched && patched.ok) {
       // 空补丁 = 合法"无修改"：不展示差异预览（没有差异），如实告知并收尾。
       if (patched.noop) {
@@ -4925,6 +5030,10 @@ async function finalizeHarnessOutput(r) {
       }
       revised = patched.text;
       notes = patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40));
+      safetyBlocked = patched.blocked || [];
+      safetyFindings = patched.findings || [];
+      // 全部补丁被拦 = 正文原样保留（**不回退整章重写**：那是一次付费且无门禁的整章覆盖）。
+      if (patched.allBlocked) toast('这一版修稿的高风险改动全部被安全门禁拦下（未写入正文），原因见差异预览', 'error');
     } else {
       revised = parseAIWritingOutput(output).finalText || output;
     }
@@ -4935,7 +5044,9 @@ async function finalizeHarnessOutput(r) {
     // 接回进度这条路径**不知道**作者勾选了几条（任务元数据里没存清单），只知道实际改好了几处。
     // 所以只传 applied，让标题按「实际改好 N 处」措辞——不再借用"按 N 条清单修改"的口径。
     // chapterId：把差异预览绑定到任务自带的章号，合并时不再依赖"当前打开的章"。
-    showReviewDiff(base, revised, { applied: (patched && patched.applied ? patched.applied.length : 0), notes, chapterId });
+    // 补丁路径已经报过门禁结论；整章重写路径（没有补丁可查）在这里补一次修后核验。
+    if (!safetyBlocked.length && !safetyFindings.length) safetyFindings = patchSafetyVerify(base, revised, patchSafetyOptions(chapterId));
+    showReviewDiff(base, revised, { applied: (patched && patched.applied ? patched.applied.length : 0), notes, chapterId, blocked: safetyBlocked, findings: safetyFindings });
     // 修稿结果已交付（差异预览已打开），标记任务已应用，恢复条不再重复提示。
     markJobApplied(r.job_id);
     await refreshChapterRecovery(chapterId);
@@ -9262,9 +9373,22 @@ function longTextKindMeta(kind, opts) {
         parse: (seg, raw) => {
           // 单请求路径（未分段）没有 segment：底稿是整篇正文（o.text 为调用方传入的待修文本）。
           const base = seg ? seg.target.text : String(o.text == null ? '' : o.text);
-          const patched = tryApplyRevisionOutput(raw, base);
+          // 安全门禁按**本片底稿**判定：命中的补丁不进本片结果，由 upper 层在差异预览里逐条说明。
+          const patched = tryApplyRevisionOutput(raw, base, patchSafetyOptions(o.chapterId));
           if (!patched || !patched.ok) throw new Error('补丁未能定位到本片段落（该片将标为失败并可续跑）');
-          return { output: patched.text, extra: { applied: patched.applied.length, unresolved: patched.unresolved.length, noop: !!patched.noop } };
+          const blocked = patched.blocked || [];
+          return {
+            output: patched.text,
+            extra: {
+              applied: patched.applied.length,
+              unresolved: patched.unresolved.length,
+              noop: !!patched.noop,
+              blocked: blocked.length,
+              // extra 会随分段结果落 localStorage：只带前 5 条、只带展示所需字段。
+              blockedList: blocked.slice(0, 5).map((b) => ({ code: b.code, reason: b.reason, anchor: String(b.anchor || '').slice(0, 40) })),
+              findings: (patched.findings || []).slice(0, 5),
+            },
+          };
         }
       };
     case 'revision_full':
@@ -10834,8 +10958,14 @@ async function refineByChecklist() {
         .filter((r) => r.extra && r.extra.unresolved)
         .map((r) => `${r.segment_id}：${r.extra.unresolved} 处未能定位`);
       const appliedCount = (revisionRun.results || []).reduce((n, r) => n + ((r.extra && r.extra.applied) || 0), 0);
+      // 安全门禁的分片结论：被拦下的补丁**不在** merged 里，这里把它们收集起来交给差异预览。
+      const blockedAll = (revisionRun.results || []).flatMap((r) => (r.extra && Array.isArray(r.extra.blockedList) ? r.extra.blockedList : []));
+      const blockedCount = (revisionRun.results || []).reduce((n, r) => n + ((r.extra && r.extra.blocked) || 0), 0);
+      const findingsAll = (revisionRun.results || []).flatMap((r) => (r.extra && Array.isArray(r.extra.findings) ? r.extra.findings : []));
       if (appliedCount === 0 && !unresolvedNotes.length) {
-        toast('模型判断这份清单没有需要改动的段落（本次未改动正文，也未回退整章重写）', 'success');
+        toast(blockedCount
+          ? `本次有 ${blockedCount} 处改动被安全门禁拦下（未自动应用），正文保持原样`
+          : '模型判断这份清单没有需要改动的段落（本次未改动正文，也未回退整章重写）', blockedCount ? 'error' : 'success');
         longTextClearRun();
         return;
       }
@@ -10844,7 +10974,9 @@ async function refineByChecklist() {
         checklist: confirmed.length,
         applied: appliedCount,
         notes: unresolvedNotes,
-        chapterId: revisionChapterId
+        chapterId: revisionChapterId,
+        blocked: blockedAll,
+        findings: findingsAll
       });
       toast(`整章分 ${revisionRun.plan.segments.length} 片改稿：共改 ${appliedCount} 处${unresolvedNotes.length ? `；${unresolvedNotes.length} 片有未能定位的问题` : ''}`,
         unresolvedNotes.length ? 'error' : 'success');
@@ -10857,7 +10989,7 @@ async function refineByChecklist() {
     );
     const raw = refinedData.output || '';
     // 首选补丁式（只改相关段落，快）；解析不到/一条都没命中 → 回退整章重写（慢但熟路）。
-    const patched = tryApplyRevisionOutput(raw, info.article);
+    const patched = tryApplyRevisionOutput(raw, info.article, patchSafetyOptions(revisionChapterId));
     if (patched && patched.ok) {
       // 空补丁 = 合法的"无修改"：不弹差异预览、**不回退整章重写**（不再多花一次钱）。
       if (patched.noop) {
@@ -10865,18 +10997,25 @@ async function refineByChecklist() {
         markJobApplied(refinedData && refinedData.job_id);
         return;
       }
+      // 全部被安全门禁拦下：正文原样保留，并且**不回退整章重写**（那是一次付费且无门禁的整章覆盖）。
+      if (patched.allBlocked) toast('这一版修稿的高风险改动全部被安全门禁拦下（未改动正文），原因见差异预览', 'error');
       showReviewDiff(info.article, patched.text, {
         baseFingerprint: info.baseChapterFingerprint || null,
         checklist: confirmed.length,
         applied: patched.applied.length,
         notes: patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40)),
-        chapterId: revisionChapterId
+        chapterId: revisionChapterId,
+        blocked: patched.blocked,
+        findings: patched.findings
       });
       markJobApplied(refinedData && refinedData.job_id);
-      toast(patched.unresolved.length ? `已改 ${patched.applied.length} 处；${patched.unresolved.length} 处未能定位` : `已按清单改好 ${patched.applied.length} 处`, patched.unresolved.length ? 'error' : 'success');
+      if (!patched.allBlocked) {
+        toast(patched.unresolved.length ? `已改 ${patched.applied.length} 处；${patched.unresolved.length} 处未能定位` : `已按清单改好 ${patched.applied.length} 处`, patched.unresolved.length ? 'error' : 'success');
+      }
       return;
     }
     // 回退：整章重写（已确认清单非空，前面统一校验过）。
+    // ⚠️ 这条路径没有补丁可以过门禁，所以改成**修后核验**（只报告）：把删出来的结构断裂如实列给作者。
     toast('按段修改没能解析出可用补丁，已回退整章重写（会慢一些）', 'error');
     const fullData = await runHarnessJob(
       { ...jobBase, prompt: buildAIRevisionPrompt(info.article, confirmed), kind: 'revision', stage: 'AI 修稿（整章）' },
@@ -10884,7 +11023,10 @@ async function refineByChecklist() {
     );
     const revised = parseAIWritingOutput(fullData.output || '').finalText || '';
     if (!revised.trim()) throw new Error('修稿结果为空');
-    showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null });
+    showReviewDiff(info.article, revised, {
+      checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null,
+      findings: patchSafetyVerify(info.article, revised, patchSafetyOptions(revisionChapterId)),
+    });
     markJobApplied(fullData && fullData.job_id);
   } catch (e) {
     if (!e.cancelled) toast('修稿失败：' + e.message, 'error');
@@ -11033,23 +11175,131 @@ function applyRevisionPatches(article, patches) {
 }
 
 /**
+ * 修稿安全门禁的接入层（Safe Editing，第三批）。
+ *
+ * 为什么需要：applyRevisionPatches 只回答"这条补丁**能不能定位**"，不回答"**该不该自动应用**"。
+ * 于是"删掉王磊递面包 → 后文面包凭空出现""删掉首次人物主体 → 后面的'她'没有先行语"
+ * "删掉'大屏切到海澜市' → 读者不知道在看现场还是屏幕""为一个轻度时间疑问顺手新增整套 B 区支线"
+ * 这些改动会被原样应用——每一处单看都更简洁，合起来把原本成立的小说修坏。
+ *
+ * 分工写在两处：
+ *   · 判据与词表全在 public/patch-safety.js（纯函数、零依赖、浏览器与 Node 测试共用，同 long-text.js）；
+ *   · 本层只做接线（取参数 / 调用 / 出错时放行并说明）+ 把结论交给差异预览。
+ * 失败姿态是**放行**：门禁模块缺失或抛错时绝不阻塞作者的正常修稿，但会在预览里明说
+ * "本次没有任何补丁被拦截"——静默降级才是真正危险的那种失败。
+ */
+function patchSafetyEngine() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelPatchSafety) || null;
+}
+
+/** 本章生效的门禁参数：人物名（先行语判定用）+ 作者指定的保护句。 */
+function patchSafetyOptions(chapterId) {
+  const opts = { protectedContent: [] };
+  try {
+    const names = (state.characters || []).map((c) => String((c && c.name) || '').trim()).filter(Boolean);
+    if (names.length) opts.characters = names;
+  } catch (_) { /* 没有人物卡时只按通用主体名词判定 */ }
+  // 保护句（文档 §13）：作者可写 localStorage —— 作品级 `ns_protected_content:<workId>`、
+  // 章节级 `ns_protected_content:<workId>:<chapterId>`，值形如 ["我信A级存在。没说你。", …]。
+  // 本批不新增界面入口（授权范围只有确定性安全层），但机制是真的、能生效、有回归覆盖。
+  try {
+    const cid = Number(chapterId) || Number(state.currentChapterId) || 0;
+    const wid = Number(state.workId || (state.work && state.work.id)) || 0;
+    const read = (key) => {
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : [];
+    };
+    opts.protectedContent = [...read(`ns_protected_content:${wid}`), ...read(`ns_protected_content:${wid}:${cid}`)];
+  } catch (_) { opts.protectedContent = []; }
+  return opts;
+}
+
+/** 门禁：把不可自动应用的补丁摘出来（不修改调用方传入的任何数据）。 */
+function patchSafetyGate(baseArticle, patches, safetyOpts) {
+  const K = patchSafetyEngine();
+  const all = Array.isArray(patches) ? patches : [];
+  if (!K || typeof K.gatePatches !== 'function') {
+    return {
+      allowed: all,
+      allowedMeta: all.map((p, index) => ({ index, issue: Number(p && p.issue) || 0, scope: null, risks: [] })),
+      blocked: [],
+      findings: [{ index: -1, issue: 0, code: 'safety_unavailable', reason: '安全门禁模块未加载：本次没有任何补丁被拦截（这一版需要人工复核）' }],
+    };
+  }
+  try {
+    const g = K.gatePatches(baseArticle, all, safetyOpts || {});
+    return {
+      allowed: Array.isArray(g.allowed) ? g.allowed : all,
+      allowedMeta: Array.isArray(g.allowedMeta) ? g.allowedMeta : [],
+      blocked: Array.isArray(g.blocked) ? g.blocked : [],
+      findings: Array.isArray(g.findings) ? g.findings : [],
+    };
+  } catch (e) {
+    return {
+      allowed: all,
+      allowedMeta: all.map((p, index) => ({ index, issue: Number(p && p.issue) || 0, scope: null, risks: [] })),
+      blocked: [],
+      findings: [{ index: -1, issue: 0, code: 'safety_unavailable', reason: `安全门禁执行出错（${e && e.message ? e.message : e}）：本次没有任何补丁被拦截` }],
+    };
+  }
+}
+
+/** Diff-aware 修后核验（文档 §12）：这一版新文里还剩哪些结构断裂——只报告，不拦阻。 */
+function patchSafetyVerify(baseArticle, patchedArticle, safetyOpts) {
+  const K = patchSafetyEngine();
+  if (!K || typeof K.verifyPatchedText !== 'function') return [];
+  try {
+    const v = K.verifyPatchedText(baseArticle, patchedArticle, safetyOpts || {});
+    return (v && Array.isArray(v.findings)) ? v.findings : [];
+  } catch (_) { return []; }
+}
+
+/** 差异预览里的"安全门禁"分区：被拦下的补丁（含原因与被拦原文）+ 修后核验的断裂。 */
+function patchSafetyNotesHtml(blocked, findings) {
+  const bs = Array.isArray(blocked) ? blocked : [];
+  const fs = Array.isArray(findings) ? findings : [];
+  if (!bs.length && !fs.length) return '';
+  const blockedHtml = bs.map((b) => `<div class="review-item issue">⛔ 未自动应用：${esc(String((b && b.reason) || ''))}`
+    + `<div class="muted">被拦下的原文：${esc(String((b && b.anchor) || '').slice(0, 50))}</div></div>`).join('');
+  const findHtml = fs.map((f) => `<div class="review-item muted">⚠️ ${esc(String((f && f.reason) || ''))}</div>`).join('');
+  return `<div class="ref-group-title">安全门禁（这些改动没有进这一版正文）</div>${blockedHtml}${findHtml}`;
+}
+
+/**
  * 修稿产出的统一入口：先按补丁解析，成功就返回改好的正文；否则返回 null（调用方回退整章重写）。
  * 抽出来是因为这条路径有**两个**调用点：正常流程 refineByChecklist 与刷新后的"接回进度"。
  *
  * 2026-09-27（R02.3）：`{"patches":[]}` 是**合法的"无修改"**，必须返回 ok+noop，
  * 而不是 null —— 旧实现把它当解析失败，触发一次整章重写（多花一次钱，还可能改坏原文）。
+ *
+ * 2026-10-07（Safe Editing）：补丁在写回前先过安全门禁。命中的**那一条**不进差异稿，
+ * 其余照旧应用（文档 §17 要求"能压缩李拓多余 A 级光效"与"绝不删除王磊递面包"同时成立）。
+ * ⚠️ 全部补丁都被拦时返回 `ok + allBlocked`，**不是** ok=false：ok=false 会让调用方回退
+ * 整章重写——那是一次付费、且**没有门禁**的整章覆盖，正好会重犯同一处错误。
  */
-function tryApplyRevisionOutput(output, baseArticle) {
+function tryApplyRevisionOutput(output, baseArticle, safetyOpts) {
   const patches = parseRevisionPatches(output);
   if (!patches) return null;
-  if (!patches.length) return { ok: true, noop: true, text: String(baseArticle || ''), applied: [], unresolved: [] };
-  const result = applyRevisionPatches(baseArticle, patches);
-  if (!result.applied.length) return { ...result, ok: false };
-  return { ...result, ok: true, noop: false };
+  const opts = safetyOpts || patchSafetyOptions(Number(state.currentChapterId) || null);
+  if (!patches.length) {
+    return { ok: true, noop: true, text: String(baseArticle || ''), applied: [], unresolved: [], blocked: [], findings: [] };
+  }
+  const gate = patchSafetyGate(baseArticle, patches, opts);
+  const result = applyRevisionPatches(baseArticle, gate.allowed);
+  if (result.applied.length) {
+    return { ...result, ok: true, noop: false, blocked: gate.blocked, findings: gate.findings };
+  }
+  if (gate.blocked.length) {
+    return { ...result, ok: true, noop: false, allBlocked: true, text: String(baseArticle || ''), blocked: gate.blocked, findings: gate.findings };
+  }
+  return { ...result, ok: false, noop: false, blocked: [], findings: gate.findings };
 }
 
 // ⚠️ 第 3 个参数是**带标签的对象**，不是一个裸数字：
 //    checklist = 作者勾选的问题条数；applied = 实际改好的处数；notes = 没能定位的条目。
+//    blocked = 被安全门禁拦下的补丁（含原因，**没有**进这一版正文）；findings = 修后核验发现的断裂。
 //    两条路径给出的数不同（正常流程知道清单条数；"接回进度"只知道改好几处），
 //    用一个参数位表达两种量，必然出现「标题说按 0 条清单修改、正文说 2 条没定位」这种自相矛盾
 //    （2026-09-18 第四轮重审抓到）。
@@ -11065,7 +11315,7 @@ function textFingerprint(text) {
   return `fnv1a:${h.toString(16)}:${s.length}`;
 }
 
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null } = {}) {
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [] } = {}) {
   // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
   // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
@@ -11085,8 +11335,9 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
       proposalIds: pickedIds.length ? pickedIds : proposalIdsOfRefs(pickedRefs),
     };
   })();
-  // R02.3：同时绑定**生成这份差异时的原文指纹**。预览期间原文被改（作者手改 / 另一任务写回 /
-  // 章节被删）时，合并必须拒绝，而不是拿旧差异稿覆盖更新的正文。
+  // R02.3（语义已于 2026-10-06 修订）：绑定**生成这份差异时的原文指纹**。
+  // ⚠️ 它现在只用于**观测/告知**（"这一章正文在预览之后变过吗"），**不再是合并的拦阻条件** ——
+  // 作者点「合并到正文」就必须写进正文（见 mergeReviewDiff 的长注释）。
   state.pendingReviewDiff = {
     newText, chapterId: targetChapterId,
     // 默认按差异"原文"取指纹；草稿链由调用方传入"章节正文在审稿启动时"的指纹（见 runArticleReview）。
@@ -11114,6 +11365,7 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
       <div class="muted mb-8"><span class="diff-add-inline">绿色</span>=修稿新增/改写，<span class="diff-del-inline">红色</span>=旧稿被删改。确认无误后合并到正文。</div>
       ${viewingOther ? `<div class="redline-scan warn">⚠️ 这份修稿属于《${esc(chapterTitleOf(targetChapterId))}》，你现在打开的是《${esc(chapterTitleOf(state.currentChapterId))}》。点「合并到正文」会写回《${esc(chapterTitleOf(targetChapterId))}》——当前这一章不会被改动。</div>` : ''}
       ${notes.length ? `<div class="redline-scan warn">⚠️ 有 ${notes.length} 条改动没能自动定位，已保持原样、需要你手工处理：${notes.map((n) => esc(String(n).slice(0, 60))).join('；')}</div>` : ''}
+      ${patchSafetyNotesHtml(blocked, findings)}
       <div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`,
     footer: `
       <button class="btn secondary" data-close-modal>放弃修改</button>
@@ -11152,17 +11404,33 @@ async function mergeReviewDiff() {
     try { await flushEditorSaves(); } catch (_) { /* 落盘失败不阻塞合并 */ }
   }
   try {
-    // R02.3：原文保真闸门 —— 差异预览绑定的是**生成时那一版原文**。合并前重新取当前正文，
-    // 指纹不一致（作者手改、另一任务写回、章节被清空/删除）就拒绝写入，让作者重新审稿，
-    // 而不是拿旧差异稿覆盖更新的正文。取不到当前正文时同样不冒险写。
+    // ⚠️ 作者裁决（2026-10-06，第二次明确要求）：「合并到正文」**没有任何拦阻** ——
+    // 只要作者点了它，正文就必须写进去（`无论什么时候，只要是用户执行，就直接强制合并到正文`）。
+    // 与 F3「旧内容是否保存？」同一条纪律：可以**告知**、可以**留档**，但绝不**拦操作**。
+    // 被替换掉的那一版由服务端在采纳事务里存进本章历史版本（固定安全底线）→ "覆盖"是可回退的，不是不可逆的。
+    //
+    // 历史（为什么这里曾经会拒绝）：R02.3 曾按"原文指纹不一致就拒绝合并"实现（防止拿旧差异稿覆盖更新的正文）。
+    // 实际代价是作者点了也进不去 —— 空正文的章节必然被误拒（2026-10-06 21:47 报障），
+    // 作者最后只能手工把预览里的段落抄进编辑器，那比"覆盖"更坏：抄写会把旧段落和新段落叠在一起，
+    // 还绕过了"旧稿进历史版本"这条兜底。所以这里只保留**观测**，不再做任何拒绝判断。
+    let baseChanged = false;
+    let baseUnreadable = false;
     if (baseFingerprint) {
-      let current = null;
-      try { current = await revisionBaseArticle(targetChapterId); }
-      catch (e) { current = null; }
-      if (current === null || !String(current).trim() || textFingerprint(current) !== baseFingerprint) {
-        toast('这一章的正文在差异预览之后被修改过（或已读不到），为避免覆盖新内容，已拒绝合并。这份修稿仍然保留：处理好正文后可以再点「合并到正文」重试。', 'error');
-        return;
-      }
+      try {
+        const current = await revisionBaseArticle(targetChapterId);
+        baseChanged = textFingerprint(current) !== baseFingerprint;
+      } catch (_) { baseUnreadable = true; }
+    }
+    if (baseChanged || baseUnreadable) {
+      // 如实留痕：这条路径会整段替换正文，事后排查必须看得到"这一次覆盖了什么原因"。
+      reportClientLogSafe({
+        level: 'warn',
+        kind: 'review_merge_overwrite',
+        message: baseUnreadable
+          ? '[修稿合并] 合并前读不到这一章正文，仍按作者操作强制写入（覆盖前那一版由服务端存进历史版本）'
+          : '[修稿合并] 本章正文在差异预览之后变过，仍按作者操作强制写入（覆盖前那一版已存进历史版本）',
+        context: { work_id: state.workId || null, chapter_id: targetChapterId, base_unreadable: baseUnreadable }
+      });
     }
     // R03：正文 + 本次勾选的入账提案走**一次**原子采纳（/novel/adopt）：
     // 同一 SQLite 事务里写历史版本、写正文、入账提案、落投影 outbox；任一步失败整次回滚。
@@ -11184,11 +11452,28 @@ async function mergeReviewDiff() {
     consumePendingDiff();   // 采纳真的落地了，这份修稿稿才算消费掉
     // 采纳是"外来写入"：本地那一行（正文 + 版本标记）必须在这里拉回服务端真值，
     // 否则紧接着的第一次编辑器保存必然 409，而"冲突的另一方"就是作者刚点的这次合并。
-    await settleReviewMergeLocally(targetChapterId, mergedHtml, res && res.adopt ? res.adopt : null);
+    // ⚠️ 收口失败**不等于写入失败**：正文此刻已经在库里。旧实现把它留在同一个 try 里，
+    // 一旦它抛错就会被下面的 catch 报成「合并失败（正文未被改动）」——那是在谎报事实
+    //（与 2026-10-05 "把刷新失败报成合并失败" 同一形状，见下面 loadWorkData 那段注释）。
+    let settleNote = '';
+    try {
+      await settleReviewMergeLocally(targetChapterId, mergedHtml, res && res.adopt ? res.adopt : null);
+    } catch (e) {
+      settleNote = '；本地界面基线没同步完（正文已在库里，刷新页面即可看到）';
+      reportClientLogSafe({
+        level: 'warn', kind: 'review_merge_settle_failed',
+        message: '[修稿合并] 正文已写入，但合并后的本地收口失败：' + (e && e.message ? e.message : e),
+        context: { work_id: state.workId || null, chapter_id: targetChapterId }
+      });
+    }
     closeModal();
+    // 本次是"强制合并"：正文若在预览之后变过（或读不到），必须如实说出来 —— 不拦，但绝不静默。
+    const overwriteNote = baseUnreadable
+      ? '；⚠️ 合并前没能读到这一章正文，被覆盖的那一版可在「历史版本」里找回'
+      : (baseChanged ? '；⚠️ 这一章正文在差异预览之后被改过，这次用它覆盖了它 —— 覆盖前的那一版已存进本章历史版本' : '');
     toast(elsewhere
-      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}）`
-      : `审稿修稿已合并到正文（旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}）`, 'success');
+      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}${overwriteNote}${settleNote}）`
+      : `审稿修稿已合并到正文（旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}${overwriteNote}${settleNote}）`, 'success');
     // 整页刷新与"合并有没有成功"是两件事：正文此刻已经在库里了。旧实现把刷新和采纳放在同一个
     // try 里，于是刷新途中任何一次 flushSave 失败都会被报成「合并失败：本地内容尚未保存，请先处理
     // 保存冲突」——作者以为没合并，其实早就写进去了（2026-10-05 报障的形状）。
@@ -11953,6 +12238,81 @@ async function runToolbarAIWrite() {
   await performToolbarAIWrite(String(req || '').trim() || null);
 }
 
+// ---------- 已保存蓝图：生成 / 查看 / 删除（历史条上的三个按钮，2026-10-06 作者要求）----------
+// 作者原话：「已保存的蓝图必须全部显示出来，并增加按钮"生成"：按照此蓝图生成正文；
+// 增加按钮"删除"：删除当前蓝图」。三者的行为边界：
+//   · 生成 —— 必**先**进入「📐 章节蓝图 · 请确认或修改」界面（作者明确要求），确认后才成文；
+//   · 查看 —— 只读，按六字段看全文（历史条那一行只放 46 字摘要）；
+//   · 删除 —— 只删蓝图，**不动正文与历史版本**。
+
+/** 在本地缓存里按 id 找一份已保存蓝图（找不到返回 null）。 */
+function savedBlueprintById(id) {
+  return (state.chapterBlueprints || []).find((b) => Number(b.id) === Number(id)) || null;
+}
+
+/**
+ * 「生成」：按这份已保存蓝图生成正文。
+ *
+ * 为什么不在这里直接调成文接口：作者要求"点生成先进入确认界面"。把蓝图交给 AI 写作管线
+ * （opts.blueprint）即可 —— 管线会先弹确认框（可改、可跳过、可取消），点「按此蓝图成文」后
+ * **跳过向模型要蓝图的那一轮**，直接装配上下文并成文。这样成文、质检、结果弹窗、草稿落库
+ * 全部复用同一条已验证的链路，不存在第二套成文实现。
+ */
+async function generateFromSavedBlueprint(id) {
+  const row = savedBlueprintById(id);
+  if (!row) { toast('这份蓝图已经不在了（可能已被删除）：刷新后再试', 'error'); return; }
+  if (!Object.values(row.blueprint || {}).some((v) => String(v || '').trim())) {
+    toast('这份蓝图没有可读内容：换一份，或直接点「✍️ AI 写作」重新规划', 'error');
+    return;
+  }
+  if (state.aiWritePipelineRunning) {
+    toast('本次写作还在进行中：请等它结束，或先点进度卡上的「停止」', 'error');
+    return;
+  }
+  // requirement 传 null：方向由这份蓝图本身承担（与"作者刚确认蓝图"那条路径同一语义）。
+  await performToolbarAIWrite(null, { blueprint: row.blueprint });
+}
+
+/** 「查看」：只读弹窗，按六字段展示这份蓝图的完整内容。 */
+function viewSavedBlueprint(id) {
+  const row = savedBlueprintById(id);
+  if (!row) { toast('这份蓝图已经不在了（可能已被删除）：刷新后再试', 'error'); return; }
+  const when = String(row.created_at || '').replace('T', ' ').slice(0, 16);
+  openModal({
+    title: '📐 已保存蓝图（只读）',
+    body: `<div class="muted" style="margin-bottom:6px">保存于 ${esc(when)}${Number(row.target_words) ? ` · 目标 ${Number(row.target_words)} 字` : ''}</div>
+      <div class="bp-view">${esc(blueprintFullText(row.blueprint)).replace(/\n/g, '<br>')}</div>`,
+    footer: `<button class="btn" data-action="bp-generate" data-id="${Number(row.id)}">按此蓝图生成正文</button>
+      <button class="btn secondary" data-close-modal>关闭</button>`,
+    large: true,
+    // 纯只读内容：点遮罩就关（与 openModal 的默认保护相反，信息类弹窗可显式例外）。
+    protectedBackdrop: false
+  });
+}
+
+/**
+ * 「删除」：删掉这一份已保存蓝图（只删蓝图，正文与历史版本都不动）。
+ * 服务端返回删除后的**真值**列表，界面照它重画——不自己算"还剩几份 / 最新是哪一份"。
+ */
+async function deleteSavedBlueprint(id) {
+  const row = savedBlueprintById(id);
+  const chapterId = Number(state.currentChapterId) || 0;
+  if (!row || !chapterId) { toast('找不到这份蓝图：刷新后再试', 'error'); return; }
+  if (!confirm('删除这一份已保存的蓝图吗？\n\n· 只删蓝图：正文与历史版本都不动；\n· 删除后不能再按它生成正文。')) return;
+  try {
+    const res = await api('/novel/chapter_blueprints', {
+      method: 'DELETE',
+      body: { chapter_id: chapterId, blueprint_id: Number(row.id) }
+    });
+    state.chapterBlueprints = Array.isArray(res.blueprints) ? res.blueprints : [];
+    if (Number(res.limit)) state.chapterBlueprintLimit = Number(res.limit);
+    refreshRecoveryBar(chapterId);
+    toast('已删除这一份蓝图（正文未改动）', 'success');
+  } catch (e) {
+    toast('删除失败：' + e.message, 'error');
+  }
+}
+
 // 蓝图确认弹窗：字段可编辑；resolve 蓝图对象 / {skip:true}（跳过蓝图直接成文）/ null（取消）。
 function showBlueprintConfirm(blueprint) {
   return new Promise((resolve) => {
@@ -12048,7 +12408,17 @@ function reportClientLogSafe(payload) {
   catch (_) { /* 同上 */ }
 }
 
-async function performToolbarAIWrite(requirement) {
+/**
+ * 本条写作管线。
+ *
+ * @param requirement 作者在需求框里写的方向（可空）。
+ * @param opts.blueprint 「按已保存蓝图生成正文」入口（2026-10-06 历史条上的「生成」按钮）：
+ *   传一份已保存的蓝图时，**跳过向模型要蓝图的那一轮**，直接把它交给确认弹窗（作者要求：
+ *   点「生成」必须先进入「章节蓝图 · 请确认或修改」界面），确认后走同一条成文链路。
+ */
+async function performToolbarAIWrite(requirement, opts = {}) {
+  // 本次是否"蓝图已经定了"：只有从历史条「生成」进来时才为真。
+  const preseededBlueprint = (opts && typeof opts.blueprint === 'object' && opts.blueprint) ? opts.blueprint : null;
   const editor = $('#editor-content');
   if (!editor) return;
   // F-43 同款互斥：**入口就置位**。旧实现直到蓝图轮才由 runHarnessJob 置位，而入口的
@@ -12123,13 +12493,17 @@ async function performToolbarAIWrite(requirement) {
     while (maxTurns-- > 0) {
       let jobMeta = null;
       let parsed;
+      // 🧭 「按已保存蓝图生成正文」：蓝图已经定好了，这一轮**不再向模型要蓝图**
+      // （作者 2026-10-06 要求：点「生成」先进入「章节蓝图 · 请确认或修改」界面）。
+      // 只在第一轮生效：弹窗里的「跳过蓝图直接成文 / 取消」与后续任何一轮都照常走规划轮。
+      const usePreseeded = !!preseededBlueprint && history.length === 0;
       const lastMsg = history.length ? history[history.length - 1] : null;
       const stageLabel = !history.length
         ? 'AI 写作（1/3 蓝图）· 正在阅读章节与设定，准备提问…'
         : (lastMsg?.content || '').includes('【提问】')
           ? 'AI 写作（1/3 蓝图）· 已收到回答，正在生成章节蓝图…'
           : 'AI 写作（1/3 蓝图）· 正在按反馈重新规划蓝图…';
-      const blueprintPrompt = buildAIWritingBlueprintPrompt(initial, history, targetWords);
+      const blueprintPrompt = usePreseeded ? '' : buildAIWritingBlueprintPrompt(initial, history, targetWords);
       // S1（2026-09-18 实测驱动）：蓝图轮优先走**直连**——省掉慢通道每次 ≈17 秒的固定开销
       // （实测：微型任务 直连 0.6s vs 慢通道 17.9s；同一条真实蓝图提示词 19.1s vs 47.3s，
       //   两者都产出 `【蓝图】` 首行 + 6/6 字段）。
@@ -12141,7 +12515,7 @@ async function performToolbarAIWrite(requirement) {
       // 慢通道那条路的结果（scan / proposals / job_id）——直连时为 null。
       // ⚠️ jobMeta 在**循环体顶部**声明：下面两个降级分支要用它，且不能随本 else 块消失。
       // 重审抓到过一版把它写成 if 块内的 `const data`，块外引用即 ReferenceError（node --check 查不出来）。
-      if (!aiContextTruncated()) {
+      if (!usePreseeded && !aiContextTruncated()) {
         // 直连也要出进度卡：否则界面会静默十几秒（用户以为是卡死）。
         // 进度卡自带每秒计时，正好补上"直连没有 stage 推送"这个短板。
         const card = showAITaskProgress(stageLabel);
@@ -12154,7 +12528,7 @@ async function performToolbarAIWrite(requirement) {
           card.close();
         }
       }
-      if (!raw.trim()) {
+      if (!usePreseeded && !raw.trim()) {
         // 🧭 规划轮的慢通道任务带上「本次是重新规划」标记（2026-10-04）：
         // 慢通道的模型**带着检索工具**（novel_context / novel_lookup），那两条路会各自
         // 去服务端取上下文与搜索结果 —— 不带这个标记，工具就能把上一版蓝图原文端出来，
@@ -12164,6 +12538,11 @@ async function performToolbarAIWrite(requirement) {
         jobMeta = await runHarnessJob(
           {
             ...jobBase,
+            // 🏷 蓝图轮**不是**「成文」：kind 单独标出来。恢复条据此把它显示成「📐 蓝图」，
+            // 并且不再提供「取回结果并应用」—— 把一份【蓝图】JSON 当正文写进章节，
+            // 正是 2026-10-01 / 2026-10-04 两次真实事故的形状（作者 2026-10-06 报障同一处）。
+            kind: 'blueprint',
+            stage: '蓝图',
             prompt: blueprintPrompt,
             env: { ...(jobBase.env || {}), NOVEL_OMIT_LAYERS: REWRITE_OMIT_LAYERS.join(',') }
           },
@@ -12171,29 +12550,35 @@ async function performToolbarAIWrite(requirement) {
         );
         raw = jobMeta.output || '';
       }
-      if (!raw.trim()) {
+      if (!usePreseeded && !raw.trim()) {
         // N-02：把原始输出挂到错误上，供错误弹窗回显（此前失败只有瞬态 toast，用户看不到任何原因）。
         const err = new Error('AI 没有返回内容');
         err.rawOutput = '（AI 任务输出为空）';
         throw err;
       }
-      // ⏱ 记这一轮蓝图：via 是**实际**用到的通道（直连失败回退慢通道时记 harness）
-      timing.round('blueprint', Date.now() - blueprintStartedAt, { via: jobMeta ? 'harness' : 'direct' });
-      // 蓝图走**抢救式**解析：模型在 JSON 值里写裸引号（2026-10-01 事故）时，
-      // 严格解析必然失败；旧路径会把整篇蓝图兜底成「成文」，于是蓝图既没进弹窗、也没进
-      // chapters.blueprint_json，而是被当成正文写进了章节。
-      const bpParsed = parseBlueprintJSON(raw);
-      if (bpParsed.blueprint) {
-        if (bpParsed.stage === 'salvaged') {
-          reportClientLog({
-            level: 'warn', kind: 'blueprint_json_salvaged',
-            message: `[写作] 蓝图 JSON 严格解析失败，已按字段抢救出 ${Object.keys(bpParsed.blueprint).length}/${BLUEPRINT_FIELDS.length} 个字段（原样回显，请作者确认后成文）`,
-            context: { work_id: state.workId || null, chapter_id: writeChapterId, chars: String(raw).length }
-          });
-        }
-        parsed = { blueprint: bpParsed.blueprint };
+      if (usePreseeded) {
+        // 蓝图由作者从「已保存蓝图」里选定：没有模型输出可解析，直接把它交给确认弹窗。
+        // 字数同样用本次的目标字数（与规划轮确认后的口径一致），不沿用这份蓝图当初存下的值。
+        parsed = { blueprint: { ...preseededBlueprint } };
       } else {
-        parsed = parseAIWritingOutput(raw);
+        // ⏱ 记这一轮蓝图：via 是**实际**用到的通道（直连失败回退慢通道时记 harness）
+        timing.round('blueprint', Date.now() - blueprintStartedAt, { via: jobMeta ? 'harness' : 'direct' });
+        // 蓝图走**抢救式**解析：模型在 JSON 值里写裸引号（2026-10-01 事故）时，
+        // 严格解析必然失败；旧路径会把整篇蓝图兜底成「成文」，于是蓝图既没进弹窗、也没进
+        // chapters.blueprint_json，而是被当成正文写进了章节。
+        const bpParsed = parseBlueprintJSON(raw);
+        if (bpParsed.blueprint) {
+          if (bpParsed.stage === 'salvaged') {
+            reportClientLog({
+              level: 'warn', kind: 'blueprint_json_salvaged',
+              message: `[写作] 蓝图 JSON 严格解析失败，已按字段抢救出 ${Object.keys(bpParsed.blueprint).length}/${BLUEPRINT_FIELDS.length} 个字段（原样回显，请作者确认后成文）`,
+              context: { work_id: state.workId || null, chapter_id: writeChapterId, chars: String(raw).length }
+            });
+          }
+          parsed = { blueprint: bpParsed.blueprint };
+        } else {
+          parsed = parseAIWritingOutput(raw);
+        }
       }
 
       if (parsed.blueprint) {
@@ -12684,7 +13069,8 @@ async function batchGenerateChapters(count) {
         }
       }
       if (!bpRaw.trim()) {
-        const bpData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, prompt: blueprintPrompt }, `${label} · 蓝图`);
+        // 与交互路径同一条归属标记：蓝图轮落库时 kind='blueprint'（不是可应用的「AI 写作」产出）。
+        const bpData = await runHarnessJob({ ...jobBase, chapter_id: ch.id, kind: 'blueprint', stage: '蓝图', prompt: blueprintPrompt }, `${label} · 蓝图`);
         bpRaw = bpData.output || '';
       }
       let bp = parseAIWritingOutput(bpRaw).blueprint || null;
@@ -12841,14 +13227,14 @@ async function refineLongTextFull(info, review, confirmedIssues) {
     if (run.mode === 'single') {
       const revised = String(run.merged || '');
       if (!revised.trim()) throw new Error('修稿结果为空');
-      showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null });
+      showReviewDiff(info.article, revised, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null, findings: patchSafetyVerify(info.article, revised, patchSafetyOptions(revisionChapterId)) });
       return;
     }
     if (!run.merged) {
       showLongTextIncomplete('修稿（整片重写）', run, () => refineLongTextFull(info, review, confirmed));
       return;
     }
-    showReviewDiff(info.article, run.merged, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null });
+    showReviewDiff(info.article, run.merged, { checklist: confirmed.length, chapterId: revisionChapterId, baseFingerprint: info.baseChapterFingerprint || null, findings: patchSafetyVerify(info.article, run.merged, patchSafetyOptions(revisionChapterId)) });
     toast(`整章分 ${run.plan.segments.length} 片重写完成（覆盖清单通过）`, 'success');
     longTextClearRun();
   } catch (e) {
@@ -14680,6 +15066,19 @@ async function handleAction(action, actionEl, e) {
 
       case 'dismiss-review':
         await dismissChapterReview();
+        break;
+
+      // 已保存蓝图：按它生成正文 / 只读查看 / 删除（历史条上的三个按钮，2026-10-06）。
+      case 'bp-generate':
+        await generateFromSavedBlueprint(actionEl.dataset.id);
+        break;
+
+      case 'bp-view':
+        viewSavedBlueprint(actionEl.dataset.id);
+        break;
+
+      case 'bp-delete':
+        await deleteSavedBlueprint(actionEl.dataset.id);
         break;
 
       case 'resume-job':

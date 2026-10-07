@@ -1112,7 +1112,7 @@ const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 // confirm / bootstrap 是作者动作，模型侧 403；确认前不写任何正式状态）。PUT /api/novel/state/temporal 启用
 // 改为迁移门禁（缺表/缺索引 → 503，不吞错误继续跑），启用即登记迁移版本，响应新增 migration 与首次启用的
 // enable_scope（预算 + 待重建范围）；未开启作品不触发额外模型调用、旧上下文不变；插件工具/端点面不变，无新表。
-const HOST_CONTRACT_VERSION = '1.20.0';
+const HOST_CONTRACT_VERSION = '1.21.0';
 
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
@@ -1729,6 +1729,109 @@ function dismissDraft(chapterId, draftId = 0) {
           LIMIT 1
         )
       `).run(cid, cid);
+  return Number(info.changes) || 0;
+}
+
+// ---------- 章节蓝图历史（每章最多两份）----------
+// 表结构与契约见 db.js 的 chapter_blueprints 注释。这里只有读写原语，供三条写入路径
+//（PUT /novel/chapter_blueprint、剧情沙盘采纳、正文写回后的清理）与两条查询路径复用。
+//
+// 三条必须维持的不变量：
+//   ① 同一章的 chapter_blueprints 最多 BLUEPRINT_HISTORY_LIMIT 份；
+//   ② chapters.blueprint_json 恒等于该章**最新那一份**蓝图（没有则空串）—— 本章上下文层、
+//      检索索引（server.js queryRows('chapters', …, blueprint_json)）、一致性核对读的都是它，
+//      镜像一旦不同步，就变成"界面删了、模型还看得见"；
+//   ③ 插入/裁剪与镜像更新在同一事务里完成。
+const BLUEPRINT_HISTORY_LIMIT = 2;
+
+/** 把该章最新一份蓝图镜像回 chapters.blueprint_json / target_words（供既有链路继续读）。 */
+function mirrorChapterBlueprint(chapterId) {
+  const latest = prepare('SELECT blueprint_json, target_words FROM chapter_blueprints WHERE chapter_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(chapterId);
+  // ⚠️ 刻意不推进 updated_at：它是编辑器保存的乐观锁基线（_if_updated_at 比的就是它），
+  // 动蓝图不该让作者手里那份还没落盘的正文凭空撞 409。
+  prepare('UPDATE chapters SET blueprint_json = ?, target_words = ? WHERE id = ?')
+    .run(latest?.blueprint_json || '', Number(latest?.target_words) || 0, chapterId);
+  return latest || null;
+}
+
+function blueprintRowToClient(row) {
+  let blueprint = {};
+  try { blueprint = JSON.parse(row.blueprint_json || '{}') || {}; } catch (_) { blueprint = {}; }
+  return {
+    id: Number(row.id),
+    chapter_id: Number(row.chapter_id),
+    blueprint,
+    target_words: Number(row.target_words) || 0,
+    created_at: row.created_at
+  };
+}
+
+function listChapterBlueprints(chapterId) {
+  return prepare(`
+    SELECT id, chapter_id, blueprint_json, target_words, created_at
+    FROM chapter_blueprints WHERE chapter_id = ?
+    ORDER BY created_at DESC, id DESC
+  `).all(chapterId).map(blueprintRowToClient);
+}
+
+/**
+ * 保存一份蓝图：插新行 → 超出上限丢最旧 → 镜像最新那一份。
+ * 为什么"每次保存都插新行"而不是就地改：作者反复点「AI 写作 / 重新规划」时，上一版必须能回退
+ * （这正是"每章保存两份"的用途）；上限靠下面的裁剪守住，不靠覆盖。
+ */
+function saveChapterBlueprint(chapterId, workId, blueprint, targetWords = 0) {
+  return withTransaction(() => {
+    const ts = now();
+    const info = prepare(`
+      INSERT INTO chapter_blueprints (chapter_id, work_id, blueprint_json, target_words, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(chapterId, workId || null, JSON.stringify(blueprint), Number(targetWords) || 0, ts, ts);
+    prepare(`
+      DELETE FROM chapter_blueprints WHERE chapter_id = ? AND id NOT IN (
+        SELECT id FROM chapter_blueprints WHERE chapter_id = ? ORDER BY created_at DESC, id DESC LIMIT ?
+      )
+    `).run(chapterId, chapterId, BLUEPRINT_HISTORY_LIMIT);
+    const latest = mirrorChapterBlueprint(chapterId);
+    const count = Number(prepare('SELECT COUNT(*) AS n FROM chapter_blueprints WHERE chapter_id = ?').get(chapterId)?.n) || 0;
+    return {
+      id: Number(info.lastInsertRowid),
+      count,
+      blueprint,
+      target_words: Number(latest?.target_words) || 0
+    };
+  });
+}
+
+/**
+ * 删除该章蓝图：给 blueprint_id 只删那一份，否则整章全删；删完把镜像收敛到"新的最新一份"。
+ * 返回删除之后的列表（前端直接照真值重画，不自己猜）。
+ */
+function deleteChapterBlueprints(chapterId, blueprintId = 0) {
+  return withTransaction(() => {
+    const bid = Number(blueprintId) || 0;
+    if (bid) prepare('DELETE FROM chapter_blueprints WHERE chapter_id = ? AND id = ?').run(chapterId, bid);
+    else prepare('DELETE FROM chapter_blueprints WHERE chapter_id = ?').run(chapterId);
+    mirrorChapterBlueprint(chapterId);
+    return listChapterBlueprints(chapterId);
+  });
+}
+
+/**
+ * 正文（AI 生成的正文）落进本章之后，本章蓝图已完成使命：整章蓝图记录与镜像一起清空。
+ *
+ * 触发点只有两个 —— POST /novel/chapter_save（应用生成稿 / 审稿合并 / 批量生成写回）与
+ * POST /novel/adopt（整次采纳），两者都在自己的事务里调用本函数，因此不会出现"正文换了、
+ * 蓝图还留着"的半套状态。
+ *
+ * ⚠️ 刻意**不**绑 PUT /chapters/:id（编辑器自动保存）：作者在正文里手打一个字就会清掉他刚确认的
+ * 那份蓝图，而那份蓝图正是他接下来要让 AI 按它成文的东西（作者 2026-10-06 明确：只在正文生成时删）。
+ *
+ * 返回删掉的行数（0 = 这一章本来就没有蓝图）。
+ */
+function clearChapterBlueprints(chapterId) {
+  const info = prepare('DELETE FROM chapter_blueprints WHERE chapter_id = ?').run(chapterId);
+  // 镜像同样清空：检索索引（server.js:996）读的就是这一列，不清它等于"库里删了、模型还看得见"。
+  prepare('UPDATE chapters SET blueprint_json = ? WHERE id = ?').run('', chapterId);
   return Number(info.changes) || 0;
 }
 
@@ -4787,12 +4890,32 @@ function markHarnessJobApplied(jobId) {
   } catch (_) { /* 标记失败只影响恢复条显示 */ }
 }
 
+/**
+ * 判定一条已完成任务的产出"是不是蓝图"（2026-10-06）。
+ *
+ * 为什么必须判：蓝图轮与成文轮共用同一条 AI 写作管线，落库时都带 kind='prose'，于是恢复条把
+ * 一份【蓝图】JSON 显示成「AI 写作：已完成，结果待应用 · 产出 N 字符」，还给出「取回结果并应用」
+ * —— 点一下就把蓝图写进正文（2026-10-01 与 2026-10-04 两次真实事故的同一根因）。
+ * 现在蓝图轮自己带 kind='blueprint'；这里额外兜住**历史遗留**记录（那些行早就落库了）。
+ *
+ * 判据刻意收窄（与前端识别蓝图 JSON 的口径一致）：只认过程头，或正文里绝不会出现的
+ * 蓝图专有字段名（≥2 个才算，避免散文里偶然出现一个词就误判）。
+ */
+function looksLikeBlueprintOutput(head) {
+  const s = String(head || '').trimStart();
+  if (/^【\s*(蓝图|规划|写作规划)\s*】/.test(s)) return true;
+  const hits = ['scene_goal', 'plot_points', 'conflicts', 'character_changes', 'hook', 'references']
+    .filter((k) => s.includes(`"${k}"`));
+  return hits.length >= 2;
+}
+
 /** 可续接的长任务：运行中的 + 最近完成但还没被应用的。 */
 function listRecoverableJobs(workId) {
   const rows = prepare(`
     SELECT id, work_id, chapter_id, kind, stage, status, error, updated_at,
            CASE WHEN status = 'done' THEN 1 ELSE 0 END AS has_output,
-           length(output) AS output_chars
+           length(output) AS output_chars,
+           substr(output, 1, 400) AS output_head
     FROM harness_jobs
     WHERE (? IS NULL OR work_id = ?)
       AND kind NOT LIKE '%:applied'
@@ -4818,6 +4941,9 @@ function listRecoverableJobs(workId) {
       resumable: !!live && (live.status === 'queued' || live.status === 'running'),
       has_output: r.has_output === 1,
       output_chars: r.output_chars || 0,
+      // 前端据此把这一行标成「📐 蓝图」，并且**不提供**「取回结果并应用」——
+      // 蓝图不是正文，它的正当用法是在「已保存蓝图」块里按它成文。
+      is_blueprint: r.status === 'done' && looksLikeBlueprintOutput(r.output_head),
       error: r.error || '',
       updated_at: r.updated_at
     };
@@ -4835,6 +4961,8 @@ function getRecoverableJob(jobId) {
       tail: live.tail.slice(-600),
       output: live.status === 'done' ? (live.output || '') : '',
       error: live.error || '', resumable: live.status === 'queued' || live.status === 'running',
+      // 与 /harness/recoverable 同一口径：蓝图轮不是「成文产出」（旧行只能按内容判定）。
+      is_blueprint: looksLikeBlueprintOutput(live.output || ''),
       restart_lost: false
     };
   }
@@ -4853,6 +4981,7 @@ function getRecoverableJob(jobId) {
     output: row.status === 'done' ? (row.output || '') : '',
     error: row.error || '',
     resumable: false,
+    is_blueprint: row.status === 'done' && looksLikeBlueprintOutput(row.output || ''),
     restart_lost: row.status === 'queued' || row.status === 'running'
   };
 }
@@ -7260,6 +7389,9 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
             .run(title, summary, content, now(), chapterId);
           // T2（W4）：整次采纳的正文与状态提案在同一事务里，修订记录也必须在其中。
           afterTemporalContentSave(workId, chapterId, content, 'adopt');
+          // 正文由 AI 生成并落进本章 → 本章蓝图整章清空（与 chapter_save 同一条规则，
+          // 见 clearChapterBlueprints 的说明）。同一事务：半边成功会留下"正文换了、蓝图还在"。
+          clearChapterBlueprints(chapterId);
           contentVersionId = Number(v.id);
           contentHashAfter = Approvals.chapterBaselineHash(content);
           // 3b) 本次采纳消费掉的生成稿草稿：同一事务里标记为已应用（2026-10-02）。
@@ -8052,7 +8184,9 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       const plan = BranchSandbox.buildAdoptionPlan(candidate, { chapterTitle: chapter.title });
       let blueprintWritten = false;
       if (body.blueprint !== false) {
-        prepare('UPDATE chapters SET blueprint_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(plan.blueprint), now(), candidate.chapter_id);
+        // 2026-10-06：沙盘采纳写的也是蓝图，必须走同一条"每章最多两份 + 镜像"的保存路径，
+        // 否则这里会成为绕过上限的旁路（直接 UPDATE 一列 = 永远只有一份、且不记历史）。
+        saveChapterBlueprint(candidate.chapter_id, candidate.work_id, plan.blueprint, 0);
         blueprintWritten = true;
       }
       let contract = null;
@@ -8667,6 +8801,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     });
   }
   // 章节蓝图保存（写作前规划 → 落库 → 随上下文带入 → 一致性核对锚点）。
+  // 2026-10-06：改走「每章最多两份」的历史表（作者要求）——每次保存插一条新记录、超限丢最旧，
+  // chapters.blueprint_json 保留为"最新那一份"的镜像。请求体与返回字段保持向后兼容（只追加）。
   if (resource === 'novel' && segments[2] === 'chapter_blueprint' && method === 'PUT') {
     const body = await readBody(req);
     const chapterId = Number(body.chapter_id);
@@ -8681,12 +8817,45 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     }
     if (!Object.values(blueprint).some((v) => v)) return sendError(res, 400, '蓝图内容不能为空');
     const targetWords = Number(body.target_words) || 0;
-    prepare('UPDATE chapters SET blueprint_json = ?, target_words = ?, updated_at = ? WHERE id = ?')
-      .run(JSON.stringify(blueprint), targetWords > 0 ? Math.min(Math.max(1, Math.floor(targetWords)), 20000) : 0, now(), chapterId);
+    const saved = saveChapterBlueprint(
+      chapterId,
+      chapter.work_id,
+      blueprint,
+      targetWords > 0 ? Math.min(Math.max(1, Math.floor(targetWords)), 20000) : 0
+    );
     touchWork(chapter.work_id);
     const work = prepare('SELECT default_chapter_words FROM works WHERE id = ?').get(chapter.work_id);
     const effective = targetWords > 0 ? targetWords : (Number(work?.default_chapter_words) || 2000);
-    return sendJSON(res, 200, { ok: true, chapter_id: chapterId, blueprint, target_words: effective });
+    return sendJSON(res, 200, {
+      ok: true, chapter_id: chapterId, blueprint, target_words: effective,
+      blueprint_id: saved.id, saved_count: saved.count, limit: BLUEPRINT_HISTORY_LIMIT
+    });
+  }
+  // 已保存的章节蓝图列表（编辑器上方「已保存蓝图」块读它；最新一份在前）。
+  if (resource === 'novel' && segments[2] === 'chapter_blueprints' && method === 'GET') {
+    const chapterId = Number(query.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    if (!prepare('SELECT id FROM chapters WHERE id = ?').get(chapterId)) return sendError(res, 404, '章节不存在');
+    return sendJSON(res, 200, {
+      ok: true, chapter_id: chapterId, limit: BLUEPRINT_HISTORY_LIMIT,
+      blueprints: listChapterBlueprints(chapterId)
+    });
+  }
+  // 删除一份（带 blueprint_id）或整章蓝图（不带）—— 作者点「已保存蓝图」那一行的「删除」。
+  // 返回删除之后的**真值**列表：界面直接照它重画，不自己猜"还剩几份 / 最新是哪一份"。
+  if (resource === 'novel' && segments[2] === 'chapter_blueprints' && method === 'DELETE') {
+    const body = await readBody(req).catch(() => ({}));
+    const chapterId = Number(body.chapter_id) || Number(query.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const chapter = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const before = listChapterBlueprints(chapterId).length;
+    const blueprints = deleteChapterBlueprints(chapterId, Number(body.blueprint_id) || 0);
+    touchWork(chapter.work_id);
+    return sendJSON(res, 200, {
+      ok: true, chapter_id: chapterId, limit: BLUEPRINT_HISTORY_LIMIT,
+      deleted: Math.max(0, before - blueprints.length), blueprints
+    });
   }
   // 章节审稿：保存报告 / 读取最新 / 提交确认清单
   if (resource === 'novel' && segments[2] === 'review' && method === 'PUT' && !segments[3]) {
@@ -8882,6 +9051,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
           .run(title, summary, content, now(), chapterId);
         // T2（W3）：AI 写回 / 审稿合并 / 草稿取回 / 批量生成写回 —— 与正文同一事务记录修订。
         afterTemporalContentSave(chapter.work_id, chapterId, content, 'agent_write_back');
+        // 本章正文已由 AI 生成并落库 → 本章蓝图完成使命，整章清空（作者 2026-10-06 要求：
+        // 「当正文生成的时候，自动删除当前章节的所有蓝图」）。
+        // 放同一事务里：不能出现"正文换了、蓝图还留着被下一章规划读到"的半套状态。
+        clearChapterBlueprints(chapterId);
         return v;
       });
     } catch (e) {

@@ -115,6 +115,27 @@ CREATE TABLE IF NOT EXISTS chapters (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- 章节蓝图历史（2026-10-06 作者要求）：蓝图从"一章一列、覆盖式写入"改成"每章最多两份"的
+-- 独立记录。为什么必须建表：chapters.blueprint_json 只能装一份，作者在一次写作里反复「重新规划」
+-- 时旧蓝图被直接覆盖（想回上一版没有退路），而**写完正文之后**那唯一一份蓝图会一直留着 ——
+-- 检索索引（server.js queryRows('chapters', …, blueprint_json)）会把它喂给模型，于是规划新章时
+-- 模型拿着上一章的旧计划来反问作者（2026-10-06 真实报障：第一章蓝图与第二章蓝图夜里那段重叠）。
+-- 约定：
+--   · chapters.blueprint_json 继续保留，语义收窄为「最新那一份蓝图」的镜像 —— 上下文装配、
+--     检索索引、一致性核对读的还是它，链路一行不用改；
+--   · 上限 BLUEPRINT_HISTORY_LIMIT=2（server.js），第 3 次保存时自动丢最旧的一份；
+--   · 正文被 AI 写回本章时（/novel/chapter_save、/novel/adopt）整章蓝图记录连同镜像一起删除。
+CREATE TABLE IF NOT EXISTS chapter_blueprints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  work_id INTEGER REFERENCES works(id) ON DELETE CASCADE,
+  blueprint_json TEXT NOT NULL DEFAULT '',
+  target_words INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chapter_blueprints_chapter ON chapter_blueprints(chapter_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -1252,6 +1273,22 @@ for (const sql of MIGRATIONS) {
       console.warn(`[db] 迁移失败：${sql} → ${e.message}`);
     }
   }
+}
+
+// 章节蓝图历史：把存量 chapters.blueprint_json 种进 chapter_blueprints（每章一份，时间取章节的
+// updated_at —— 那正是当初写下这份蓝图的时刻）。必须放在 MIGRATIONS 之后：旧库里 blueprint_json
+// 这一列本身是迁移补出来的，种入语句读它，顺序反了会在旧库上直接报错。
+// 幂等：只在"该章还没有任何蓝图记录"时种入；正文写回后整章清空（镜像也一并清空），因此不会被复活。
+try {
+  db.exec(`
+    INSERT INTO chapter_blueprints (chapter_id, work_id, blueprint_json, target_words, created_at, updated_at)
+    SELECT c.id, c.work_id, c.blueprint_json, COALESCE(c.target_words, 0), c.updated_at, c.updated_at
+    FROM chapters c
+    WHERE c.blueprint_json IS NOT NULL AND c.blueprint_json <> ''
+      AND NOT EXISTS (SELECT 1 FROM chapter_blueprints b WHERE b.chapter_id = c.id)
+  `);
+} catch (e) {
+  console.warn(`[db] 章节蓝图历史种入失败（不影响其它功能）：${e.message}`);
 }
 
 // N-03：新作品插入时自动分配 OpenViking 共享记忆库的作品级目录标识（32 位随机 hex）。

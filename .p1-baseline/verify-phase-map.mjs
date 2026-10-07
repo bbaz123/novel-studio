@@ -1078,6 +1078,35 @@ export const PHASES = [
       + ' ⚠️ 写 Topics 走的是专用端点 `PUT /repos/{owner}/{repo}/topics`：实测仓库 PATCH 即使返回 200 也**不会**改 topics，'
       + ' 必须写后回读校验。',
   },
+  {
+    id: 'SE',
+    title: '2026-10-07 第三批：Safe Editing 修稿安全门禁（确定性结构依赖 + 删除依赖 + 修后核验）',
+    files: [
+      // —— 本轮新增的确定性模块与交付文档（可独立撤回）——
+      'public/patch-safety.js',
+      'docs/safe-editing-gate-20261007.md',
+      // —— 接线点（与 P 系列 / R / TT 等共享同一文件，按文件粒度整体回滚）——
+      'public/app.js',
+      'public/index.html',
+      'frontend-test.mjs',
+      // 阶段映射生成器自身：本阶段新增 SE 条目（与 G2 / TT 等共享同一文件）。
+      '.p1-baseline/verify-phase-map.mjs',
+    ],
+    evidence: [
+      'public/patch-safety.js',
+      'docs/safe-editing-gate-20261007.md',
+    ],
+    rollback: 'shared',
+    note: '**只加一层确定性门禁，不改任何模型契约**：补丁 JSON 仍是 `{"patches":[{issue,anchor,revised}]}`，'
+      + ' 提示词字段一字未动（文档 §15 里需要改模型输出契约的 `fact_delta` 自报属未选中的批次）。'
+      + ' 门禁做的事：对每条补丁判定 `protected_content / story_fact / object_provenance / reference_anchor / scene_anchor`'
+      + '（外加只报告的 `causal_bridge_break`），命中的那一条**不进差异稿**，同批其余补丁照旧应用。'
+      + ' 失败姿态是**放行**并在差异预览里写明 `safety_unavailable`——门禁不能阻塞作者修稿。'
+      + ' 证据：`node frontend-test.mjs` 的 `94a`–`94r`（含文档 §14 五条用例与两组阴性对照）全绿，'
+      + ' 旧的 `87/88/89/90/90a/90b/90c/58ad` 一并保持通过。'
+      + ' `public/app.js`、`public/index.html`、`frontend-test.mjs` 与其它阶段共用，故 `rollback = shared`；'
+      + ' `public/patch-safety.js` 与交付文档本身可以单独撤回（删文件即回到旧行为）。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

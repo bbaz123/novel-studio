@@ -48,6 +48,7 @@
 | **TT** | 时态故事状态重构（T0–T8：版本化状态底座、保存接线、影响分析、逐章重建、上下文与界面） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **V1** | 2026-10-02 轮：v1.0.0 审计修复轮的取证材料与新增离线门禁（文档 + 测试，不含产品代码） | ✅ 可独立回滚 |
 | **G2** | 2026-10-02 轮：第二次 GitHub 展示面 / 增长优化（Description + Topics + 中英 README 首屏 + 文档索引与贡献者入口） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **SE** | 2026-10-07 第三批：Safe Editing 修稿安全门禁（确定性结构依赖 + 删除依赖 + 修后核验） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：U、V、Z4、V1。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -157,7 +158,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
   - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT——改动改在同一批代码里，撤不干净
 - **说明**：检索桶加在 server.js 的 search()、查回路径在 layers.mjs 的 RETRIEVAL；分别与 P2/P5 共享文件。
 - **验收证据**：`docs/p3-retrieval-verification.md`、`.p1-baseline/verify-retrieval.mjs`、`.p1-baseline/verify-plugin-tools.mjs`
@@ -176,7 +177,7 @@
   - ai/policy.mjs 被**生产代码** harness.js（P0/Z1）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** server.js（P2/P3/P5/Z2/Z3/PI/L/Z6/TT）import——撤掉会打断线上路径
   - 文件 docs/p4-policy-verification.md 同时属于 P4/S——改动改在同一批代码里，撤不干净
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
   - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT——改动改在同一批代码里，撤不干净
 - **说明**：策略单点化本身可撤（恢复各处字面量），但 ai/policy.mjs 被 harness.js 与 server.js import，前端与 server.js 又被 P3/P5 共同修改 → 无法只撤 P4。
 - **验收证据**：`docs/p4-policy-verification.md`、`ai/policy.mjs`、`.p1-baseline/verify-ai-branches.mjs`、`.p1-baseline/test-model-switch-gate.mjs`
@@ -213,7 +214,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X/Z3/TT/G2）import——撤掉会让该工具失效
+  - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X/Z3/TT/G2/SE）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/exp-concurrent-models.mjs（验收工具，D8/Z1）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/test-agent-memory-guard.mjs（验收工具，D8）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/test-harness-env.mjs（验收工具，X）import——撤掉会让该工具失效
@@ -539,7 +540,7 @@
   - 文件 .p1-baseline/test-context-manifest.mjs 同时属于 Z2/Z3——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-host-contract.mjs 同时属于 Z2/Z3/TT——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/verify-all.mjs 同时属于 X/Z2/Z3/TT——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE——改动改在同一批代码里，撤不干净
   - 文件 ai/context/assembler.mjs 同时属于 P2/Z2/Z3——改动改在同一批代码里，撤不干净
   - ai/context/assembler.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
 - **说明**：**不能单独回滚**：内核被 server.js、层规格与插件工具面同时引用，而那三处又是 P1–P6 / Z2 改过的同一批函数。 本轮的**设计前提**是「机制生效 ≠ 强制接入」：作品开关 story_state_config.enabled 默认 0，未开启时该层不进 manifest、不进 excluded、不计入可执行下限（floor(settings) 仍 = 18173）。 质量红线：本轮**没有**改模型、prompt 语义、reasoning effort、token 预算、层顺序与默认 AI route；逐字节上下文基线 **50/50 相同**；活实例断言「开启后只多一层且其余各层 emitted 逐层相同」。 详见 docs/story-state-kernel-2026-09-26.md。 第五步 Golden Novel 联合回归（19 类难 case）另抓到并修掉两处真实缺陷：① character_knowledge 的 upsert 少了部分唯一索引的 WHERE 谓词 → 角色知识边界整条路不可用（S14 回归 + 变异对照）；② knowledgeOf 的 unknown/suspected/false_belief 可见窗口方向反了 → 最需要提醒的章节反而看不见（S15 回归 + 变异对照）。 另补 GET /api/novel/state/facts（契约 1.1.0 → 1.2.0，附加式）。详见 docs/golden-novel-regression-2026-09-26.md。
@@ -625,8 +626,8 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2——改动改在同一批代码里，撤不干净
-  - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT——改动改在同一批代码里，撤不干净
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT——改动改在同一批代码里，撤不干净
+  - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
 - **说明**：**不能单独回滚**：public/app.js 是 P2–P5 / Z2 / Z3 反复改过的同一个文件。 本轮两件事，都是附加式：① 成文耗时测量层——新增 newWriteTiming() 分轮耗时账本；streamAIDirectWrite 多返回 ms/ttftMs； runHarnessJob 多返回客户端观测 ms；三处 showAIWritingResult 传入真实 channel/model/ms/timing （此前从未传过，导致 ai_eval_events 的 ms 恒为 0、channel/model 恒为空串）， 并附加一条 app_logs kind=ai_write_timing（含分轮明细与 draft_key）；② 超长 prompt 走 argv 触发 spawn ENAMETOOLONG 的修复（仅 Windows、仅超长时改走 dsh --profile novel - + stdin）——短/中文本与非 Windows 路径逐字不变，回滚只需把 useStdinPrompt 置 false。 质量红线：**没有**改模型、prompt 语义、上下文、reasoning effort、token 预算，也没有改任何生成分支的判断条件—— 测量值不参与决策，全部是附加字段。之所以走 app_logs 而不给 ai_eval_events 加列：避免 schema 迁移 与已冻结的 Host Contract 表清单变更（零迁移、零契约变更、零回滚风险）。 证据：frontend-test.mjs 新增 108h / 112a / 112b / 112c 四条断言（**既有期望值一字未改**）钉住 "埋点落库请求里就是真值"；任务设置离线 49/49、离线清单 32/32、API 186/190（0 失败）、插件冒烟 39/39 全绿。 详见 docs/ai-write-latency-plan.md 与 docs/HARNESS_ARGV_LIMIT_FIX.md。
 - **验收证据**：`docs/ai-write-latency-plan.md`、`docs/HARNESS_ARGV_LIMIT_FIX.md`、`frontend-test.mjs`
 - **本阶段认领的文件**（5 个）：
@@ -685,8 +686,8 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT——改动改在同一批代码里，撤不干净
-  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT——改动改在同一批代码里，撤不干净
+  - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
   - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT——改动改在同一批代码里，撤不干净
 - **说明**：独立重审（不继承上一轮 PASS）发现并修复的缺陷：① ISSUE-02：server.js 漏 import sampleSetHash，作品尚无文风档案时 GET /api/novel/style/profile 必 500 → 前端作者样文/档案/意图整卡降级；② ISSUE-03：R08 长文本单请求路径三处缺陷——revision_patch 的 parse 依赖 segment（单请求必抛 TypeError，「先审稿再应用→按清单修稿」永远出不了差异预览）；review / 按清单修稿 / 写作精修三类调用在单请求路径会先把模型跑一遍再让老路径跑第二遍（同一次任务双倍计费、双倍等待）；AI 写作草稿链的差异合并指纹以草稿为基准比对正文，永远拒绝合并。 修复全是最小改动（补齐 import / 单请求路径 singleRunByCaller 交回调用方 / 合并以审稿启动时的正文指纹为基准）， 未改 prompt 语义、模型路由、预算与任何注入字节。frontend-test.mjs 新增 58ad/58ae/58af 三条断言（先复现红，再转绿）。 证据：.verify-post/（本轮全部脚本与日志，可整体删除）。
 - **验收证据**：`docs/post-implementation-audit.md`、`docs/post-implementation-acceptance.md`、`docs/post-implementation-issues.md`、`docs/post-implementation-results.json`
@@ -825,7 +826,7 @@
 - **阻断原因（推导得出）**：
   - 文件 .p1-baseline/test-host-contract.mjs 同时属于 Z2/Z3/TT——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/verify-all.mjs 同时属于 X/Z2/Z3/TT——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE——改动改在同一批代码里，撤不干净
   - ai/repair/analyzer.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6）import——撤掉会打断线上路径
   - ai/repair/runner.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6）import——撤掉会打断线上路径
   - 文件 ai/story-state/approval.mjs 同时属于 Z3/TT——改动改在同一批代码里，撤不干净
@@ -919,7 +920,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE——改动改在同一批代码里，撤不干净
   - 文件 CONTRIBUTING.md 同时属于 W/Z2/G1/G2——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2——改动改在同一批代码里，撤不干净
@@ -933,9 +934,123 @@
   - `README.zh-CN.md`
   - `docs/README.md`
 
+### SE · 2026-10-07 第三批：Safe Editing 修稿安全门禁（确定性结构依赖 + 删除依赖 + 修后核验）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE——改动改在同一批代码里，撤不干净
+  - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
+  - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE——改动改在同一批代码里，撤不干净
+  - 文件 public/index.html 同时属于 S/SE——改动改在同一批代码里，撤不干净
+- **说明**：**只加一层确定性门禁，不改任何模型契约**：补丁 JSON 仍是 `{"patches":[{issue,anchor,revised}]}`， 提示词字段一字未动（文档 §15 里需要改模型输出契约的 `fact_delta` 自报属未选中的批次）。 门禁做的事：对每条补丁判定 `protected_content / story_fact / object_provenance / reference_anchor / scene_anchor`（外加只报告的 `causal_bridge_break`），命中的那一条**不进差异稿**，同批其余补丁照旧应用。 失败姿态是**放行**并在差异预览里写明 `safety_unavailable`——门禁不能阻塞作者修稿。 证据：`node frontend-test.mjs` 的 `94a`–`94r`（含文档 §14 五条用例与两组阴性对照）全绿， 旧的 `87/88/89/90/90a/90b/90c/58ad` 一并保持通过。 `public/app.js`、`public/index.html`、`frontend-test.mjs` 与其它阶段共用，故 `rollback = shared`； `public/patch-safety.js` 与交付文档本身可以单独撤回（删文件即回到旧行为）。
+- **验收证据**：`public/patch-safety.js`、`docs/safe-editing-gate-20261007.md`
+- **本阶段认领的文件**（6 个）：
+  - `.p1-baseline/verify-phase-map.mjs`
+  - `docs/safe-editing-gate-20261007.md`
+  - `frontend-test.mjs`
+  - `public/app.js`
+  - `public/index.html`
+  - `public/patch-safety.js`
+
 ## 三、归属核对
 
-- 真实改动集：**367** 个文件
-- 未被任何阶段认领：**0** 个
+- 真实改动集：**465** 个文件
+- 未被任何阶段认领：**96** 个
 
-✓ 全部改动都有归属。
+⚠️ 以下改动没有归属——没人能说清怎么回滚它们：
+  - `.p1-baseline/_split-own-diff-20261006.mjs`
+  - `.p1-baseline/ch121-current.txt`
+  - `.p1-baseline/ch121-v48-manual.txt`
+  - `.p1-baseline/ch121-v49-draft.txt`
+  - `.p1-baseline/cleanup-my-draft67.mjs`
+  - `.p1-baseline/dump-ch121.mjs`
+  - `.p1-baseline/e2e-adopt-realdata-20261006.mjs`
+  - `.p1-baseline/gen-recompute-ch119.mjs`
+  - `.p1-baseline/gen-regress-merge-20261005.mjs`
+  - `.p1-baseline/list-cards.mjs`
+  - `.p1-baseline/make-clean-backup.mjs`
+  - `.p1-baseline/probe-adopt-blocked-20261006.mjs`
+  - `.p1-baseline/probe-adopt-ledger-20261005.mjs`
+  - `.p1-baseline/probe-after-eperm.mjs`
+  - `.p1-baseline/probe-ch119-bp.mjs`
+  - `.p1-baseline/probe-ch119-words.mjs`
+  - `.p1-baseline/probe-ch121-compare.mjs`
+  - `.p1-baseline/probe-ch121-lineage.mjs`
+  - `.p1-baseline/probe-ch121-recovery.mjs`
+  - `.p1-baseline/probe-ch121-state-20261002.mjs`
+  - `.p1-baseline/probe-ch121-which-version.mjs`
+  - `.p1-baseline/probe-chapter-bodies.mjs`
+  - `.p1-baseline/probe-context-layers.mjs`
+  - `.p1-baseline/probe-draft66.mjs`
+  - `.p1-baseline/probe-final.mjs`
+  - `.p1-baseline/probe-fork-from-server.mjs`
+  - `.p1-baseline/probe-guard-check.mjs`
+  - `.p1-baseline/probe-guard-verdict-20261006.mjs`
+  - `.p1-baseline/probe-harness-spawn.mjs`
+  - `.p1-baseline/probe-hybrid-shape-20261005.mjs`
+  - `.p1-baseline/probe-job-tables-20261005.mjs`
+  - `.p1-baseline/probe-jobs-today.mjs`
+  - `.p1-baseline/probe-last-log.mjs`
+  - `.p1-baseline/probe-leak-detail.mjs`
+  - `.p1-baseline/probe-leak-layers.mjs`
+  - `.p1-baseline/probe-leak-words2.mjs`
+  - `.p1-baseline/probe-lineage-20261005.mjs`
+  - `.p1-baseline/probe-live-untouched-20261006.mjs`
+  - `.p1-baseline/probe-longtext-plan.mjs`
+  - `.p1-baseline/probe-merge-block-20261005.mjs`
+  - `.p1-baseline/probe-merge-fingerprint-2-20261006.mjs`
+  - `.p1-baseline/probe-merge-fingerprint-20261006.mjs`
+  - `.p1-baseline/probe-merge-fingerprint-3-20261006.mjs`
+  - `.p1-baseline/probe-new-rules.mjs`
+  - `.p1-baseline/probe-new-rules2.mjs`
+  - `.p1-baseline/probe-patch-verify-20261005.mjs`
+  - `.p1-baseline/probe-placement-cases.mjs`
+  - `.p1-baseline/probe-placement.mjs`
+  - `.p1-baseline/probe-placeof-regex.mjs`
+  - `.p1-baseline/probe-rebuild-20261005.mjs`
+  - `.p1-baseline/probe-recent-ai-logs.mjs`
+  - `.p1-baseline/probe-regex-min.mjs`
+  - `.p1-baseline/probe-repro-14-13-20261006.mjs`
+  - `.p1-baseline/probe-revisions-20261005.mjs`
+  - `.p1-baseline/probe-rewrite-mode.mjs`
+  - `.p1-baseline/probe-rules-catalog.mjs`
+  - `.p1-baseline/probe-run-1930.mjs`
+  - `.p1-baseline/probe-running-jobs.mjs`
+  - `.p1-baseline/probe-scenelogic-direct.mjs`
+  - `.p1-baseline/probe-spawn-child.mjs`
+  - `.p1-baseline/probe-spawn-job.mjs`
+  - `.p1-baseline/probe-spawn-sandbox.mjs`
+  - `.p1-baseline/probe-voice-detail.mjs`
+  - `.p1-baseline/probe-why-blocked.mjs`
+  - `.p1-baseline/probe-write-channel-20261005.mjs`
+  - `.p1-baseline/probe-yaml.mjs`
+  - `.p1-baseline/restore-ch121-v48.mjs`
+  - `.p1-baseline/smoke-draft-dismiss.mjs`
+  - `.p1-baseline/smoke-empty-guard.mjs`
+  - `.p1-baseline/smoke-review-dismiss.mjs`
+  - `.p1-baseline/spawn-attempt.txt`
+  - `.p1-baseline/spawn-capability.txt`
+  - `.p1-baseline/test-migration-draft-dismissed.mjs`
+  - `.p1-baseline/verify-adopt-fix-20261002.mjs`
+  - `.p1-baseline/verify-backups.mjs`
+  - `.p1-baseline/verify-ch121-untouched.mjs`
+  - `.p1-baseline/verify-ch121-untouched2.mjs`
+  - `.p1-baseline/verify-thinking-heartbeat-20261002.mjs`
+  - `ai/writing/compile.mjs`
+  - `ai/writing/policy.mjs`
+  - `ai/writing/scopes.mjs`
+  - `docs/adopt-guard-20261006.md`
+  - `docs/blueprint-regenerate-20261004.md`
+  - `docs/ch121-cast-fix-20261002.md`
+  - `docs/ch121-ledger-proposals-fix-20261002.md`
+  - `docs/character-timing-checklist.md`
+  - `docs/deai-round2-diagnostics-20261006.md`
+  - `docs/deai-source-fix-round3-20261002.md`
+  - `docs/deai-trace-baseline-20261002.md`
+  - `docs/draft-dismiss-20261004.md`
+  - `docs/empty-guard-no-exit-20261004.md`
+  - `docs/review-merge-empty-body-20261006.md`
+  - `docs/review-merge-force-20261006.md`
+  - `docs/save-incident-20261002.md`
+  - `docs/spawn-eperm-20261002.md`
+  - `scripts/cleanup-stale-blueprints-20261006.mjs`

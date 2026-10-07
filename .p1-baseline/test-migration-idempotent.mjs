@@ -57,7 +57,9 @@ const NEW_TABLES = ['author_approvals', 'adoption_operations', 'projection_outbo
   'import_rebuild_runs', 'import_rebuild_batches', 'library_docs',
   'library_index', 'novel_index_chapters', 'novel_index_characters', 'novel_index_events', 'novel_index_foreshadows',
   'novel_index_items', 'novel_index_knowledge', 'novel_index_locations', 'novel_index_meta', 'novel_index_relations',
-  'novel_index_style', 'novel_index_threads', 'novel_index_world'];
+  'novel_index_style', 'novel_index_threads', 'novel_index_world',
+  // 1.21.0（2026-10-06）：章节蓝图历史（每章最多两份；chapters.blueprint_json 降级为最新一份的镜像）
+  'chapter_blueprints'];
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-migration-'));
 let first = null;
