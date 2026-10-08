@@ -5549,5 +5549,58 @@ P.traceStopStream();
     JSON.stringify(puts));
 }
 
+// ── 接线修复（2026-10-08）第二批：另三个"有写路径、界面打不开"的开关 ────────────
+{
+  const savedFetch = sandbox.fetch;
+  const calls = [];
+  sandbox.fetch = async (url, opts = {}) => {
+    calls.push({
+      url: String(url),
+      method: String(opts.method || 'GET').toUpperCase(),
+      body: opts.body ? JSON.parse(String(opts.body)) : null,
+    });
+    return { ok: true, status: 200, text: async () => '{"ok":true,"enabled":true}' };
+  };
+  try {
+    await sandbox.setMemoryAutoCompress(true);
+    await sandbox.setNovelIndexEnabled(true);
+    await sandbox.rebuildNovelIndex();
+    await sandbox.setLibraryIndexEnabled(true);
+    await sandbox.rebuildLibraryIndex();
+  } finally {
+    sandbox.fetch = savedFetch;
+  }
+  const hit = (m, frag) => calls.find((c) => c.method === m && c.url.includes(frag));
+  const memPut = hit('PUT', '/novel/memory_auto_compress');
+  check('119g 自动压缩开关发出 PUT /novel/memory_auto_compress（它计费，作者必须能显式开关）',
+    memPut && memPut.body && memPut.body.enabled === true, JSON.stringify(memPut));
+
+  const novPut = hit('PUT', '/novel/novel_index');
+  const novRebuild = hit('POST', '/novel/novel_index/rebuild');
+  check('119h 资产索引：开关与重建都从界面可达（重建必须带 work_id）',
+    novPut && novPut.body && novPut.body.enabled === true && novRebuild && /work_id=\d+/.test(novRebuild.url),
+    JSON.stringify([novPut, novRebuild]));
+
+  const libPut = hit('PUT', '/novel/library/index/enabled');
+  const libRebuild = hit('POST', '/novel/library/index/rebuild');
+  check('119i 资料索引：开关与重建都从界面可达',
+    libPut && libPut.body && libPut.body.enabled === true && !!libRebuild, JSON.stringify([libPut, libRebuild]));
+
+  const row = sandbox.retrievalIndexesHtml(
+    { enabled: true, version: 'v3', tiers: { wired: ['character', 'event'], structure_only: ['world'] } },
+    { enabled: false, version: { version_key: 'lv9' } });
+  check('119j 索引那一行同时给出开关 / 重建按钮 / 分层 / 版本；未建时如实写"未建"',
+    row.includes('data-action="novel-index-toggle"') && row.includes('data-action="rebuild-novel-index"')
+    && row.includes('data-action="rebuild-library-index"')
+    && row.includes('character/event') && row.includes('world') && row.includes('v3') && row.includes('lv9')
+    && sandbox.retrievalIndexesHtml({}, {}).includes('未建'),
+    row.replace(/\s+/g, ' ').slice(0, 120));
+
+  const mrow = sandbox.memoryAutoCompressRow({ enabled: true, threshold: 6000, last_job: { status: 'failed', error: 'boom' } });
+  check('119k 自动压缩那一行带费用提示与上次作业状态（失败要能看见，而不是只能翻日志）',
+    mrow.includes('费用') && mrow.includes('阈值 6000') && mrow.includes('上次作业：failed') && mrow.includes('boom'),
+    mrow.replace(/\s+/g, ' ').slice(0, 120));
+}
+
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);
 process.exit(failures ? 1 : 0);

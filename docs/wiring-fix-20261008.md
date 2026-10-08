@@ -95,8 +95,12 @@
 
 ## 五、仍留在清单上的接线项（诚实标注）
 
-- 4 个半死开关的**界面入口**（`ov_recall_dedup` 优先：语义召回卡已有勾选框位置，省上下文预算；
-  `memory_auto_compress` 会花钱，需费用提示；两个索引开关还需 rebuild 按钮）。
+- ~~4 个半死开关的**界面入口**~~ → **已完成（第三批）**：`ov_recall_dedup`（语义召回卡）、
+  `memory_auto_compress`（长期记忆页，带**费用提示**与上次作业状态）、`novel_index_enabled` /
+  `library_index_enabled`（上下文预览页的「检索索引」组：开关 + **重建按钮** + 分层/版本）。
+  四者同一模式：动作拆成**有名函数**（前端桩 `El` 没有 `matches()`、`addEventListener` 是空操作，
+  无法派发事件——"动作是可调用函数"是它可以被断言的前提），配 `119f`–`119k` 逐条断言。
+  注意"打开了却不重建"等于没开（索引是派生数据），所以开关与重建按钮是**成对**出现的。
 - `annotateSemantic` 的 manifest 字段（要动契约，需随 host-contract 一起改）。
 - `wrapAsData` 的接线（要动所有请求字节，必须 A/B + 基线重冻，单独评估）。
 - `NOVELSTUDIO_PROPOSE_MODE` 的清理（事件/记忆两条路径已被 `agentChannel` 强制提案取代）。

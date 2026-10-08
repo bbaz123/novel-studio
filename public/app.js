@@ -3573,6 +3573,66 @@ async function setRecallDedup(enabled) {
   return api('/novel/semantic', { method: 'PUT', body: { dedup_recall: enabled === true } });
 }
 
+/**
+ * 两个**派生索引**的开关与重建（`novel_index_enabled` / `library_index_enabled`）。
+ *
+ * 2026-10-08 接线修复：两者都**有 PUT、没有界面入口**——作者只能手工调接口；
+ * 而且"打开了却不重建"等于没开（索引是派生数据，要先建一份才有候选可定位）。
+ * 所以界面上开关与重建按钮必须**成对**出现，并把版本显示出来，让"到底建没建、建到哪一版"可见。
+ * 与前两个开关同模式：动作拆成有名函数，前端桩才能直接调用（桩无法派发事件）。
+ */
+async function setNovelIndexEnabled(enabled) {
+  return api('/novel/novel_index', { method: 'PUT', body: { enabled: enabled === true } });
+}
+async function rebuildNovelIndex() {
+  return api(`/novel/novel_index/rebuild?work_id=${Number(state.workId) || 0}`, { method: 'POST' });
+}
+async function setLibraryIndexEnabled(enabled) {
+  return api('/novel/library/index/enabled', { method: 'PUT', body: { enabled: enabled === true } });
+}
+async function rebuildLibraryIndex() {
+  return api('/novel/library/index/rebuild', { method: 'POST' });
+}
+
+/** 检索索引那一组 HTML（纯函数：渲染与断言共用同一份文案，避免两处说法漂移）。 */
+function retrievalIndexesHtml(novel = {}, library = {}) {
+  const tier = (arr) => (Array.isArray(arr) ? arr.join('/') : '');
+  const nvVersion = novel.version || novel.version_key || '未建';
+  const libVersion = (() => {
+    const v = library.version;
+    if (!v) return '未建';
+    if (typeof v === 'string' || typeof v === 'number') return v;
+    return v.version || v.version_key || '已建';
+  })();
+  return `
+    <div class="ref-group-title">检索索引（派生数据 · 默认关闭 · 开启后需重建一次）</div>
+    <div class="row" style="gap:10px;flex-wrap:wrap">
+      <label class="row" style="display:inline-flex;gap:6px" title="资产索引（角色/事件/伏笔等）：只用于候选定位与审计，索引结果不作为新层注入上下文。">
+        <input type="checkbox" data-action="novel-index-toggle" ${novel.enabled === true ? 'checked' : ''}> 小说资产索引
+      </label>
+      <button class="btn small secondary" data-action="rebuild-novel-index">重建</button>
+      <span class="muted" style="font-size:12px">已接通：${esc(tier(novel.tiers && novel.tiers.wired) || '—')} · 仅建结构：${esc(tier(novel.tiers && novel.tiers.structure_only) || '—')} · 版本 ${esc(String(nvVersion).slice(0, 24))}</span>
+    </div>
+    <div class="row" style="gap:10px;flex-wrap:wrap">
+      <label class="row" style="display:inline-flex;gap:6px" title="资料索引（词法候选）：仅用于候选发现与查询扩展，候选/关键词/摘要不会进入模型上下文。">
+        <input type="checkbox" data-action="library-index-toggle" ${library.enabled === true ? 'checked' : ''}> 资料索引
+      </label>
+      <button class="btn small secondary" data-action="rebuild-library-index">重建</button>
+      <span class="muted" style="font-size:12px">版本 ${esc(String(libVersion).slice(0, 24))}</span>
+    </div>`;
+}
+
+async function loadRetrievalIndexes() {
+  const box = $('#retrieval-indexes');
+  if (!box) return;
+  // 两个索引的取状态互相独立：任一个读不到都按"关闭/未建"渲染，不让整块预览挂掉。
+  const [novel, library] = await Promise.all([
+    api('/novel/novel_index').catch(() => ({})),
+    api('/novel/library/index').catch(() => ({})),
+  ]);
+  box.innerHTML = retrievalIndexesHtml(novel || {}, library || {});
+}
+
 async function renderContextTab(list) {
   list.innerHTML = '<div class="muted" style="padding:4px 2px">加载中…</div>';
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || null;
@@ -3620,8 +3680,10 @@ async function renderContextTab(list) {
     <div class="ref-group-title">出场角色（${(ctx.scene_characters || []).length}）· 勾选 = 强制带入本章</div>
     <div class="context-char-list">${charRows || '<div class="muted" style="padding:2px 4px">暂无角色</div>'}</div>
     ${recallHtml}
+    <div id="retrieval-indexes" class="mt-8"></div>
     <div class="ref-group-title">装配结果（${(ctx.assembled || '').length} 字，超层预算的截断会在文中注明）</div>
     <pre class="context-preview">${esc(ctx.assembled || '')}</pre>`;
+  loadRetrievalIndexes();
 }
 
 // F-01：自动保存用闭包快照捕获当时的章节与内容，800ms 后触发时不再重查 DOM，
@@ -6768,6 +6830,44 @@ async function renderRebuildPage(content) {
 }
 
 // 小说设定 → 长期记忆 / 故事摘要
+/**
+ * 「自动压缩长期记忆」开关（`memory_auto_compress`）。
+ *
+ * 为什么单独抽出来：这个开关**有 PUT、没有界面入口**——作者只能手工调接口去改，
+ * 而它每次触发都是一次**计费**的模型调用，恰恰是最需要作者显式知情的那类开关。
+ * 拆成"动作 / 渲染"两个有名函数，理由与 `setRecallDedup` 相同：前端桩无法派发事件，
+ * 能测的前提是动作本身可调用（`temporalToggle` 同模式）。
+ */
+async function setMemoryAutoCompress(enabled) {
+  return api('/novel/memory_auto_compress', { method: 'PUT', body: { enabled: enabled === true } });
+}
+
+/** 自动压缩开关那一行的 HTML（纯函数：渲染与断言共用同一份文案，避免两处说法漂移）。 */
+function memoryAutoCompressRow(info = {}) {
+  const on = info.enabled === true;
+  const job = info.last_job || null;
+  const jobText = job
+    ? `上次作业：${esc(job.status || '未记录')}${job.error ? `（${esc(String(job.error).slice(0, 60))}）` : ''}`
+    : '上次作业：无记录';
+  return `
+    <div class="row" style="gap:8px;align-items:center">
+      <label class="row" style="display:inline-flex;gap:6px" title="开启后：保存正文超过阈值会自动建一次压缩作业。⚠️ 每次自动压缩都会调用模型并产生费用。">
+        <input type="checkbox" data-action="memory-auto-compress-toggle" ${on ? 'checked' : ''}> 自动压缩长期记忆
+      </label>
+      <span class="muted" style="font-size:12px">阈值 ${Number(info.threshold) || 0} 字 · ${jobText}</span>
+    </div>`;
+}
+
+async function loadMemoryAutoCompress() {
+  const box = $('#memory-auto-compress');
+  if (!box) return;
+  try {
+    box.innerHTML = memoryAutoCompressRow(await api('/novel/memory_auto_compress'));
+  } catch (_) {
+    box.innerHTML = '<div class="muted" style="font-size:12px">自动压缩开关状态读取失败（不影响手工压缩）</div>';
+  }
+}
+
 async function renderMemory(content) {
   const currentChapter = state.chapters.find((c) => c.id === state.currentChapterId) || null;
   content.innerHTML = `
@@ -6790,6 +6890,7 @@ async function renderMemory(content) {
       </div>
       <textarea id="story-memory-input" rows="8" placeholder="记录已经发生的重要剧情、伏笔、角色状态变化，AI 写作时会自动带入。"></textarea>
       <div class="muted mt-8">💡 这条记忆与正文写作、AI 上下文联动，保存后会在 AI 写作时作为长期记忆传入。</div>
+      <div id="memory-auto-compress" class="mt-8"></div>
     </div>
     <div class="card mb-12">
       <div class="card-head"><span class="card-title">章节作者注（联动） ${helpDot('chapter_note')}</span></div>
@@ -6807,6 +6908,7 @@ async function renderMemory(content) {
       ` : '<div class="muted">当前作品还没有章节</div>'}
     </div>`;
   loadStoryMemory();
+  loadMemoryAutoCompress();
 }
 
 async function loadStoryMemory() {
@@ -15738,6 +15840,20 @@ async function handleAction(action, actionEl, e) {
         await compressStoryMemory();
         break;
 
+      // 两个派生索引的「重建」入口（开关在同一处的检索索引组里）。
+      // 重建是纯派生数据（单向来自正典/资料登记表、幂等），所以不做二次确认。
+      case 'rebuild-novel-index':
+        await rebuildNovelIndex();
+        await loadRetrievalIndexes();
+        toast('小说资产索引已重建', 'success');
+        break;
+
+      case 'rebuild-library-index':
+        await rebuildLibraryIndex();
+        await loadRetrievalIndexes();
+        toast('资料索引已重建', 'success');
+        break;
+
       case 'open-memory-versions':
         await openMemoryVersions();
         break;
@@ -16518,6 +16634,29 @@ document.addEventListener('change', async (e) => {
     try {
       await setRecallDedup(e.target.checked);
       await renderContextTab($('#reference-list'));
+    } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
+    return;
+  }
+  // 自动压缩长期记忆（memory_auto_compress）：它**计费**，所以界面上必须能显式开关。
+  if (e.target.matches('[data-action="memory-auto-compress-toggle"]')) {
+    try {
+      await setMemoryAutoCompress(e.target.checked);
+      await loadMemoryAutoCompress();
+    } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
+    return;
+  }
+  // 两个派生索引的开关（novel_index_enabled / library_index_enabled）。
+  if (e.target.matches('[data-action="novel-index-toggle"]')) {
+    try {
+      await setNovelIndexEnabled(e.target.checked);
+      await loadRetrievalIndexes();
+    } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
+    return;
+  }
+  if (e.target.matches('[data-action="library-index-toggle"]')) {
+    try {
+      await setLibraryIndexEnabled(e.target.checked);
+      await loadRetrievalIndexes();
     } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
     return;
   }
