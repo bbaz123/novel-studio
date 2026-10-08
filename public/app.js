@@ -3559,6 +3559,20 @@ function renderReference(tab = 'terms') {
 
 // 参考面板「上下文」页签（v0.8.0）：预览本次实际装配的分层上下文与出场角色名单，
 // 作者可勾选角色强制带入（章节级覆盖，存 chapters.context_character_ids）。
+/**
+ * 召回去重开关（`ov_recall_dedup`）。
+ *
+ * 为什么要有这个**有名函数**、而不是把请求写死在 change 监听里：前端桩里 `El` 没有
+ * `matches()`、`addEventListener` 是空操作（无法派发事件），所以"能测"的前提是动作本身
+ * 是可调用的函数——`temporalToggle` 就是这个模式。
+ *
+ * 2026-10-08 接线修复：这个开关此前**只有 PUT、没有界面入口**，作者在 GUI 里够不到
+ * "真去掉重复召回条目"那一档（默认行为是"只标注不删除"，见 `docs/context-contract.md`）。
+ */
+async function setRecallDedup(enabled) {
+  return api('/novel/semantic', { method: 'PUT', body: { dedup_recall: enabled === true } });
+}
+
 async function renderContextTab(list) {
   list.innerHTML = '<div class="muted" style="padding:4px 2px">加载中…</div>';
   const chapter = state.chapters.find((c) => c.id === state.currentChapterId) || null;
@@ -3571,6 +3585,10 @@ async function renderContextTab(list) {
   }
   const sceneIds = new Set((ctx.scene_characters || []).map((c) => c.id));
   const forcedSet = new Set((ctx.scene_characters || []).filter((c) => c.forced).map((c) => c.id));
+  // 召回去重的当前取值：它是作品级 app_settings，**不在** context 响应里，所以单独取一次。
+  // 取不到就按"关闭"渲染——不让一个设置读取失败把整块上下文预览打掉。
+  let dedupRecall = false;
+  try { dedupRecall = (await api('/novel/semantic')).dedup_recall === true; } catch (_) { dedupRecall = false; }
   // OpenViking 语义召回层：状态 + 命中来源（写入 AI 上下文的新增分层）。
   const recall = ctx.semantic_recall || {};
   const recallStatusText = {
@@ -3583,7 +3601,7 @@ async function renderContextTab(list) {
       <div class="ref-desc muted">${esc(h.text || '')}</div>
     </div>`).join('');
   const recallHtml = `
-    <div class="ref-group-title">相关记忆检索（语义召回）· ${recallStatusText} · <label class="row" style="display:inline-flex;gap:4px"><input type="checkbox" data-action="semantic-toggle" ${recall.enabled === false ? '' : 'checked'}> 启用</label></div>
+    <div class="ref-group-title">相关记忆检索（语义召回）· ${recallStatusText} · <label class="row" style="display:inline-flex;gap:4px"><input type="checkbox" data-action="semantic-toggle" ${recall.enabled === false ? '' : 'checked'}> 启用</label> · <label class="row" style="display:inline-flex;gap:4px" title="开启后：与宿主层逐字重复的召回条目会被真正去掉；关闭时只在贡献记录里标注（默认）"><input type="checkbox" data-action="semantic-dedup-toggle" ${dedupRecall ? 'checked' : ''}> 去重生效</label></div>
     ${recallHits || '<div class="muted" style="padding:2px 4px">本次装配暂无召回命中（写入前可先保存章节/长期记忆，供记忆库向量化）</div>'}`;
   const charRows = state.characters.map((c) => {
     const inScene = sceneIds.has(c.id);
@@ -16491,6 +16509,14 @@ document.addEventListener('change', async (e) => {
   if (e.target.matches('[data-action="semantic-toggle"]')) {
     try {
       await api('/novel/semantic', { method: 'PUT', body: { enabled: e.target.checked } });
+      await renderContextTab($('#reference-list'));
+    } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
+    return;
+  }
+  // 召回去重（ov_recall_dedup）：动作走有名函数，便于前端桩直接调用（桩无法派发事件）。
+  if (e.target.matches('[data-action="semantic-dedup-toggle"]')) {
+    try {
+      await setRecallDedup(e.target.checked);
       await renderContextTab($('#reference-list'));
     } catch (_) { /* 开关失败忽略，下次刷新可见 */ }
     return;

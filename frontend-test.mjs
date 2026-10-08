@@ -5522,5 +5522,32 @@ P.traceStopStream();
     String(src).indexOf('loadEditRules(true)') >= 0 ? 'loadEditRules(true) 出现在 src' : '缺少启动预取');
 }
 
+// ── 接线修复（2026-10-08）：把"有写路径、界面打不开"的开关补上界面动作 ──────────
+// 判据钉的是**动作函数发出的请求体**，而不是"界面上有没有一个勾选框"：
+// 这套前端桩里 `El` 没有 `matches()`、`addEventListener` 是空操作（无法派发事件），
+// 所以能测的前提是动作本身是**可调用的有名函数**（`temporalToggle` 就是这个模式）。
+{
+  const savedFetch = sandbox.fetch;
+  const puts = [];
+  sandbox.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const method = String(opts.method || 'GET').toUpperCase();
+    if (u.includes('/novel/semantic') && method === 'PUT') {
+      puts.push(JSON.parse(String(opts.body || '{}')));
+      return { ok: true, status: 200, text: async () => '{"ok":true,"enabled":true,"dedup_recall":true}' };
+    }
+    return { ok: true, status: 200, text: async () => '{}' };
+  };
+  try {
+    await sandbox.setRecallDedup(true);
+    await sandbox.setRecallDedup(false);
+  } finally {
+    sandbox.fetch = savedFetch;
+  }
+  check('119f 召回去重开关发出 PUT /novel/semantic 且带 dedup_recall（此前界面上够不到这一档）',
+    puts.length === 2 && puts[0].dedup_recall === true && puts[1].dedup_recall === false,
+    JSON.stringify(puts));
+}
+
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);
 process.exit(failures ? 1 : 0);
