@@ -371,6 +371,26 @@ async function main() {
       JSON.stringify({ applied: apply2.json.applied, rows: rows2.length, state: updated.state }).slice(0, 200));
   }
 
+  // ── S14f 正文级知识边界（2026-10-08 接线）────────────────────────────────
+  // `detectKnowledgeViolations` / `detectAuthorScopeLeaks` 此前零调用点：预检 ⑦ 只看
+  // "契约是否要求一个此时点不知情的角色出场"（必须发生在动笔前），而"成文里真的写出了
+  // 他不该知道的事"只能**写后**判。上面 S14 刚好把三档知识登记进了库，这里直接复用。
+  {
+    const leak = await api('POST', '/api/novel/state/validate', {
+      work_id: workId, chapter_id: c1,
+      draft: '他忽然说出了幕后黑手的身份，满座皆惊。',
+    });
+    const codes = (leak.json.conflicts || []).map((c) => c.code);
+    ok('S14f 成文写出角色此时点不该知道的事 → 报 KNOWLEDGE_VIOLATION（只报告，不阻断）',
+      codes.includes('KNOWLEDGE_VIOLATION'), codes.join(',') || '（无）');
+    const clean = await api('POST', '/api/novel/state/validate', {
+      work_id: workId, chapter_id: c1, draft: '他走在街上，什么也没发生。',
+    });
+    ok('S14f- 阴性对照：成文没有提到该事实时**不报**（不冤枉作者）',
+      !(clean.json.conflicts || []).some((c) => c.code === 'KNOWLEDGE_VIOLATION'),
+      (clean.json.conflicts || []).map((c) => c.code).join(',') || '（无）');
+  }
+
   // ── S15 知识可见窗口：known 与非 known 的方向相反（S14 同源缺陷的②）────────
   // 判据：unknown/suspected/false_belief 描述的是「错误或不确定的认知」这件事，
   //   它**结束于** learned（那一章他学到真相）→ 只在 learned > 游标时可见。

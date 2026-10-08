@@ -344,7 +344,17 @@ export function applyProposal(proposalId, { onBeforeCommit = null } = {}) {
   return result;
 }
 
-/** 批量应用返回 stale 时，把整批标 stale（与单条应用保持同一可见口径）。 */
+/**
+ * 批量应用返回 stale 时，把整批标 stale（与单条应用保持同一可见口径）。
+ *
+ * ⚠️ 2026-10-08 审计：**当前零调用点**。它想服务的场景（批量/单条应用发现基线移动后
+ * 把提案标 stale）目前由各应用路径**内联**完成（见本站上方 `applyProposal` 里那两句
+ * `UPDATE story_state_proposals SET state='stale'`）。所以它不是被别的模块取代的重复实现
+ * （与 `temporal/impact.mjs` 的 `markDownstreamStale` 不是一回事：那个管**下游章节失效**，
+ * 这个管**提案自身的状态**），而是"写了没接"的辅助函数。
+ * 处置：本次**不改行为**，只如实标注。要么将来把内联的两处收口到它这里（同一口径只写一份），
+ * 要么确认不再需要后删除——留在没有标注的死代码里，下一次审计还会把它当成缺陷报一遍。
+ */
 export function markProposalsStale(ids = []) {
   let n = 0;
   for (const id of (Array.isArray(ids) ? ids : []).map(Number).filter((x) => x > 0)) {

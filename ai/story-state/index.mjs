@@ -33,9 +33,11 @@ export * from './store.mjs';
 
 import { buildAliasIndex } from './entities.mjs';
 import { deriveForeshadows, renderForeshadowLines } from './foreshadow.mjs';
-import { projectCanon, renderCanonLines } from './canon.mjs';
+import { projectCanon, renderCanonLines, classifyConflict } from './canon.mjs';
 import { buildTimelineView, ordinal } from './timeline.mjs';
-import { knowledgeOf } from './knowledge.mjs';
+// 2026-10-08：后两个判据此前**零调用点**——正文级知识边界一直没接进写后校验，
+// 于是 golden-novel 回归把它记成"漏报型空档"（预检 ⑦ 只看契约，不看成文）。
+import { knowledgeOf, detectKnowledgeViolations, detectAuthorScopeLeaks } from './knowledge.mjs';
 import { checkContract, renderContractSection, isCheckable } from './contract.mjs';
 import { buildStoryStateText, blockManifest, visibleOnly } from './semantic-context.mjs';
 import { scanInjection, wrapAsData } from './injection.mjs';
@@ -222,7 +224,20 @@ export function validateOf(comp, draft, { stateChanges = [], styleHits = [] } = 
   if (!comp) return { ok: false, reason: '该作品未开启确定性故事状态（开关关闭时不运行写后校验）', checks: [], summary: { total: 0, pass: 0, fail: 0, unknown: 0 } };
   const contractResult = checkContract(comp.contract || {}, draft, { stateChanges, styleHits });
   const text = String(draft || '');
-  const conflicts = [...comp.timelineView.leaks, ...comp.timelineView.inversions, ...comp.aliasIndex.conflicts];
+  // 正文级知识边界。预检 ⑦ 只看"契约是否要求一个此时点不知情的角色出场"——它必须发生在
+  // 动笔前；而"成文里真的写出了他不该知道的事"只能**写后**判。这两个判据此前零调用点，
+  // golden-novel 回归因此把这条记成"漏报型空档"。接上后**只报告不阻断**（与其他确定性判据同纪律）。
+  const characters = (comp.entities || [])
+    .filter((e) => String(e.kind) === 'character')
+    .map((e) => ({ id: e.id, name: e.canonical_name }));
+  const knowledgeConflicts = [
+    ...detectKnowledgeViolations(text, comp.knowledge, characters, comp.cursor),
+    ...detectAuthorScopeLeaks(text, comp.facts, comp.cursor),
+  ].map(classifyConflict);
+  const conflicts = [
+    ...comp.timelineView.leaks, ...comp.timelineView.inversions, ...comp.aliasIndex.conflicts,
+    ...knowledgeConflicts,
+  ];
   const projection = comp.projection;
   return {
     ok: true,

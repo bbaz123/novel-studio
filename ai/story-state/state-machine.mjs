@@ -8,9 +8,16 @@
  *     ② 把每个相位**映射回宿主状态词**（queued/running/done/failed/timeout/cancelled），
  *        使取消、恢复、轮询全部继续走宿主既有端点——插件不新增任务记录、不新增取消机制。
  *
- * 相位可以从**产物**推导（`derivePhase`），也可以由编排层显式推进（`nextPhase`）。
+ * 相位可以从**产物**推导（`derivePhase`），也可以由编排层显式推进（`advance(from, to)`）。
  * 两条路径共用同一张迁移表：`advance()` 在非法迁移上返回 `ok:false` 而不是抛异常，
  * 让调用方能把"流程走岔了"当成一条可上报的事件，而不是一次崩溃。
+ *
+ * ⚠️ 2026-10-08 订正：此处此前写的是 `nextPhase`，而**该符号从来不存在**
+ * （缺点报告 P3-07 记的"注释与代码不符"之一，会误导维护者去找一个不存在的函数）。
+ * 显式推进的入口就是 `advance`。
+ * 另：本模块的迁移逻辑（`advance` / `derivePhase` / `hostStatusOf` / `PHASES_BY_HOST_STATUS`）
+ * 目前仍是**零生产调用点**——只有 `PHASES` 词表经 server.js 下发。是否接进编排层属独立评估
+ * （判定见 `docs/wiring-fix-20261008.md`），本次只订正注释，不改行为。
  */
 
 const str = (v) => String(v || '');

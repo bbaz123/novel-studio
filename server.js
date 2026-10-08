@@ -3872,6 +3872,30 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
     }
   }
 
+  // ── 提示词注入遥测（2026-10-08 接线）─────────────────────────────────────
+  // `annotateLayers` / `summarizeInjection` 此前零调用点：模块头声明的三条防护里，
+  // 实际生效的只有 `scanInjection`，而且**只扫 story_state 一层**。这里把检测器接到
+  // **全部层**上，但**只记录、不改一个字节**——围栏（`wrapAsData`）会改写每一个请求，
+  // 属"改冻结装配"，仍按 OBS-06 待定，本批不碰。
+  // 用副本计算：即便 `annotateLayers` 返回的是新对象，也不让组装结果受任何影响。
+  // ⚠️ 必须走门面 `StoryState.*`：本文件只有 `import * as StoryState`，没有这两个函数的
+  // 顶层绑定——写成裸名会是 ReferenceError，而它发生在装配路径上，后果是**整个上下文
+  // 端点都不返回 assembled**（本批接线时真踩过一次，被 test-story-state-api 的 S1c 抓住）。
+  {
+    const scanned = StoryState.summarizeInjection(StoryState.annotateLayers(
+      layers.filter((l) => l && l.text).map((l) => ({ id: l.id, text: l.text }))
+    ));
+    if (scanned.flag_total > 0) {
+      log({
+        level: scanned.high_total > 0 ? 'warn' : 'info',
+        layer: 'ai', kind: 'prompt_injection_scan',
+        message: `上下文命中 ${scanned.flag_total} 条指令式文本模式（高危 ${scanned.high_total}）：`
+          + scanned.layers_with_flags.map((l) => `${l.id}(${l.total})`).join('、'),
+        context: { work_id: workId, chapter_id: chapter ? chapter.id : null, layers: scanned.layers_with_flags },
+      });
+    }
+  }
+
   // 装配：渲染 + 每层 cap + 总预算收敛（弹性层按 FLEX_ORDER 逐档压缩，零损失层绝不参与），
   // 并产出裁剪清单。总预算的「可执行下限」由 layers.mjs 的 computeFloor() 自动核算，
   // 不再靠注释里的手算数字（历史失误 1：预算常量不核算可执行下限）。
