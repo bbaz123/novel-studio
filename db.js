@@ -369,6 +369,24 @@ CREATE TABLE IF NOT EXISTS chapter_reviews (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- 修稿选择记录（E03，2026-10-09）：把"作者勾了哪几条问题、对着哪一份稿子"落成**独立**记录。
+-- 为什么必须独立于 chapter_reviews.checklist_json：那张表存的是"当前勾选状态"（会被后续操作覆盖），
+-- 而这份记录是**每一次发起修稿时的输入快照**——补丁里的 issue id 不在记录里就必须拒收
+--（"作者取消一个问题后不能把它包含在之前缓存的候选里"）。
+CREATE TABLE IF NOT EXISTS revision_selections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  review_id INTEGER,
+  snapshot_id TEXT NOT NULL DEFAULT '',
+  base_hash TEXT NOT NULL DEFAULT '',
+  selection_hash TEXT NOT NULL DEFAULT '',
+  plan_hash TEXT NOT NULL DEFAULT '',
+  selected_issue_ids_json TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT 'ui',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 -- ══════════════════════════════════════════════════════════════════════════════
 -- 确定性故事状态内核（novel-writing 插件阶段 · 全部为**附加式**新增，1.1.0）
 --

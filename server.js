@@ -32,6 +32,10 @@ import { planAndExecute as runRetrievalPlan } from './ai/novel-index/plan.mjs';
 import { layerContribution, recallHitContribution, omittedRecallContribution, dshContribution, dshBundleRuleEntries, buildContributionRecord, recordContributions, latestContributions, listContributions, findDuplicateLayer } from './ai/context/contributions.mjs';
 import { editingRuleCatalog, resolveEditingSelection, editingSelectionToSettings, buildEditingRuleBlock } from './ai/editing/rules.mjs';
 import { scanEditing } from './ai/editing/scan.mjs';
+// E03：审稿报告的结构化与**引用核验**（复用 E04 的判定，不另写一套）。
+import { structureReviewReport } from './ai/editing/narrative-review.mjs';
+// E04：叙事诊断的**确定性候选层**（复用 scanEditing 的统计，不复制它的判据）。
+import { narrativeCandidateSignals } from './ai/editing/narrative-scan.mjs';
 // R09：作者样文 → 结构化文风档案 → 三级作者意图。样文是**数据不是事实**：
 // 本模块只写作者样文/档案/意图三张表，绝不写 story_facts / story_events / character_knowledge。
 import * as AuthorStyle from './ai/style/store.mjs';
@@ -1112,7 +1116,7 @@ const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 // confirm / bootstrap 是作者动作，模型侧 403；确认前不写任何正式状态）。PUT /api/novel/state/temporal 启用
 // 改为迁移门禁（缺表/缺索引 → 503，不吞错误继续跑），启用即登记迁移版本，响应新增 migration 与首次启用的
 // enable_scope（预算 + 待重建范围）；未开启作品不触发额外模型调用、旧上下文不变；插件工具/端点面不变，无新表。
-const HOST_CONTRACT_VERSION = '1.21.0';
+const HOST_CONTRACT_VERSION = '1.22.0';
 
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
@@ -3251,6 +3255,22 @@ function omitLayersCacheSuffix(layers) {
   return Array.isArray(layers) && layers.length ? `|omit=${[...layers].sort().join('+')}` : '';
 }
 
+/**
+ * 阶段白名单（E02，2026-10-08）：`stage=draft|verify_style|rewrite`。
+ * 未知值一律忽略（返回 ''，不报错、不静默扩权）——与 `omit_layers` 同一姿态。
+ * 阶段只影响**有阶段变体**的编辑能力（ai/editing/rules.mjs 的 stage_rules）；
+ * 不传时装配器逐字沿用旧行为。
+ */
+const EDIT_STAGES = new Set(['draft', 'verify_style', 'rewrite']);
+function normalizeStage(value) {
+  const s = String(value || '').trim();
+  return EDIT_STAGES.has(s) ? s : '';
+}
+/** 阶段必须进缓存键：同一章 draft 与 verify_style 的规则块不同，不进键会互相误命中。 */
+function stageCacheSuffix(stage) {
+  return stage ? `|stage=${stage}` : '';
+}
+
 async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts = {}) {
   const work = prepare('SELECT * FROM works WHERE id = ?').get(workId);
   if (!work) return null;
@@ -3690,15 +3710,27 @@ async function buildNovelContext(workId, chapterId, mode = 'full', contextOpts =
       edit_abilities: getAppSetting('edit_abilities', ''),
       edit_genre: getAppSetting('edit_genre', 'general'),
     });
+    // 阶段化（E02）：装配器知道本次请求的真实阶段（`contextOpts.stage` / `contextOpts.task`）时，
+    // 规则块按阶段编译；两个都没传时逐字沿用旧行为（task='write'、无阶段）。
     if (selection.enabled) {
-      const block = buildEditingRuleBlock(selection, { task: 'write' });
+      const block = buildEditingRuleBlock(selection, {
+        task: String((contextOpts && contextOpts.task) || 'write'),
+        stage: String((contextOpts && contextOpts.stage) || ''),
+      });
       if (block.text) {
         editRulesLayer = L('edit_rules', block.text, {
           sourceIds: block.sources.map((s) => s.id),
-          note: `规则块 v${block.version}｜hash ${block.hash.slice(0, 12)}｜档位 ${block.tier}｜题材 ${block.genre}｜能力 ${block.sources.filter((s) => s.kind === 'ability').length} 项`,
+          // 阶段为空时 note 与接入前逐字一致（默认路径不许漂移）；有阶段时把阶段与变体写进去。
+          note: `规则块 v${block.version}｜hash ${block.hash.slice(0, 12)}｜档位 ${block.tier}｜题材 ${block.genre}｜能力 ${block.sources.filter((s) => s.kind === 'ability').length} 项`
+            + (block.stage ? `｜阶段 ${block.stage}` : ''),
         });
       }
-      editRulesMeta = { version: block.version, hash: block.hash, tier: block.tier, genre: block.genre, decisions: block.decisions, sources: block.sources };
+      editRulesMeta = {
+        version: block.version, hash: block.hash, tier: block.tier, genre: block.genre,
+        task: block.task, stage: block.stage, decisions: block.decisions, sources: block.sources,
+        // 审计摘要随层一起落库：证实"这一阶段进了哪些规则"，无需读正文。
+        audit: block.audit,
+      };
     }
   } catch (e) {
     // 规则层构建失败不能把生成路径打挂：记 warning，按"这一层没有数据"继续。
@@ -4113,6 +4145,49 @@ function mergeMemoryDraft(prevSummary, deltaEventsText) {
  *   rawText：AI 返回的无法解析的原文。宁可存原文也不丢 —— 一轮审稿要等好几分钟，
  *   因为 JSON 里多一个引号就整份丢弃，是 2026-09-14 真实事故的根因。
  */
+/**
+ * 修稿选择记录（E03）：写入"这一次修稿的输入快照"。
+ * 与 chapter_reviews.checklist_json 的区别：那边是**当前勾选状态**（会被覆盖），
+ * 这边是**每次发起修稿的选择**，用于复核与"补丁越权"判定。
+ */
+function saveRevisionSelection(workId, chapterId, payload = {}) {
+  const ids = Array.isArray(payload.selectedIssueIds) ? payload.selectedIssueIds.map((x) => String(x)) : [];
+  const info = prepare(`
+    INSERT INTO revision_selections
+      (work_id, chapter_id, review_id, snapshot_id, base_hash, selection_hash, plan_hash, selected_issue_ids_json, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Number(workId) || 0, Number(chapterId) || 0,
+    Number(payload.reviewId) || null,
+    asString(payload.snapshotId, '').slice(0, 200),
+    asString(payload.baseHash, '').slice(0, 200),
+    asString(payload.selectionHash, '').slice(0, 200),
+    asString(payload.planHash, '').slice(0, 200),
+    JSON.stringify(ids).slice(0, 20000),
+    asString(payload.source, 'ui').slice(0, 40),
+  );
+  // 每章只保留最近 20 次选择记录（与审稿保留 10 份同一思路：可复核，但不成垃圾场）。
+  prepare(`
+    DELETE FROM revision_selections WHERE chapter_id = ? AND id NOT IN (
+      SELECT id FROM revision_selections WHERE chapter_id = ? ORDER BY id DESC LIMIT 20
+    )
+  `).run(Number(chapterId) || 0, Number(chapterId) || 0);
+  return Number(info.lastInsertRowid) || 0;
+}
+
+function latestRevisionSelection(chapterId) {
+  const row = prepare('SELECT * FROM revision_selections WHERE chapter_id = ? ORDER BY id DESC LIMIT 1').get(Number(chapterId) || 0);
+  if (!row) return null;
+  let ids = [];
+  try { const parsed = JSON.parse(row.selected_issue_ids_json || '[]'); ids = Array.isArray(parsed) ? parsed.map((x) => String(x)) : []; } catch (_) { ids = []; }
+  return {
+    id: row.id, work_id: row.work_id, chapter_id: row.chapter_id, review_id: row.review_id || null,
+    snapshot_id: row.snapshot_id || '', base_hash: row.base_hash || '',
+    selection_hash: row.selection_hash || '', plan_hash: row.plan_hash || '',
+    selected_issue_ids: ids, source: row.source || '', created_at: row.created_at || '',
+  };
+}
+
 function saveReview(workId, chapterId, report, extra = {}) {
   const payload = report && typeof report === 'object' ? { ...report } : {};
   const rawText = asString(extra.rawText, '').slice(0, 200000);
@@ -5841,16 +5916,20 @@ async function handleAPI(req, res, pathname, query) {
     const noTools = String(query.tools || '') === '0';
     // 规划轮跳层（2026-10-04）：omit_layers=blueprint 表示"这一轮是在重新规划"。
     const omitLayers = normalizeOmitLayers(query.omit_layers);
+    // 阶段（E02）：draft / verify_style / rewrite —— 决定编辑能力注入哪一版文本。
+    const stage = normalizeStage(query.stage);
     const cacheKey = contextCacheKeyOf({ workId, chapterId, mode: 'full', phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
       + temporalCacheSuffixOf(workId, temporalParams)
       + (noTools ? '|notools' : '')
-      + omitLayersCacheSuffix(omitLayers);
+      + omitLayersCacheSuffix(omitLayers)
+      + stageCacheSuffix(stage);
     let budgeted = cacheGetContext(cacheKey, workId);
     if (budgeted === undefined) {
       budgeted = await buildNovelContext(workId, chapterId, 'full', {
         direction, directionSource, libraryRecallPhase, requestId,
         toolsAvailable: !noTools,
         omitLayers,
+        stage,
         boundary: temporalParams.boundary || undefined,
         commitId: temporalParams.commitId || undefined,
         worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
@@ -5887,7 +5966,11 @@ async function handleAPI(req, res, pathname, query) {
       context_id: budgeted ? budgeted.context_id : '',
       context_request_id: budgeted ? budgeted.context_request_id : '',
       context_integrity: budgeted ? budgeted.context_integrity : null,
-      context_envelope: budgeted ? budgeted.context_envelope : null
+      context_envelope: budgeted ? budgeted.context_envelope : null,
+      // E02（2026-10-09，additive）：直连通道也要能回答"这一轮注入了哪一版编辑规则"
+      // （阶段/hash/来源）。少了它，直连与 Harness 的"同阶段等价"只能靠读源码判断，
+      // 而两条通道各自算一份规则块正是 E02 要防的漂移。
+      edit_rules: budgeted ? budgeted.edit_rules : null
     });
   }
 
@@ -7545,12 +7628,14 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       edit_abilities: getAppSetting('edit_abilities', ''),
       edit_genre: getAppSetting('edit_genre', 'general'),
     });
-    const editRulesState = (task = 'write') => {
+    const editRulesState = (task = 'write', stage = '') => {
       const selection = resolveEditingSelection(editingSettings());
-      return { selection, block: buildEditingRuleBlock(selection, { task }) };
+      return { selection, block: buildEditingRuleBlock(selection, { task, stage: String(stage || '') }) };
     };
     if (resource === 'novel' && segments[2] === 'editing' && segments[3] === 'rules' && method === 'GET') {
-      const { selection, block } = editRulesState(asString(query.task, 'write'));
+      // 阶段（E02）：`?stage=draft|verify_style|rewrite` 只影响**有阶段变体**的能力；
+      // 不传 stage 时逐字沿用旧行为。界面与测试据此核对"同一能力在不同阶段拿到不同文本"。
+      const { selection, block } = editRulesState(asString(query.task, 'write'), asString(query.stage, ''));
       return sendJSON(res, 200, { ok: true, selection, block });
     }
     if (resource === 'novel' && segments[2] === 'editing' && segments[3] === 'scan' && method === 'POST') {
@@ -7569,15 +7654,24 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       const foreshadows = prepare("SELECT id, summary, foreshadow_status FROM story_events WHERE work_id = ? AND kind = 'foreshadow' ORDER BY id ASC").all(workId)
         .map((f) => ({ ...f, status: f.foreshadow_status }));
       const out = scanEditing(text, { abilities, genre: selection.genre, task: 'review', characters, foreshadows });
+      // E04（2026-10-09）：面向功能的叙事诊断 —— **确定性候选层**随扫描一起返回。
+      // 只在作者启用 `story-shape` 时产出（与 scan 的能力门控同口径）；语义审稿**没有**在这里跑，
+      // 所以永远带 `semantic_status:'not_run'`：界面不得据此显示"叙事诊断完成"。
+      const narrative = abilities.includes('story-shape')
+        ? narrativeCandidateSignals(text, { characters, genre: selection.genre })
+        : null;
       return sendJSON(res, 200, {
         ok: true,
         work_id: workId, chapter_id: chapterId || null,
         selection: { ...selection, abilities },
         ...out,
+        ...(narrative ? { narrative } : {}),
+        // 无论有没有候选都明确口径：这一层是确定性候选，不是"诊断结论"。
+        narrative_status: narrative ? narrative.semantic_status : 'not_requested',
       });
     }
     if (resource === 'novel' && segments[2] === 'editing' && method === 'GET') {
-      const { selection, block } = editRulesState(asString(query.task, 'write'));
+      const { selection, block } = editRulesState(asString(query.task, 'write'), asString(query.stage, ''));
       return sendJSON(res, 200, { ok: true, catalog: editingRuleCatalog(), selection, block });
     }
     if (resource === 'novel' && segments[2] === 'editing' && method === 'PUT') {
@@ -7590,7 +7684,7 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       setAppSetting('edit_genre', stored.edit_genre);
       // 设置改动影响所有作品的装配结果：整体作废进程内缓存（与 touchWork 同口径，但不改 updated_at）。
       contextCache.invalidateAll();
-      const { selection, block } = editRulesState(asString(body.task, 'write'));
+      const { selection, block } = editRulesState(asString(body.task, 'write'), asString(body.stage, ''));
       return sendJSON(res, 200, { ok: true, saved: stored, selection, block });
     }
   }
@@ -8310,16 +8404,19 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const noTools = String(query.tools || '') === '0';
     // 规划轮跳层（2026-10-04）：与 /api/ai_context 同口径、同缓存后缀。
     const omitLayers = normalizeOmitLayers(query.omit_layers);
+    const stage = normalizeStage(query.stage);
     const cacheKey = contextCacheKeyOf({ workId, chapterId, mode, phase: libraryRecallPhase, directionHash: directionHashOf(direction) })
       + temporalCacheSuffixOf(workId, temporalParams)
       + (noTools ? '|notools' : '')
-      + omitLayersCacheSuffix(omitLayers);
+      + omitLayersCacheSuffix(omitLayers)
+      + stageCacheSuffix(stage);
     let ctx = cacheGetContext(cacheKey, workId);
     if (ctx === undefined) {
       ctx = await buildNovelContext(workId, chapterId, mode, {
         direction, directionSource, libraryRecallPhase, requestId,
         toolsAvailable: !noTools,
         omitLayers,
+        stage,
         boundary: temporalParams.boundary || undefined,
         commitId: temporalParams.commitId || undefined,
         worldlineId: temporalParams.worldlineId === null ? undefined : temporalParams.worldlineId,
@@ -8925,16 +9022,113 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const report = body.report && typeof body.report === 'object' ? body.report : {};
     const rawText = asString(body.raw_text, '');
+    // E03：把审稿报告结构化并**核验引用**（结构化输入才有；只有行文本时逐字沿用旧行为）。
+    // 引用不合规的条目进 rejected（带理由）——不静默丢弃，作者能在报告里看见为什么被拒收。
+    const chapterText = htmlToPlain((chapter && chapter.content) || '');
+    const structured = structureReviewReport(report, {
+      text: chapterText,
+      baseHash: asString(body.base_hash, ''),
+      snapshotId: asString(body.snapshot_id, ''),
+    });
     // 有原文兜底时不再拒绝：报告解析失败也必须留下可回看的证据。
-    if (!asString(report.summary, '').trim() && !asArray(report.issues).length && !rawText.trim()) {
+    if (!asString(structured.summary, '').trim() && !asArray(structured.issues).length && !rawText.trim()) {
       return sendError(res, 400, '审稿报告不能为空');
     }
-    const reviewId = saveReview(chapter.work_id, chapterId, report, {
+    const reviewId = saveReview(chapter.work_id, chapterId, structured, {
       rawText,
-      status: body.status === 'raw' || (!asString(report.summary, '').trim() && !asArray(report.issues).length) ? 'raw' : 'parsed'
+      status: body.status === 'raw' || (!asString(structured.summary, '').trim() && !asArray(structured.issues).length) ? 'raw' : 'parsed'
     });
-    return sendJSON(res, 201, { ok: true, review_id: reviewId, status: rawText && !asString(report.summary, '').trim() ? 'raw' : 'parsed' });
+    return sendJSON(res, 201, {
+      ok: true,
+      review_id: reviewId,
+      status: rawText && !asString(structured.summary, '').trim() ? 'raw' : 'parsed',
+      structure: structured.structure,
+      findings_accepted: structured.counts ? structured.counts.accepted : 0,
+      findings_rejected: structured.rejected ? structured.rejected.length : 0,
+      // 拒收理由逐条给出（作者与测试都能核对"不是我漏了，而是引用没通过"）。
+      rejected: structured.rejected || [],
+    });
   }
+  // ── E03：修稿选择记录（独立于"当前勾选状态"，用于复核与补丁越权判定） ──
+  if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'selection' && method === 'PUT') {
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
+    const ids = asArray(body.selected_issue_ids);
+    if (!ids.length) return sendError(res, 400, 'selected_issue_ids 不能为空（没有选择就没有修稿依据）');
+    const selectionId = saveRevisionSelection(chapter.work_id, chapterId, {
+      reviewId: body.review_id, snapshotId: body.snapshot_id, baseHash: body.base_hash,
+      selectionHash: body.selection_hash, planHash: body.plan_hash,
+      selectedIssueIds: ids, source: body.source,
+    });
+    return sendJSON(res, 201, { ok: true, selection_id: selectionId, selected: ids.length });
+  }
+  if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'selection' && method === 'GET') {
+    const chapterId = Number(query.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const sel = latestRevisionSelection(chapterId);
+    return sendJSON(res, 200, { ok: true, selection: sel });
+  }
+  // E06：模型诊断 / 人工复判 / 结构指标 三类证据的**对照数据**（只读；比例由界面按样本量守卫决定是否显示）。
+  if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'comparison' && method === 'GET') {
+    const chapterId = Number(query.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const parseJson = (s) => { try { const v = JSON.parse(s || ''); return v && typeof v === 'object' ? v : {}; } catch (_) { return {}; } };
+    const checklistCounts = (raw) => {
+      const vals = Object.values(parseJson(raw) || {});
+      return {
+        confirmed: vals.filter((v) => v === 'confirmed' || v === true).length,
+        ignored: vals.filter((v) => v === 'ignored' || v === false).length,
+      };
+    };
+    const reviews = prepare('SELECT id, report_json, checklist_json, status, created_at FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 10').all(chapterId);
+    const reportShapes = reviews.map((r) => ({ id: r.id, created_at: r.created_at, ...checklistCounts(r.checklist_json) }));
+    const confirmed = reportShapes.reduce((n, r) => n + r.confirmed, 0);
+    const ignored = reportShapes.reduce((n, r) => n + r.ignored, 0);
+    const latestReport = reviews[0] ? parseJson(reviews[0].report_json) : null;
+    const selections = prepare('SELECT id, created_at, selected_issue_ids_json FROM revision_selections WHERE chapter_id = ? ORDER BY id DESC LIMIT 20').all(chapterId);
+    const latestSel = selections[0] ? { id: selections[0].id, created_at: selections[0].created_at } : null;
+    let structure = null;
+    try {
+      const sig = narrativeCandidateSignals(htmlToPlain(chapter.content || ''), {});
+      structure = {
+        paragraphs: sig.measured.paragraphs,
+        chars: sig.measured.chars,
+        dialogue_ratio: sig.measured.dialogue_ratio,
+        narrative_candidates: sig.candidates.length,
+        insufficient_data: sig.insufficient_data.length,
+        style_shape: sig.measured.style_shape,
+      };
+    } catch (_) { structure = null; }
+    return sendJSON(res, 200, {
+      ok: true, chapter_id: chapterId,
+      model: {
+        reviews: reviews.length,
+        latest: latestReport ? {
+          id: reviews[0].id, status: reviews[0].status, created_at: reviews[0].created_at,
+          structure: asString(latestReport.structure, '') || 'unknown',
+          issues: asArray(latestReport.issues).length,
+          findings: Array.isArray(latestReport.findings) ? latestReport.findings.length : 0,
+          findings_rejected: Array.isArray(latestReport.rejected) ? latestReport.rejected.length : 0,
+          deferred: asArray(latestReport.deferred).length,
+        } : null,
+        report_shapes: reportShapes,
+      },
+      human: {
+        reviews_with_checklist: reportShapes.filter((r) => r.confirmed + r.ignored > 0).length,
+        confirmed, ignored,
+        selections: selections.length,
+        latest_selection: latestSel,
+      },
+      structure,
+      // 比例能不能看由界面按样本量守卫决定：这里只给原始计数，避免两处各写一份阈值。
+      sample_inputs: { reviews: reviews.length, runs: selections.length },
+    });
+  }
+
   if (resource === 'novel' && segments[2] === 'review' && method === 'GET') {    const chapterId = Number(query.chapter_id);
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const review = getLatestReview(chapterId);

@@ -218,10 +218,12 @@ export function apply(ctx, config) {
     'output 的 assembled 字段就是可直接读入的整块上下文；scene_characters 是出场角色名单（forced=true 表示作者在工坊「上下文」页签强制带入的角色，写作时必须让其出场）。',
     'work_id/chapter_id 缺省时自动使用进程注入的身份（由 novel-studio 启动的任务自带）。mode: full=整章代写/分析, continuation=接龙续写, fragment=片段补写, settings=设定类生成轻量装配（不含当前场景/蓝图/前文衔接）。',
     '若任务提示词里已内联提供了同样的上下文（由 novel-studio 网页启动的任务通常如此），不必重复调用本工具，用 novel_lookup 按需补查即可。',
+    'stage 可选（E02）：draft=生成期（只给正向许可，不给评分任务，成文轮应在调用方未内联时显式传它）| verify_style=诊断期（完整判据 + 反证要求）| rewrite=修稿期（只管已选问题）。不传 = 沿用旧行为（基础规则文本）。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
     chapter_id: { type: 'string', description: '章节 id（可选）' },
     mode: { type: 'string', description: 'full | continuation | fragment | settings（默认 full）' },
+    stage: { type: 'string', description: '可选：draft | verify_style | rewrite（编辑规则的阶段；不传 = 旧行为）' },
   }, async (args) => {
     const workId = envId(args, 'work_id')
     if (workId === undefined) {
@@ -231,8 +233,10 @@ export function apply(ctx, config) {
     }
     const chapterId = envId(args, 'chapter_id')
     const mode = args.mode || process.env.NOVELSTUDIO_MODE || 'full'
+    // E02：阶段白名单与宿主同口径（`normalizeStage`）；非法值一律忽略而不是原样透传。
+    const stage = ['draft', 'verify_style', 'rewrite'].includes(String(args.stage || '')) ? String(args.stage) : ''
     // omitSuffix()：规划轮跳过上一版蓝图层（标记由宿主注入，见文件上方说明）
-    const ctx = await jfetch(`/api/novel/context${identitySuffix(workId, chapterId, mode)}${omitSuffix()}`)
+    const ctx = await jfetch(`/api/novel/context${identitySuffix(workId, chapterId, mode, { stage })}${omitSuffix()}`)
     if (!ctx.ok) throw new Error('novel-studio 返回异常')
     const head = `作品：${ctx.work?.title ?? ''}${ctx.chapter ? `｜当前章节：第${(ctx.chapter?.position ?? -1) + 1}节 ${ctx.chapter?.title ?? ''}` : ''}（mode=${ctx.mode ?? ''}）`
     const body = ctx.assembled || JSON.stringify(ctx)
@@ -657,12 +661,15 @@ export function apply(ctx, config) {
     '把成文的审稿报告保存到章节（审稿→确认清单→修稿→差异合并闭环的记录锚点）。',
     '用法：作者要求审稿时，先对照上下文输出审稿报告给作者（总评 + 问题逐条 + 优点），作者确认后调用本工具保存。',
     'report 参数：{ summary: "总评", issues: ["问题描述1", ...], strengths: ["优点1", ...] }。',
+    '推荐同时给 findings（结构化，可复核）：JSON 数组，每项 { id, kind, severity, verdict, evidence:[{quote}], reading_cost, rationale, counterevidence, suggested_action }。',
+    'evidence[].quote 必须是**正文里逐字存在**的片段（宿主会核验：定位不到或出现多次的条目会被拒收并给出理由）；counterevidence 写"为什么这可能只是有意手法"，缺了会被降级为待核验。',
     '保存后作者可在 novel-studio 界面逐条确认/忽略并按清单修稿。',
   ].join('\n'), {
     work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
     chapter_id: { type: 'string', description: '章节 id（必填）' },
     summary: { type: 'string', description: '审稿总评（两三句）' },
-    issues: { type: 'string', description: '问题清单，每条一行' },
+    issues: { type: 'string', description: '问题清单，每条一行（旧口径，仍支持）' },
+    findings: { type: 'string', description: '结构化结论（推荐）：ReviewV2 findings 的 JSON 数组字符串，含逐字引用与反证' },
     strengths: { type: 'string', description: '优点，每条一行（可选）' },
   }, async (args) => {
     const workId = envId(args, 'work_id')
@@ -673,13 +680,19 @@ export function apply(ctx, config) {
       issues: String(args.issues || '').split(/\n+/).map((s) => s.trim()).filter(Boolean),
       strengths: String(args.strengths || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)
     }
-    if (!report.summary.trim() && !report.issues.length) throw new Error('审稿报告不能为空')
+    if (String(args.findings || '').trim()) report.findings = String(args.findings)
+    if (!report.summary.trim() && !report.issues.length && !report.findings) throw new Error('审稿报告不能为空')
     const data = await jfetch('/api/novel/review', {
       method: 'PUT',
       body: { work_id: workId, chapter_id: chapterId, report },
       timeout: 30000
     })
-    return `审稿报告已保存（review #${data.review_id}）：${report.issues.length} 条问题，作者可在工坊界面确认清单并修稿。`
+    const rejected = Number(data.findings_rejected) || 0
+    const accepted = Number(data.findings_accepted) || 0
+    const tail = data.structure === 'review_v2'
+      ? `｜结构化结论 ${accepted} 条通过引用核验${rejected ? `，${rejected} 条因引用不合规被拒收（理由见报告）` : ''}`
+      : '｜（行文本口径）'
+    return `审稿报告已保存（review #${data.review_id}）：${report.issues.length} 条问题${tail}，作者可在工坊界面确认清单并修稿。`
   })
 
   register('novel_blueprint', [
@@ -1183,10 +1196,15 @@ export function apply(ctx, config) {
     const direction = normalizeDirectionArg(args.direction)
     const directionSource = ['confirmed_blueprint', 'saved_blueprint', 'agent', 'fallback'].includes(args.direction_source) ? args.direction_source : ''
     const info = await jfetch(`/api/novel/story_state?work_id=${encodeURIComponent(workId)}`)
+    // E02（2026-10-09）：装配必须带**阶段**，否则这条通道拿到的是"基础规则"（= 诊断判据 + 生成许可混在一起），
+    // 与直连通道（前端成文轮传 stage=draft）编译出的规则集合**不等价** ——
+    // 后果是"同样点一次成文，直连与慢通道注入的规矩不同"，而这正是《叙事性专项修复》E02 的通过条件之一。
+    // 本工具是**写作编排**入口（准备写作简报），因此阶段恒为 draft；诊断/修稿另有各自入口。
     const ctx = await jfetch(`/api/novel/context${identitySuffix(workId, chapterId, mode, {
       direction,
       direction_source: directionSource,
       library_recall_phase: direction ? 'direction' : undefined,
+      stage: 'draft',
     })}${omitSuffix()}`, { timeout: 40000 })
     const parts = [
       `【写作简报】作品：${ctx.work?.title ?? ''}${ctx.chapter ? `｜第${(ctx.chapter?.position ?? -1) + 1}节 ${ctx.chapter?.title ?? ''}` : ''}（mode=${ctx.mode ?? mode}）`,

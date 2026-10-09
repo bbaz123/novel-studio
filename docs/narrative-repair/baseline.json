@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "task_id": "narrative-repair-2026-10-08",
+  "captured_at": "2026-10-09",
+  "repo": {
+    "toplevel": "C:/Users/a1941/Desktop/DeepSeek/novel-studio",
+    "head": "10f964664e5d405f29e8afb351765dd489c128c7",
+    "branch": "Experimental-Version-v1.0",
+    "package_name": "novel-studio",
+    "package_version": "1.1.6",
+    "engines_node": ">=22.13.0",
+    "node_actual": "v24.19.0",
+    "scripts": { "start": "node server.js", "dev": "node --watch server.js" },
+    "has_npm_test": false,
+    "project_agents_md": null,
+    "uncommitted_before": ["public/index.html", "public/styles.css"],
+    "uncommitted_note": "作者自己的侧栏 GitHub 入口改动；本轮不 reset / clean / stash，改动前已做时间戳备份"
+  },
+  "backup": {
+    "dir": "data/backup-narrative-repair-20261009181433",
+    "files": ["app.js", "index.html", "styles.css", "patch-safety.js", "rules.mjs", "policy.mjs", "compile.mjs", "server.js"],
+    "layout": "files/ + uncommitted.diff + git-status.txt + README.md"
+  },
+  "fixtures": {
+    "dir": "tests/narrative-repair/fixtures",
+    "before_sha256": "ffeae9058ae7a2c1ee7dc589d1b735da260c9f59dcacbcf11b5e9584bce3a321",
+    "after_sha256": "932510efaa4b06892d05d6fab7ce257a7b019c2b82a72ce9e05974ba6b13d4f0",
+    "verified_change_groups": 6,
+    "producer": "scripts/materialize-narrative-fixtures.mjs",
+    "verified_at": "2026-10-09",
+    "scope": "fixture_integrity_only_not_novel_studio_tests"
+  },
+  "baseline_tests": [
+    {
+      "command": "node scripts/ci-offline-checks.mjs",
+      "cwd": "C:/Users/a1941/Desktop/DeepSeek/novel-studio",
+      "started_at_local": "2026-10-09T18:16 (approx)",
+      "exit_code": 0,
+      "passed": 53,
+      "failed": 0,
+      "log": ".narrative-repair/baseline-ci-offline.log",
+      "note": "改动前基线：53/53 全绿，零计费。改动后必须复跑并与此对比（见 test-report.md）"
+    }
+  ],
+  "reviews": [
+    {
+      "id": "review-2026-10-09",
+      "scope": "E01（补丁协议 v2）+ E02（阶段化规则编译）的全部改动与新文件",
+      "mode": "只读（审查期未改任何文件）",
+      "reviewers": ["本会话自审（对抗式）", "独立复查者 55e31f54（只读，未改文件、未提交、未起服务器）"],
+      "found": 12,
+      "by_severity": { "blocker": 0, "high": 1, "medium": 7, "low": 4 },
+      "high_finding": "句级跨度被逐条门禁按'整段替换/删除'模拟 → 安全的精确改动被 object_provenance/reference_anchor 误拦；且整批被拦使组合核验早退、无人纠正",
+      "fixes_verified_by": ["tests/narrative-repair/01 P16—P21", "frontend-test 94H/94H2/94H3/94I/94I2/94J/94K/94K2/94K3"],
+      "details": "docs/narrative-repair/test-report.md §2b、docs/narrative-repair/implementation-report.md §3",
+      "note": "两份清单在【高】那一条上独立重合；独立复查者另发现组合核验空白段错位、空补丁文案与缺失覆盖表、回滚文档不实、短跨度静默跳过等"
+    }
+  ],
+  "risk_triage": [
+    { "id": "C01", "claim": "ai/writing/policy.mjs 已有阶段作用域/允许略写/场面不设配额", "status": "verified", "evidence": "ai/writing/policy.mjs: scopes=WRITING_SCOPES, allow_omission / scene_detail_budget / scene_count_no_quota 均在，且 compileWritingRules 按 scope 过滤", "action": "复用，不新建同义策略" },
+    { "id": "C02", "claim": "buildAIWritingProsePrompt 仍要求每个场面补齐特定构件", "status": "already_fixed_before_this_round", "evidence": "public/app.js buildAIWritingProsePrompt 的『场面写法：功能驱动（不是每个场面都要写满）』段（2026-10-08 第五批）已替换旧的『每个场面必须有…』", "action": "本轮不重复实现；仅登记为 already_satisfied（见 implementation-report）" },
+    { "id": "C03", "claim": "fiction-humanizer 同时用于 write/review，规则倾向动作替代", "status": "fixed_this_round", "evidence": "ai/editing/rules.mjs 升 v1.5.0：fiction-humanizer / dialogue-editor 增加 stage_rules（draft 只给正向许可 / verify_style 给完整判据与反证要求 / rewrite 只管已选问题），buildEditingRuleBlock 接收 stage 并返回 audit；不传 stage 时逐字沿用基础 rule（03 E02-a）", "action": "已修；由 tests/narrative-repair/03（17/17）与 frontend-test 94B—94E 钉住" },
+    { "id": "C04", "claim": "refineByChecklist 的补丁失败/零命中分支仍可调用完整重写", "status": "fixed_this_round", "evidence": "改动前 public/app.js 约 11209『回退：整章重写』；本轮拆成 refineByFullRewrite + showRevisionUnresolved（仅作者显式动作触发）", "action": "已修；由 frontend-test 94x/94y/94z 钉住" },
+    { "id": "C05", "claim": "applyRevisionPatches 拒绝空 revised；子串锚点定位后替换整段", "status": "fixed_this_round", "evidence": "public/revision-patch.js 协议 v2 支持 op:'delete' 与精确 span；新提示词只下发 v2 契约", "action": "已修（v2 路径）；legacy 兼容路径按任务书要求保留旧语义并在报告里标明" },
+    { "id": "C06", "claim": "public/patch-safety.js 已有物件/先行语/场景来源检查", "status": "verified", "evidence": "patch-safety.js v1.1.0 gatePatches/deletionRisks/HARD_CODES", "action": "扩展而非重建：新增组合核验（verifyCombinedCandidate）复用其 deletionRisks / verifyPatchedText" },
+    { "id": "C07", "claim": "scan.mjs 有 style-density，默认关闭", "status": "verified", "evidence": "ai/editing/scan.mjs scanStyleDensity + 能力开关（.p1-baseline/test-editing-rules.mjs 覆盖）", "action": "本轮未改动" },
+    { "id": "C08", "claim": "文风分析已有均值/分位与语义未运行标记", "status": "verified_open", "evidence": "ai/style/author-profile.mjs analyzeStyle/buildStyleEvidence/isProfileStale", "action": "未改动（E06/E04 剩余项）" },
+    { "id": "C09", "claim": "插件 novel_review 把问题按换行字符串存储", "status": "verified", "evidence": "harness-plugins/novel-writing/novel-tools.mjs 约 656-682：issues 为换行分隔字符串；服务端 chapter_reviews.report_json 存 JSON", "action": "未改动（E03 剩余项：结构字段端到端）" },
+    { "id": "C10", "claim": "模型策略 fast/quality 共用 deepseek-flash", "status": "verified", "evidence": "ai/policy.mjs MODELS / EFFORT_BY_TIER（.p1-baseline/test-policy-tiers.mjs 覆盖）", "action": "未改动；本轮不换模型" }
+  ],
+  "evidence_boundaries": [
+    "没有读取作者的本地数据库、真实 API Key、隐藏工作区、当次审稿任务日志；无法归因样本历史运行",
+    "没有运行真实 DeepSeek API；一切结论来自本机离线检查",
+    "任务书公开分支行号（W05—W14）不是本机版本的证明；本文件只记录本机实测位置"
+  ],
+  "artifacts": {
+    "source_map": "docs/narrative-repair/source-map.md",
+    "execution_state": "docs/narrative-repair/execution-state.json",
+    "implementation_report": "docs/narrative-repair/implementation-report.md",
+    "test_report": "docs/narrative-repair/test-report.md",
+    "coverage_report": "docs/narrative-repair/coverage-report.json",
+    "rollback": "docs/narrative-repair/rollback.md"
+  }
+}

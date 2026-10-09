@@ -41,6 +41,16 @@
         <button data-view="trace" data-nav-section="support" title="排查问题用：把每次操作跑了哪些代码、花了多久、调了什么 AI 录成可回看的调用链。正常写作可以无视">⌁ <span>运行追踪</span></button>
         <button data-view="logs" data-nav-section="support" title="排查问题用：错误、慢操作、进程异常的记录。正常写作可以无视">≡ <span>日志</span></button>
       </nav>
+      <!-- 左下角常驻入口：本工坊仓库地址（新标签页打开；侧栏折叠时随侧栏一起移出画面） -->
+      <a class="sidebar-foot" href="https://github.com/bbaz123/novel-studio" target="_blank" rel="noopener noreferrer"
+        title="在 GitHub 上打开本工坊仓库：https://github.com/bbaz123/novel-studio"
+        aria-label="在 GitHub 上打开本工坊仓库（新标签页）">
+        <span class="sidebar-foot-icon" aria-hidden="true">🐙</span>
+        <span class="sidebar-foot-text">
+          <span class="sidebar-foot-label">GitHub 仓库</span>
+          <span class="sidebar-foot-url">bbaz123/novel-studio</span>
+        </span>
+      </a>
     </aside>
     <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
     <div class="main">
@@ -65,6 +75,14 @@
   <div id="tooltip" class="tooltip" hidden></div>
   <div id="ai-task-progress" class="ai-task-progress" hidden></div>
   <script src="/patch-safety.js"></script>
+  <!-- 补丁协议 v2（E01）：必须在 app.js 之前加载。
+       缺了它**不会**退回旧格式路径（新提示词只索取 span 级补丁，旧抢救分支救不了 v2 载荷）：
+       修稿会在发起付费请求之前明确拒绝并说明"协议模块未加载"，接回进度时也会给出同一个结论码
+       （schema_unavailable），不会把原因错写成"模型没输出 JSON"。 -->
+  <script src="/revision-patch.js"></script>
+  <!-- 局部编辑计划（E05）：把"已选问题"编译成受约束的授权跨度 + 不变量 + 依赖组。
+       必须在 revision-patch.js 之后（跨度口径复用它的 buildSpans）、app.js 之前。 -->
+  <script src="/revision-plan.js"></script>
   <script src="/long-text.js"></script>
   <script src="/app.js"></script>
 </body>

@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "task_id": "narrative-repair-2026-10-08",
+  "status": "in_progress",
+  "base_commit": "10f964664e5d405f29e8afb351765dd489c128c7",
+  "updated_at": "2026-10-09",
+  "next_task": "无（E00—E07 全部有交付与证据；未接线项与未评测项见 acceptance-report.md 第五节）",
+  "review_2026_10_09": {
+    "mode": "只读审查（自审 + 独立复查 55e31f54），审查期未改任何文件",
+    "found": 12,
+    "by_severity": {
+      "blocker": 0,
+      "high": 1,
+      "medium": 7,
+      "low": 4
+    },
+    "status": "全部已修并有回归断言（01 P16—P21、frontend-test 94H/94H2/94H3/94I/94I2/94J/94K/94K2/94K3、94G 状态还原）",
+    "details": [
+      "docs/narrative-repair/test-report.md §2b",
+      "docs/narrative-repair/implementation-report.md §3"
+    ],
+    "high": "句级跨度被逐条门禁按'整段替换/删除'模拟 → 安全改动被误拦；修复为按段落级真实 before/after 构造门禁输入，并补跨度级事实增量判据"
+  },
+  "changed_paths": [
+    "public/revision-patch.js",
+    "public/app.js",
+    "public/index.html",
+    "ai/editing/rules.mjs",
+    "server.js",
+    "scripts/materialize-narrative-fixtures.mjs",
+    "scripts/test-narrative-repair.mjs",
+    "scripts/ci-offline-checks.mjs",
+    "tests/narrative-repair/harness.mjs",
+    "tests/narrative-repair/01-patch-protocol.test.mjs",
+    "tests/narrative-repair/02-fixtures.test.mjs",
+    "tests/narrative-repair/03-stage-rules.test.mjs",
+    "tests/narrative-repair/fixtures/before.txt",
+    "tests/narrative-repair/fixtures/after.txt",
+    "tests/narrative-repair/fixtures/manifest.json",
+    "frontend-test.mjs",
+    "docs/narrative-repair/source-map.md",
+    "docs/narrative-repair/baseline.json",
+    "docs/narrative-repair/execution-state.json",
+    "docs/narrative-repair/implementation-report.md",
+    "docs/narrative-repair/test-report.md",
+    "docs/narrative-repair/coverage-report.json",
+    "docs/narrative-repair/rollback.md",
+    "叙事性专项修复.md"
+  ],
+  "artifacts": {
+    "source_map": "docs/narrative-repair/source-map.md",
+    "baseline": "docs/narrative-repair/baseline.json",
+    "implementation_report": "docs/narrative-repair/implementation-report.md",
+    "test_report": "docs/narrative-repair/test-report.md",
+    "coverage_report": "docs/narrative-repair/coverage-report.json",
+    "rollback": "docs/narrative-repair/rollback.md",
+    "fixtures": "tests/narrative-repair/fixtures",
+    "baseline_log": ".narrative-repair/baseline-ci-offline.log",
+    "post_log": ".narrative-repair/post-ci-offline.log",
+    "backup": "data/backup-narrative-repair-20261009181433"
+  },
+  "tests": [
+    {
+      "command": "node scripts/ci-offline-checks.mjs",
+      "when": "before",
+      "exit_code": 0,
+      "passed": 53,
+      "failed": 0
+    },
+    {
+      "command": "node scripts/ci-offline-checks.mjs",
+      "when": "after",
+      "exit_code": 0,
+      "passed": 54,
+      "failed": 0
+    },
+    {
+      "command": "node scripts/test-narrative-repair.mjs",
+      "when": "after",
+      "exit_code": 0,
+      "suites_passed": 2,
+      "suites_failed": 0,
+      "assertions_passed": 61,
+      "assertions_failed": 0
+    },
+    {
+      "command": "node frontend-test.mjs",
+      "when": "after",
+      "exit_code": 0,
+      "note": "含新增 1c 与 9c 接线断言（94s—94A）"
+    },
+    {
+      "command": "node scripts/materialize-narrative-fixtures.mjs \"叙事性专项修复.md\"",
+      "when": "after",
+      "exit_code": 0,
+      "note": "before_sha256=ffeae905…, after_sha256=932510ef…, verified_change_groups=6"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "E00",
+      "title": "建立证据基线与真实源码地图",
+      "status": "passed",
+      "evidence": [
+        "docs/narrative-repair/source-map.md（真实函数位置与调用关系）",
+        "docs/narrative-repair/baseline.json（仓库/版本/风险分流/基线测试）",
+        "tests/narrative-repair/fixtures/**（附录 A/B 的 hash 与六组改动在本机复算一致）",
+        "node scripts/ci-offline-checks.mjs 基线 53/0"
+      ],
+      "notes": [
+        "工作区有作者未提交改动（public/index.html、public/styles.css）：未 reset/clean/stash/切分支",
+        "本项目没有项目级 AGENTS.md；开发说明以 README.md / docs 为准",
+        "冻结样本导出脚本对'已存在且内容不同'的目标明确失败，不覆盖基线"
+      ]
+    },
+    {
+      "id": "E01",
+      "title": "先修局部补丁的执行正确性（P0）",
+      "status": "passed",
+      "evidence": [
+        "public/revision-patch.js（协议 v2.0.0：严格解码 / 跨度校验 / 依赖组原子 / 组合核验 / 幂等 / 预算）",
+        "public/app.js：buildAIRevisionPatchPrompt 下发 span_id+协议 v2；tryApplyRevisionOutput 分流；refineByChecklist 去掉失败回退并新增 showRevisionUnresolved / refineByFullRewrite",
+        "tests/narrative-repair/01-patch-protocol.test.mjs：53/53（P01—P09、P14 + P15 自证）",
+        "frontend-test.mjs：94s—94A（模块加载 / 精确跨度 / schema_error / stale / 显式失败出口 / 跨度目录）"
+      ],
+      "notes": [
+        "P08 的'单条安全、组合断裂'由前提断言 P08-PRE 与组合结论共同证明，不是只跑正例",
+        "legacy（anchor/revised）兼容路径按兼容要求保留，其'包含式退位替换整段'的旧语义已在本报告与 test-report 明确标注；新请求一律走 v2",
+        "P10/P11 的端到端编排（隔离实例 + 假模型）未跑，属 E07 剩余项"
+      ]
+    },
+    {
+      "id": "E02",
+      "title": "清理真实生成入口的模板冲突（P0）",
+      "status": "passed",
+      "evidence": [
+        "headline 冲突（'每个场面必须补齐构件'）是 2026-10-08 第五批已改的：本轮复跑未改，登记 already_satisfied",
+        "阶段化编译：ai/editing/rules.mjs 升 v1.5.0，fiction-humanizer / dialogue-editor 增加 stage_rules（draft / verify_style / rewrite 三版），buildEditingRuleBlock 接收 stage 并返回 audit（stage / policy_version / rule_ids / rule_sources / counts_by_type / stage_variants_used / base_fallbacks / truncated_layers）",
+        "不传 stage 时逐字沿用基础 rule（tests/narrative-repair/03 E02-a/E02-j 钉住）；未知阶段回落并标 base_fallback，不假装阶段生效",
+        "服务端接线：buildNovelContext 按 contextOpts.task/stage 编译规则块（两者都不传时行为逐字不变）；/api/ai_context 与 /api/novel/context 接受 stage 白名单参数并**进缓存键**（默认无 → 键与旧版逐字节相同）；/api/novel/editing/rules 与 PUT 也接受 stage",
+        "前端接线：loadAIContext 接受 stage（白名单 + 进客户端 key + 进两条 URL）；蓝图/成文/扩写/人设/细纲/批量成文 → draft，润色 → rewrite（真实请求 URL 由 frontend-test 94G 断言）",
+        "审稿轮口径：新增 WRITING_DISCIPLINE_REVIEW（同一份纪律 + 诊断/反证口径，不另写一份）；生成轮不带该口径（94B/94C/94D）",
+        "蓝图情节点不再把'身体动作'列为每点必填（94F）；ai/writing/policy.mjs 的 diagnostic 规则仍按 scope 挡在 draft 外（03 E02-i + 94E 审计摘要）",
+        "tests/narrative-repair/03-stage-rules.test.mjs：17/17",
+        "E02 剩余（通道等价 + 部署拷贝，2026-10-09）：novel_write_pipeline 的装配带 stage=draft（此前不带 → 直连与 Harness 注入不同规则集合）；novel_context 增加可选 stage（白名单，非法值不透传）；/api/ai_context 追加 additive edit_rules；同参数两条端点同一份 assembled + 同一 rule-block hash（E19—E19e）；Harness 侧路由输入级检查 + 变异测试（verify-plugin-tools）；前端 96c—96e 断言成文提示词仍带事实限制且不含诊断内容；新增只读部署拷贝核对 verify-preset-copy（结论 junction_ok，遗留拷贝无通道加载）"
+      ],
+      "notes": [
+        "尚未接线：审稿/修稿请求自身的上下文装配仍复用上一次 loadAIContext 的结果（没有为 verify_style 单独再取一次装配）。原因：那会多一次装配（时间与召回成本），属需要作者决定的行为改动 —— 已记入 next，不假装已做",
+        "AI 写作的慢通道（harness preset）侧仍走它自己的预设人设；本轮只保证直连通道与 HTTP 装配参数支持阶段"
+      ],
+      "next": [
+        "（无强制剩余）直连/Harness 一致性的回归已进 CI"
+      ]
+    },
+    {
+      "id": "E03",
+      "title": "对齐审稿结果与作者选择的端到端保真（P0）",
+      "status": "passed",
+      "evidence": [
+        "structureReviewReport（ai/editing/narrative-review.mjs）：结构化 findings 走引用核验（逐字定位、出现多次拒收、反证缺失降级 hypothesis）；兼容清单由结论派生（带 id/理由/逐字引用）；只有行文本时逐字沿用旧行为；findings 非合法 JSON 时如实报告",
+        "novel_review 增加 findings 参数（JSON 字符串）并在工具说明里写明引用与反证要求；PUT /api/novel/review 走结构化并返回 structure/findings_accepted/findings_rejected/rejected",
+        "新表 revision_selections（work_id/chapter_id/review_id/snapshot_id/base_hash/selection_hash/plan_hash/selected_issue_ids/source）+ PUT/GET /api/novel/revision/selection；空勾选 400；每章保留最近 20 次",
+        "前端：发起修稿前必写选择记录（失败会明确告知本次勾选无法事后复核）；取回路径读选择记录并据此收窄 selectedIssueIds，读不到时如实显示只按快照与章号校验",
+        "tests/narrative-repair/07-review-structure.test.mjs 10/10；.p1-baseline/test-editing-rules.mjs E15—E17b（路由级）；frontend-test 94K4/94K5"
+      ],
+      "notes": [
+        "模型侧是否真的产出合规 findings 需要真实审稿（付费未授权）：离线只验证'给了就核验'",
+        "选择记录目前只用于收窄与复核，尚未接'跨刷新共享重试预算'（仍属未接线项）"
+      ],
+      "next": [
+        "E06 剩余：对比视图（模型诊断 vs 人工复判 vs 结构指标并列）",
+        "把 must_keep/do_not_add 接到结构化 finding 的作者显式保护项"
+      ]
+    },
+    {
+      "id": "E04",
+      "title": "实现面向功能的叙事诊断（P1）",
+      "status": "passed",
+      "evidence": [
+        "ai/editing/narrative-scan.mjs：四类诊断（repeated_mechanism / redundant_explanation / spectacle_redundancy / reaction_homogeneity）的候选信号。**消费** scan.mjs 的确定性 findings（process-shape-repeat / crowd-function-repeat / camera-outside-media / duplicate-*），只自建三类结构测量：段内非通用 3-gram 重复、相邻段 bigram 包含度、相邻句骨架重复",
+        "不复制 scan.mjs 的词表：通用度用**文档频率**判定（跨段覆盖 ≥40% 视为通用），重复检测用字符 n-gram，没有任何 AI 词表",
+        "候选不定罪：suggested_action 只允许 condense/check、requires_semantic_check 恒真、每条都带 counterevidence_hint、severity 只到 low",
+        "数据不足显式返回：段落数 <4、对白占比 ≥75%、正文为空都会进 insufficient_data（不硬判）",
+        "段号口径统一：映射 scan.mjs 命中时用引用原文换算到本模块的空行分段口径，换算不到则如实标注来源口径",
+        "ai/editing/narrative-review.mjs：ReviewV2 finding 的引用核验（逐字可定位、重复引用拒绝）、反证缺失降级 hypothesis、auto_eligible 只给 confirmed 且排除 observation/deferred/keep、三类保护分区、§9.2 提示词",
+        "接线：POST /api/novel/editing/scan 在作者启用 story-shape 时返回 narrative（semantic_status 恒为 not_run），未启用时不返回",
+        "tests/narrative-repair/04-narrative-scan.test.mjs：24/24（正例 R02/R04/R06、阴性对照 R03/R05/R11、数据不足、引用核验与保护分区）",
+        ".p1-baseline/test-editing-rules.mjs：65/0（新增 E12—E14 的路由级证据）"
+      ],
+      "notes": [
+        "语义层未运行（付费评测未授权）：semantic_status 恒为 not_run，界面不得显示'叙事诊断完成'",
+        "前端开关与报告渲染属 E06，尚未做；因此作者目前只能通过扫描端点/接口看到候选",
+        "候选精度已如实记录：在 88 段的冻结样本上产出 9 条候选（含目标形状 p35 四处落雪、p41 '没关系'×2）；3-gram 阈值再收紧会漏掉 '没关系'×2 这一真实形状，故保留并交给语义层过滤"
+      ],
+      "next": [
+        "E06 的'叙事专项诊断'开关与报告渲染（把 narrative 候选接到界面）",
+        "真实模型语义审稿：需要独立授权与预算"
+      ]
+    },
+    {
+      "id": "E05",
+      "title": "把问题变成受约束的局部编辑计划（P1）",
+      "status": "passed",
+      "evidence": [
+        "public/revision-plan.js（UMD v1.0.0）：buildRevisionPlan 产出 hotspots（片段级授权跨度 + 只读上下文 + must_keep/do_not_add + 依赖组）、groups（同段或上下文重叠者合并为原子组，共享上下文但**跨度不变**）、coverage（planned/needs_scope/refused）、unlocated_hotspots、needs_explicit_widening（超预算举手并给候选范围）、selection_hash / plan_hash / isPlanStale、dry_run 恒真且无写盘路径",
+        "只支持 replace / delete / condense；condense 要求 Host 显式批准连续跨度（merged_span_approved），否则 refused（不静默降级成 replace）",
+        "跨度口径复用 public/revision-patch.js 的 buildSpans（不另写偏移逻辑）；定位到引号片段时把范围**收紧到片段本身**，不是整句/整段",
+        "buildRevisionPatchPromptFromPlan 只列授权跨度 + 只读上下文 + 不变量 + 依赖组，不含'通读/顺便优化'暗示",
+        "app.js 接线：revisionPlanFor 从问题描述的引号片段定位片段级跨度；有计划时把整章跨度目录**收窄到热点段落**，定位不到则如实退回整章并写明原因",
+        "tests/narrative-repair/05-revision-plan.test.mjs：18/18（含附录四个示范补丁进计划但不写真实稿、非授权跨度不变、预算举手、勾选变更作废、干跑）",
+        "frontend-test 94L—94L4：应用层收窄与 needs_scope 退回"
+      ],
+      "notes": [
+        "condense 的应用层入口（谁批准 merged span）尚未做：当前一律 refused（如实拒绝）",
+        "must_keep / do_not_add 的数据来源要等 E03 的结构化 finding 与作者的显式保护项；现在由调用方传入（app.js 目前传空）",
+        "计划的 selection_hash 已算好，但'跨刷新共享'仍缺落库（属 E03/E07 范围）"
+      ],
+      "next": [
+        "E06：叙事专项开关 + 差异预览展示'改动理由/未修改的保留理由'",
+        "把 must_keep / do_not_add 接到 E03 的结构化 finding 与作者显式保护项"
+      ]
+    },
+    {
+      "id": "E06",
+      "title": "接入设置与可解释报告（P1）",
+      "status": "passed",
+      "evidence": [
+        "审稿报告弹窗加两个可选授权（默认关闭、只影响这次修稿）：允许对已选问题局部压缩 / 把编辑器里选中的文字列为保护；存本机 localStorage，点「按确认清单修稿」时落盘",
+        "allowCondense 接进 buildRevisionPlan（关闭时 condense 一律 refused；跨句压缩还需 host 的 merged_span_approved），保护项同时进 patchSafetyOptions 与计划的 protectedSpans",
+        "差异预览新增：本次改动（问题 ID / 改动前 / 改动后 / 理由 / 撤销这一处）、校验状态（已验证 / 未核验 / 被拦下 + 未完成项 + 核验发现）、相对结论",
+        "单处撤销：candidateWithoutIssue 按原稿位置从后往前重建；缺位置或与原稿不一致时拒绝（不部分应用）；按钮重建候选并刷新，该问题在覆盖表里标 dropped",
+        "相对结论守卫：comparisonVerdict 未读 diff 时只返回 needs_diff_review；读过也只给相对观察并要求作者确认",
+        "修掉两个实现缺陷：tryApplyRevisionOutput 漏带 start/end（撤销必然失败）、撤销分支误用不存在的变量 target（撤销静默失效）",
+        "tests/narrative-repair/06-report.test.mjs 13/13；frontend-test 94M—94Q2",
+        "对照视图（E06 剩余）：GET /api/novel/revision/comparison 返回三类证据的原始计数（模型诊断/人工复判/结构指标），比例是否可看由 revisionSampleGuard 决定——样本不足时只允许看单次明细并写明不得据此判断趋势；入口在审稿报告弹窗"
+      ],
+      "notes": [
+        "两个开关的入口在审稿报告弹窗（作者做决定的一步），未另建设置页卡片",
+        "must_keep / do_not_add 仍由调用方传入，等 E03 的结构化 finding 与作者显式保护项"
+      ],
+      "next": [
+        "must_keep / do_not_add 的数据来源（作者显式保护项）",
+        "设置页卡片（可选：两个开关目前只在审稿弹窗）"
+      ]
+    },
+    {
+      "id": "E07",
+      "title": "完成回归、运行证据与交付（P1）",
+      "status": "passed",
+      "evidence": [
+        "scripts/run-narrative-acceptance.mjs：按**退出码**判定（不看输出里是否出现「通过」二字），逐条记录 cwd/开始时间/耗时/退出码/通过失败数/日志路径，产出 docs/narrative-repair/e07-run-manifest.json",
+        "9 条必做命令全部退出码 0：ci-offline 54/0、专项套件 7 个（159 条断言）、frontend、隔离实例-编辑规则 79/0、隔离实例-迁移 13/0、host-contract 28/0、插件工具面与通道 7 项、部署拷贝 junction_ok、冻结样本复算",
+        "docs/narrative-repair/acceptance-report.md：§10.2 九维验收清单 + §8 的 I01—I08 逐项对照证据",
+        "implementation-report.md §1b：Cxx/Nxx/Lxx → 代码变化 → 测试用例 → 结果 的逐条映射（C01/C10 标 already_satisfied、C08 标 partial、N/L 类标「机制已实现、文学效果待评测」）",
+        "rollback.md 按 §10.3 更新并逐条给出验证命令与结果（特性开关可单独回滚且关掉后 assembled 逐字节一致；正确性修复不依赖规则开关；新增字段是可忽略的版本化扩展；DB 有重复启动/旧库/损坏库测试）",
+        "阶段映射：新增 SE6 阶段登记本轮 27 个文件（门禁报告「✓ SE6 的 6 项证据都在」，本轮改动无未归属文件），docs/phase-map.md 已用 --write 重新生成；门禁仍失败的原因是 96 个历史遗留文件未归属（非本轮）",
+        "付费调用 0 次：SKIPPED: paid_evaluation_not_authorized / SKIPPED: missing_frozen_blueprint"
+      ],
+      "next": [],
+      "notes": [
+        "真实模型文学评测未执行（未使用本轮 2 元授权）：审稿覆盖/局部修稿/生成实验都未做",
+        "未在真实浏览器 + 真实数据库上走一遍 diff→合并→保存→空覆盖护栏",
+        "E06 两个开关只做了离线/桩级验证",
+        "C08（文风分析样本来源与按阶段使用）未实现（不属 P0/P1 闭环必需）",
+        "git commit 仍会被 verify-phase-map 拦住：96 个历史遗留文件未归属，需作者或更早轮次补登记或清理"
+      ]
+    }
+  ],
+  "blockers": [
+    "真实 LLM 文学评测未获独立授权与预算 → SKIPPED: paid_evaluation_not_authorized",
+    "生成实验缺少冻结蓝图 → SKIPPED: missing_frozen_blueprint"
+  ]
+}

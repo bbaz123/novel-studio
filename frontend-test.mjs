@@ -931,8 +931,12 @@ globalThis.__probe = {
   settleOldContentBeforeOverwrite, reportLegacyGuardFailures, pendingEditorSnapshotFor, discardPendingEditorWorkFor, discardSupersededEditorWorkFor,
   proposalRefOf, collectCheckedProposalRefs, proposalIdsOfRefs,
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
+  parseRevisionPatchesDetailed, revisionPatchEngine, revisionSnapshotFor, revisionSpanCatalogue,
+  showRevisionUnresolved, refineByFullRewrite, revisionCoverageHtml, showRevisionDispositions,
+  revisionPlanEngine, revisionPlanFor, revisionSpanCatalogue, showReviewReport, revisionPreference, setRevisionPreference,
+  revisionComparisonHtml, showRevisionComparison,
   patchSafetyEngine, patchSafetyOptions, patchSafetyGate, patchSafetyVerify, patchSafetyNotesHtml,
-  WRITING_DISCIPLINE, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
+  WRITING_DISCIPLINE, WRITING_DISCIPLINE_REVIEW, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
   continuityGuardSummaryHtml,
   streamAIDirectWrite,
   performToolbarAIWrite, askAIQuestion, askToolbarAIWriteRequirement, showBlueprintConfirm, openModal, closeModal, restoreChapterDraft, previewChapterDraft, dismissChapterDraft, refreshRecoveryBar, dismissJobResult, dismissChapterReview,
@@ -941,7 +945,7 @@ globalThis.__probe = {
   newWriteTiming,
   withThinkingHeadroom,
   verifyAIDraft,
-  contentHashOf, classifyChapterLength, writingPolicyLines,
+  contentHashOf, classifyChapterLength, writingPolicyLines, writingStageAudit,
   WRITING_POLICY_FALLBACK_RULES, WRITING_POLICY_FALLBACK_VERSION,
   pollHarnessJob, showAITaskProgress, runHarnessJob, handleAction,
   ATTRIBUTIONS, renderThanks, AI_TABS,
@@ -967,6 +971,13 @@ try {
   // 第三批同理：/patch-safety.js 也先于 /app.js（修稿安全门禁；缺了它 app.js 会**放行**但在预览里明示）。
   const patchSafetySrc = fs.readFileSync(path.join(repoRoot, 'public', 'patch-safety.js'), 'utf8');
   new vm.Script(patchSafetySrc, { filename: 'patch-safety.js' }).runInContext(ctx, { timeout: 10000 });
+  // E01：补丁协议 v2 也必须先于 app.js（index.html 里同序）。缺了它 app.js 会退回旧格式路径，
+  // 所以这条加载与下面 "1c" 断言一起，负责把"少一个 script 标签导致新协议整体失效"钉住。
+  const revisionPatchSrc = fs.readFileSync(path.join(repoRoot, 'public', 'revision-patch.js'), 'utf8');
+  new vm.Script(revisionPatchSrc, { filename: 'revision-patch.js' }).runInContext(ctx, { timeout: 10000 });
+  // E05：编辑计划模块必须在 revision-patch.js 之后（它复用那边的 buildSpans 口径）。
+  const revisionPlanSrc = fs.readFileSync(path.join(repoRoot, 'public', 'revision-plan.js'), 'utf8');
+  new vm.Script(revisionPlanSrc, { filename: 'revision-plan.js' }).runInContext(ctx, { timeout: 10000 });
   const longTextSrc = fs.readFileSync(path.join(repoRoot, 'public', 'long-text.js'), 'utf8');
   new vm.Script(longTextSrc, { filename: 'long-text.js' }).runInContext(ctx, { timeout: 10000 });
   new vm.Script(src + probeSrc, { filename: 'app.js' }).runInContext(ctx, { timeout: 20000 });
@@ -981,6 +992,12 @@ if (runtimeError) {
 }
 const P = sandbox.__probe;
 check('1b 探针成功取出追踪模块引用', !!P && !!P.trace && typeof P.traceToggle === 'function');
+check('1c 补丁协议 v2 模块随页面加载（UMD，先于 app.js）',
+  !!sandbox.NovelRevisionPatch
+  && typeof sandbox.NovelRevisionPatch.VERSION === 'string'
+  && sandbox.NovelRevisionPatch.VERSION.startsWith('2.')
+  && typeof sandbox.NovelRevisionPatch.runRevisionPipeline === 'function',
+  sandbox.NovelRevisionPatch ? sandbox.NovelRevisionPatch.VERSION : 'missing');
 if (!P) process.exit(1);
 // --- P0-01：409 保存冲突必须可恢复（本地优先 / 服务端优先） ---
 {
@@ -2393,7 +2410,10 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     const r = P.tryApplyRevisionOutput('{"patches":[]}', article);
     return !!r && r.ok === true && r.noop === true && r.text === article && r.applied.length === 0 && r.unresolved.length === 0;
   })());
-  check('90 补丁都定位不到时 ok=false（调用方据此回退）', (() => { const r = P.tryApplyRevisionOutput(JSON.stringify({ patches: [{ anchor: '不存在的段落。', revised: 'x' }] }), article); return !!r && r.ok === false && r.unresolved.length === 1; })());
+  // ⚠️ 2026-10-08 规格变更（《叙事性专项修复》E01／§6.6）：`ok=false` 仍然表示"这批补丁不可用"，
+  //    但**调用方不再据此回退整章重写**（那是付费且无门禁的整章覆盖）。断言保持不变，
+  //    "不回退"由下面 94s 那组接线断言（refineByChecklist 里已没有 buildAIRevisionPrompt）负责。
+  check('90 补丁都定位不到时 ok=false（调用方不得据此整章重写，见 94s）', (() => { const r = P.tryApplyRevisionOutput(JSON.stringify({ patches: [{ anchor: '不存在的段落。', revised: 'x' }] }), article); return !!r && r.ok === false && r.unresolved.length === 1; })());
 
   // R02.3（2026-09-27）：唯一性与重叠必须显式失败，不能静默改错段/吞补丁。
   const dupArticle = ['相同的话。', '第二段：别的。', '相同的话。'].join('\n\n');
@@ -2408,10 +2428,15 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   ]);
   check('90c 重叠补丁（同段两条）显式拒绝第二条、保留第一条', overlap.applied.length === 1 && overlap.unresolved.length === 1 && /重叠/.test(overlap.unresolved[0].reason) && overlap.text.includes('改甲。') && !overlap.text.includes('改乙。'), JSON.stringify(overlap.unresolved[0] && overlap.unresolved[0].reason));
 
-  // 提示词契约：必须要求 JSON 补丁、只改相关段落、anchor 逐字
+  // 提示词契约：必须要求 JSON 补丁、只改相关跨度、span 与原句逐字
+  // ⚠️ 2026-10-08 规格变更（E01／§6.4）：下发协议从"anchor/revised"改成 v2
+  //    （span_id + op + original + replacement）。旧字段名不再出现在新提示词里，
+  //    旧字段仍由解析器的兼容分支接收（见 80c/80d 的抢救断言）。
   const prompt = P.buildAIRevisionPatchPrompt(article, ['问题一', '问题二']);
-  check('91 补丁提示词含 JSON 契约与 anchor/revised 字段', prompt.includes('"patches"') && prompt.includes('anchor') && prompt.includes('revised'));
-  check('92 补丁提示词明确"只改相关段落、其余不要输出"', /只修改/.test(prompt) && /不要输出/.test(prompt));
+  check('91 补丁提示词含 JSON 契约与协议 v2 字段（span_id/op/original/replacement）',
+    prompt.includes('"patches"') && prompt.includes('span_id') && prompt.includes('"op"')
+    && prompt.includes('original') && prompt.includes('replacement') && prompt.includes('"schema_version":2'));
+  check('92 补丁提示词明确"只修相关跨度、其余不要输出"', /只修改/.test(prompt) && /不要输出/.test(prompt));
   check('93 补丁提示词带上确认清单', prompt.includes('1. 问题一') && prompt.includes('2. 问题二'));
   check('94 整章重写提示词仍保留（兜底路径）', P.buildAIRevisionPrompt(article, ['问题一']).includes('完整正文'));
 }
@@ -2538,6 +2563,394 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   P.closeModal();
 }
 
+// --- 9c) E01 接线：《叙事性专项修复》局部补丁协议 v2（2026-10-08）-----------------
+// 覆盖 P06/P10/P13 的**应用层**面（模块级判定在 tests/narrative-repair/01-patch-protocol.test.mjs）：
+//   · 新协议真的被下发（span_id + op + original + replacement），跨度目录里带稳定 span_id；
+//   · 精确跨度替换：只授权长段里的一句 → 只改这一句；
+//   · 协议 schema 错误与 stale 都被**如实拒绝**，且原文一个字符不动；
+//   · 失败不再自动扩大为整章重写（静态：调用方里没有整章重写分支；动态：只有作者动作才发整章请求）。
+{
+  const RP = sandbox.NovelRevisionPatch;
+  check('94s 补丁协议 v2 模块随页面加载（index.html 顺序先于 app.js）',
+    !!RP && typeof RP.VERSION === 'string' && RP.VERSION.startsWith('2.') && P.revisionPatchEngine() === RP,
+    RP ? RP.VERSION : 'missing');
+
+  const longPara = '第一句写了很多东西，其中提到了雨、伞和鞋子，还有一整段别的内容。';
+  const v2Article = [longPara, '第二段：他站着没动。'].join('\n\n');
+  const snap = P.revisionSnapshotFor(v2Article, 107);
+  const sentSpan = RP.buildSpans(v2Article, { sentences: true }).find((x) => x.kind === 'sentence');
+  const v2Payload = JSON.stringify({
+    schema_version: 2, snapshot_id: snap.snapshot_id, base_hash: snap.body_hash,
+    patches: [{ patch_id: 'p1', group_id: 'p1', issue_ids: [1], span_id: sentSpan.span_id, op: 'replace', original: sentSpan.text, replacement: '第一句很短。' }],
+    dispositions: [{ issue_id: '1', status: 'patched', reason: '删重复' }],
+  });
+  const applied = P.tryApplyRevisionOutput(v2Payload, v2Article, {}, { snapshot: snap, chapterId: 107, selectedIssueIds: ['1'] });
+  check('94t 精确跨度替换：只授权长段里的一句时只改这一句（其余逐字不变）',
+    !!applied && applied.ok === true && applied.applied.length === 1 && applied.text === v2Article.replace(sentSpan.text, '第一句很短。'),
+    applied ? JSON.stringify(applied.text) : 'null');
+  check('94u 应用层把"已改/未完成/被拦下"分开报（覆盖率可解释）',
+    !!applied && Array.isArray(applied.coverage) && applied.coverage.length === 1 && applied.coverage[0].status === 'patched');
+
+  // 协议 schema 错误：坏元素丢光**不能**变成"合法无修改"
+  const schemaBad = P.tryApplyRevisionOutput('{"patches":[{}]}', v2Article, {}, { chapterId: 107 });
+  check('94v patches:[{}] → schema_error（不是 noop 成功），且原文不动',
+    !!schemaBad && schemaBad.ok === false && schemaBad.error_code === 'schema_error' && schemaBad.text === v2Article,
+    JSON.stringify({ ok: schemaBad && schemaBad.ok, code: schemaBad && schemaBad.error_code }));
+
+  // stale：补丁针对旧快照，正文已经变了 → 拒绝，且**不覆盖**新稿
+  const edited = v2Article.replace('第二段', '第二段（作者刚改过）');
+  const staleOut = P.tryApplyRevisionOutput(v2Payload, edited, {}, { snapshot: P.revisionSnapshotFor(edited, 107), chapterId: 107, selectedIssueIds: ['1'] });
+  check('94w 源稿变化后旧补丁按 stale 拒绝，不覆盖作者新稿',
+    !!staleOut && staleOut.ok === false && staleOut.error_code === 'stale' && staleOut.text === edited,
+    JSON.stringify({ ok: staleOut && staleOut.ok, code: staleOut && staleOut.error_code }));
+
+  // 整章重写只能由作者动作触发：调用方里不再有失败回退分支
+  const refineBody = (src.match(/async function refineByChecklist\(\)[\s\S]*?\n}\n/) || [''])[0];
+  check('94x refineByChecklist 里不再出现"解析失败就整章重写"的回退分支',
+    refineBody.length > 0 && !refineBody.includes('buildAIRevisionPrompt') && refineBody.includes('showRevisionUnresolved'),
+    `len=${refineBody.length}`);
+  check('94y 整章重写被拆成独立函数，且只被显式动作调用',
+    /async function refineByFullRewrite\(/.test(src) && /state\.pendingLongTextAltRetry = \(\) => refineByFullRewrite\(/.test(src));
+
+  // 失败弹窗：两个出口都是作者动作，不静默不扩大
+  containers['#modal-root'].innerHTML = '';
+  P.state.pendingLongTextRetry = null; P.state.pendingLongTextAltRetry = null;
+  P.showRevisionUnresolved({ article: v2Article, chapterId: 107 }, { issues: ['问题一'] }, ['问题一'], '补丁协议未通过校验（schema_error）');
+  const failHtml = String(containers['#modal-root'].innerHTML);
+  check('94z 修稿失败时给作者显式选择（重试补丁 / 整章重写），而不是自动改写整章',
+    failHtml.includes('正文未被改动') && failHtml.includes('重试补丁修稿') && failHtml.includes('整章重写')
+    && typeof P.state.pendingLongTextRetry === 'function' && typeof P.state.pendingLongTextAltRetry === 'function',
+    failHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 120));
+  P.state.pendingLongTextRetry = null; P.state.pendingLongTextAltRetry = null;
+  P.closeModal();
+
+  // 提示词：跨度目录（span_id｜原文）必须下发，否则模型无法证明改动落在授权范围内
+  const v2Prompt = P.buildAIRevisionPatchPrompt(v2Article, ['重复解释'], { snapshot: snap, chapterId: 107 });
+  check('94A 修稿提示词下发授权跨度目录（span_id｜逐字原文）',
+    /p1｜/.test(v2Prompt) && /p1s1｜/.test(v2Prompt) && v2Prompt.includes('original 必须与授权跨度'),
+    v2Prompt.slice(v2Prompt.indexOf('【授权跨度'), v2Prompt.indexOf('【授权跨度') + 60));
+}
+
+// --- 9d) E02 接线：阶段化（提示词口径 + 真实路由输入）-------------------------
+// 覆盖 §5.1/§5.2 的三条可验证要求：
+//   · 审稿轮把同一份纪律当**判据**用（诊断口径 + 反证），不当重写授权；
+//   · 生成/修稿轮各自带上真实阶段，且阶段进了**客户端 key 与请求 URL**（否则阶段白加）；
+//   · 审计摘要能证明诊断规则没有流入生成阶段。
+{
+  // ① 审稿轮：诊断口径（不是另一份纪律，而是同一份纪律 + 判据说明）
+  const review = P.buildAIReviewPrompt('正文');
+  check('94B 审稿提示词带诊断口径（判据 / 不许输出改写稿 / 要给反证）',
+    review.includes('【本轮是审稿/诊断，不是重写】') && review.includes('不要输出改写后的正文')
+    && review.includes('反证') && review.includes('放 deferred')
+    && review.includes(P.WRITING_DISCIPLINE),
+    review.slice(review.indexOf('【本轮是审稿/诊断'), review.indexOf('【本轮是审稿/诊断') + 40));
+  // 同一份纪律仍在（不为了阶段化把生成纪律从审稿轮里删掉）
+  check('94C 审稿轮仍带完整写作纪律（阶段化 = 换口径，不是删规则）',
+    P.WRITING_DISCIPLINE.includes('不要为了证明读者已经理解的事实') && review.includes('【写作纪律（务必遵守）】'));
+  // ② 生成轮不带诊断口径（诊断口径只属于审稿轮）
+  const prose = P.buildAIWritingProsePrompt('需求', { scene_goal: '开场' }, 2000);
+  check('94D 生成轮不带审稿口径（诊断规则不回流进生成提示词）',
+    !prose.includes('【本轮是审稿/诊断，不是重写】') && prose.includes(P.WRITING_DISCIPLINE));
+  // ③ 审计摘要：draft 一条诊断都没有，verify_style 才有
+  const auditDraft = P.writingStageAudit('draft');
+  const auditVerify = P.writingStageAudit('verify_style');
+  check('94E 阶段审计摘要证明诊断规则没有流入生成阶段',
+    !('diagnostic' in auditDraft.counts_by_type) && auditDraft.diagnostic_excluded.length > 0
+    && (auditVerify.counts_by_type.diagnostic || 0) > 0
+    && auditDraft.rule_ids.length > 0 && auditDraft.policy_version === P.WRITING_POLICY_FALLBACK_VERSION,
+    JSON.stringify({ draft: auditDraft.counts_by_type, verify: auditVerify.counts_by_type }));
+  // ④ 蓝图：身体动作不再是每个情节点的必填项（E02 的"从通用必填清单改为按事件必要性"）
+  const bp = P.buildAIWritingBlueprintPrompt('续写', [], 2000, true);
+  check('94F 蓝图情节点不再把"身体动作"列为每点必填',
+    !/每个一行：地点、出场人物、身体动作/.test(bp)
+    && /身体动作只在确实发生或构成关键因果时写/.test(bp));
+  // ⑤ 真实路由输入：阶段真的进了请求 URL（走 loadAIContext 的实际拼装）
+  const savedCtx = P.state.aiContext;
+  const savedChapterId107 = P.state.currentChapterId;
+  const savedWorkId107 = P.state.workId;
+  const stageUrls = [];
+  const grabStage = () => {
+    for (const r of requests) {
+      if (r.url.includes('/ai_context') || r.url.includes('/novel/context')) stageUrls.push(r.url);
+    }
+  };
+  try {
+    requests.length = 0;
+    P.state.currentChapterId = 107;
+    P.state.workId = 1;
+    P.state.aiContext = { assembled: '【装配结果】正文' };
+    await P.loadAIContext({ stage: 'verify_style' });
+    grabStage();
+    await P.loadAIContext({ stage: 'nonsense' });
+    grabStage();
+  } catch (_) { /* 桩环境不保证网络路径全通；下面的断言只看是否发出过带 stage 的请求 */ }
+  P.state.aiContext = savedCtx;
+  // 状态必须成对还原：这个块改了"当前章/作品"，后续断言的前置条件不能被它悄悄改掉。
+  P.state.currentChapterId = savedChapterId107;
+  P.state.workId = savedWorkId107;
+  check('94G 阶段通过真实请求 URL 下发（白名单外的一律不加）',
+    stageUrls.some((u) => /[?&]stage=verify_style(&|$)/.test(u))
+    && !stageUrls.some((u) => /stage=nonsense/.test(u)),
+    JSON.stringify(stageUrls.map((u) => u.slice(u.indexOf('?'), u.indexOf('?') + 120))));
+}
+
+// --- 9e) 2026-10-09 审查修复的**应用层**回归（每条都先复现旧行为）-----------------
+// 覆盖：协议模块缺失时的归因与前置拒绝 / 覆盖表渲染 / 空补丁时的处置呈现 /
+//      "失败不整章重写"的**运行时**证据 + §6.6 的一次仅格式重试。
+{
+  const RP9e = sandbox.NovelRevisionPatch;
+  const article = '第一段：陈默走进雨里。\n\n第二段：他站着没动。';
+  const snap9e = P.revisionSnapshotFor(article, 107);
+  const v2Payload9e = JSON.stringify({
+    schema_version: 2, snapshot_id: snap9e.snapshot_id, base_hash: snap9e.body_hash,
+    patches: [{ patch_id: 'p1', group_id: 'p1', issue_ids: [1], span_id: 'p2', op: 'replace', original: '第二段：他站着没动。', replacement: '第二段：他把伞收了。' }],
+  });
+
+  // 94H：协议模块缺失 → 明确结论码（旧行为：判成 parse_error，弹"模型没输出可用的补丁 JSON"）
+  const savedEngine9e = sandbox.NovelRevisionPatch;
+  const savedPending9e = P.state.pendingReview;
+  const savedRunning9e = P.state.aiTaskRunning;
+  const savedLt9e = P.state.longTextSettings;
+  try {
+    sandbox.NovelRevisionPatch = undefined;
+    const d = P.parseRevisionPatchesDetailed(v2Payload9e);
+    check('94H 协议模块缺失时给出可读结论码（不把原因错写成"模型没输出 JSON"）',
+      d.ok === false && d.error_code === 'schema_unavailable' && /模块未加载/.test(String((d.errors && d.errors[0] || {}).message || '')),
+      JSON.stringify({ ok: d.ok, code: d.error_code }));
+    requests.length = 0;
+    containers['#toast-root'].innerHTML = '';
+    P.state.aiTaskRunning = false;
+    P.state.pendingReview = { info: { article, chapterId: 107, baseChapterFingerprint: null }, review: { issues: ['问题一'] }, confirmedOverride: ['问题一'] };
+    await P.refineByChecklist();
+    const posts = requests.filter((r) => r.method === 'POST' && r.url.includes('harness/run'));
+    const toastBox = containers['#toast-root'];
+    const toastsText = (toastBox.children || []).map((c) => String(c.textContent || '')).join(' ｜ ');
+    check('94H2 协议模块缺失时在**付费之前**拒绝（0 次 AI 请求 + 明确文案）',
+      posts.length === 0 && toastsText.includes('协议模块未加载'),
+      JSON.stringify({ posts: posts.length, toast: toastsText.slice(0, 80) }));
+  } finally {
+    sandbox.NovelRevisionPatch = savedEngine9e;
+    P.state.pendingReview = savedPending9e;
+    P.state.aiTaskRunning = savedRunning9e;
+    P.state.longTextSettings = savedLt9e;
+  }
+  check('94H3 进程内引用仍然指向已恢复的模块（前后一致）', P.revisionPatchEngine() === RP9e && !!sandbox.NovelRevisionPatch);
+
+  // 94I：覆盖表渲染（此前 coverage 传进去被静默忽略 → 作者看不到"哪个问题改了/哪个没改"）
+  containers['#modal-root'].innerHTML = '';
+  P.showReviewDiff(article, article.replace('第二段：他站着没动。', '第二段：他把伞收了。'), {
+    checklist: 2, applied: 1, chapterId: 107,
+    coverage: [
+      { issue_id: '1', status: 'patched', reason: '删掉重复解释' },
+      { issue_id: '2', status: 'deferred', reason: '证据不足，保留原文' },
+    ],
+  });
+  const covHtml = String(containers['#modal-root'].innerHTML);
+  check('94I 差异预览渲染问题覆盖表（每个已选问题的处置可见，含未改的那个）',
+    covHtml.includes('问题覆盖') && covHtml.includes('已改（候选里）') && covHtml.includes('待核验（证据不足）')
+    && covHtml.includes('证据不足，保留原文'),
+    covHtml.includes('问题覆盖') ? 'ok' : covHtml.replace(/<[^>]*>/g, ' ').slice(0, 80));
+  check('94I2 没有覆盖数据时不渲染空表（不制造噪音）', P.revisionCoverageHtml([]) === '');
+  P.closeModal();
+
+  // 94J：空补丁但模型给了 blocked/deferred → 必须展示处置，而不是转述成"没有需要改动"
+  containers['#modal-root'].innerHTML = '';
+  P.showRevisionDispositions('模型对 2 个问题给出了"不自动改"的处置（未改动正文）', [
+    { issue_id: '1', status: 'blocked', reason: '缺少后文上下文' },
+    { issue_id: '2', status: 'keep', reason: '承担辨识度的对白' },
+  ]);
+  const dispHtml = String(containers['#modal-root'].innerHTML);
+  check('94J 空补丁时把 blocked/keep 的处置与理由摊给作者（不谎称"不需要改"）',
+    dispHtml.includes('被拦下/无法应用') && dispHtml.includes('保留（模型说明无需改）')
+    && dispHtml.includes('缺少后文上下文') && dispHtml.includes('没有需要展示的文本差异'),
+    dispHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 100));
+  P.closeModal();
+
+  // 94K：**运行时**证明"失败不整章重写"，并顺手钉住"至多一次仅格式重试"
+  requests.length = 0;
+  const savedPending9k = P.state.pendingReview;
+  const savedRunning9k = P.state.aiTaskRunning;
+  const savedLt9k = P.state.longTextSettings;
+  const savedRetry9k = P.state.pendingLongTextRetry;
+  const savedAlt9k = P.state.pendingLongTextAltRetry;
+  try {
+    P.state.aiTaskRunning = false;
+    P.state.longTextSettings = { request_chars: 200000, output_reserve_chars: 1000, protocol_chars: 100, max_segment_chars: 120000, min_segment_chars: 100 };
+    P.state.pendingReview = { info: { article, chapterId: 107, baseChapterFingerprint: null }, review: { issues: ['问题一', '问题二'] }, confirmedOverride: ['问题一'] };
+    await P.refineByChecklist();
+  } catch (_) { /* 桩不提供真实模型：这里只观察"发了什么请求" */ }
+  const posts9k = requests.filter((r) => r.method === 'POST' && r.url.includes('harness/run'));
+  const askedFullRewrite = posts9k.some((r) => String(r.body || '').includes('完整正文'));
+  check('94K 修稿失败不产生整章重写请求（运行时证据，非源码正则）',
+    posts9k.length > 0 && askedFullRewrite === false,
+    JSON.stringify({ posts: posts9k.length, fullRewriteAsked: askedFullRewrite }));
+  check('94K2 §6.6 的格式失败只做**一次**仅格式重试（同一授权范围，不叠成无限调用）',
+    posts9k.length === 2 && String(posts9k[1].body || '').includes('上一次响应未通过输出格式验证')
+    && String(posts9k[1].body || '').includes('不要扩大编辑范围'),
+    JSON.stringify({ posts: posts9k.length }));
+  check('94K3 失败后给作者的是**显式选择**（重试补丁 / 整章重写），不是自动改写',
+    typeof P.state.pendingLongTextRetry === 'function' && typeof P.state.pendingLongTextAltRetry === 'function'
+    && String(containers['#modal-root'].innerHTML).includes('正文未被改动'));
+  // E03：发起修稿前，本次勾选必须写成**独立的选择记录**（快照 + 两个 hash + 勾选集合）
+  const selReq = requests.find((r) => r.method === 'PUT' && r.url.includes('/novel/revision/selection'));
+  const selBody = selReq ? String(selReq.body || '') : '';
+  check('94K4 E03：修稿前写独立选择记录（含勾选集合 / 快照 / selection_hash / 章节）',
+    !!selReq && /"selected_issue_ids":\["1"\]/.test(selBody)
+    && /"base_hash"/.test(selBody) && /"selection_hash"/.test(selBody)
+    && /"snapshot_id"/.test(selBody) && /"chapter_id":107/.test(selBody),
+    selBody.slice(0, 200));
+  check('94K5 选择记录取的是**本次确认清单**的编号（取消勾选后不会把旧编号写进记录）',
+    /"selected_issue_ids":\["1"\]/.test(selBody) && !/"selected_issue_ids":\["1","2"\]/.test(selBody));
+  P.state.pendingPendingReview = undefined;
+  P.state.pendingReview = savedPending9k;
+  P.state.aiTaskRunning = savedRunning9k;
+  P.state.longTextSettings = savedLt9k;
+  P.state.pendingLongTextRetry = savedRetry9k;
+  P.state.pendingLongTextAltRetry = savedAlt9k;
+  P.closeModal();
+}
+
+// --- 9f) E05 接线：局部编辑计划把"整章跨度目录"收窄到热点 -----------------------
+{
+  const article = '第一段：陈默走进雨里。\n\n第二段：他站着没动。\n\n第三段：雨还在下。';
+  const snap = P.revisionSnapshotFor(article, 108);
+  const plan = P.revisionPlanFor(article, ['把「第二段：他站着没动。」改成他收了伞'], { snapshot: snap, chapterId: 108 });
+  check('94L 计划把问题描述里的引号片段定位成**片段级**授权跨度',
+    !!plan && plan.hotspots.length === 1 && plan.hotspots[0].original === '第二段：他站着没动。'
+    && plan.hotspots[0].span.end - plan.hotspots[0].span.start === '第二段：他站着没动。'.length,
+    JSON.stringify(plan && plan.hotspots.map((h) => h.original)));
+  const planPrompt = P.buildAIRevisionPatchPrompt(article, ['把「第二段：他站着没动。」改成他收了伞'], { snapshot: snap, chapterId: 108, plan });
+  check('94L2 有计划时跨度目录收窄到相关段落（不再把整章每一句都下发）',
+    planPrompt.includes('已按本次选中问题收窄到相关段落')
+    && planPrompt.includes('第二段：他站着没动。')
+    && !planPrompt.includes('第一段：陈默走进雨里。｜')
+    && planPrompt.includes('【本次授权范围'),
+    planPrompt.slice(planPrompt.indexOf('【授权跨度'), planPrompt.indexOf('【授权跨度') + 40));
+  check('94L3 定位不到的问题如实标 needs_scope，并退回整章目录（不假装收窄过）',
+    (() => {
+      const p2 = P.revisionPlanFor(article, ['后半段读起来有点 AI 感'], { snapshot: snap, chapterId: 108 });
+      const prompt2 = P.buildAIRevisionPatchPrompt(article, ['后半段读起来有点 AI 感'], { snapshot: snap, chapterId: 108, plan: p2 });
+      return p2.unlocated_hotspots.length === 1 && p2.coverage[0].status === 'needs_scope'
+        && prompt2.includes('本次没能从问题描述里定位到具体原句');
+    })());
+  check('94L4 计划是干跑：不含候选正文、不写盘（dry_run）',
+    !!plan && plan.dry_run === true && plan.writes_to_disk === false && !('candidate_text' in plan));
+}
+
+// --- 9g) E06 接线：设置开关 + 可解释报告 + 单处撤销 -----------------------------
+{
+  const article = '第一段：陈默走进雨里。\n\n第二段：他站着没动。';
+  const at = (s) => ({ start: article.indexOf(s), end: article.indexOf(s) + s.length });
+  const p1 = '第一段：陈默走进雨里。';
+  const p2 = '第二段：他站着没动。';
+  const patches = [
+    { issue: 1, op: 'replace', anchor: p1, revised: '第一段：陈默撑着伞走进雨里。', ...at(p1) },
+    { issue: 2, op: 'replace', anchor: p2, revised: '第二段：他把伞收了。', ...at(p2) },
+  ];
+  const coverage = [
+    { issue_id: '1', status: 'patched', reason: '去掉重复的雨景交代' },
+    { issue_id: '2', status: 'patched', reason: '收紧动作交代' },
+  ];
+
+  // ① 审稿报告弹窗里的两个可选授权（默认关闭 + 会持久化）
+  sandbox.localStorage.setItem('ns_revision_allow_condense', '0');
+  sandbox.localStorage.setItem('ns_revision_protect_selection', '0');
+  containers['#modal-root'].innerHTML = '';
+  P.showReviewReport({ summary: '总评', issues: ['问题一'], strengths: [], deferred: [] });
+  const reportHtml = String(containers['#modal-root'].innerHTML);
+  check('94M 审稿报告带两个可选授权开关（默认关闭；只影响这次修稿）',
+    reportHtml.includes('data-revision-opt="condense"') && reportHtml.includes('data-revision-opt="protect"')
+    && !/data-revision-opt="condense"[^>]*checked/.test(reportHtml)
+    && reportHtml.includes('不改变生成行为'),
+    reportHtml.includes('data-revision-opt') ? 'ok' : 'missing');
+  P.closeModal();
+
+  // ② 可解释报告：逐条改动（问题 ID / 前 / 后 / 理由 / 撤销入口）+ 校验状态 + 相对结论
+  containers['#modal-root'].innerHTML = '';
+  P.showReviewDiff(article, article.replace(p1, '第一段：陈默撑着伞走进雨里。'), {
+    chapterId: 108, applied: 1, patches, coverage,
+    verification: {
+      safety_blocked: false, verified: true, unresolved: [], findings: [],
+      comparison: P.revisionPlanEngine().comparisonVerdict({ metricDelta: -6, diffRead: true }),
+    },
+  });
+  const diffHtml = String(containers['#modal-root'].innerHTML);
+  check('94N 预览给出逐条改动：问题 ID / 改动前后 / 理由 / 「撤销这一处」入口',
+    diffHtml.includes('本次改动') && diffHtml.includes('data-action="diff-drop-issue"')
+    && diffHtml.includes('撤销这一处') && diffHtml.includes('理由：') && diffHtml.includes('去掉重复'),
+    'len=' + diffHtml.length);
+  check('94O 预览给出校验状态（不让"未核验"看起来像"已验证"）',
+    diffHtml.includes('校验状态') && diffHtml.includes('已验证（组合核验通过）'));
+  check('94P 相对结论只给"相对"观察并要求作者确认（不把指标变化写成质量结论）',
+    diffHtml.includes('相对结论') && /相对/.test(diffHtml) && /作者确认/.test(diffHtml)
+    && !/本次改善|质量提升|已提升质量|改善完成/.test(diffHtml));  check('94P2 未读 diff 时不给改善结论（守卫可达）',
+    P.revisionPlanEngine().comparisonVerdict({ metricDelta: -9, diffRead: false }).verdict === 'needs_diff_review'
+    && String(P.revisionPlanEngine().comparisonVerdict({ metricDelta: -9, diffRead: false }).reason).includes('diff'));
+
+  // ③ 单处撤销：真的用"原稿 + 其余补丁"重建候选，并在同一预览里刷新
+  // ⚠️ toast 是 appendChild 的（innerHTML 清不掉旧节点），这里清 children。
+  containers['#toast-root'].children.length = 0;
+  await P.handleAction('diff-drop-issue', { dataset: { issue: '1' } }, {});
+  const afterHtml = String(containers['#modal-root'].innerHTML);
+  const toastText = (containers['#toast-root'].children || []).map((c) => String(c.textContent || '')).join('｜');
+  check('94Q 撤销一处后重建候选：被撤销的那处不再出现在候选里',
+    afterHtml.includes('已按你的撤销重建候选')
+    && !/#1<\/b> · 替换/.test(afterHtml)
+    && /#2<\/b> · 替换/.test(afterHtml)
+    && afterHtml.includes('已从候选里去掉'),
+    JSON.stringify({
+      notice: afterHtml.includes('已按你的撤销重建候选'),
+      issue1: /#1<\/b> · 替换/.test(afterHtml),
+      issue2: /#2<\/b> · 替换/.test(afterHtml),
+      dropped: afterHtml.includes('已从候选里去掉'),
+      toast: toastText.slice(0, 80),
+    }));
+  check('94Q2 撤销后该问题在覆盖表里标成 dropped（处置可解释）',
+    afterHtml.includes('撤销') && afterHtml.includes('已从候选里去掉') && afterHtml.includes('问题覆盖'));
+  P.closeModal();
+  P.state.pendingReviewDiff = null;
+}
+
+// --- 9h) E06 对照视图：模型诊断 / 人工复判 / 结构指标（比例受样本量守卫约束）--------
+{
+  const data = {
+    ok: true, chapter_id: 108,
+    model: {
+      reviews: 2,
+      latest: { id: 9, status: 'parsed', structure: 'review_v2', issues: 3, findings: 2, findings_rejected: 1, deferred: 1 },
+      report_shapes: [{ id: 9, confirmed: 2, ignored: 1 }],
+    },
+    human: { reviews_with_checklist: 1, confirmed: 2, ignored: 1, selections: 2, latest_selection: { id: 4, created_at: '2026-10-09T00:00:00.000Z' } },
+    structure: { paragraphs: 88, chars: 4200, dialogue_ratio: 0.12, narrative_candidates: 9, insufficient_data: 0 },
+    sample_inputs: { reviews: 2, runs: 2 },
+  };
+  const html = P.revisionComparisonHtml(data);
+  check('94R 对照视图并列三类证据（模型/人工/结构），不把结构指标当质量结论',
+    html.includes('模型诊断') && html.includes('人工复判') && html.includes('结构指标')
+    && html.includes('88 段 / 4200 字') && html.includes('不判"好不好"'),
+    'len=' + html.length);
+  check('94R2 样本不足时明确标注"不得据此判断趋势"，且不出现改善类结论',
+    html.includes('样本不足') && html.includes('不得据此判断趋势') && !/本次改善|质量已提升|已提升质量/.test(html));
+  const rich = P.revisionComparisonHtml({ ...data, sample_inputs: { reviews: 3, runs: 4 }, structure: { paragraphs: 88, chars: 4200, dialogue_ratio: 0.12, narrative_candidates: 9, insufficient_data: 0 } });
+  check('94R3 样本够时也只说"相对观察"，不宣告质量结论',
+    rich.includes('相对观察') && !/本次改善|质量已提升|已提升质量/.test(rich) && rich.includes('必须先看实际差异'));
+  check('94R4 结构化结论与拒收条数分开展示（引用没通过核验的要看得见）',
+    html.includes('2 条通过引用核验') && html.includes('1 条被拒收'));
+  // 入口：从审稿报告能打开对照（请求真的带上了 chapter_id）
+  requests.length = 0;
+  containers['#modal-root'].innerHTML = '';
+  P.showReviewReport({ summary: '总评', issues: ['问题一'], strengths: [], deferred: [] });
+  check('94R5 审稿报告里给出「模型/人工/结构对照」入口（带章节号）',
+    String(containers['#modal-root'].innerHTML).includes('data-action="review-compare"')
+    && String(containers['#modal-root'].innerHTML).includes('data-chapter='));
+  P.closeModal();
+  await P.handleAction('review-compare', { dataset: { chapter: '108' } }, {});
+  const cmpReq = requests.find((r) => r.url.includes('/novel/revision/comparison'));
+  check('94R6 打开对照时按章请求数据（不是拿当前章硬套）',
+    !!cmpReq && /chapter_id=108/.test(cmpReq.url), cmpReq ? cmpReq.url : 'no request');
+  P.closeModal();
+}
+
 // --- 10) 写作路径提速（S1/S2/S3）：纪律内联、截断回退、空回复重试 ---
 {
   // S1：蓝图提示词必须带上内联的写作纪律（直连通道没有插件人设）
@@ -2545,6 +2958,18 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('95 蓝图提示词内联了写作纪律（直连没有插件人设）', bp.includes('【写作纪律（务必遵守）】') && bp.includes('已按预算截断'), bp.length + ' 字');
   check('96 纪律常量本身含"不要编造与既有设定冲突的内容"', /不要编造与既有设定冲突/.test(P.WRITING_DISCIPLINE));
   check('96b 蓝图专用那条（references）只出现在蓝图提示词里', bp.includes('references') );
+
+  // E02（2026-10-09）：**直连通道的成文提示词**必须仍带明确事实限制，且**不含**诊断判据/逐项评分任务。
+  // 为什么在这一层验：「生成阶段不做自评」是 E02 的通过条件，而它只在拼到最终提示词后才算数——
+  // 只验规则模块（模块级已另有用例）会漏掉"提示词里其实没带/带错了阶段文本"。
+  const proseStage = P.buildAIWritingProsePrompt('续写本章', { scene_goal: '开场', plot_points: '甲' }, 1200);
+  check('96c 直连成文提示词仍写明"不要编造与既有设定冲突的内容"（明确事实限制）',
+    /不要编造与既有设定冲突的内容/.test(proseStage), 'len=' + proseStage.length);
+  check('96d 直连成文提示词不含诊断阶段的东西（逐项评分任务 / 完整判据 / 审稿清单）',
+    !/逐项评分|诊断期·完整判据|逐处识别机械表达，每条都要给出/.test(proseStage));
+  const reviewStage = P.buildAIReviewPrompt('一段正文');
+  check('96e 审稿提示词仍带完整判据（诊断阶段没有被"去自评"削掉）',
+    /逐处识别机械表达|诊断|逐条/.test(reviewStage) && reviewStage.includes('【写作纪律（务必遵守）】'));
 
   // S2：审稿提示词内联确定性红线扫描（慢通道的工具优势被抵消）
   const withScan = P.buildAIReviewPrompt('正文内容', '命中 1 处：嘴角勾起×1');

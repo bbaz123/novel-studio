@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "fixture_name": "awakening_chapter_review_pair",
+  "source_files": [
+    {
+      "name": "粘贴的文本 (1).txt",
+      "sha256_raw_file": "be3198ec319bd062bc3082121b09f881e93537f0cc606214e94232edc520a866"
+    },
+    {
+      "name": "粘贴的 markdown (2)。md",
+      "sha256_raw_file": "54ad3b238fbb0c9f3c830e203de323a9fb55b2840b857d60ce1061554e42448f"
+    }
+  ],
+  "canonical_originals": "粘贴的文本 (1).txt",
+  "advice_source": "粘贴的 markdown (2)。md",
+  "extraction": {
+    "encoding": "UTF-8",
+    "outer_whitespace": "stripped_once_at_extraction",
+    "internal_text": "preserved",
+    "hash": "SHA-256 of extracted original UTF-8 bytes; no trailing newline added",
+    "originals_in_other_source_compact_equal": true
+  },
+  "before": {
+    "sha256": "ffeae9058ae7a2c1ee7dc589d1b735da260c9f59dcacbcf11b5e9584bce3a321",
+    "chars": 3148,
+    "compact_chars": 3061
+  },
+  "after": {
+    "sha256": "932510efaa4b06892d05d6fab7ce257a7b019c2b82a72ce9e05974ba6b13d4f0",
+    "chars": 3230,
+    "compact_chars": 3056
+  },
+  "comparison": {
+    "whitespace": "removed_for_comparison_only",
+    "algorithm": "Python difflib.SequenceMatcher(autojunk=False).ratio()",
+    "ratio": 0.9811999346084682,
+    "semantic_change_groups": 6,
+    "six_replacements_reconstruct_after": true,
+    "meaning": "text_sequence_similarity_not_quality_or_AI_probability"
+  },
+  "changes": [
+    {
+      "id": "D01",
+      "before": "上午八点四十，江陵市第三检测中心，候检大厅。",
+      "after": "3751年全民觉醒日，上午八点四十，江陵市第三检测中心，候检大厅。",
+      "analysis": "新增年份与事件名称，属于事实增量；需核对已批准设定，不是纯文风优化。前稿没有“3751年10月”。"
+    },
+    {
+      "id": "D02",
+      "before": "他从早上到现在数了四遍全国广播里念过的A级。",
+      "after": "他从早上到现在，把“还没出A级”这件事念了四遍。",
+      "analysis": "把统计动作改成重复念叨，人物语感有所变化；不能据此认定整段对话、耳机动作已重写。"
+    },
+    {
+      "id": "D03",
+      "before": "岳宸炎把排号纸翻了个面。纸背面是空白的，边角上有一小块折痕，是他刚才捏出来的。",
+      "after": "岳宸炎把排号纸翻了个面，数了数前头还剩几个人。",
+      "analysis": "确实替换了一个行为：从重复纸面细节转向关注何时轮到自己；注意力更贴近当下目标，但未解决主要S级段落。"
+    },
+    {
+      "id": "D04",
+      "before": "播报念出了那个名字，声音和江陵这边的系统是同一个：",
+      "after": "直播里的播报念出了那个名字，声音和大厅里的广播是同一个：",
+      "analysis": "明确了直播与大厅声源；仍将等级/能力结果称作“那个名字”，应单列用词疑点而不新增少女姓名。"
+    },
+    {
+      "id": "D05",
+      "before": "播报的声音停了半拍。",
+      "after": "大厅里的广播停了半拍。",
+      "analysis": "将停顿明确归给本地广播，可能改变声源意义；没有任务上下文时，不预断这一改动正确或错误。"
+    },
+    {
+      "id": "D06",
+      "before": "比刚才王磊按过的位置要凉一些，像一块在阴天里放了一整天的金属。",
+      "after": "比刚才王磊按过的位置要凉一些，那点凉一直压在掌心。",
+      "analysis": "替换比喻与触感措辞；尚未解决此前未触摸王磊位置却能比较温度的感知依据疑点。"
+    }
+  ]
+}

@@ -71,6 +71,7 @@ export const CHECKS = [
   { name: '迁移幂等与损坏库（空库建表 73 张 / 重复启动不漂移不丢行 / 旧库只读指纹 / 损坏库响亮失败不篡改原文件，零计费）', cmd: ['.p1-baseline/test-migration-idempotent.mjs'], why: '新 migration 必须在空库、重复启动与失败场景下都正确' },
   { name: 'Host Contract 契约测试（代码↔契约 / 文档↔契约 / 边界 / 旧库兼容）', cmd: ['.p1-baseline/test-host-contract.mjs'], why: '冻结的宿主契约不得漂移' },
   { name: '时态故事状态重构总入口（离线：reducer/原子归约/章序/历史隔离/完整性/保存接线（自托管隔离实例 + 本机假模型）/未启用零写入，零计费）', cmd: ['scripts/test-temporal-refactor.mjs'], why: 'T1–T8 的统一状态底座：清单为空或任一子套件失败必须非零退出；保存入口接线证据不许用 mock 冒充（06 走真实 HTTP + 真实后台调度，模型端点指向本机假模型）' },
+  { name: '叙事性专项修复总入口（离线：补丁协议 v2 的 P/E02/R 类 + 冻结样本 + 2026-10-09 审查回归，零计费）', cmd: ['scripts/test-narrative-repair.mjs'], why: '《叙事性专项修复》E01/E02 与审查修复的判定面：显式删除、精确跨度、按段落级门禁、schema 严格性、组合门禁、越权与 stale、阶段化规则、协议模块缺失姿态，都必须在离线可复现；清单为空必须非零退出' },
   { name: '编码检查判据自检（含阴性对照）', cmd: ['.p1-baseline/check-utf8.mjs', '--self-test'], why: '中文仓库的编码纪律' },
   { name: '日志差集归因判据自检', cmd: ['.p1-baseline/diff-log-noise.mjs', '--self-test'], why: '正常增长不得判红' },
   { name: '花钱总闸归属判据自检（本地假端点自证 / 未归属判红）', cmd: ['.p1-baseline/audit-llm-calls.mjs', '--self-test'], why: '零计费探针不得被误判成花钱，未归属的调用不得放过' },

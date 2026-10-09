@@ -1,0 +1,602 @@
+{
+  "schema_version": 1,
+  "task_id": "narrative-repair-2026-10-08",
+  "generated_at": "2026-10-09",
+  "note": "《叙事性专项修复》§6.7 要求的问题覆盖表。'作者是否选中' 一列在本轮只对**本轮真正走过的路径**有意义：E03 的独立选择记录（review_id + snapshot_id + selected_issue_ids + selection_hash）尚未实现，因此这里如实标注 selected_recorded=false，不伪造勾选状态。",
+  "columns": [
+    "issue_id",
+    "kind",
+    "selected",
+    "selected_recorded",
+    "patch_produced",
+    "entered_candidate",
+    "result",
+    "reason",
+    "tests"
+  ],
+  "rows": [
+    {
+      "issue_id": "P01/示例N05（'然后她不一样了。'整段删除）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "协议 v2 的 op:'delete' 真的删除该跨度（含段尾分隔符），其余文字与换行逐字不变；不再需要为满足非空值编造替代句",
+      "tests": [
+        "01 P01",
+        "01 P01b",
+        "01 P01c",
+        "01 P01d"
+      ]
+    },
+    {
+      "issue_id": "示例N04（观看行为被解释两次）",
+      "kind": "narrative",
+      "selected": false,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "deferred",
+      "reason": "本轮只实现机制（精确 replace / 显式 delete）与协议判定；候选改写本身属 E04/E05 的产物，未实现",
+      "tests": [
+        "01 P06（精确替换机制）"
+      ]
+    },
+    {
+      "issue_id": "示例N08（章尾不作为重点重写）",
+      "kind": "narrative",
+      "selected": false,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "kept",
+      "reason": "有效性留白属保护项；本轮未实现机器可判的保护跨度（E05 的 must_keep / do_not_change）",
+      "tests": [
+        "01 P03（keep/deferred 处置可读，不得谎称全部解决）"
+      ]
+    },
+    {
+      "issue_id": "示例L04（停顿声源不确定）",
+      "kind": "observation",
+      "selected": false,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "deferred",
+      "reason": "证据不足的观察项不参与补丁计划（协议层：没有 issue_ids 的补丁会被 selection_mismatch 拒绝；未选问题会被 out_of_scope 拒绝）",
+      "tests": [
+        "01 P09",
+        "01 P09b"
+      ]
+    },
+    {
+      "issue_id": "P04（坏元素被折叠成'合法空补丁'）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "schema_error 并保留原文；界面不再显示'模型判断无需修改'",
+      "tests": [
+        "01 P04",
+        "01 P04b",
+        "frontend-test 94v"
+      ]
+    },
+    {
+      "issue_id": "P08（两条单独安全的删除合起来删光先行语）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "blocked",
+      "reason": "组合门禁抓到 reference_anchor：候选保留给作者看，但**不进入可自动采纳集**，也不被称为已验证",
+      "tests": [
+        "01 P08-PRE",
+        "01 P08",
+        "01 P08b",
+        "01 P08c"
+      ]
+    },
+    {
+      "issue_id": "P10（审稿后作者改稿）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "stale：不猜位置、不覆盖新稿",
+      "tests": [
+        "01 P10",
+        "01 P10b",
+        "frontend-test 94w"
+      ]
+    },
+    {
+      "issue_id": "P12（门禁不可用/抛错/畸形）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "unverified",
+      "reason": "safety_unavailable：候选可看、手工编辑照常，但**不写'已验证'**",
+      "tests": [
+        "01 P12",
+        "01 P12b",
+        "01 P12c",
+        "01 P12d"
+      ]
+    },
+    {
+      "issue_id": "C04（补丁失败自动扩大为整章重写）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "失败路径不再调用整章重写；改为作者显式选择（重试补丁 / 整章重写）",
+      "tests": [
+        "frontend-test 94x",
+        "frontend-test 94y",
+        "frontend-test 94z",
+        "01 P13d"
+      ]
+    },
+    {
+      "issue_id": "R01（冻结样本不可改写）",
+      "kind": "fixture",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "kept",
+      "reason": "附录 A/B 的 hash、字符数与六组替换重建在本机复算一致；导出脚本对已存在且不同的样本**明确失败**，不覆盖基线",
+      "tests": [
+        "02 R01-a",
+        "02 R01-b",
+        "02 R01-c",
+        "02 R01-d",
+        "02 R01-e",
+        "02 R01-f"
+      ]
+    },
+    {
+      "issue_id": "C02/C03（同一规则跨阶段复用：生成期收到诊断评分任务、诊断期收到写作指令）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "编辑能力按阶段编译（draft 只给正向许可 / verify_style 给完整判据与反证要求 / rewrite 只管已选问题），审稿轮改用诊断口径；不传阶段时逐字沿用基础文本",
+      "tests": [
+        "03 E02-a",
+        "03 E02-c",
+        "03 E02-d",
+        "03 E02-f",
+        "03 E02-g",
+        "03 E02-h",
+        "03 E02-i",
+        "frontend-test 94B",
+        "frontend-test 94C",
+        "frontend-test 94D",
+        "frontend-test 94E"
+      ]
+    },
+    {
+      "issue_id": "C02（蓝图情节点把'身体动作'当每点必填）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "改为'身体动作只在确实发生或构成关键因果时写，不是每个情节点的必填项'",
+      "tests": [
+        "frontend-test 94F"
+      ]
+    },
+    {
+      "issue_id": "E02 阶段参数（缓存键/白名单）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "stage 走白名单、进客户端 key 与服务端缓存键；不传时键与旧版逐字节相同（旧行为零漂移）；白名单外的值一律忽略且不进 URL",
+      "tests": [
+        "frontend-test 94G",
+        "03 E02-j",
+        "03 E02-k",
+        ".p1-baseline/test-editing-rules.mjs（62/0，含关闭后逐字节一致）"
+      ]
+    },
+    {
+      "issue_id": "复审R1（高）：句级精确改动被逐条门禁按整段模拟误拦",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "门禁改按段落级真实 before/after 收输入；另补跨度级'事实增量过大'判据防止开缺口。修复前实测 allBlocked=true/applied=0 且理由是假的（词还在同段里）",
+      "tests": [
+        "01 P16",
+        "01 P16b",
+        "01 P16c",
+        "01 P16d",
+        "01 P17"
+      ]
+    },
+    {
+      "issue_id": "复审R2（中）：组合核验在段落带前导空白时坐标错位（假警告 + 跳过组合分析）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "改用原始段文本切片、只对结果 trim；不再产生 unsupported_mapping 假警告",
+      "tests": [
+        "01 P20"
+      ]
+    },
+    {
+      "issue_id": "复审R3（中）：空补丁时把 blocked/deferred 转述成'不需要改'；覆盖表分文不显",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "noop 分支按状态分文案 + showRevisionDispositions 展示逐条处置；showReviewDiff 渲染 revisionCoverageHtml",
+      "tests": [
+        "frontend-test 94I",
+        "frontend-test 94I2",
+        "frontend-test 94J"
+      ]
+    },
+    {
+      "issue_id": "复审R4（中）：文档/注释的'删 script 即可回滚'不实；模块缺失时归因错误",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "加 schema_unavailable 结论码 + refineByChecklist 付费前前置校验（0 次 AI 请求）；更正 rollback.md §1A 与 index.html 注释",
+      "tests": [
+        "frontend-test 94H",
+        "frontend-test 94H2",
+        "frontend-test 94H3"
+      ]
+    },
+    {
+      "issue_id": "复审R5/R6（中）：接回进度未传 ctx；分段路径丢作者勾选",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "恢复分支传 {snapshot, chapterId}；分段'改用整片重写'传 confirmed",
+      "tests": [
+        "frontend-test 94K",
+        "frontend-test 94y"
+      ]
+    },
+    {
+      "issue_id": "复审R7（中）：§6.6 的一次仅格式重试未实现",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "用 createRetryBudget({max:1}) 实现一次仅格式重试；提示词侧加'仅格式重试'块（不扩大编辑范围）",
+      "tests": [
+        "frontend-test 94K2"
+      ]
+    },
+    {
+      "issue_id": "复审R8/R9/R10（中/低）：别章判据自证式、删除分隔符归属、多份 JSON 静默挑一份",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": true,
+      "entered_candidate": true,
+      "result": "proposed",
+      "reason": "跨度按快照章打标；句跨度等于父段时按段落删除且末段回收前导分隔符；partial_json_ignored 拒绝执行",
+      "tests": [
+        "01 P18",
+        "01 P18b",
+        "01 P19",
+        "01 P19b",
+        "01 P21",
+        "01 P21b"
+      ]
+    },
+    {
+      "issue_id": "E04：四类叙事诊断（N02—N07 的候选形状）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "确定性候选层产出带准确引用的候选（含反证提示、只允许 condense/check、requires_semantic_check 恒真）；正例 R02（没关系×2）/R04（四处落雪骨架）/R06（流程复现）与阴性对照 R03/R05/R11 都成立。语义判断未运行（付费未授权）→ semantic_status=not_run",
+      "tests": [
+        "04 E04-a",
+        "04 E04-b",
+        "04 E04-c",
+        "04 E04-c2",
+        "04 E04-d",
+        "04 E04-d2",
+        "04 E04-e",
+        "04 E04-f",
+        "04 E04-g",
+        "04 E04-i",
+        ".p1-baseline/test-editing-rules.mjs E12",
+        "E13",
+        "E14"
+      ]
+    },
+    {
+      "issue_id": "E04：伪造引用 / 无反证的审稿结论",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "引用不能逐字定位（或出现多次）→ 拒收且理由可读；反证缺失 → 降级 hypothesis 且不进 auto_eligible；observation/deferred/keep 一律不进可采纳集",
+      "tests": [
+        "04 E04-k",
+        "04 E04-l",
+        "04 E04-l2",
+        "04 E04-m",
+        "04 E04-m2",
+        "04 E04-n",
+        "04 E04-o",
+        "04 E04-p"
+      ]
+    },
+    {
+      "issue_id": "E05：受约束的局部编辑计划（非授权跨度不变 / 不自动扩大 / 勾选变更作废）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "buildRevisionPlan 把已选问题编译成片段级授权跨度 + 只读上下文 + 不变量 + 依赖组；预算不够返回 needs_explicit_widening（含候选范围）而非自动放宽；定位不到进 needs_scope；勾选变更 → plan_hash/selection_hash 变化且 isPlanStale 为真；dry_run 恒真",
+      "tests": [
+        "05 E05-a",
+        "05 E05-b",
+        "05 E05-c",
+        "05 E05-d",
+        "05 E05-e",
+        "05 E05-j",
+        "05 E05-k",
+        "05 E05-k2",
+        "frontend-test 94L",
+        "94L2",
+        "94L3",
+        "94L4"
+      ]
+    },
+    {
+      "issue_id": "E05：附录四个示范补丁进测试候选但不写真实稿；condense 需显式批准",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "例A 整段删除 / 例B 保留事实的替换 / 例C 合并排比 / 例D 用词：四者都能进入计划（dry_run），condense 未获批准时 refused 而非静默降级",
+      "tests": [
+        "05 E05-f",
+        "05 E05-g",
+        "05 E05-g2",
+        "05 E05-g3",
+        "05 E05-h"
+      ]
+    },
+    {
+      "issue_id": "E06：可解释报告（逐条改动 + 校验状态 + 单处撤销）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "差异预览逐条给出问题 ID / 改动前后 / 理由 / 撤销入口，并给出校验状态与未完成项；撤销按原稿位置重建候选（缺位置或源稿变了就拒绝），撤销后该项在覆盖表里标 dropped",
+      "tests": [
+        "06 E06-a",
+        "06 E06-a2",
+        "06 E06-a3",
+        "06 E06-a4",
+        "06 E06-a5",
+        "06 E06-e",
+        "frontend-test 94N",
+        "94O",
+        "94Q",
+        "94Q2"
+      ]
+    },
+    {
+      "issue_id": "E06：相对改善结论必须先读实际 diff",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "comparisonVerdict 在未读 diff 时只返回 needs_diff_review；读过 diff 也只给相对观察并要求作者确认（不把指标变化写成质量结论）",
+      "tests": [
+        "06 E06-b",
+        "06 E06-b2",
+        "06 E06-b3",
+        "06 E06-b4",
+        "frontend-test 94P",
+        "94P2"
+      ]
+    },
+    {
+      "issue_id": "E06：两个可选授权的默认值与作用域",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "kept",
+      "reason": "开关默认关闭、只影响这次修稿、不改生成行为；关闭时 condense 一律 refused（不静默降级），保护项关闭时不额外登记——默认行为逐字保持",
+      "tests": [
+        "06 E06-c",
+        "06 E06-d",
+        "06 E06-d2",
+        "frontend-test 94M"
+      ]
+    },
+    {
+      "issue_id": "E03：审稿报告结构化（引用必须逐字可定位）",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": true,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "结构化 findings 过引用核验：定位不到或正文里出现多次 → 拒收并给出理由（不静默丢弃）；反证缺失 → 降级 hypothesis 且不进 auto_eligible；兼容清单由结论派生（带 id/理由/引用），旧的行文本口径逐字不变",
+      "tests": [
+        "07 E03-a",
+        "07 E03-a2",
+        "07 E03-b",
+        "07 E03-b2",
+        "07 E03-c",
+        "07 E03-d",
+        "07 E03-d2",
+        "07 E03-e",
+        "07 E03-e2",
+        "07 E03-f",
+        ".p1-baseline/test-editing-rules.mjs E15",
+        "E15b"
+      ]
+    },
+    {
+      "issue_id": "E03：作者的选择必须可复核（独立选择记录）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": true,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "新表 revision_selections 记录每次发起修稿的输入快照（勾选集合 + 快照 + base/selection/plan 三个 hash）；修稿前必写记录（失败会明确告知无法事后复核）；取回路径读记录并据此收窄 selectedIssueIds，读不到时如实显示「只按快照与章号校验」",
+      "tests": [
+        ".p1-baseline/test-editing-rules.mjs E16",
+        "E16b",
+        "E17",
+        "E17b",
+        "frontend-test 94K4",
+        "94K5"
+      ]
+    },
+    {
+      "issue_id": "E06：对照视图（模型诊断 / 人工复判 / 结构指标，避免小样本过拟合）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "GET /api/novel/revision/comparison 只给原始计数；比例/趋势是否可看由 revisionSampleGuard 决定（样本不足 → 只允许看单次明细并写明不得据此判断趋势）；结构指标只描述「有几个」，不判「好不好」",
+      "tests": [
+        "06 E06-f",
+        "06 E06-f2",
+        "06 E06-f3",
+        ".p1-baseline/test-editing-rules.mjs E18",
+        "E18b",
+        "E18c",
+        "frontend-test 94R",
+        "94R2",
+        "94R3",
+        "94R4",
+        "94R5",
+        "94R6"
+      ]
+    },
+    {
+      "issue_id": "E02：直连与 Harness 对同一阶段输出等价规则集合",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "blocked",
+      "reason": "修复前 Harness 侧（novel_write_pipeline）不带阶段 → 同一章成文经直连与经慢通道注入的规则集合不同；修复后同参数两条端点给出同一份 assembled 与同一 rule-block hash，并有路由输入级检查与变异测试",
+      "tests": [
+        ".p1-baseline/test-editing-rules.mjs E19",
+        "E19b",
+        "E19c",
+        "E19d",
+        "E19e",
+        ".p1-baseline/verify-plugin-tools.mjs 通道等价 4 项（含变异测试）",
+        "frontend-test 96c",
+        "96d"
+      ]
+    },
+    {
+      "issue_id": "E02：部署拷贝与源文件的漂移",
+      "kind": "defect",
+      "selected": true,
+      "selected_recorded": false,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "kept",
+      "reason": "活跃通道（headless/novel profile）走 junction 指向仓库 → 源文件即部署文件、无副本；遗留的 ~/.dsh/.agent-presets/novel-writing 是 2026-09-18 旧拷贝且无通道加载，按规则只报告不写用户目录",
+      "tests": [
+        ".p1-baseline/verify-preset-copy.mjs（结论 junction_ok）"
+      ]
+    },
+    {
+      "issue_id": "E07：回归、运行证据与交付（§10.1 产物 + §10.2 九维清单 + §10.3 回滚）",
+      "kind": "narrative",
+      "selected": true,
+      "selected_recorded": true,
+      "patch_produced": false,
+      "entered_candidate": false,
+      "result": "proposed",
+      "reason": "run-narrative-acceptance.mjs 按退出码判定并产出 e07-run-manifest.json（9 条必做命令全绿、付费调用 0 次）；acceptance-report.md 逐项对照 §10.2 九维 + I01—I08；implementation-report §1b 给出 Cxx/Nxx/Lxx → 代码 → 测试 → 结果；rollback.md 按 §10.3 更新并给出验证命令；SE6 阶段登记本轮文件（本轮未归属 = 0）",
+      "tests": [
+        "scripts/run-narrative-acceptance.mjs（9/0）",
+        "acceptance-report.md",
+        "implementation-report.md §1b",
+        "rollback.md",
+        ".p1-baseline/verify-phase-map.mjs（SE6 证据 6/6）"
+      ]
+    }
+  ],
+  "summary": {
+    "proposed": 19,
+    "kept": 4,
+    "deferred": 2,
+    "blocked": 8,
+    "unverified": 1,
+    "unimplemented_issue_classes": [
+      "idempotencyKey / staleCheck 在采纳路径上的接线（既有设计决定：合并指纹只作告知、不作阻断）",
+      "真实模型语义审稿（付费未授权）",
+      "condense 的 Host 批准入口（应用层未提供）",
+      "must_keep / do_not_add 的数据来源",
+      "跨刷新共享重试预算（需落库）",
+      "设置页卡片（两个开关目前在审稿弹窗）",
+      "E07 全量验收（需作者参与）"
+    ]
+  }
+}

@@ -1226,6 +1226,70 @@ export const PHASES = [
       + ' 时间锚点 4–5 个、匿名群众反应 1 段、镜头越界 0 段 —— 即 S1/S3/S5 在本章是**倾向**而非硬性缺陷，'
       + ' 判据据此保持静默（零误报纪律），这是刻意的能力边界而非漏检。',
   },
+  {
+    id: 'SE6',
+    title: '2026-10-09 第六批：叙事性专项修复（E00—E07：局部补丁执行正确性 / 阶段化规则 / 审稿与选择保真 / 叙事诊断 / 编辑计划 / 可解释报告）',
+    files: [
+      // —— 本批新增的模块（可单独撤回：不支持新模块时上层有回落姿态）——
+      'public/revision-patch.js',
+      'public/revision-plan.js',
+      'ai/editing/narrative-scan.mjs',
+      'ai/editing/narrative-review.mjs',
+      // —— 本批新增的测试、冻结样本与交付文档（可独立撤回）——
+      'tests/narrative-repair/',
+      'docs/narrative-repair/',
+      'scripts/test-narrative-repair.mjs',
+      'scripts/materialize-narrative-fixtures.mjs',
+      'scripts/run-narrative-acceptance.mjs',
+      '.p1-baseline/verify-preset-copy.mjs',
+      '.narrative-repair/',
+      '叙事性专项修复.md',
+      // —— 共用文件的改动（与其它阶段重叠，见 note）——
+      'public/app.js',
+      'public/index.html',
+      'ai/editing/rules.mjs',
+      'server.js',
+      'db.js',
+      'frontend-test.mjs',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/test-editing-rules.mjs',
+      '.p1-baseline/test-migration-idempotent.mjs',
+      'harness-plugins/novel-writing/novel-tools.mjs',
+      'docs/host-contract.md',
+      'docs/host-contract.v1.json',
+      // 阶段映射生成器自身：本阶段新增 SE6 条目。
+      '.p1-baseline/verify-phase-map.mjs',
+    ],
+    evidence: [
+      'docs/narrative-repair/implementation-report.md',
+      'docs/narrative-repair/test-report.md',
+      'docs/narrative-repair/e07-run-manifest.json',
+      'docs/narrative-repair/coverage-report.json',
+      'docs/narrative-repair/rollback.md',
+      'scripts/run-narrative-acceptance.mjs',
+    ],
+    rollback: 'shared',
+    note: '**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`；'
+      + ' 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`），'
+      + ' `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`，'
+      + ' 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`，'
+      + ' 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。'
+      + ' 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）；'
+      + ' ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价，'
+      + ' Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）；'
+      + ' ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）；'
+      + ' ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）；'
+      + ' ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）；'
+      + ' ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）；'
+      + ' ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。'
+      + ' `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、'
+      + ' `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*`'
+      + ' 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**'
+      + '（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级；'
+      + ' 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。'
+      + ' ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`），'
+      + ' 故交付文档只写"机制已实现、文学效果待评测"。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

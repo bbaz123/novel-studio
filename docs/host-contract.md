@@ -1,4 +1,4 @@
-# Host Contract 1.21.0（宿主契约 · 冻结）
+# Host Contract 1.22.0（宿主契约 · 冻结）
 
 > **这份文档是 novel-writing 插件阶段的稳定地面。**
 > 冻结的是**已经验收过的行为与接口**，不是"理论完美"；任何新增宿主行为都必须以后再走主体变更流程（质量门 → 行为门 → 兼容门），
@@ -6,7 +6,7 @@
 >
 > - 机读契约面（由真实代码导出，不是手抄）：`docs/host-contract.v1.json`
 > - 契约测试（离线、零计费）：`node .p1-baseline/test-host-contract.mjs`
-> - 版本：**host-contract 1.21.0**（`HOST_CONTRACT_VERSION` 在 `server.js`；`GET /api/novel/ping` 会回报它）
+> - 版本：**host-contract 1.22.0**（`HOST_CONTRACT_VERSION` 在 `server.js`；`GET /api/novel/ping` 会回报它）
 > - 1.0.0 冻结于 **2026-09-25**（依据：`docs/main-v2-acceptance-2026-09-25.md` 的 A PASS 验收结论）
 > - 1.1.0 冻结于 **2026-09-26**（**附加式**扩展：确定性故事状态内核；预算常量、层顺序、默认生成路径均未变，逐字节基线 50/50 复验。见 §13）
 > - 1.2.0 冻结于 **2026-09-26**（**附加式**：只读事实端点 `GET /api/novel/state/facts`；并修正派生视图的章序展示——内部 0 基下标，展示一律 +1。见 §13）
@@ -29,6 +29,7 @@
 > - 1.17.0 冻结于 **2026-09-30**（**附加式 + 时态上下文全链路**：T5 把唯一权威状态来源接进上下文装配与工具查询——`GET /api/novel/context` 与 `GET /api/ai_context` 新增可选参数 `boundary` / `commit_id` / `worldline_id` / `perspective` / `pov_character_id`（默认参数下缓存键与响应逐字节同 1.16.0），响应新增 additive 字段 `temporal_context`；`GET /api/novel/events`、`GET /api/novel/foreshadows`、`POST /api/novel/consistency`、`GET /api/search` 在显式给出 `chapter_id` 时按同一游标过滤并附 `temporal_filter`（未来章 / 未归属 / 本章未确认新稿分别拦为 `future_chapter` / `unattributed` / `unconfirmed_index`）；时态状态版本进入缓存外部版本串，状态推进立即失效缓存。无新表；未开启 `temporal_enabled` 的作品零变化）
 > - 1.18.0 冻结于 **2026-09-30**（**附加式 + 独立导航与章末状态面板**：T6 前端把编辑规则 / 作者样文 / 故事状态 / 剧情分支 / 导入重建拆成五个独立页面（各自 route key、独立加载、错误态与空态；旧键 `st` 保留兼容别名，旧链接不失效），新增作者侧只读 `GET /api/novel/state/revision`（候选修订预览：归属校验 / 404 / 不写状态）；章末状态面板读真实时态状态（章前章后 / 世界线 / 提交 / 有效性 / 可信前缀 / 出场类型 / 变更前后 + 证据定位 / 待确认提案），位于正文编辑区之外，不进正文导出与字数统计；影响分析与逐章重建的界面动作全部走真实 API 与一次性作者审批。无新表；插件工具/端点面不变；未开启 `temporal_enabled` 的作品零变化）
 > - 1.20.0 冻结于 **2026-10-02**（**附加式 · 审计修复轮**：通道能力 `tools` / 采纳并发基线 `expected.updated_at` / 模型通道账本写入强制提案 + `foreshadow_status` 审批 / chapters 单事务 + `auto` 自动快照 + 413 / 影响报告 truncated 字段 / `story_state/contract` 端点；详见 §14 与 `host-contract.v1.json` 的 `contract_history`）
+> - 1.22.0 冻结于 **2026-10-09**（**附加式 · 修稿选择记录**：新增表 `revision_selections`（`work_id`/`chapter_id`/`review_id`/`snapshot_id`/`base_hash`/`selection_hash`/`plan_hash`/`selected_issue_ids_json`/`source`），记录**每一次发起修稿的输入快照**——与 `chapter_reviews.checklist_json`（当前勾选状态）不同，它是「这一次按哪几条问题、对着哪份稿子改」的可复核依据，也是「取消一个问题后不得把它包含在旧候选里」的判定输入。新增 `PUT /api/novel/revision/selection`（空勾选 400；每章保留最近 20 次）与 `GET /api/novel/revision/selection?chapter_id=`、`GET /api/novel/revision/comparison?chapter_id=`（模型诊断 / 人工复判 / 结构指标的**只读**对照：只给原始计数，比例是否可看由界面按样本量守卫决定；不存在章节 404）。`PUT /api/novel/review` 追加 additive 返回字段 `structure` / `findings_accepted` / `findings_rejected` / `rejected`，并把结构化 `findings` 过**引用核验**（逐字定位不到或出现多次的条目被拒收并给出理由）；只有行文本口径时逐字沿用旧行为。既有表结构、端点语义、预算、层序与插件工具面/端点白名单均未变。见 §13、§14）
 > - 1.21.0 冻结于 **2026-10-06**（**附加式 · 章节蓝图生命周期**：蓝图从「一章一列、覆盖式写入」改为**每章最多两份**的可追溯历史——新表 `chapter_blueprints`，`chapters.blueprint_json` 语义收窄为「最新那一份」的镜像（既有上下文装配 / 检索索引 / 一致性核对读取路径逐字节不变）。`PUT /api/novel/chapter_blueprint` 请求体与返回字段不变（只追加 `blueprint_id` / `saved_count` / `limit`）；新增作者侧 `GET /api/novel/chapter_blueprints?chapter_id=`（列表）与 `DELETE /api/novel/chapter_blueprints`（带 `blueprint_id` 删一条，不带则整章；返回剩余列表真值，镜像同步收敛）。正文**由 AI 写回本章**时（`POST /api/novel/chapter_save` 与 `POST /api/novel/adopt`，与正文同一事务）整章蓝图记录与镜像一并清空；编辑器手动/自动保存（`PUT /api/chapters/:id`）不触发。`GET /api/harness/recoverable` 与 `/api/harness/recovered` 新增 additive 字段 `is_blueprint`，使历史遗留的蓝图轮产出不再被当成可应用的成文结果。插件工具面与插件端点白名单不变（仍 26 工具 / 75 条声明）；旧端点 / 字段 / 预算 / 层序 / 默认 route 未变。见 §13、§14）
 > - 1.19.0 冻结于 **2026-09-30**（**附加式 + 存量重建与迁移门禁**：T7 新增作者侧 `GET /api/novel/state/backfill`（只读进度：迁移状态 / 逐章状态机 / 预算 / bootstrap 候选）与 `POST /api/novel/state/backfill/step`（冻结不可变修订 + 返回抽取请求或登记候选；本处理器不调用模型）、`POST /api/novel/state/backfill/confirm`（作者逐章按序确认，可信前缀只在按序确认后前进；重复确认幂等）、`POST /api/novel/state/backfill/bootstrap/plan`（旧字段最新值 → 待确认候选；幂等、不自动回填）、`POST /api/novel/state/backfill/bootstrap/decide`（作为开篇设定 / 指定章生效 / 拒绝；拒绝不写任何状态）；写入口模型侧一律 403，确认前不写任何正式状态，章节/作品归属校验失败 404。`PUT /api/novel/state/temporal` 启用改为迁移门禁（缺表/缺索引 → 503 且不改配置，不吞错误继续跑），启用即登记迁移版本（`app_settings.temporal_migration` 1.0.0），响应新增 `migration`（登记后状态）与首次启用时的 `enable_scope`（章数 / 预计模型调用 / 待重建范围 / bootstrap 待确认数；旧作品默认不启用自动模型分析）。无新表；插件工具/端点面不变；未开启 `temporal_enabled` 的作品零变化）
 
@@ -164,7 +165,7 @@
 | **错误码** | 无（DB 层错误由 API 层转成 4xx/5xx） |
 | **retryable** | 写冲突由 `busy_timeout` 吸收；业务层不重试 |
 | **兼容策略** | **只增不减**：`CREATE TABLE IF NOT EXISTS` + `try ALTER TABLE ... ADD COLUMN`（列已存在即忽略）；**绝不** `DROP TABLE` / `DROP COLUMN` / `RENAME` / 删除用户数据 |
-| **版本** | 1.21.0（累计 73 张表；1.0.0 冻结的 25 张旧表零结构改动，新增表全部是新表） |
+| **版本** | 1.22.0（累计 74 张表；1.0.0 冻结的 25 张旧表零结构改动，新增表全部是新表） |
 | **不变条件** | ① 旧作品/旧章节/旧记忆继续可打开；② 对旧库零 schema 写入、零数据删除（验收实测：`sqlite_master` 指纹 `3cb7e5d9ac4f67b9` 前后一致）；③ 新增表全部是**新表**，不改旧表结构；`story_state_config.enabled` 对既有作品默认 `0`（未开启 = 行为与 1.0.0 完全一致） |
 | **可观测字段** | `sqlite_master`（表/索引/视图/触发器）、关键表行数 |
 | **不可绕过** | 插件不得直接读写 `novel.db`（含 `-wal` / `-shm`）；不得要求宿主"顺手"改字段 |

@@ -59,7 +59,9 @@ const NEW_TABLES = ['author_approvals', 'adoption_operations', 'projection_outbo
   'novel_index_items', 'novel_index_knowledge', 'novel_index_locations', 'novel_index_meta', 'novel_index_relations',
   'novel_index_style', 'novel_index_threads', 'novel_index_world',
   // 1.21.0（2026-10-06）：章节蓝图历史（每章最多两份；chapters.blueprint_json 降级为最新一份的镜像）
-  'chapter_blueprints'];
+  'chapter_blueprints',
+  // 1.22.0（2026-10-09）：修稿选择记录（每一次发起修稿的输入快照，供复核与越权判定）
+  'revision_selections'];
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-migration-'));
 let first = null;

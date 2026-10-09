@@ -1,7 +1,7 @@
 {
   "$comment": "Host Contract 的可机读契约面（由真实代码导出，不是手抄）。任何字段的变化都必须走主体变更流程：改代码 → 改本文件 → 改 docs/host-contract.md → 跑 .p1-baseline/test-host-contract.mjs。",
-  "host_contract": "1.21.0",
-  "frozen_at": "2026-10-06",
+  "host_contract": "1.22.0",
+  "frozen_at": "2026-10-09",
   "host": {
     "service": "novel-studio",
     "engine": "novel-core",
@@ -568,6 +568,7 @@
       "plotline_characters",
       "plotlines",
       "projection_outbox",
+      "revision_selections",
       "story_binding_trust",
       "story_chapter_bindings",
       "story_chapter_dependencies",
@@ -986,6 +987,11 @@
       "version": "1.21.0",
       "frozen_at": "2026-10-06",
       "note": "附加式：章节蓝图从「一章一列、覆盖式写入」改为可追溯的**每章最多两份**历史（新表 chapter_blueprints；chapters.blueprint_json 语义收窄为「最新那一份」的镜像，既有上下文装配 / 检索索引 / 一致性核对读取路径逐字节不变）。PUT /api/novel/chapter_blueprint 的请求体与返回字段不变（只追加 blueprint_id / saved_count / limit）；新增作者侧 GET /api/novel/chapter_blueprints?chapter_id= 与 DELETE /api/novel/chapter_blueprints（body: chapter_id + 可选 blueprint_id；删除后返回剩余列表真值，镜像同步收敛）。蓝图的生命周期收紧：正文**由 AI 写回本章**时（POST /api/novel/chapter_save 与 POST /api/novel/adopt，与正文同一事务）整章蓝图记录与镜像一并清空——编辑器的手动/自动保存（PUT /api/chapters/:id）不触发。GET /api/harness/recoverable 与 /api/harness/recovered 新增 additive 字段 is_blueprint（按产出内容判定「这是不是蓝图」），使历史遗留的蓝图轮产出不再被当成可应用的成文结果。插件工具面与插件端点白名单不变（仍 26 工具 / 75 条声明）；旧端点/字段/预算/层序/默认 route 未变；正文为空、蓝图仍在用的章节行为不变。"
+    },
+    {
+      "version": "1.22.0",
+      "frozen_at": "2026-10-09",
+      "note": "附加式：新增表 revision_selections（修稿选择记录：work_id/chapter_id/review_id/snapshot_id/base_hash/selection_hash/plan_hash/selected_issue_ids_json/source），记录「每一次发起修稿的输入快照」；新增作者侧 PUT/GET /api/novel/revision/selection（空勾选 400；每章保留最近 20 次）；PUT /api/novel/review 追加 additive 返回字段 structure/findings_accepted/findings_rejected/rejected，并把结构化 findings 过**引用核验**（定位不到或出现多次的条目被拒收，只有行文本时逐字沿用旧行为）。插件工具面与端点白名单不变（仍 26 工具 / 75 条声明）；既有表结构、端点语义、预算、层序、默认 route 均未变。"
     }
   ]
 }

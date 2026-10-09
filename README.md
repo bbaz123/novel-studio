@@ -19,7 +19,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.1.6** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.4](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.4).
+> 📌 Version **v1.1.6** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.1.6](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.6).
 
 <details>
 <summary><b>Contents</b></summary>

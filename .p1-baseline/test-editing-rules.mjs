@@ -381,6 +381,149 @@ try {
   ok('E10 扫描是只读的：模型侧可以调用（不写数据、不改 Canon）', scanAgent.status === 200);
   const scanOther = await jfetch('/api/novel/editing/scan', { method: 'POST', body: { work_id: w, chapter_id: 999999 } });
   ok('E11 跨书/不存在的章节 → 404（不扫描别人的正文）', scanOther.status === 404, `实际 ${scanOther.status}`);
+  // ── E04（2026-10-09）：叙事诊断的确定性候选层随扫描一起返回 ──
+  // 只在作者启用 story-shape 时产出；`semantic_status` 恒为 not_run（界面不得显示"叙事诊断完成"）；
+  // 且确定性层**只给 condense/check**，永不返回 delete（不定罪）。
+  await jfetch('/api/novel/editing', { method: 'PUT', body: { enabled: true, tier: 'deai', abilities: ['story-shape'], genre: 'general' } });
+  const narrativeText = [
+    '他不认识画面里那个女生。这道光柱和他没关系，这场雪和他也没关系。',
+    '雪落在海澜市的中心广场上。落在写字楼的玻璃幕墙上。落在停着的公交车顶。落在通往港口的立交桥上。',
+    '半座城市。',
+    '上午十点前后，屏幕右上角换了行字。',
+  ].join('\n\n');
+  const nScan = await jfetch('/api/novel/editing/scan', { method: 'POST', body: { work_id: w, chapter_id: c1, text: narrativeText } });
+  const narrative = nScan.data && nScan.data.narrative;
+  ok('E12 启用 story-shape 时扫描返回叙事候选层（确定性候选，含数据不足字段）',
+    nScan.status === 200 && !!narrative && Array.isArray(narrative.candidates)
+      && narrative.deterministic === true && Array.isArray(narrative.insufficient_data)
+      && nScan.data.narrative_status === 'not_run',
+    JSON.stringify({ candidates: narrative && narrative.candidates.length, status: nScan.data.narrative_status }));
+  ok('E13 叙事候选不定罪：只给 condense/check、requires_semantic_check 恒真、不带 delete',
+    !!narrative && narrative.candidates.length > 0
+      && narrative.candidates.every((x) => ['condense', 'check'].includes(x.suggested_action))
+      && narrative.candidates.every((x) => x.requires_semantic_check === true)
+      && narrative.candidates.every((x) => !!x.counterevidence_hint),
+    JSON.stringify((narrative ? narrative.candidates : []).map((x) => x.rule_id)));
+  await jfetch('/api/novel/editing', { method: 'PUT', body: { enabled: true, tier: 'deai', abilities: ['fiction-humanizer'], genre: 'general' } });
+  const nOff = await jfetch('/api/novel/editing/scan', { method: 'POST', body: { work_id: w, chapter_id: c1, text: narrativeText } });
+  ok('E14 未启用 story-shape 时不返回叙事候选（不打开就不加调用与结论）',
+    !(nOff.data && nOff.data.narrative) && nOff.data.narrative_status === 'not_requested',
+    JSON.stringify({ has: !!(nOff.data && nOff.data.narrative), status: nOff.data.narrative_status }));
+
+  // ── E03（2026-10-09）：审稿报告结构化（引用核验）+ 修稿选择记录 ──
+  const realQuote = '他把斗篷挂好，屋里只有一盏灯。';
+  const goodFinding = {
+    id: 'N04', kind: 'narrative', severity: 'medium', verdict: 'confirmed',
+    evidence: [{ quote: realQuote, source: 'body' }],
+    reading_cost: '交代与后文重复', rationale: '这句已由动作表达',
+    counterevidence: '若作者有意用静物收束段落，则不是冗余', suggested_action: 'condense',
+  };
+  const fakeFinding = { ...goodFinding, id: 'X9', evidence: [{ quote: '他把斗篷挂了起来。', source: 'body' }] };
+  const reviewPut = await jfetch('/api/novel/review', {
+    method: 'PUT',
+    body: { work_id: w, chapter_id: c1, base_hash: 'fnv1a:test:10', report: { summary: '总评', issues: [], findings: [goodFinding, fakeFinding] } },
+  });
+  ok('E15 结构化审稿：引用能逐字定位的通过、定位不到的拒收并给出理由',
+    reviewPut.status === 201 && reviewPut.data.structure === 'review_v2'
+      && reviewPut.data.findings_accepted === 1 && reviewPut.data.findings_rejected === 1
+      && /找不到/.test(String((reviewPut.data.rejected[0] || {}).errors || '').slice(0, 200)),
+    JSON.stringify(reviewPut.data));
+  const reviewGet = await jfetch(`/api/novel/review?chapter_id=${c1}`);
+  const savedReport = (reviewGet.data.review || {}).report || {};
+  ok('E15b 结构化结论随报告落库：兼容清单带 id 与引用，findings 可复核（拒收项不在清单里）',
+    reviewGet.status === 200 && Array.isArray(savedReport.issues)
+      && savedReport.issues.some((x) => String(x).includes('[N04]') && String(x).includes(realQuote.slice(0, 10)))
+      && Array.isArray(savedReport.findings) && savedReport.findings.length === 1
+      && !savedReport.issues.some((x) => String(x).includes('X9')),
+    JSON.stringify({ issues: savedReport.issues, findings: (savedReport.findings || []).length }));
+
+  const selPut = await jfetch('/api/novel/revision/selection', {
+    method: 'PUT',
+    body: { work_id: w, chapter_id: c1, review_id: reviewPut.data.review_id, snapshot_id: 'ch1@abc', base_hash: 'fnv1a:test:10', selection_hash: 'sel-aaa', plan_hash: 'plan-bbb', selected_issue_ids: ['1', '2'], source: 'ui' },
+  });
+  const selGet = await jfetch(`/api/novel/revision/selection?chapter_id=${c1}`);
+  const sel = selGet.data.selection || {};
+  ok('E16 修稿选择记录可独立复核：勾选集合、快照与两个 hash 都能读回',
+    selPut.status === 201 && selPut.data.selected === 2
+      && Array.isArray(sel.selected_issue_ids) && sel.selected_issue_ids.join(',') === '1,2'
+      && sel.snapshot_id === 'ch1@abc' && sel.selection_hash === 'sel-aaa' && sel.plan_hash === 'plan-bbb'
+      && Number(sel.review_id) === Number(reviewPut.data.review_id),
+    JSON.stringify(sel));
+  await jfetch('/api/novel/revision/selection', {
+    method: 'PUT',
+    body: { work_id: w, chapter_id: c1, snapshot_id: 'ch1@abc', base_hash: 'fnv1a:test:10', selection_hash: 'sel-ccc', selected_issue_ids: ['2'], source: 'ui' },
+  });
+  const selGet2 = await jfetch(`/api/novel/revision/selection?chapter_id=${c1}`);
+  ok('E16b 选择记录是**每次发起修稿的输入快照**：取消一条后读到的是新的集合（不是旧的缓存）',
+    (selGet2.data.selection || {}).selected_issue_ids.join(',') === '2'
+      && (selGet2.data.selection || {}).selection_hash === 'sel-ccc');
+  const selEmpty = await jfetch('/api/novel/revision/selection', {
+    method: 'PUT', body: { work_id: w, chapter_id: c1, selected_issue_ids: [] },
+  });
+  ok('E17 空勾选被拒绝（没有选择就没有修稿依据，不能记一条什么都不含的记录）',
+    selEmpty.status === 400, JSON.stringify(selEmpty.data));
+  const selOther = await jfetch('/api/novel/revision/selection?chapter_id=999999');
+  ok('E17b 不存在的章节：读选择记录返回空（不串到别的章）', selOther.status === 200 && selOther.data.selection === null);
+
+  // E06：三类证据的对照数据（只给原始计数；比例是否可看由界面按样本量守卫决定）
+  const cmp = await jfetch(`/api/novel/revision/comparison?chapter_id=${c1}`);
+  const cm = cmp.data.model || {};
+  const ch = cmp.data.human || {};
+  ok('E18 对照视图返回三类证据：模型诊断 / 人工复判 / 结构指标 + 原始样本计数',
+    cmp.status === 200 && Number(cm.reviews) >= 1 && !!cm.latest
+      && cm.latest.structure === 'review_v2' && Number(cm.latest.findings) === 1 && Number(cm.latest.findings_rejected) === 1
+      && Number(ch.selections) === 2 && Number(cmp.data.sample_inputs.reviews) === Number(cm.reviews)
+      && Number(cmp.data.sample_inputs.runs) === Number(ch.selections),
+    JSON.stringify({ model: cm.latest, human: ch, sample: cmp.data.sample_inputs }));
+  const st = cmp.data.structure || {};
+  ok('E18b 结构指标来自确定性测量（段落/字数/对白占比/候选数），且不掺语义结论',
+    Number(st.paragraphs) >= 1 && Number(st.chars) > 0 && Number.isFinite(Number(st.dialogue_ratio))
+      && Number.isFinite(Number(st.narrative_candidates)),
+    JSON.stringify(st));
+  const cmpOther = await jfetch('/api/novel/revision/comparison?chapter_id=999999');
+  ok('E18c 不存在的章节 → 404（对照不跨章）', cmpOther.status === 404);
+
+  // ── E02（2026-10-09）：直连与 Harness 的**同阶段等价**（路由输入级证据） ──
+  // 两条通道各自取上下文：直连走 /api/ai_context（前端 loadAIContext），Harness 走 /api/novel/context
+  // （插件 novel_write_pipeline，现在带 stage=draft）。这里同参数对照两条端点的实际装配结果与规则块元信息。
+  await jfetch('/api/novel/editing', { method: 'PUT', body: { enabled: true, tier: 'deai', abilities: ['fiction-humanizer'], genre: 'general' } });
+  const draftNovel = await jfetch(`/api/novel/context?work_id=${w}&chapter_id=${c1}&mode=full&tools=0&stage=draft`);
+  const draftAi = await jfetch(`/api/ai_context?chapter_id=${c1}&tools=0&stage=draft`);
+  ok('E19 同一阶段两条端点给出同一份装配与同一规则块 hash（直连 vs Harness 等价）',
+    draftNovel.status === 200 && draftAi.status === 200
+      && typeof draftNovel.data.assembled === 'string' && draftNovel.data.assembled === draftAi.data.assembled
+      && !!draftNovel.data.edit_rules && draftNovel.data.edit_rules.hash === draftAi.data.edit_rules.hash
+      && draftNovel.data.edit_rules.stage === 'draft',
+    JSON.stringify({
+      sameAssembled: draftNovel.data.assembled === draftAi.data.assembled,
+      novelHash: draftNovel.data.edit_rules && draftNovel.data.edit_rules.hash,
+      aiHash: draftAi.data.edit_rules && draftAi.data.edit_rules.hash,
+      stage: draftNovel.data.edit_rules && draftNovel.data.edit_rules.stage,
+    }));
+  const draftText = String(draftNovel.data.assembled || '');
+  ok('E19b draft 阶段只给生成期许可：不含诊断判据与逐项评分任务',
+    draftText.includes('生成期·只给正向许可') && draftText.includes('这一阶段不做逐项评分')
+      && !draftText.includes('诊断期·完整判据') && !draftText.includes('逐处识别机械表达，每条都要给出'),
+    'len=' + draftText.length);
+  const verifyStage = await jfetch(`/api/novel/context?work_id=${w}&chapter_id=${c1}&mode=full&tools=0&stage=verify_style`);
+  const verifyText = String(verifyStage.data.assembled || '');
+  ok('E19c verify_style 阶段给完整判据 + 反证要求（证明两阶段确实不同，不是都为空）',
+    verifyText.includes('诊断期·完整判据') && verifyText.includes('反证')
+      && verifyText !== draftText
+      && (verifyStage.data.edit_rules || {}).hash !== (draftNovel.data.edit_rules || {}).hash,
+    JSON.stringify({ verifyStage: (verifyStage.data.edit_rules || {}).stage }));
+  const legacyStage = await jfetch(`/api/novel/context?work_id=${w}&chapter_id=${c1}&mode=full&tools=0`);
+  const legacyText = String(legacyStage.data.assembled || '');
+  ok('E19d 不传阶段 = 旧行为（基础规则文本），且与 draft 变体不同（阶段确实生效过）',
+    legacyText !== draftText && legacyText.includes('能力·去 AI 腔：逐处识别机械表达'),
+    JSON.stringify({ legacyStage: (legacyStage.data.edit_rules || {}).stage || '(空=基础)' }));
+  // 「明确事实限制仍在」分两层验：
+  //   · 装配层：三个阶段都仍带**写作红线**层（作品级显式事实限制的承载层）；
+  //   · 提示词层：直连提示词（frontend-test 94S）与 Harness 预设（verify-plugin-tools）都仍写明
+  //     "不要编造与既有设定冲突的内容"——那两处才是这句话真正落地的位置。
+  ok('E19e 三个阶段都仍带写作红线层（作品级显式事实限制没有被阶段化吃掉）',
+    [draftText, verifyText, legacyText].every((t) => /红线/.test(t)),
+    JSON.stringify({ draft: /红线/.test(draftText), verify: /红线/.test(verifyText), legacy: /红线/.test(legacyText) }));
 } catch (e) {
   fails.push('测试执行异常');
   console.error('✗ 测试执行异常：', e && e.stack ? e.stack : e);

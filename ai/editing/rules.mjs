@@ -14,7 +14,7 @@
  */
 import { sha16 } from '../story-state/hash.mjs';
 
-export const EDITING_RULE_VERSION = '1.4.0';
+export const EDITING_RULE_VERSION = '1.5.0';
 
 /**
  * 编辑保护规则：所有档位、所有能力共用的保真底线。
@@ -67,6 +67,43 @@ export const EDIT_TIERS = [
 ];
 
 /**
+ * 阶段档（2026-10-08，E02）：同一能力 ID 在不同阶段注入**不同内容**，而不是把同一段话塞给所有阶段。
+ *
+ * 为什么必须拆（《叙事性专项修复》§5.2）：把"诊断标准 + 反例大全 + 逐项评分任务"塞进生成阶段，
+ * 会把"写正文"变成"边写边自评"，模型于是去满足评分项（这正是 AI 味的结构性来源之一）；
+ * 反过来，把"允许略写、允许留白"这类**生成期许可**塞进诊断阶段，等于让审稿器把有效留白报成问题。
+ *
+ * 三条纪律：
+ *   · 只保留旧能力 ID（`fiction-humanizer` 等），不新增 `humanizer-write` / `humanizer-review`
+ *     这种用户选项 —— 旧作者设置继续可用（`resolveEditingSelection` 白名单不变）；
+ *   · `stage_rules` 是**可选**的：不传 stage 时逐字使用 `rule`，与接入前完全一致（旧调用点零变化）；
+ *   · 找不到对应阶段 → 回落 `rule`，并在审计摘要里标 `base_fallback`（不假装阶段变体生效了）。
+ */
+export const STAGE_ALIASES = {
+  blueprint: 'draft', draft: 'draft', expand: 'draft',
+  rewrite: 'rewrite', polish: 'rewrite', revision: 'rewrite',
+  review: 'verify_style', verify_style: 'verify_style', verify_fact: 'verify_style',
+};
+
+/**
+ * 取某能力在某阶段应注入的规则文本。
+ * @returns {{text:string, stage:string, used:'stage'|'stage_alias'|'base'|'base_fallback'}}
+ */
+export function stageRuleFor(ability, stage) {
+  const base = String((ability && ability.rule) || '');
+  const wanted = String(stage || '').trim();
+  if (!ability || !wanted) return { text: base, stage: '', used: 'base' };
+  const map = ability.stage_rules && typeof ability.stage_rules === 'object' ? ability.stage_rules : null;
+  if (!map) return { text: base, stage: '', used: 'base_fallback' };
+  if (typeof map[wanted] === 'string' && map[wanted]) return { text: map[wanted], stage: wanted, used: 'stage' };
+  const alias = STAGE_ALIASES[wanted];
+  if (alias && typeof map[alias] === 'string' && map[alias]) {
+    return { text: map[alias], stage: alias, used: 'stage_alias' };
+  }
+  return { text: base, stage: '', used: 'base_fallback' };
+}
+
+/**
  * 七项创作能力（§10.3）。它们不是七个工具，而是小说 bundle 的可选规则/profile。
  * `tasks` 声明能力起作用的任务；`genre_affinity` 声明适用的题材档（空数组 = 不挑题材）；
  * `rule` 是真正会进入请求的规则文本；`signals` 交给确定性扫描器（scan.mjs）用。
@@ -79,6 +116,27 @@ export const ABILITIES = [
     tasks: ['write', 'review'],
     genre_affinity: [],
     rule: '能力·去 AI 腔：逐处识别机械表达（"仿佛/似乎/不由得"堆叠、万能情绪句、空泛升华、整齐排比、解释性总结），给出更具体的动作、感官或潜台词；保留原意与信息量，不新增事实。另有四类**词表测不到**的痕迹必须一并避开：①「不是 X。是 Y。」式先否定再重定义的短语判断，以及连续三短句总结；②给抽象判断配视觉化动作或比喻（"把那句话放在桌面上，让它自己立住"）、以及全篇均匀的比喻密度；③为了让前文意象、数字、颜色或口头禅再出现一次而回扣；④把普通场景写成镜头调度，或用“像……或者只是……”“其实……根本……”替读者反复校正画面。呼应要有叙事必要，允许细节全章只出现一次，也允许人物在章内没有想通。',
+    // 阶段化内容：生成期只给正向许可，诊断期给完整判据与反证要求，修稿期只管已选问题。
+    stage_rules: {
+      draft: '能力·去 AI 腔（生成期·只给正向许可，不给评分任务）：写的时候只避开两类机械感——'
+        + '① 万能情绪句与空泛升华（"仿佛/似乎/不由得"堆叠、整齐排比、替读者总结刚写过的东西）；'
+        + '② 每个念头都给出完整认知闭环。详略带由内容决定：可以有一段不推进剧情、只过场或闲聊的内容，'
+        + '允许有些细节全章只出现一次，也允许人物的想法在章内没有想通。'
+        + '**不要**为了"显得自然"刻意加水、刻意打乱句长或故意不均匀——那会变成另一种模板。'
+        + '这一阶段不做逐项评分，也不要输出审查报告。',
+      verify_style: '能力·去 AI 腔（诊断期·完整判据 + 反证要求）：逐处识别机械表达，每条都要给出**正文原文引用**'
+        + '与它伤害的阅读效果：① 万能情绪句（"仿佛/似乎/不由得"堆叠）、空泛升华、整齐排比、'
+        + '含义已由动作或对白表达之后又补一句的解释性总结；②「不是 X。是 Y。」式先否定再重定义的短语判断、'
+        + '连续三个短句当总结；③ 给抽象判断配视觉化动作或比喻、以及全篇均匀的比喻密度；'
+        + '④ 为了让前文意象、数字、颜色或口头禅再出现一次而回扣；⑤ 把普通场景写成镜头调度，'
+        + '或用“像……或者只是……”“其实……根本……”替读者反复校正画面。'
+        + '**反证要求**：作者可能故意排比、故意累积（高潮/恐怖/压迫）、故意留白、故意写直接心理——'
+        + '给不出"为什么这不是有意手法"的就不要报，放 deferred。只报告，不改写正文。',
+      rewrite: '能力·去 AI 腔（修稿期）：只处理本次清单里**已经选定**的问题，不重新评审全文、不顺带润色其它地方。'
+        + '改法优先"删掉含义已由动作或对白表达之后的总结句、合并承担同一功能的重复证据"；'
+        + '删除重复说明要使用显式 delete，不要另造一个动作或旁白来填位。'
+        + '每个已选问题都要给出处置（patched / keep / deferred / blocked）与理由；拿不准就保留并说明。'
+    },
   },
   {
     // 2026-10-02（作者第三轮逐句意见）：这一类不是"用词"问题，而是**叙述者在场**的问题。
@@ -120,6 +178,17 @@ export const ABILITIES = [
     tasks: ['write', 'review'],
     genre_affinity: [],
     rule: '能力·对白编辑：检查对白是否承担推进/人物/信息中至少一项职责；避免对白资料倾倒（用对话背诵设定）；让不同角色的用词、句长、礼貌层级可区分；连续对白之间补必要的动作节拍。',
+    // 阶段化（E02）：这条原来把"补动作节拍"当成**写作指令**发给所有阶段。
+    // 在诊断/修稿阶段它变成了相反的要求（别把动作节拍当节拍器），所以必须拆开。
+    stage_rules: {
+      draft: '能力·对白编辑（生成期）：让不同角色的用词、句长、礼貌层级可区分；每段对白至少要承担推进、'
+        + '塑造人物或传递信息中的一项。动作节拍按需补：需要"停一下"时才补，同一个动作在本章写到第二遍基本不再提供新信息。',
+      verify_style: '能力·对白编辑（诊断期）：逐段核对对白是否承担推进/人物/信息中至少一项；是否存在"对白资料倾倒"'
+        + '（用对话背诵设定）；去掉姓名后不同人物的台词是否还能区分；动作节拍是否被当成了节拍器之间（每段都补、'
+        + '且都在同一功能上）。每条给正文原文引用；判不出就放 deferred，不要写成硬伤。',
+      rewrite: '能力·对白编辑（修稿期）：只改本次选定的对白问题；人物独特的应答方式与承担辨识度的台词保持原样，'
+        + '不得以"重复""不够工整"为由把对白改平、改短或换成同一套模板。',
+    },
   },
   {
     id: 'webnovel-pacing',
@@ -328,13 +397,19 @@ export function abilityDecision(ability, { task = 'write', genre = 'general' } =
 }
 
 /**
- * 组装本次编辑的规则块（确定性；同一选择 → 同一 hash）。
+ * 组装本次编辑的规则块（确定性；同一选择 + 同一阶段 → 同一 hash）。
  * 规则文本按顺序拼接：保护规则 → 档位 → （题材侧重）→ 各能力。
+ *
+ * 阶段（`stage`，可选）只影响**有 `stage_rules` 的能力**；不传 stage 时行为与接入前逐字一致。
+ * 返回值额外给出**审计摘要**（不含正文、不含密钥）：用什么阶段、进了哪些规则 id、各类型几条、
+ * 哪些能力回落到了基础文本。它的用途是证实"诊断规则确实没有流入生成阶段"，而不是声称已解耦。
+ *
  * @param {{enabled:boolean,tier:string,abilities:string[],genre:string}} selection
- * @param {{task?:string, includeProtection?:boolean}} opts
+ * @param {{task?:string, stage?:string, includeProtection?:boolean}} opts
  */
-export function buildEditingRuleBlock(selection, { task = 'write', includeProtection = true } = {}) {
+export function buildEditingRuleBlock(selection, { task = 'write', stage = '', includeProtection = true } = {}) {
   const sel = selection || {};
+  const stageKey = String(stage || '').trim();
   const tier = EDIT_TIERS.find((t) => t.id === sel.tier) || EDIT_TIERS[0];
   const genre = GENRES.find((g) => g.id === sel.genre) || GENRES[0];
   const parts = [];
@@ -356,10 +431,24 @@ export function buildEditingRuleBlock(selection, { task = 'write', includeProtec
     const dec = abilityDecision(ability, { task, genre: genre.id });
     decisions.push({ id: ability.id, load: dec.load, reason: dec.reason });
     if (!dec.load) continue;
-    parts.push(`【${ability.name}】\n${ability.rule}`);
-    sources.push({ id: `ability:${ability.id}`, kind: 'ability', version: EDITING_RULE_VERSION, hash: ruleHash(ability.rule), chars: ability.rule.length });
+    const variant = stageRuleFor(ability, stageKey);
+    parts.push(`【${ability.name}】\n${variant.text}`);
+    sources.push({
+      id: `ability:${ability.id}${variant.stage ? `@${variant.stage}` : ''}`,
+      kind: 'ability',
+      version: EDITING_RULE_VERSION,
+      hash: ruleHash(variant.text),
+      chars: variant.text.length,
+      stage: variant.stage || null,
+      variant: variant.used,
+      // 兼容/可追踪：无论是否走阶段变体，都记下基础文本的 hash，便于比对"这一段到底换没换"。
+      base_hash: ruleHash(ability.rule),
+    });
+    decisions[decisions.length - 1].stage_variant = variant.used;
   }
   const text = parts.join('\n\n');
+  const countsByType = {};
+  for (const s of sources) countsByType[s.kind] = (countsByType[s.kind] || 0) + 1;
   return {
     block_id: 'edit-rules',
     version: EDITING_RULE_VERSION,
@@ -368,8 +457,21 @@ export function buildEditingRuleBlock(selection, { task = 'write', includeProtec
     tier: tier.id,
     genre: genre.id,
     task,
+    stage: stageKey || null,
     text,
     sources,
     decisions,
+    // 审计摘要：证实"哪个阶段进了哪些规则"，以及哪些能力回落到了基础文本。
+    audit: {
+      stage: stageKey || '(unspecified)',
+      policy_version: EDITING_RULE_VERSION,
+      task,
+      rule_ids: sources.map((s) => s.id),
+      rule_sources: sources.map((s) => ({ id: s.id, kind: s.kind, hash: s.hash, chars: s.chars, stage: s.stage || null, variant: s.variant || null })),
+      counts_by_type: countsByType,
+      stage_variants_used: sources.filter((s) => s.stage).map((s) => s.id),
+      base_fallbacks: stageKey ? sources.filter((s) => s.kind === 'ability' && s.variant === 'base_fallback').map((s) => s.id) : [],
+      truncated_layers: [],
+    },
   };
 }
