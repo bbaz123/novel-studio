@@ -1290,6 +1290,38 @@ export const PHASES = [
       + ' ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`），'
       + ' 故交付文档只写"机制已实现、文学效果待评测"。',
   },
+  {
+    id: 'SE7',
+    title: '2026-10-10 第七批：叙事审稿—局部修稿闭环的授权边界修复（《修复.md》E00—E07：选中问题 → 获准跨度 → 实际补丁不可越权）',
+    files: [
+      // —— 本批新增的测试交付物、交付文档与验收运行器（可独立撤回：撤回后旧套件照常跑）——
+      'docs/narrative-repair-116/',
+      '.narrative-repair-116/',
+      'scripts/run-narrative-repair-116.mjs',
+      // `tests/narrative-repair/` 已由 SE6 以目录前缀认领（本批在其下新增 08/09/10 三个套件与新样本夹具目录）。
+    ],
+    evidence: [
+      'docs/narrative-repair-116/source-map.md',
+      'docs/narrative-repair-116/baseline.json',
+      'docs/narrative-repair-116/implementation-report.md',
+      'docs/narrative-repair-116/test-report.md',
+      'docs/narrative-repair-116/rollback.md',
+      'scripts/run-narrative-repair-116.mjs',
+    ],
+    rollback: 'independent',
+    note: '**只收紧授权、不改模型契约**：新增 `planAuthorization`（计划 → Host 授权表）、'
+      + '`planPatchApplication(opts.authorization)`（授权跨度白名单 + protected 拒绝）、'
+      + '`locateFragment` 的定位歧义拒绝（`ambiguous_anchor`）、'
+      + '`decodePatchOutput(raw,{expectedSchemaVersion,allowLegacy})` 的"新任务不吃 legacy"、'
+      + '以及 `deletionRisks` 的 `information_truncation`（soft 码，只提醒不硬拦）。'
+      + ' ⚠️ 回滚口径：本批**自身的**新增物（`docs/narrative-repair-116/`、`.narrative-repair-116/`、'
+      + ' `scripts/run-narrative-repair-116.mjs`）可独立撤回；而上面的代码改动落在'
+      + ' `public/app.js`、`public/revision-patch.js`、`public/revision-plan.js`、`public/patch-safety.js`、'
+      + ' `frontend-test.mjs`、`scripts/test-narrative-repair.mjs` —— 这些文件由 SE/SE4/SE5/SE6 等更早阶段共同认领，'
+      + ' 撤回时必须与那些阶段一起处理（见 `docs/narrative-repair-116/rollback.md` §2 的按责任单元回滚）。'
+      + ' ⚠️ 已知边界：真实模型语义审稿与文学效果 A/B 未执行（`SKIPPED: paid_evaluation_not_authorized`）；'
+      + ' 分段修稿的授权表按"逐字原文"匹配（分片与整章的 span 命名空间不同），已由 08/09 套件取证。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

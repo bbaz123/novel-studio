@@ -43,7 +43,7 @@ Novel Studio 把它做成**确定性、可检查的机制**：本机跑一个 No
 
 **一句实话**：Novel Studio 写不出比托管 AI 写作服务更漂亮的**单句**，也不会像人类编辑那样给你一份成熟大纲。它做的是那些工具不做的事——**不让设定漂移、死人复活和伏笔失踪悄悄过去**，而且是在你自己的机器上、免费做这件事。
 
-> 📌 版本 **v1.1.6**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.1.6](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.6)。
+> 📌 版本 **v1.1.7**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.1.7](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.7)。
 >
 > 🔎 **English keywords**：local-first AI novel writing studio / novel writing software · AI writing assistant · AI 小说写作软件 · Chinese web novel (网文) / long-form fiction · character consistency & foreshadowing tracker · worldbuilding tool · story bible · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted & privacy-first, your data never leaves your machine.
 
@@ -728,9 +728,24 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 
 ## 📝 更新记录
 
-### 🛠️ 最近更新（2026-10-08 · **v1.1.6** 实验版：叙事结构机械感）
+### 🛠️ 最近更新（2026-10-11 · **v1.1.7** 实验版：审稿—局部修稿闭环硬化）
 
-**这就是当前版本。** 上一版解决的是"改字的时候别改坏事实"；这一版解决的是**生成端为什么会把结构写成机械的**。
+**这就是当前版本。** 上一版解决"生成端为什么把结构写成机械的"；这一版解决**从审稿到落笔这条链路上，判断与授权是否真的守得住**。
+
+两轮专项（`修复.md` 的 E00–E07、`修改方案.md` 的 E00–E06）都指向同一件事：审稿报告说对了话，不代表修稿动作被正确约束。本轮把 S01–S09 九个风险点逐个复现，**其中多数已在 1.1.6 满足**，只对真实缺口做最小修复：
+
+- **红线扫描改成候选信号**（`public/app.js` `buildAIReviewPrompt`）：命中不再"必须进 issues"，改为逐条判断 + `not_applicable` 出口 + 反例通道。`微微` 在合法语境下确定性层 0 候选
+- **报告自洽检查不再滥报**（`ai/editing/narrative-review.mjs` 新增 `checkReportConsistency`）：原先"绝对措辞 + 同话题"判据在 **12 份真实报告上误报 6 份**，已改为**只有在正文里找到可确证反例**才置 `needs_calibration`（并给出反例原句）；优点与问题的字面重叠降级为 `advisories`（"建议核对，非结论"，不改 status）；不同维度不报。**不新增模型轮**
+- **授权 fail-closed 硬化**（`public/revision-patch.js` `ERROR_CODES` + `runRevisionPipeline`）：期望补丁协议 v2 却缺授权表 → `authorization_required`，**正文一字不动**；未传计划时不再下发"整章跨度"目录
+- **两个候选诊断**（`ai/editing/narrative-scan.mjs`）：`reaction_causality`、`focalization_limit` —— 自带反证通道，只报线索不定罪
+- **差异预览给出净收益**（`public/app.js` `showReviewDiff`）：显示 `before → after / net_delta / remaining_to_target`，达标与否分别措辞
+- **审稿报告回带自洽结论**（`server.js`）：`consistency` 随 `report_json` 落库，**无需迁移**
+- **验证**（零计费）：`tests/narrative-repair/` **11 套件 240 条断言 0 失败**（含阴性对照）+ `frontend-test.mjs` ALL PASS。证据见 [docs/review-closure-116](docs/review-closure-116/final-summary.md) 与 [docs/narrative-repair-116](docs/narrative-repair-116/final-summary.md)
+- **能力边界（如实说）**：**文学效果提升标 `not_run`** —— 未获付费评测授权，离线断言只证明工程行为，不构成"写得更好"的证据
+
+### 🛠️ 之前更新（2026-10-08 · **v1.1.6** 实验版：叙事结构机械感）
+
+**当时是当前版本。** 上一版解决的是"改字的时候别改坏事实"；这一版解决的是**生成端为什么会把结构写成机械的**。
 作者对第一章《觉醒日》的结构层审稿结论是一句话：**「AI 太认真地把所有事情都交代清楚了」**——
 不是词汇层面的 AI 味（没有"嘴角勾起一抹"这类典型 AI 词），而是叙事结构层面的机械感：
 同类流程完整复现、时间轴过密、群众反应换着说法重复、主角被写成摄像机。

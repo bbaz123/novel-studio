@@ -1,0 +1,143 @@
+{
+  "started_at": "2026-10-11T11:38:25.140Z",
+  "config_id": 1,
+  "key_sha8": "166a6ba3",
+  "model": "deepseek-flash",
+  "price_per_m": {
+    "input": 4,
+    "output": 16
+  },
+  "budget_yuan": 2,
+  "calls": [
+    {
+      "status": 200,
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2075,
+        "completion_tokens": 3499,
+        "total_tokens": 5574,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 2884
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 2075
+      },
+      "cost_yuan": 0.064284,
+      "spend_total_yuan": 0.064284,
+      "reply_len": 1292
+    },
+    {
+      "status": 200,
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2093,
+        "completion_tokens": 4583,
+        "total_tokens": 6676,
+        "prompt_tokens_details": {
+          "cached_tokens": 1792
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 3781
+        },
+        "prompt_cache_hit_tokens": 1792,
+        "prompt_cache_miss_tokens": 301
+      },
+      "cost_yuan": 0.0817,
+      "spend_total_yuan": 0.145984,
+      "reply_len": 1650
+    }
+  ],
+  "spend_yuan": 0.145984,
+  "assertions": [
+    {
+      "id": "S01-A1",
+      "desc": "合法语境的「微微」未被强制报成 issue",
+      "pass": false,
+      "observed": {
+        "weiwei_in_issues": true
+      }
+    },
+    {
+      "id": "S01-A2",
+      "desc": "报告给出了 not_applicable 处置（命中可被否决）",
+      "pass": true,
+      "observed": {
+        "mentions_not_applicable": true
+      }
+    },
+    {
+      "id": "S01-B1",
+      "desc": "真实冗余被报成 issue（不是\"零命中\"放过）",
+      "pass": true,
+      "observed": {
+        "issue_count": 7
+      }
+    },
+    {
+      "id": "S01-B2",
+      "desc": "issue 带可定位的原文引用",
+      "pass": true,
+      "observed": {
+        "quote_present": true
+      }
+    },
+    {
+      "id": "S01-AB",
+      "desc": "A 侧不报「微微」且 B 侧报真问题：两侧结论不同（判据有区分力）",
+      "pass": false,
+      "observed": {
+        "a_guilty": true,
+        "b_issues": 7
+      }
+    }
+  ],
+  "raw_replies": [
+    "{\n  \"summary\": \"本章正文仅一句话，远低于4000字目标，无法构成可审章节；剧情推进、人物关系、设定信息、冲突与章末钩子均缺少足够材料。唯一能确认的问题是篇幅严重不足，扫描命中的“微微”在此属于正常程度副词，不宜硬报为AI腔。\",\n  \"issues\": [\n    {\n      \"text\": \"全文只有“她微微侧过身，让出了一条路。他点了点头，继续往前走。”约二十余字，远低于本章4000字目标，导致没有场景建立、人物动机、冲突推进和章末钩子。位置：全章。理由：作为章节正文，它只承担一个过渡动作，无法支撑读者对后续情节的期待；不像有意留白，因为留白仍需要前文语境和本章功能。\",\n      \"signal_hit\": \"\",\n      \"verdict\": \"confirmed\"\n    },\n    {\n      \"text\": \"节奏与钩子缺失：全章没有给出目标、阻碍、信息差或未解问题，句子结束后没有让读者继续读下一章的动力。位置：全章。理由：当前仅“让路—点头—前行”的动作链，属于过场，不构成章节级节奏推进。\",\n      \"signal_hit\": \"\",\n      \"verdict\": \"confirmed\"\n    }\n  ],\n  \"deferred\": [\n    {\n      \"text\": \"“她”和“他”的身份、关系、所在地点，以及让路与继续前行的原因均未交代，是否为后文伏笔或单纯省略无法在本章判断。位置：全章。\",\n      \"type\": \"possible_foreshadowing\",\n      \"recheck_within_chapters\": 5\n    },\n    {\n      \"text\": \"既有设定冲突、人物言行一致性与剧情逻辑目前均缺少上下文，无法核验；需结合前后章节判断。位置：全章。\",\n      \"type\": \"unknown_context\",\n      \"recheck_within_chapters\": 5\n    }\n  ],\n  \"strengths\": [\n    {\n      \"text\": \"动作句干净，没有堆砌形容词、比喻或分镜调度词，标点和主语衔接清楚。\"\n    }\n  ],\n  \"scan_verdicts\": [\n    {\n      \"signal_hit\": \"微微\",\n      \"verdict\": \"not_applicable\",\n      \"counterevidence\": \"“微微”在此是正常程度副词，修饰侧身幅度；单句内没有形成模板复用、情绪词库轮换或AI腔复读，不能仅因扫描命中就报为问题。\"\n    },\n    {\n      \"signal_hit\": \"没有任何\",\n      \"verdict\": \"not_applicable\",\n      \"counterevidence\": \"待审正文中不存在“没有任何”这一表达，无法按该扫描命中核验，也不应臆造为问题。\"\n    }\n  ]\n}",
+    "{\"summary\":\"这是一段约七十余字的片段，而非完整章节。它快速建立了人物与异常画面之间的疏离感，但缺少上下文、事件推进和章末钩子，连续否定句与“程序”比喻也让表达偏向模板化。若作为开篇或独立章节，需补足场景、动作与选择；若为插入片段，则光柱、雪、画面女生等应放入后续核验。\",\"issues\":[{\"text\":\"待审正文约七十余字，相对本章目标四千字严重不足；没有场景展开、人物目标、事件推进或章末钩子，无法构成完整章节。需补足到目标篇幅，或明确此段仅为片段。\",\"signal_hit\":\"\",\"verdict\":\"confirmed\"},{\"text\":\"全段只有三句，人物、地点、时间、前因均未落地；“画面里那个女生”“光柱”“雪”“程序”缺少最低限度的场景关系，读者无法建立情境。需在开篇交代他所在位置、正在看什么、与这些异常的关系。\",\"signal_hit\":\"\",\"verdict\":\"confirmed\"},{\"text\":\"“他不认识画面里那个女生”“这道光柱和他没关系”“这场雪和他也没关系”“也没有任何表情”连续用否定式短句证明同一件事：他与眼前事件无关。功能相同，段落没有信息增量，读者只能被告知冷漠，无法从具体动作或潜台词判断。\",\"signal_hit\":\"没有任何\",\"verdict\":\"confirmed\"},{\"text\":\"“就像刚才只是完成了一个程序”是抽象比喻直接解释人物状态，缺少具体动作或感官落点，人物像执行模板。若后续没有程序、机械或任务设定支撑，这句会显得空泛。\",\"signal_hit\":\"\",\"verdict\":\"hypothesis\"},{\"text\":\"连续三句均为静态否定与状态描写，没有新事件、选择或变化，章首钩子为零。应尽快让异常与他发生可观察的互动，或给出他必须做的选择。\",\"signal_hit\":\"\",\"verdict\":\"confirmed\"},{\"text\":\"既有设定冲突、人物言行一致性与已完成任务是否回退均无法核验；当前小说上下文为空，本段信息不足以支撑冲突判定。\",\"signal_hit\":\"\",\"verdict\":\"not_applicable\"},{\"text\":\"工具命中“微微”×1，但待审正文中未出现“微微”一词，无法对应具体位置，不判定为 AI 腔或模板句。\",\"signal_hit\":\"微微\",\"verdict\":\"not_applicable\"}],\"deferred\":[{\"text\":\"“画面里那个女生”的身份、他为何看到她、是否会在后续产生关系，暂未解释，待后文核验。\",\"type\":\"possible_foreshadowing\",\"recheck_within_chapters\":5},{\"text\":\"“光柱”和“雪”是同一异常事件、能力现象还是背景场景，尚未说明，待后续章节确认。\",\"type\":\"possible_foreshadowing\",\"recheck_within_chapters\":5},{\"text\":\"“就像刚才只是完成了一个程序”是否指向具体任务、仪式、能力流程或机械设定，当前无法判断，待后续核验。\",\"type\":\"possible_foreshadowing\",\"recheck_within_chapters\":5},{\"text\":\"他站在哪里、当前视点是否能看见画面、光柱和雪，本段没有交代，待后续章节核验。\",\"type\":\"possible_foreshadowing\",\"recheck_within_chapters\":5}],\"strengths\":[{\"text\":\"用“不认识”“没关系”快速建立人物与眼前事件的心理距离，情绪方向明确。\"},{\"text\":\"“光柱”与“雪”并置，提供了一个可追问的异常画面。\"},{\"text\":\"短句和冷感节奏与人物疏离状态一致，若后续有具体事件承接，可以形成冷开场。\"}]}"
+  ],
+  "A": {
+    "parsed": true,
+    "issue_count": 2,
+    "deferred_count": 2,
+    "weiwei_in_issues": true,
+    "mentions_not_applicable": true,
+    "sample": [
+      {
+        "text": "全文只有“她微微侧过身，让出了一条路。他点了点头，继续往前走。”约二十余字，远低于本章4000字目标，导致没有场景建立、人物动机、冲突推进和章末钩子。位置：全章。理由：作为章节正文，它只承担一个过渡动作，无法支撑读者对后续情节的期待；不像有意留白，因为留白仍需要前文语境和本章功能。",
+        "signal_hit": "",
+        "verdict": "confirmed"
+      },
+      {
+        "text": "节奏与钩子缺失：全章没有给出目标、阻碍、信息差或未解问题，句子结束后没有让读者继续读下一章的动力。位置：全章。理由：当前仅“让路—点头—前行”的动作链，属于过场，不构成章节级节奏推进。",
+        "signal_hit": "",
+        "verdict": "confirmed"
+      }
+    ]
+  },
+  "B": {
+    "parsed": true,
+    "issue_count": 7,
+    "quote_present": true,
+    "sample": [
+      {
+        "text": "待审正文约七十余字，相对本章目标四千字严重不足；没有场景展开、人物目标、事件推进或章末钩子，无法构成完整章节。需补足到目标篇幅，或明确此段仅为片段。",
+        "signal_hit": "",
+        "verdict": "confirmed"
+      },
+      {
+        "text": "全段只有三句，人物、地点、时间、前因均未落地；“画面里那个女生”“光柱”“雪”“程序”缺少最低限度的场景关系，读者无法建立情境。需在开篇交代他所在位置、正在看什么、与这些异常的关系。",
+        "signal_hit": "",
+        "verdict": "confirmed"
+      },
+      {
+        "text": "“他不认识画面里那个女生”“这道光柱和他没关系”“这场雪和他也没关系”“也没有任何表情”连续用否定式短句证明同一件事：他与眼前事件无关。功能相同，段落没有信息增量，读者只能被告知冷漠，无法从具体动作或潜台词判断。",
+        "signal_hit": "没有任何",
+        "verdict": "confirmed"
+      }
+    ]
+  },
+  "finished_at": "2026-10-11T11:39:06.603Z"
+}

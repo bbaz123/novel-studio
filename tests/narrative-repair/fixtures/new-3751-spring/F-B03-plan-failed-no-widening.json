@@ -1,0 +1,8 @@
+{
+  "id": "F-B03",
+  "kind": "plan_failed_no_widening",
+  "body": "这一章还有很多段落。（模拟真实较长章节）\n\n中间还有别的东西。\n\n最后也是。",
+  "finding": { "id": "M-1", "text": "中间某处写得机械。", "quote": null },
+  "planned_hotspots": [],
+  "expected": { "status": "needs_scope", "authorized_span_count": 0, "scope_complete": false, "chapter_wide_spans": false, "paid_request": false }
+}

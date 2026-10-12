@@ -208,6 +208,120 @@ export const REVIEW_V2_FIELDS = [
   'protected_span_ids', 'unreviewed_ranges', 'semantic_status',
 ];
 
+// ── 报告自洽性（E01 §5.2）──────────────────────────────────────────────────
+// 为什么要在**确定性层**做：报告里"优点"与"问题"互相打架时，模型很少自己发现——它两次都用绝对措辞，
+// 作者却会同时看到"后面不再完整演示"与"0372号重复了全套流程"。这一层不调用新模型轮，只做词面核对：
+//   · 只在优点出现**绝对否定/穷尽**措辞（不再/完全没有/彻底…）时检查；
+//   · 并要求两边确实指向**同一话题**（共享实词），避免把不同维度误报成矛盾。
+// 它只产出"待校准"提示与反例引用，绝不改写作者或模型的结论。
+const ABSOLUTE_CLAIM = [
+  // ⚠️ 2026-10-11（真实数据回归发现，重要）：最初这里写了 `(完全|彻底|根本)?(没有|没|无|不)`，
+  //    把**裸 `不`** 也当成"绝对否定"。在 12 份**真实历史审稿报告**上实测 → **6 份假阳性**：
+  //    「**不靠**旁白建体系」「**不是**旁白讲设定」「普通模式**不锁**反作用力」「**不抢**戏」这类
+  //    正常描述被读成"宣称已不存在"。中文里裸 `不/没` 过于常见，**不能作为绝对措辞的信号**。
+  //    现在只认**明确表达穷尽/消解**的完整说法（且"完全没有/彻底没有"不再让前缀可选）。
+  { re: /不再(完全|完整|重复|出现|发生)?/, kind: 'no_longer' },
+  { re: /(完全|彻底|根本|基本)(没有|没|无|不存在|不)/, kind: 'completely_absent' },
+  { re: /(从没|从未|从来没有|一处也没有|毫无|没有任何)/, kind: 'never' },
+  { re: /零(解释|重复|说明|遗漏|解释性)/, kind: 'zero' },
+];
+const EXPLANATION_RE = /(所以|是因为|原因是|因为|于是|这才|原来|从小就|一直|说明|意味着|其实|归根到底|毕竟)/;
+const STOP = new Set([
+  '没有', '不再', '完全', '彻底', '根本', '重复', '解释', '一个', '一种', '这一', '那也', '但是', '因为',
+  '所以', '问题', '优点', '后面', '这里', '那里', '处理', '写得', '可以', '这个', '那个', '什么', '怎么',
+]);
+
+/** 抽出用于"话题是否相同"比对的实词字符（2-gram，去停用词）。 */
+function topicGrams(s) {
+  const t = String(s || '').replace(/[\s，。、；：！？「」“”"'（）()\[\]…—-]/g, '');
+  const out = new Set();
+  for (let i = 0; i + 2 <= t.length; i += 1) {
+    const g = t.slice(i, i + 2);
+    if (!STOP.has(g) && /[\u4e00-\u9fff]/.test(g)) out.add(g);
+  }
+  return out;
+}
+/**
+ * "是否在谈同一处"的判据（2026-10-11 收紧）。
+ *
+ * ⚠️ 最初只要求"共享任意一个 2-gram"，在 12 份真实报告上实测会把
+ * 「收力比出力难」（strength）与「开篇时间线冲突」（issue）判成同话题 —— 只因共享一个「章」字。
+ * 汉字 2-gram 的假共享率极高，**单一共享不能作为"同话题"的证据**。
+ * 现在要求重叠系数（共享数 / 较短一侧的实词数）达到阈值，并至少有 3 个共享 gram。
+ */
+const TOPIC_OVERLAP_MIN = 0.18;
+const TOPIC_SHARED_MIN = 3;
+/** 严格版：用于**要改变 status** 的判定（宁可不报）。 */
+function sharesTopic(a, b) {
+  const A = topicGrams(a);
+  const B = topicGrams(b);
+  if (!A.size || !B.size) return false;
+  let shared = 0;
+  for (const g of B) if (A.has(g)) shared += 1;
+  if (shared < TOPIC_SHARED_MIN) return false;
+  return shared / Math.min(A.size, B.size) >= TOPIC_OVERLAP_MIN;
+}
+/** 宽松版：用于**建议作者核对**（不改 status）。宁多提示，不得声称"互相矛盾"。 */
+function sharesTopicLoose(a, b) {
+  const A = topicGrams(a);
+  for (const g of topicGrams(b)) if (A.has(g)) return true;
+  return false;
+}
+/** 取正文里第一句含"解释性连接词"的句子（作为反例引用；找不到就返回空串，不编造）。 */
+function explanationExample(text) {
+  const ss = String(text || '').split(/(?<=[。！？…])/).map((s) => s.trim()).filter(Boolean);
+  for (const s of ss) if (EXPLANATION_RE.test(s)) return s;
+  return '';
+}
+
+/**
+ * 检查 strengths 与 issues/正文是否互相矛盾。
+ * @returns {{status:'ok'|'needs_calibration', conflicts:Array, checked_strengths:number, note:string}}
+ */
+export function checkReportConsistency({ strengths = [], issues = [], text = '' } = {}) {
+  const S = (Array.isArray(strengths) ? strengths : []).map((x) => String(x || '').trim()).filter(Boolean);
+  const I = (Array.isArray(issues) ? issues : []).map((x) => String(x || '').trim()).filter(Boolean);
+  const conflicts = [];
+  const advisories = [];
+  for (const s of S) {
+    const claim = ABSOLUTE_CLAIM.find((c) => c.re.test(s));
+    if (!claim) continue;
+    // ① 与正文打架（**可确证**）：claim "完全没有解释"，而正文里确实存在解释句 —— 反例就是那句原文。
+    //    这是唯一能给出**可核对证据**的判定，因此只有它允许把 status 变成 needs_calibration。
+    if (/解释|说明|交代/.test(s)) {
+      const example = explanationExample(text);
+      if (example) {
+        const marker = (EXPLANATION_RE.exec(example) || [''])[0];
+        conflicts.push({
+          type: 'strength_vs_body', claim: claim.kind, strength: s, issue: '', evidence: example,
+          reason: `优点宣称"${/完全没有/.test(s) ? '完全没有解释' : '没有解释'}"，正文里却存在解释性句子`
+            + `（连接词「${marker}」）：应限定措辞或单列候选，不能同时给出互相否认的绝对断言`,
+        });
+        continue;
+      }
+    }
+    // ② 与 issue 有话题重叠（**不可确证**）：仅凭字面重叠无法判定语义是否真矛盾 ——
+    //    2026-10-11 实测：宽松判据在 12 份真实报告上误报 6 份，收紧到重叠系数后合成正例又漏报。
+    //    结论：**字面重叠不能证明"互相矛盾"**。因此这里只作**建议核对**，不改变 status、不声称矛盾。
+    const hitIssue = I.find((i) => sharesTopicLoose(s, i));
+    if (hitIssue) {
+      advisories.push({
+        type: 'strength_vs_issue_overlap', strength: s, issue: hitIssue,
+        reason: '优点与某条问题在字面上有话题重叠：请作者核对是否真的互相否认'
+          + '（本层不做语义判断，因此**不**据此宣称报告自相矛盾）',
+      });
+    }
+  }
+  return {
+    status: conflicts.length ? 'needs_calibration' : 'ok',
+    conflicts,
+    advisories,
+    checked_strengths: S.length,
+    note: 'status=needs_calibration 只在**可确证**的情况给出（绝对措辞 × 正文反例，证据是那句原文）；'
+      + '优点与问题的话题重叠只进 advisories 供人工核对，不改变 status —— 因为字面重叠无法证明语义矛盾。',
+  };
+}
+
 /**
  * 把一份审稿报告**结构化并核验**（E03）。
  *
@@ -232,13 +346,16 @@ export function structureReviewReport(report = {}, ctx = {}) {
   };
   const summary = String(report.summary == null ? '' : report.summary);
   const strengths = asList(report.strengths);
+  // E01 §5.2：每条返回路径都带上自洽性结论（strengths/issues/正文三者的绝对断言不能互相否认）。
+  // 在**返回处**统一附加，避免"某条早退分支漏了它"这类只在一部分报告上生效的缺陷。
+  const withConsistency = (out) => ({ ...out, consistency: checkReportConsistency({ strengths, issues: asList(out.issues), text: ctx.text || '' }) });
   let rawFindings = report.findings;
   if (typeof rawFindings === 'string') {
     // 模型常把 JSON 放进字符串；解析失败要**如实报告**，不能让整份审稿因格式问题消失。
     try { rawFindings = JSON.parse(rawFindings); } catch (e) { rawFindings = { __parse_error: String(e && e.message ? e.message : e) }; }
   }
   if (rawFindings && !Array.isArray(rawFindings) && rawFindings.__parse_error) {
-    return {
+    return withConsistency({
       summary, strengths,
       issues: asList(report.issues),
       findings: [],
@@ -246,17 +363,17 @@ export function structureReviewReport(report = {}, ctx = {}) {
       counts: { total: 0, accepted: 0, rejected: 0 },
       structure: 'findings_unparsable',
       structure_note: `findings 不是合法 JSON（${rawFindings.__parse_error}）：已按旧口径保存行文本问题清单`,
-    };
+    });
   }
   if (!Array.isArray(rawFindings) || !rawFindings.length) {
-    return {
+    return withConsistency({
       summary, strengths,
       issues: asList(report.issues),
       findings: [],
       rejected: [],
       counts: { total: 0, accepted: 0, rejected: 0 },
       structure: 'legacy_lines',
-    };
+    });
   }
   const normalized = normalizeNarrativeFindings(rawFindings, {
     text: ctx.text || '', schemaVersion: 2, baseHash: ctx.baseHash || '',
@@ -270,7 +387,7 @@ export function structureReviewReport(report = {}, ctx = {}) {
       + (f.verdict === 'hypothesis' ? ' ⚠️未给出反证，仅作待核验' : '');
   });
   const extraIssues = asList(report.issues).filter((line) => !derived.some((d) => d.includes(clip(line, 20))));
-  return {
+  return withConsistency({
     summary,
     strengths,
     issues: [...derived, ...extraIssues],
@@ -281,5 +398,5 @@ export function structureReviewReport(report = {}, ctx = {}) {
     schema_version: REVIEW_SCHEMA_VERSION,
     base_hash: String(ctx.baseHash || ''),
     snapshot_id: String(ctx.snapshotId || ''),
-  };
+  });
 }

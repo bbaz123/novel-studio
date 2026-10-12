@@ -1,0 +1,38 @@
+{
+  "cfg": {
+    "dir": "(temp)",
+    "configId": 1,
+    "keySha8": "166a6ba3",
+    "model": "deepseek-flash",
+    "baseUrl": "https://api.deepseek.com"
+  },
+  "out": {
+    "calls": [
+      {
+        "action": "test",
+        "status": 200,
+        "ok": true,
+        "reply": "连接成功",
+        "model": "deepseek-flash",
+        "usage": {
+          "prompt_tokens": 36,
+          "completion_tokens": 16,
+          "total_tokens": 52,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 16
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 36
+        }
+      }
+    ],
+    "usageTotal": {
+      "prompt_tokens": 36,
+      "completion_tokens": 16,
+      "total_tokens": 52
+    }
+  }
+}

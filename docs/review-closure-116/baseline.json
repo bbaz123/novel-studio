@@ -1,0 +1,88 @@
+{
+  "task": "novel-studio 1.1.6｜第二轮审稿—局部修稿闭环专项（《修改方案.md》E00—E06）",
+  "captured_at": "2026-10-11",
+  "workspace": {
+    "path": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio",
+    "is_novel_studio": true,
+    "package_name": "novel-studio",
+    "package_version": "1.1.6",
+    "engines_node": ">=22.13.0",
+    "node_version": "v24.19.0",
+    "npm_version": "11.17.0",
+    "branch": "Experimental-Version-v1.0",
+    "head": "6f9a14b0d1f7e11117b68d0536aee5ca238969cd",
+    "head_subject": "feat(叙事性专项修复): 补丁协议 v2 + 叙事诊断/审稿结构化 + 修稿计划与补丁模块 + 159 条离线断言",
+    "head_unchanged_at_end": true,
+    "project_agents_md": "不存在（仓库根无 AGENTS.md；存在 CONTRIBUTING.md / docs/README.md / README.md）",
+    "version_verdict": "ok（本地 1.1.6 = 任务书目标；未 checkout / rebase / 升级 / 降级）"
+  },
+  "pre_existing_worktree": {
+    "note": "本会话开始前工作树已经是脏的：包含上一轮《修复.md》E00—E07 的未提交修复成果。本轮在其之上增量修改，**未**覆盖、未回退、未重置。",
+    "tracked_modifications_at_start": [
+      ".p1-baseline/verify-phase-map.mjs",
+      "docs/narrative-repair/e07-run-manifest.json",
+      "frontend-test.mjs",
+      "package.json",
+      "public/app.js",
+      "public/patch-safety.js",
+      "public/revision-patch.js",
+      "public/revision-plan.js",
+      "scripts/test-narrative-repair.mjs",
+      "tests/narrative-repair/05-revision-plan.test.mjs"
+    ],
+    "untracked_at_start": [
+      ".narrative-repair-116/",
+      "docs/narrative-repair-116/",
+      "scripts/run-narrative-repair-116.mjs",
+      "tests/narrative-repair/08-authorization.test.mjs",
+      "tests/narrative-repair/09-information-truncation.test.mjs",
+      "tests/narrative-repair/10-new-sample.test.mjs",
+      "tests/narrative-repair/fixtures/new-3751-spring/",
+      "修复.md",
+      "修改方案.md"
+    ]
+  },
+  "environment_limits": {
+    "piped_stdio_blocked": {
+      "evidence": "spawnSync(node, ['-e','console.log(1)'], {encoding:'utf8'}) => status=null, error.code=EPERM；同一命令用 stdio:['ignore','inherit','inherit'] => status=0",
+      "impact": [
+        "scripts/ci-offline-checks.mjs 54/54 报红（环境，不是代码）",
+        ".p1-baseline/test-editing-rules.mjs 断言跑完后在起隔离实例处 spawn EPERM",
+        "api-test-suite.mjs / ci-isolated-run.mjs 无法在本会话执行"
+      ],
+      "mitigation": "scripts/test-narrative-repair.mjs 增加同进程回退（管道不可用时逐套件 import；断言与退出码判定不变），现 11/11 通过"
+    }
+  },
+  "baseline_tests": {
+    "method": "逐套件**直接**执行（绕开被沙箱阻塞的管道包装脚本），只信退出码与断言数",
+    "results": [
+      { "suite": "tests/narrative-repair/01-patch-protocol.test.mjs", "exit_code": 0, "assertions": 65, "failed": 0 },
+      { "suite": "tests/narrative-repair/02-fixtures.test.mjs", "exit_code": 0, "assertions": 8, "failed": 0 },
+      { "suite": "tests/narrative-repair/03-stage-rules.test.mjs", "exit_code": 0, "assertions": 17, "failed": 0 },
+      { "suite": "tests/narrative-repair/04-narrative-scan.test.mjs", "exit_code": 0, "assertions": 24, "failed": 0 },
+      { "suite": "tests/narrative-repair/05-revision-plan.test.mjs", "exit_code": 0, "assertions": 19, "failed": 0 },
+      { "suite": "tests/narrative-repair/06-report.test.mjs", "exit_code": 0, "assertions": 16, "failed": 0 },
+      { "suite": "tests/narrative-repair/07-review-structure.test.mjs", "exit_code": 0, "assertions": 10, "failed": 0 },
+      { "suite": "tests/narrative-repair/08-authorization.test.mjs", "exit_code": 0, "assertions": 26, "failed": 0 },
+      { "suite": "tests/narrative-repair/09-information-truncation.test.mjs", "exit_code": 0, "assertions": 11, "failed": 0 },
+      { "suite": "tests/narrative-repair/10-new-sample.test.mjs", "exit_code": 0, "assertions": 12, "failed": 0 },
+      { "suite": "tests/narrative-repair/11-review-closure.test.mjs（本轮新增）", "exit_code": 0, "assertions": 19, "failed": 0 }
+    ],
+    "total_assertions": 227,
+    "aggregate_runner": { "cmd": "node scripts/test-narrative-repair.mjs", "exit_code": 0, "suites": "11/11", "note": "已加同进程回退；回退只替代传输方式，不替代断言" },
+    "frontend": { "cmd": "node frontend-test.mjs", "exit_code": 0, "note": "=== ALL PASS ===；本轮新增 S01-a/S01-b/S01-c 三条" }
+  },
+  "not_run": [
+    { "id": "N1", "what": "真实模型语义审稿 / 文学效果 A/B", "reason": "SKIPPED: paid_evaluation_not_authorized", "resume": "用户明确授权预算与样本策略后执行" },
+    { "id": "N2", "what": "scripts/ci-offline-checks.mjs 全部 54 项", "reason": "沙箱禁管道 + 部分需 HTTP 隔离实例", "resume": "在允许子进程管道的环境执行同一命令" },
+    { "id": "N3", "what": "api-test-suite.mjs（/api/novel/review HTTP 往返）", "reason": "需隔离子进程起服务", "resume": "node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs" },
+    { "id": "N4", "what": "本轮真实正文 6357/4000/5000 字的本地复算", "reason": "未拿到该章完整正文；片段不可拼全文", "resume": "拿到完整章节快照后用 wordCount 复算" },
+    { "id": "N5", "what": "本次实际勾选 issue / condense 开关 / 原始补丁", "reason": "本地无该次运行记录（missing_execution_evidence）", "resume": "如允许只读访问审稿运行记录则核对" }
+  ],
+  "not_touched": [
+    "data/（真实作品库与密钥）：未读取、未修改",
+    "真实章节正文与角色卡：未作为测试输入写入，未改写",
+    "harness-plugins/ 与 DSH 安装目录：未修改",
+    "git：未 commit / push / reset / clean / stash；HEAD 会话结束仍为 6f9a14b0d1"
+  ]
+}

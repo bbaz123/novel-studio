@@ -9047,6 +9047,14 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       findings_rejected: structured.rejected ? structured.rejected.length : 0,
       // 拒收理由逐条给出（作者与测试都能核对"不是我漏了，而是引用没通过"）。
       rejected: structured.rejected || [],
+      // E01 §5.2：报告自洽性（strengths 与 issues/正文不能互相否认）。随 report_json 一起落库，
+      // 因此无需迁移即可回看；"待校准"只表示同一份报告里出现了互相否认的绝对断言。
+      consistency: structured.consistency || null,
+      consistency_conflicts: structured.consistency ? structured.consistency.conflicts.length : 0,
+      // advisories 是"建议核对"（字面话题重叠，**不是**矛盾结论），因此与 conflicts **分开计数**，
+      // 不得合并进 consistency_conflicts（那会把建议说成结论）。
+      consistency_advisories: structured.consistency && Array.isArray(structured.consistency.advisories)
+        ? structured.consistency.advisories.length : 0,
     });
   }
   // ── E03：修稿选择记录（独立于"当前勾选状态"，用于复核与补丁越权判定） ──

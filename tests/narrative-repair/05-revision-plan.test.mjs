@@ -3,7 +3,8 @@
  *
  * 覆盖任务书 §6.3 与 §7 E05 的通过条件：
  *   · 热点 / 授权跨度 / 只读上下文 / 信息保留清单 / 依赖组都在计划里；
- *   · **非授权跨度不变**（定位到片段就只授权那一刻文字，不是整段）；
+ *   · **非授权跨度不变**（散文里的「」提及 → 授权包含它的最短跨度、优先整句；结构化 quote →
+ *     只授权那一刻文字；两者都不会放宽到整段/整章）；
  *   · **不自动扩大**：预算不够返回 `needs_explicit_widening`（含候选范围），跨度一个都没放宽；
  *   · 定位不到的问题如实进 `needs_scope`（不猜、不替作者指原文）；
  *   · 作者改勾选 → 旧计划与旧候选作废（计划级 hash + `isPlanStale`）；
@@ -179,10 +180,15 @@ const snap = RP.snapshotOf(body, { chapter_id: 7 });
     snapshot: RP.snapshotOf(before, { chapter_id: 10 }),
     findings: [{ id: '1', text: '「岳宸炎把排号纸翻了个面。纸背面是空白的」这一段重复纸面细节', suggested_action: 'replace' }],
   });
-  check('E05-n', '另一版样本同样能定位到片段级跨度（判据不依赖某一版写法）',
-    planBefore.hotspots.length === 1 && before.includes(planBefore.hotspots[0].original)
-    && planBefore.hotspots[0].original.length < 40,
-    JSON.stringify(planBefore.hotspots.map((h) => h.original.slice(0, 20))));
+  // 2026-10-10（作者授权）：散文「」提及**恰好被一句话包含**时授权那一整句；
+  // **跨句提及保持片段精度** —— 否则"包含它的段落"在本样本（一段=整章，3148 字）上会失控。
+  const hBefore = planBefore.hotspots[0];
+  check('E05-n 跨句提及保持片段精度，不放宽到整段（一段=整章时放大就是越权）',
+    planBefore.hotspots.length === 1 && before.includes(hBefore.original)
+    && hBefore.original.includes('把排号纸翻了个面')
+    && hBefore.original.length < 40
+    && /~/.test(String(hBefore.span.span_id)),
+    JSON.stringify({ id: hBefore.span.span_id, len: hBefore.original.length, chapter: before.length }));
 }
 
 finish('05-revision-plan');

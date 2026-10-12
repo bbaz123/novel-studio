@@ -1,0 +1,7 @@
+{
+  "id": "F-B02",
+  "kind": "ambiguous_anchor",
+  "body": "他低下头。\n\n过了一阵，他低下头。",
+  "finding": { "id": "I-低", "text": "「他低下头。」这个动作重复了，删掉后面那次", "quote": "他低下头。" },
+  "expected": { "status": "ambiguous_anchor", "hotspots": 0, "never_pick_first": true }
+}

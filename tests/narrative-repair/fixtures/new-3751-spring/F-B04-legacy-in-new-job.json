@@ -1,0 +1,7 @@
+{
+  "id": "F-B04",
+  "kind": "legacy_in_new_job",
+  "expected_schema_version": 2,
+  "raw": "{\"patches\":[{\"anchor\":\"他低下头。\",\"revised\":\"他低着头。\"}]}",
+  "expected": { "error_code": "incompatible_legacy_format", "text_changed": false, "legacy_readable_by_default": true, "format_retries_at_most": 1 }
+}

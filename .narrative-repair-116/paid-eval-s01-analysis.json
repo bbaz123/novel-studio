@@ -1,0 +1,134 @@
+{
+  "spend_yuan_so_far": 0.145984,
+  "budget_yuan": 2,
+  "calls": [
+    {
+      "status": 200,
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2075,
+        "completion_tokens": 3499,
+        "total_tokens": 5574,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 2884
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 2075
+      },
+      "cost_yuan": 0.064284,
+      "spend_total_yuan": 0.064284,
+      "reply_len": 1292
+    },
+    {
+      "status": 200,
+      "ok": true,
+      "usage": {
+        "prompt_tokens": 2093,
+        "completion_tokens": 4583,
+        "total_tokens": 6676,
+        "prompt_tokens_details": {
+          "cached_tokens": 1792
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 3781
+        },
+        "prompt_cache_hit_tokens": 1792,
+        "prompt_cache_miss_tokens": 301
+      },
+      "cost_yuan": 0.0817,
+      "spend_total_yuan": 0.145984,
+      "reply_len": 1650
+    }
+  ],
+  "replies_parseable": [
+    true,
+    true
+  ],
+  "A": {
+    "parsed": true,
+    "weiwei_signalled_in_issue": null,
+    "weiwei_in_scan_verdicts": "not_applicable",
+    "weiwei_counterevidence_len": 60,
+    "issue_count": 2,
+    "issue_heads": [
+      "全文只有“她微微侧过身，让出了一条路。他点了点头，继续往前走。”约二",
+      "节奏与钩子缺失：全章没有给出目标、阻碍、信息差或未解问题，句子结束后"
+    ],
+    "summary_keeps_weiwei": true
+  },
+  "B": {
+    "parsed": true,
+    "issue_count": 7,
+    "redundancy_issues": 1,
+    "negation_issues": 1
+  },
+  "assertions": [
+    {
+      "id": "S01-A1",
+      "desc": "合法语境的「微微」没有被任何 issue 定罪（不存在 signal_hit=微微 且 verdict 为 confirmed/hypothesis 的条目）",
+      "pass": true,
+      "observed": {
+        "weiwei_signalled_in_issue": null
+      }
+    },
+    {
+      "id": "S01-A2",
+      "desc": "「微微」在 scan_verdicts 里被明确判 not_applicable（命中可被否决）",
+      "pass": true,
+      "observed": {
+        "verdict": "not_applicable"
+      }
+    },
+    {
+      "id": "S01-A3",
+      "desc": "该 not_applicable 带反证（counterevidence 非空）",
+      "pass": true,
+      "observed": {
+        "len": 60
+      }
+    },
+    {
+      "id": "S01-A4",
+      "desc": "总评明说「微微」是正常用法、不宜硬报（措辞可核）",
+      "pass": true,
+      "observed": {
+        "matched": true
+      }
+    },
+    {
+      "id": "S01-B1",
+      "desc": "真实冗余/否定句堆叠被报成 issue（不是\"零命中\"放过）",
+      "pass": true,
+      "observed": {
+        "issue_count": 7
+      }
+    },
+    {
+      "id": "S01-B2",
+      "desc": "至少一条 issue 指向\"和…没关系／也没关系\"这处可定位引用",
+      "pass": true,
+      "observed": {
+        "matched": 1
+      }
+    },
+    {
+      "id": "S01-AB",
+      "desc": "两侧有区分力：A 侧「微微」不被定罪且被记 not_applicable，B 侧真问题成立",
+      "pass": true,
+      "observed": {
+        "a_signal_verdict": null,
+        "a_scan_verdict": "not_applicable",
+        "b_issues": 7
+      }
+    }
+  ],
+  "device_error_log": [
+    "① 用整份报告做字符串包含 → 命中 scan_verdicts/summary（假阳性）",
+    "② 用单个 issue 对象做 stringify → 混入并列的 summary 键（假阳性）",
+    "③ 只读 issue 的 text → 引用原句本身含关键词（假阳性）",
+    "最终：改用结构化字段 signal_hit + verdict（可核验）"
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "label": "baseline",
+  "generated_at": "2026-10-10T12:39:02.350Z",
+  "node": "v24.19.0",
+  "cwd": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio",
+  "note": "退出码 0 且断言数非零才算 passed；skipped 不算 passed。零计费（不调用真实模型）。",
+  "totals": {
+    "checks": 6,
+    "passed": 2,
+    "failed": 4
+  },
+  "results": [
+    {
+      "id": "E00-narrative-repair-suite",
+      "label": "叙事性专项离线套件（补丁协议 v2 / 夹具 / 阶段规则 / 叙事扫描 / 编辑计划 / 报告 / 审稿结构）",
+      "cmd": "node scripts/test-narrative-repair.mjs",
+      "why": "E01/E02/E04/E05 的判定面：显式删除、精确跨度、越权与 stale、阶段化规则都在这里",
+      "exit_code": 0,
+      "ms": 601,
+      "counts": {
+        "passed": 7,
+        "failed": 0,
+        "skipped": 0,
+        "total": 7
+      },
+      "assertions_observed": true,
+      "verdict": "passed",
+      "evidence": ".narrative-repair-116/logs-baseline/E00-narrative-repair-suite.log"
+    },
+    {
+      "id": "E00-narrative-acceptance",
+      "label": "叙事性专项验收运行器（E07 退出码判定）",
+      "cmd": "node scripts/run-narrative-acceptance.mjs",
+      "why": "E07 的机器可读清单：按退出码判定而不是按文案",
+      "exit_code": 0,
+      "ms": 129310,
+      "counts": null,
+      "assertions_observed": false,
+      "verdict": "failed",
+      "evidence": ".narrative-repair-116/logs-baseline/E00-narrative-acceptance.log"
+    },
+    {
+      "id": "E00-frontend",
+      "label": "前端执行验证（vm + DOM 桩，界面契约）",
+      "cmd": "node frontend-test.mjs",
+      "why": "app.js 的接线改动只能在这里被真实执行到（修稿入口、差异预览、采纳）",
+      "exit_code": 0,
+      "ms": 8537,
+      "counts": null,
+      "assertions_observed": false,
+      "verdict": "failed",
+      "evidence": ".narrative-repair-116/logs-baseline/E00-frontend.log"
+    },
+    {
+      "id": "E00-editing-rules",
+      "label": "编辑规则（隔离实例：规则进请求 / 题材门控 / 确定性扫描）",
+      "cmd": "node .p1-baseline/test-editing-rules.mjs",
+      "why": "E05 阶段规则与通道对账的既有证据面",
+      "exit_code": 0,
+      "ms": 1552,
+      "counts": {
+        "passed": 79,
+        "failed": 0,
+        "skipped": 0,
+        "total": 79
+      },
+      "assertions_observed": true,
+      "verdict": "passed",
+      "evidence": ".narrative-repair-116/logs-baseline/E00-editing-rules.log"
+    },
+    {
+      "id": "E00-plugin-tools",
+      "label": "插件工具面与版本一致",
+      "cmd": "node .p1-baseline/verify-plugin-tools.mjs",
+      "why": "Host 侧工具契约不得因本轮改动漂移",
+      "exit_code": 0,
+      "ms": 67,
+      "counts": null,
+      "assertions_observed": false,
+      "verdict": "failed",
+      "evidence": ".narrative-repair-116/logs-baseline/E00-plugin-tools.log"
+    },
+    {
+      "id": "E00-preset-copy",
+      "label": "预设拷贝一致性",
+      "cmd": "node .p1-baseline/verify-preset-copy.mjs",
+      "why": "E05 的 DSH preset 通道：拷贝与激活的版本必须一致",
+      "exit_code": 0,
+      "ms": 67,
+      "counts": null,
+      "assertions_observed": false,
+      "verdict": "failed",
+      "evidence": ".narrative-repair-116/logs-baseline/E00-preset-copy.log"
+    }
+  ]
+}

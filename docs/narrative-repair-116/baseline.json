@@ -1,0 +1,53 @@
+{
+  "task": "novel-studio 116 轮｜叙事审稿—局部修稿闭环最小差异修复（《修复.md》E00—E07）",
+  "captured_at": "2026-10-10",
+  "workspace": {
+    "path": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio",
+    "is_novel_studio": true,
+    "package_name": "novel-studio",
+    "package_version": "1.1.6",
+    "engines_node": ">=22.13.0",
+    "node_version": "v24.19.0",
+    "branch": "Experimental-Version-v1.0",
+    "head": "6f9a14b0d1f7e11117b68d0536aee5ca238969cd",
+    "head_subject": "feat(叙事性专项修复): 补丁协议 v2 + 叙事诊断/审稿结构化 + 修稿计划与补丁模块 + 159 条离线断言",
+    "worktree_dirty_before": 1,
+    "worktree_dirty_before_detail": "?? 修复.md（用户本轮提供的任务书；未跟踪，未改动）",
+    "tracked_modifications_before": 0,
+    "project_agents_md": "不存在（仓库根无 AGENTS.md；有 CONTRIBUTING.md 与 docs/README.md）",
+    "workspace_version_verdict": "ok（本地 package.json = 1.1.6，与任务书目标一致；未 checkout/rebase/升级/降级）",
+    "public_remote_note": "公开 Experimental-Version-v1.0 分支此前核查为 1.1.4；本轮一切结论只以本地 1.1.6 工作树为准，未参考旧版覆盖本地。"
+  },
+  "baseline_tests": {
+    "note": "E00.3 要求的修改前基线。命令与真实退出码见 .narrative-repair-116/logs-baseline/*.log。",
+    "runner": "node scripts/run-narrative-repair-116.mjs --label baseline",
+    "results": [
+      { "id": "E00-narrative-repair-suite", "cmd": "node scripts/test-narrative-repair.mjs", "exit_code": 0, "assertions": "7/7 套件（65 条断言）", "log": ".narrative-repair-116/logs-baseline/E00-narrative-repair-suite.log" },
+      { "id": "E00-narrative-acceptance", "cmd": "node scripts/run-narrative-acceptance.mjs", "exit_code": 0, "assertions": "9/9 必做命令（前端/编辑规则/迁移/契约/工具面/预设/夹具/专项套件/CI）", "log": ".narrative-repair-116/logs-baseline/E00-narrative-acceptance.log" },
+      { "id": "E00-frontend", "cmd": "node frontend-test.mjs", "exit_code": 0, "assertions": "=== ALL PASS ===", "log": ".narrative-repair-116/logs-baseline/E00-frontend.log" },
+      { "id": "E00-editing-rules", "cmd": "node .p1-baseline/test-editing-rules.mjs", "exit_code": 0, "assertions": "79/79", "log": ".narrative-repair-116/logs-baseline/E00-editing-rules.log" },
+      { "id": "E00-plugin-tools", "cmd": "node .p1-baseline/verify-plugin-tools.mjs", "exit_code": 0, "assertions": "工具面 26 个一致", "log": ".narrative-repair-116/logs-baseline/E00-plugin-tools.log" },
+      { "id": "E00-preset-copy", "cmd": "node .p1-baseline/verify-preset-copy.mjs", "exit_code": 0, "assertions": "结论 junction_ok", "log": ".narrative-repair-116/logs-baseline/E00-preset-copy.log" }
+    ],
+    "ci_offline_baseline": { "cmd": "node scripts/ci-offline-checks.mjs", "exit_code": 0, "assertions": "54/54", "log": ".narrative-repair/e07-ci-offline.log（上一轮同名日志）" }
+  },
+  "pre_existing_red": {
+    "phase_map": {
+      "cmd": "node .p1-baseline/verify-phase-map.mjs",
+      "exit_code": 1,
+      "verdict": "pre_existing_failed（本轮改动之前就红）",
+      "evidence": ".narrative-repair-116/phase-map-baseline.log",
+      "detail": "基线 commit ca1cdf96 起该分支共有 503+ 个文件改动，其中 100 个未被任何阶段认领（旧探针脚本 / .p1-baseline 遗留数据 / 我的 .narrative-repair-116 日志），且 docs/phase-map.md 记录的『真实改动集 503』与实跑值不一致（=2 处问题）。两项都与本轮修复责任无关；本轮已把新增路径登记进 SE7 阶段，不再新增未归属项。"
+    },
+    "committed_e07_manifest": {
+      "verdict": "previous_round_evidence_is_a_failed_run",
+      "detail": "HEAD 里 docs/narrative-repair/e07-run-manifest.json 记录的是上一轮一次**全项 exit -1 的失败运行**（generated_at 2026-10-09T12:41:28.281Z，worktree_dirty=0）。不能当作本地 1.1.6 的测试通过证明。本轮按 E00.3 要求重跑该运行器，文件被它按设计覆盖为本次真实结果（见 test-report.md）。"
+    }
+  },
+  "not_touched": [
+    "data/（真实作品库与密钥）：未读取、未修改",
+    "真实章节正文（含用户提到的「3751年，春」）：未作为测试输入，未改写",
+    "harness-plugins/ 与 DSH 安装目录：未修改",
+    "git 状态：未 commit / 未 push / 未 reset / 未 clean / 未 stash；未新增长期分支"
+  ]
+}

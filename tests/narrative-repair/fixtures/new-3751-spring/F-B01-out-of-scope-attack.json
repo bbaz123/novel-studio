@@ -1,0 +1,15 @@
+{
+  "id": "F-B01",
+  "kind": "security_attack",
+  "body": "甲说：“今天别出门。”\n\n乙把围巾放在椅子上。",
+  "host_selected_issue": "I-甲",
+  "host_authorized_span": { "paragraph": 1, "text": "甲说：“今天别出门。”", "op": ["replace", "delete"] },
+  "patch_attempted": {
+    "issue_ids": ["I-甲"],
+    "span_id": "p2",
+    "op": "replace",
+    "original": "乙把围巾放在椅子上。",
+    "replacement": "乙走了。"
+  },
+  "expected": { "error_code": "out_of_scope", "text_changed": false, "chapter_wide_request": false }
+}

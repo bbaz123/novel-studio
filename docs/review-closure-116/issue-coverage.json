@@ -1,0 +1,138 @@
+{
+  "schema": "issue-coverage/1",
+  "task": "novel-studio 1.1.6｜第二轮（《修改方案.md》）",
+  "generated_at": "2026-10-11",
+  "note": "review_id / chapter_id / span_id 均为**示例占位**（本轮没有拿到用户那次真实运行记录，见 baseline.json not_run N5）。这里给出的是**契约与覆盖口径**，以及本轮可离线验证的部分。",
+  "review_id": "EXAMPLE-REVIEW-ID",
+  "chapter_id": "EXAMPLE-CHAPTER-ID",
+  "selected_issue_ids": ["R06", "R07"],
+  "selection_hash": "EXAMPLE-fnv1a-selection-hash",
+  "plan_hash": "EXAMPLE-fnv1a-plan-hash",
+  "coverage": [
+    {
+      "issue_id": "R06",
+      "selected": true,
+      "authorized_span_ids": ["EXAMPLE-SPAN-H02"],
+      "patch_ids": ["EXAMPLE-PATCH-H02"],
+      "disposition": "partially_resolved",
+      "reason": "只移除第二A级群众反应的抽象解说；检测流程（计时/光柱/喝彩）仍基本保留",
+      "diff_verified": true
+    },
+    {
+      "issue_id": "R07",
+      "selected": true,
+      "authorized_span_ids": ["EXAMPLE-END-SPAN"],
+      "patch_ids": ["EXAMPLE-DELETE"],
+      "disposition": "resolved",
+      "reason": "重复等待被删除，系统声音及首次等待保留",
+      "diff_verified": true
+    }
+  ],
+  "disposition_vocabulary": [
+    "resolved",
+    "partially_resolved",
+    "needs_author_choice",
+    "refused",
+    "blocked",
+    "deferred",
+    "unaccounted"
+  ],
+  "hard_rules": [
+    "补丁条数 ≠ 解决的问题数：'实际改了 2 个 span' 不得自动报成'2 个问题全部解决'",
+    "每个已选问题必须同时满足：selected ∧ authorized_span_ids ∧ patch_ids ∧ diff_verified 才算 resolved",
+    "同一 issue 落在未授权跨度 → out_of_scope，正文逐字不变（T31-a/b、E01-1）",
+    "condense 未获批准时不产生压缩授权，也不静默降级成 replace（T41-a）"
+  ],
+  "hotspots": [
+    {
+      "issue_id": "H01",
+      "title": "0001号完整演示之后对 D/C 级流水式结果的概括",
+      "suggested_action": "condense",
+      "protected_facts": ["初次机制展示", "基础等级区分", "群体反应"],
+      "expected_compression_range": "small",
+      "author_approved": false,
+      "dependency_group": null
+    },
+    {
+      "issue_id": "H02",
+      "title": "0372号第二 A 级中重复的计时/光柱/喝彩流程",
+      "suggested_action": "condense",
+      "protected_facts": ["第二个 A 级", "风暴掌控者", "与李拓不同的增量", "王磊'两个A级'的计数基础"],
+      "expected_compression_range": "medium",
+      "author_approved": false,
+      "dependency_group": "second-a-tier"
+    },
+    {
+      "issue_id": "H03",
+      "title": "6:20 与 7:40 两处等待/队伍位置的重复",
+      "suggested_action": "condense",
+      "protected_facts": ["6:20/7:40 时间推进"],
+      "expected_compression_range": "small",
+      "author_approved": false,
+      "dependency_group": null,
+      "note": "两处不相邻：必须是两次独立授权，不得用包含中间正文的大 span 合并"
+    },
+    {
+      "issue_id": "H04",
+      "title": "面馆牛肉面段",
+      "suggested_action": "check",
+      "protected_facts": ["若承担人物关系对照则整体保护"],
+      "expected_compression_range": "unknown",
+      "author_approved": false,
+      "dependency_group": null
+    },
+    {
+      "issue_id": "H05",
+      "title": "号码纸中段反复取出/按内袋检查",
+      "suggested_action": "condense",
+      "protected_facts": ["首次物件交代", "正式折一道（伏笔）", "0731 身份事实"],
+      "expected_compression_range": "small",
+      "author_approved": false,
+      "dependency_group": null
+    },
+    {
+      "issue_id": "H06",
+      "title": "主角 D 级之后的'嘴角没有上扬/没有下压'",
+      "suggested_action": "replace",
+      "protected_facts": ["主角克制", "成绩事实", "对王磊关系不改变"],
+      "expected_compression_range": "tiny",
+      "author_approved": false,
+      "dependency_group": null,
+      "note": "直接删冗余优于另造一个动作（不得强迫'每个微表情都换动作'）"
+    },
+    {
+      "issue_id": "H07",
+      "title": "章尾重复等待及景物收尾",
+      "suggested_action": "delete",
+      "protected_facts": ["系统绑定原句", "只有主角听到", "不出现下一句的留白"],
+      "expected_compression_range": "tiny",
+      "author_approved": false,
+      "dependency_group": null
+    }
+  ],
+  "length_plan": {
+    "source": "SOURCE（审稿报告数字），本轮未本地复算",
+    "measured_before": null,
+    "measured_after": null,
+    "net_delta": null,
+    "count_method_version": "wordCount/plainLength（剥标签+去空白）",
+    "reported_before": 6357,
+    "chapter_target": 4000,
+    "style_max": 5000,
+    "target_source": "章节覆盖 > 作品默认 > 2000（resolveTargetWords）",
+    "remaining_to_chapter_target": null,
+    "remaining_to_style_max": null,
+    "unverified_reason": "未拿到该章完整正文；片段不可拼全文（full_sample_unavailable）",
+    "rule": "本次授权改动只影响可覆盖部分；剩余差额由作者决定是否继续授权，**不得**据此自动扩大范围"
+  },
+  "positive_controls": [
+    { "id": "K01", "what": "有效悬念：「检测完成。宿主符合绑定条件。」+「他等了几秒。没有下一句。」", "verdict": "keep", "evidence": "T02-a（阴性：不产生候选）、09-information-truncation" },
+    { "id": "K02", "what": "有效升级：海澜直播 S级·寒月灵体 vs SS级异象是不同字段", "verdict": "keep", "evidence": "10-new-sample E04-c（阴性对照）" },
+    { "id": "K03", "what": "人物/伏笔：王磊与岳宸炎说话方式、0731 号码纸正式折一道", "verdict": "keep", "evidence": "issue-coverage.hotspots[H05].protected_facts" }
+  ],
+  "not_run": [
+    "本轮真实运行的 review_id / 勾选集合 / condense 开关 / 原始补丁（无记录）",
+    "6357 / 4000 / 5000 的本地口径复算",
+    "真实模型语义审稿对 H01–H07 的实际压缩量"
+  ]
+}

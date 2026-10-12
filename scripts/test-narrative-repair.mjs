@@ -32,6 +32,15 @@ export const NARRATIVE_REPAIR_TESTS = [
   'tests/narrative-repair/06-report.test.mjs',
   // E03：审稿报告结构化与引用核验（逐字定位 / 重复引用拒收 / 反证降级 / 旧口径不变）
   'tests/narrative-repair/07-review-structure.test.mjs',
+  // E01（116 轮）：锁死"选中问题 → 获准跨度 → 实际补丁"（授权表 / 歧义拒绝 / plan 不放宽 / legacy 隔离）
+  'tests/narrative-repair/08-authorization.test.mjs',
+  // E03（116 轮）：解决"删得掉，但删错信息"（A01 information_truncation / A02 合理精简 / 阴性对照）
+  'tests/narrative-repair/09-information-truncation.test.mjs',
+  // E04/E06（116 轮）：新一组「3751年，春」夹具 + 四类叙事诊断的正反对照
+  'tests/narrative-repair/10-new-sample.test.mjs',
+  // E01/§5.1-5.3 + §6.3（116 轮·第二轮）：扫描命中候选化、报告自洽、感知/因果候选、
+  // 缺授权 fail-closed 与篇幅缺口如实呈现。
+  'tests/narrative-repair/11-review-closure.test.mjs',
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();
@@ -46,9 +55,47 @@ if (!list.length) {
 }
 
 const results = [];
+/**
+ * 受限沙箱里 `spawnSync` + `stdio:'pipe'` 会被拒绝（子进程 status=null，套件耗时≈0ms）。
+ * 那**不是测试失败**，但我们也不能把"起不来"记成通过 —— 因此退到**同进程**执行：
+ * 仍然逐套件跑真实断言、仍然按退出码判定，只是不再要一根管道。
+ * 运行环境允许管道时走原来的子进程路径（隔离更好，且与仓库其他运行器一致）。
+ */
+async function runInProcess(rel) {
+  const { pathToFileURL } = await import('node:url');
+  const orig = { log: console.log, error: console.error };
+  const buf = [];
+  const cap = (...a) => { buf.push(a.map((x) => String(x)).join(' ')); };
+  console.log = cap;
+  console.error = cap;
+  const prevExit = process.exitCode;
+  process.exitCode = 0;
+  let threw = '';
+  try {
+    await import(`${pathToFileURL(path.join(REPO, rel)).href}?t=${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  } catch (e) {
+    threw = e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e);
+    process.exitCode = 1;
+  } finally {
+    console.log = orig.log;
+    console.error = orig.error;
+  }
+  const status = process.exitCode || 0;
+  process.exitCode = prevExit || 0;
+  return { stdout: buf.join('\n'), stderr: threw, status };
+}
+
+let inProcessFallback = false;
 for (const rel of list) {
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, [rel], { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  let r = spawnSync(process.execPath, [rel], { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  if (r.status === null && !String(r.stdout || '').trim() && !String(r.stderr || '').trim()) {
+    if (!inProcessFallback) {
+      inProcessFallback = true;
+      console.log('提示：当前环境不允许子进程管道（spawnSync status=null）→ 改用**同进程**逐套件执行（断言与退出码判定不变）。\n');
+    }
+    r = await runInProcess(rel);
+  }
   const ms = Date.now() - t0;
   const out = String(r.stdout || '');
   const summary = (out.split(/\r?\n/).filter((l) => l.includes('通过') && l.includes('未通过')).pop() || '').trim();

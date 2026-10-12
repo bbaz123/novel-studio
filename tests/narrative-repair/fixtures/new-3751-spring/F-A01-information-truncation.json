@@ -1,0 +1,17 @@
+{
+  "id": "F-A01",
+  "kind": "information_truncation",
+  "body": "屏幕下方滚过一行小字：职业方向——材料修复、灵植培育、检测辅助。\n\n岳宸炎盯着那行字看了两秒。",
+  "finding": {
+    "id": "A01",
+    "text": "这句只留栏目名：把「职业方向——材料修复、灵植培育、检测辅助。」压成「职业方向。」",
+    "quote": "职业方向——材料修复、灵植培育、检测辅助。"
+  },
+  "patch": { "op": "replace", "replacement": "职业方向。", "issue_ids": ["A01"] },
+  "expected": {
+    "signal": "information_truncation",
+    "hard": false,
+    "lost": "材料修复、灵植培育、检测辅助",
+    "verdict": "可见提醒：信息残缺风险，不等于质量改善；正文仍按作者裁决，不强制回滚"
+  }
+}

@@ -933,7 +933,8 @@ globalThis.__probe = {
   parseRevisionPatches, applyRevisionPatches, tryApplyRevisionOutput, buildAIRevisionPatchPrompt, buildAIRevisionPrompt,
   parseRevisionPatchesDetailed, revisionPatchEngine, revisionSnapshotFor, revisionSpanCatalogue,
   showRevisionUnresolved, refineByFullRewrite, revisionCoverageHtml, showRevisionDispositions,
-  revisionPlanEngine, revisionPlanFor, revisionSpanCatalogue, showReviewReport, revisionPreference, setRevisionPreference,
+  revisionPlanEngine, revisionPlanFor, revisionAuthorizationFor, issueStableId, revisionRetryBudgetFor, revisionRetryBudgetKey, revisionSpanCatalogue, showReviewReport, revisionPreference, setRevisionPreference,
+  reportConsistencyHtml,
   revisionComparisonHtml, showRevisionComparison,
   patchSafetyEngine, patchSafetyOptions, patchSafetyGate, patchSafetyVerify, patchSafetyNotesHtml,
   WRITING_DISCIPLINE, WRITING_DISCIPLINE_REVIEW, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
@@ -2268,13 +2269,34 @@ check('58b 菜单里不再出现旧名，AI 标签仍是内部键 st', P.AI_TABS
   // 单请求路径（不超限，不分段）：修稿解析不得依赖 segment；三类"调用方自己跑单请求"的任务
   // 不得在模块内先跑一遍再让调用方跑第二遍（同一份钱花两次）。
   const revBase = '雨点敲在窗上。陈默数着第七次雷声。';
-  const revJSON = JSON.stringify({ patches: [{ issue: 1, anchor: revBase, revised: revBase + '他按住口袋里的芯片。' }] });
+  // 2026-10-10（《修复.md》E01-D）：新修稿作业是 **v2**，legacy 载荷按格式不兼容拒绝；
+  // 旧断言用的是 `{patches:[{anchor,revised}]}` 形态，那正是新任务不再接受的输入。
+  // 同时（E01-A/B）问题描述里必须带**逐字引用**，否则 Host 编译不出授权跨度、不会发起付费调用。
+  const revIssue = '补动作：在「陈默数着第七次雷声。」之后补一笔';
+  const revSnap = P.revisionSnapshotFor(revBase, null);
+  const revSpan = sandbox.NovelRevisionPatch.buildSpans(revBase, { sentences: true })
+    .find((s) => s.text === '陈默数着第七次雷声。');
+  const revJSON = JSON.stringify({
+    schema_version: 2, snapshot_id: revSnap.snapshot_id, base_hash: revSnap.body_hash,
+    patches: [{
+      patch_id: 'p1', group_id: 'p1', issue_ids: ['1'], span_id: revSpan.span_id, op: 'replace',
+      original: '陈默数着第七次雷声。', replacement: '陈默数着第七次雷声。他按住口袋里的芯片。',
+    }],
+    dispositions: [{ issue_id: '1', status: 'patched', reason: '补一笔动作' }],
+  });
   let revParseErr = null; let revParsed = null;
-  try { revParsed = P.longTextKindMeta('revision_patch', { text: revBase, issues: ['补动作'] }).parse(null, revJSON); }
+  try { revParsed = P.longTextKindMeta('revision_patch', { text: revBase, issues: [revIssue] }).parse(null, revJSON); }
   catch (e) { revParseErr = e; }
   check('58ad 修稿单请求路径可直接解析补丁（解析不得要求 segment）',
     !revParseErr && !!revParsed && revParsed.extra && revParsed.extra.applied === 1 && String(revParsed.output).includes('他按住口袋里的芯片'),
     revParseErr ? String(revParseErr.message) : JSON.stringify(revParsed && revParsed.extra));
+  // E01-D：新作业收到 legacy 载荷 → 格式不兼容（不落进"anchor 包含即替换整段"的旧路径）
+  let revLegacyErr = null;
+  try { P.longTextKindMeta('revision_patch', { text: revBase, issues: [revIssue] }).parse(null, JSON.stringify({ patches: [{ issue: 1, anchor: revBase, revised: revBase + '补。' }] })); }
+  catch (e) { revLegacyErr = e; }
+  check('58ad2 新修稿作业（v2）不接受 legacy 自动应用（旧格式只作为独立兼容通道可读）',
+    !!revLegacyErr && sandbox.NovelRevisionPatch.decodePatchOutput(JSON.stringify({ patches: [{ anchor: '甲。', revised: '乙。' }] })).ok === true,
+    revLegacyErr ? String(revLegacyErr.message).slice(0, 60) : 'no-error');
 
   const singleCalls = [];
   P.state.longTextRunner = async ({ segment, kind }) => { singleCalls.push(kind + ':' + (segment ? segment.segment_id : 'single')); return '模块内单请求结果'; };
@@ -2624,11 +2646,27 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   P.state.pendingLongTextRetry = null; P.state.pendingLongTextAltRetry = null;
   P.closeModal();
 
-  // 提示词：跨度目录（span_id｜原文）必须下发，否则模型无法证明改动落在授权范围内
-  const v2Prompt = P.buildAIRevisionPatchPrompt(v2Article, ['重复解释'], { snapshot: snap, chapterId: 107 });
+  // 提示词：跨度目录（span_id｜原文）必须下发，否则模型无法证明改动落在授权范围内。
+  // 2026-10-11（S04-1）：该断言原先**不传 plan**、依赖"未传 plan → 整章目录"的宽松默认。
+  // 现在默认严格，所以这里改为按**两种真实用法**分别钉住，原来的意图（目录必须下发、
+  // 且 id 与原句成对出现）一条都没少：
+  //   · 有计划（生产路径）→ 目录按热点收窄，且不得出现第二套 span_id；
+  //   · 无计划（历史宽松语义）→ 必须**显式** opt-in 才恢复。
+  // 2026-10-11（S04-1）：该断言原先**不传 plan**、依赖"未传 plan → 整章目录"的宽松默认。
+  // 现在默认严格（见 S04-1a/S04-1b/94A2），因此这里**显式** opt-in 以保留原意：
+  // "没有计划热点时也要把 span_id｜逐字原文 目录下发，模型才能自证改动落在授权范围内"。
+  const v2Plan = P.revisionPlanFor(v2Article, ['重复解释'], { snapshot: snap, chapterId: 107 });
+  const v2Prompt = P.buildAIRevisionPatchPrompt(v2Article, ['重复解释'], {
+    snapshot: snap, chapterId: 107, plan: v2Plan, allowCatalogueWithoutPlan: true,
+  });
   check('94A 修稿提示词下发授权跨度目录（span_id｜逐字原文）',
     /p1｜/.test(v2Prompt) && /p1s1｜/.test(v2Prompt) && v2Prompt.includes('original 必须与授权跨度'),
     v2Prompt.slice(v2Prompt.indexOf('【授权跨度'), v2Prompt.indexOf('【授权跨度') + 60));
+  const v2PromptLoose = P.buildAIRevisionPatchPrompt(v2Article, ['重复解释'], { snapshot: snap, chapterId: 107, allowCatalogueWithoutPlan: true });
+  check('94A2（S04-1）"未传 plan → 整章目录"不再是默认；显式 opt-in 才恢复旧语义',
+    !P.buildAIRevisionPatchPrompt(v2Article, ['重复解释'], { snapshot: snap, chapterId: 107 }).includes('因此给整章跨度')
+    && v2PromptLoose.includes('因此给整章跨度'),
+    JSON.stringify({ defaultLoose: P.buildAIRevisionPatchPrompt(v2Article, ['重复解释'], { snapshot: snap, chapterId: 107 }).includes('因此给整章跨度') }));
 }
 
 // --- 9d) E02 接线：阶段化（提示词口径 + 真实路由输入）-------------------------
@@ -2776,7 +2814,15 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   try {
     P.state.aiTaskRunning = false;
     P.state.longTextSettings = { request_chars: 200000, output_reserve_chars: 1000, protocol_chars: 100, max_segment_chars: 120000, min_segment_chars: 100 };
-    P.state.pendingReview = { info: { article, chapterId: 107, baseChapterFingerprint: null }, review: { issues: ['问题一', '问题二'] }, confirmedOverride: ['问题一'] };
+    // 2026-10-10（《修复.md》E01-A/B、E02）：问题描述里带**逐字引用**（Host 才能编译出授权跨度），
+    // 勾选的是报告里的**第 2 条**（confirmedIdsOverride 固化稳定编号）——
+    // 旧写法只勾第 2 条却把编号写成 1，重试时更会被重新编号成 1，事后对不回原审稿（K5）。
+    P.state.pendingReview = {
+      info: { article, chapterId: 107, baseChapterFingerprint: null },
+      review: { issues: ['问题一', '把「第二段：他站着没动。」改掉'] },
+      confirmedOverride: ['把「第二段：他站着没动。」改掉'],
+      confirmedIdsOverride: ['2'],
+    };
     await P.refineByChecklist();
   } catch (_) { /* 桩不提供真实模型：这里只观察"发了什么请求" */ }
   const posts9k = requests.filter((r) => r.method === 'POST' && r.url.includes('harness/run'));
@@ -2795,12 +2841,12 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   const selReq = requests.find((r) => r.method === 'PUT' && r.url.includes('/novel/revision/selection'));
   const selBody = selReq ? String(selReq.body || '') : '';
   check('94K4 E03：修稿前写独立选择记录（含勾选集合 / 快照 / selection_hash / 章节）',
-    !!selReq && /"selected_issue_ids":\["1"\]/.test(selBody)
+    !!selReq && /"selected_issue_ids":\["2"\]/.test(selBody)
     && /"base_hash"/.test(selBody) && /"selection_hash"/.test(selBody)
     && /"snapshot_id"/.test(selBody) && /"chapter_id":107/.test(selBody),
     selBody.slice(0, 200));
-  check('94K5 选择记录取的是**本次确认清单**的编号（取消勾选后不会把旧编号写进记录）',
-    /"selected_issue_ids":\["1"\]/.test(selBody) && !/"selected_issue_ids":\["1","2"\]/.test(selBody));
+  check('94K5 选择记录用**稳定编号**（只勾第 2 条就记 "2"，不按当前勾选顺序重编成 1）',
+    /"selected_issue_ids":\["2"\]/.test(selBody) && !/"selected_issue_ids":\["1"\]/.test(selBody));
   P.state.pendingPendingReview = undefined;
   P.state.pendingReview = savedPending9k;
   P.state.aiTaskRunning = savedRunning9k;
@@ -2820,18 +2866,24 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     && plan.hotspots[0].span.end - plan.hotspots[0].span.start === '第二段：他站着没动。'.length,
     JSON.stringify(plan && plan.hotspots.map((h) => h.original)));
   const planPrompt = P.buildAIRevisionPatchPrompt(article, ['把「第二段：他站着没动。」改成他收了伞'], { snapshot: snap, chapterId: 108, plan });
-  check('94L2 有计划时跨度目录收窄到相关段落（不再把整章每一句都下发）',
-    planPrompt.includes('已按本次选中问题收窄到相关段落')
-    && planPrompt.includes('第二段：他站着没动。')
-    && !planPrompt.includes('第一段：陈默走进雨里。｜')
-    && planPrompt.includes('【本次授权范围'),
-    planPrompt.slice(planPrompt.indexOf('【授权跨度'), planPrompt.indexOf('【授权跨度') + 40));
-  check('94L3 定位不到的问题如实标 needs_scope，并退回整章目录（不假装收窄过）',
+  // 2026-10-10（E01-B 续，现场事故）：计划在手时**不再下发带 span_id 的原生目录** ——
+  // 同一处文字出现两套 id（计划登记的跨度 vs 原生 `p1s1`）正是现场 5/5 判 out_of_scope、
+  // 正文一个字没动的根源。现在目录降级为**不含 id 的只读上下文块**；
+  // "只列热点所在段落"的收窄判据改为对该块内部断言（整章正文仍在【待修正文】里，不能用全文判断）。
+  const ctxBlock = planPrompt.slice(planPrompt.indexOf('【相关段落'), planPrompt.indexOf('【待修正文】'));
+  check('94L2 有计划时只下一套跨度：只读上下文块收窄到热点段落，且不再出现原生 span_id 目录',
+    planPrompt.includes('【本次授权范围') && planPrompt.includes('【相关段落（只读上下文')
+    && ctxBlock.includes('第二段：他站着没动。') && !ctxBlock.includes('第一段：陈默走进雨里。')
+    && !planPrompt.includes('【授权跨度（span_id'),
+    ctxBlock.replace(/\s+/g, ' ').slice(0, 90));
+  check('94L3（E01-A）定位不到 → needs_scope；计划在手时**不**退回整章目录（旧退位分支已删除）',
     (() => {
       const p2 = P.revisionPlanFor(article, ['后半段读起来有点 AI 感'], { snapshot: snap, chapterId: 108 });
       const prompt2 = P.buildAIRevisionPatchPrompt(article, ['后半段读起来有点 AI 感'], { snapshot: snap, chapterId: 108, plan: p2 });
       return p2.unlocated_hotspots.length === 1 && p2.coverage[0].status === 'needs_scope'
-        && prompt2.includes('本次没能从问题描述里定位到具体原句');
+        && p2.scope_incomplete === true
+        && !prompt2.includes('【授权跨度（span_id')
+        && prompt2.includes('【本次没有任何被授权的可编辑跨度】');
     })());
   check('94L4 计划是干跑：不含候选正文、不写盘（dry_run）',
     !!plan && plan.dry_run === true && plan.writes_to_disk === false && !('candidate_text' in plan));
@@ -2977,6 +3029,18 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   check('97 审稿提示词带确定性红线扫描结果', withScan.includes('【确定性红线扫描结果') && withScan.includes('嘴角勾起'));
   check('98 扫描不可用时不出现空标题（不编造"零命中"）', !withoutScan.includes('【确定性红线扫描结果'));
   check('98b 审稿提示词不带蓝图专用字段（references 对不上审稿的 JSON 契约）', !withoutScan.includes('写进 references'));
+  // 2026-10-11（S01 / 《修改方案.md》§5.1）：扫描命中是**信号**，不是结论。
+  // 旧措辞"扫描命中的要写进 issues 并指出位置"把一份字面词表统计直接升格成文学缺陷，
+  // 于是「微微」「嘴角」这类正常用法也会被要求报成 AI 腔。现在必须显式给出 not_applicable 出口。
+  check('S01-a（S01）扫描结果被明确声明为"候选信号"，不再强制命中进 issues',
+    withScan.includes('候选信号') && !/扫描命中的要写进 issues/.test(withScan),
+    JSON.stringify({ candidate: withScan.includes('候选信号'), forced: /扫描命中的要写进 issues/.test(withScan) }));
+  check('S01-b（S01）提示词给出 not_applicable 出口与逐条判断要求（词命中 ≠ 文学错误）',
+    withScan.includes('not_applicable') && /不成立|逐条判断/.test(withScan),
+    JSON.stringify({ na: withScan.includes('not_applicable') }));
+  check('S01-c（S01）合法语境可用 keep/deferred 处置，不靠"命中过扫描"定罪',
+    withScan.includes('deferred') && withScan.includes('counterevidence'),
+    JSON.stringify({ deferred: withScan.includes('deferred'), counter: withScan.includes('counterevidence') }));
   // 2026-09-22：篇幅的**权威口径**必须进提示词。此前模型只能自己挑尺子：AI 写作按本章目标
   // （3000）补足、审稿却按作品默认/风格区间（4000）判，于是 work#18 第 5、6 章被反复误报
   // 「篇幅不足」——一条由口径不一致制造、却被记成正文问题的假 issue。
@@ -3402,8 +3466,9 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     check('108d 空正文审稿被拦下时给出可执行的提示', msgs.some((m) => m.includes('未发起审稿')), msgs.join(' | ').slice(0, 60));
 
     // 反证：有底稿时必须真的调用（否则上面两条可能只是"函数永远不动"）
+    // 2026-10-10（E01-A）：问题描述带逐字引用，Host 才能编译出授权跨度并发起调用。
     calls.harness = 0;
-    P.state.pendingReview = { info: { article: '第一段：正文。', chapterId: 107 }, review: { issues: ['问题一'] } };
+    P.state.pendingReview = { info: { article: '第一段：正文。', chapterId: 107 }, review: { issues: ['把「第一段：正文。」改一下'] } };
     sandbox.runHarnessJob = async () => { calls.harness += 1; return { output: '{"patches":[]}' }; };
     await P.refineByChecklist();
     check('108e 有底稿时正常发起修稿（证明 108a 不是"函数根本不会调用"）', calls.harness >= 1, `harness=${calls.harness}`);
@@ -6025,6 +6090,210 @@ P.traceStopStream();
   check('119k 自动压缩那一行带费用提示与上次作业状态（失败要能看见，而不是只能翻日志）',
     mrow.includes('费用') && mrow.includes('阈值 6000') && mrow.includes('上次作业：failed') && mrow.includes('boom'),
     mrow.replace(/\s+/g, ' ').slice(0, 120));
+}
+
+// --- 116 轮 E01/E02/E05：授权边界 / 稳定编号 / 授权跨度收窄（《修复.md》E01、E02、E05）---------
+// 为什么放在应用层（而不是只测模块）：K1/K2/K5 三个风险全部是**接线**风险 ——
+// revision-plan / revision-patch 单独看都对，是 app.js 的参数与顺序把它们绕过去了。
+{
+  const article = '第一段：陈默走进雨里。\n\n第二段：他站着没动。\n\n第三段：雨还在下。';
+  const saved116 = {
+    pendingReview: P.state.pendingReview, aiTaskRunning: P.state.aiTaskRunning,
+    longTextSettings: P.state.longTextSettings, qsa: sandbox.document.querySelectorAll,
+    modal: containers['#modal-root'].innerHTML,
+  };
+  const since = () => requests.slice(marker);
+  let marker = requests.length;
+  // ⚠️ fetchStub 记录的是**请求体原文**（api() 已经 JSON.stringify 过），所以这里必须解析回来：
+  //    直接拿字符串做 `^` 行首匹配会永远失败（换行是字面 `\n` 两个字符），那会变成假红。
+  const jsonBody = (r) => {
+    if (!r || r.body == null) return null;
+    if (typeof r.body === 'object') return r.body;
+    try { return JSON.parse(String(r.body)); } catch (_) { return null; }
+  };
+  const posts = () => requests.slice(marker).filter((r) => r.method === 'POST' && r.url.includes('harness/run'));
+  try {
+    P.state.aiTaskRunning = false;
+    P.state.longTextSettings = { request_chars: 200000, output_reserve_chars: 1000, protocol_chars: 100, max_segment_chars: 120000, min_segment_chars: 100 };
+    containers['#modal-root'].innerHTML = '';
+
+    // ① E01-A：勾选的问题里没有可唯一定位的原文 → **不发起付费修稿**，也不退回整章可编辑
+    marker = requests.length;
+    P.state.pendingReview = { info: { article, chapterId: 301 }, review: { review_id: 4242, issues: ['后半段读起来有点 AI 感'] } };
+    sandbox.document.querySelectorAll = () => [{ dataset: { reviewIssue: '0' } }];
+    await P.refineByChecklist();
+    check('116E-a（E01-A）没有可唯一定位的引用 → 0 次修稿调用（K1：不再退回整章可编辑）',
+      posts().length === 0 && !since().some((r) => String(r.body || '').includes('【授权跨度（span_id')),
+      JSON.stringify({ harness: posts().length }));
+    const modalText = String(containers['#modal-root'].innerHTML).replace(/<[^>]*>/g, ' ');
+    check('116E-b 拒绝时说实话并保留作者出口（整章重写仍是显式动作）',
+      /没有发起付费修稿/.test(modalText) && /整章重写/.test(modalText),
+      modalText.replace(/\s+/g, ' ').slice(0, 90));
+
+    // ② E02：报告 10 项、只勾第 3/7 项 → 稳定编号 ['3','7']，且 review_id 一起带下去
+    marker = requests.length;
+    const issues10 = Array.from({ length: 10 }, (_, i) => `问题 ${i + 1}`);
+    issues10[2] = '把「第二段：他站着没动。」改掉';
+    issues10[6] = '把「第三段：雨还在下。」压缩一下';
+    P.state.pendingReview = { info: { article, chapterId: 302 }, review: { review_id: 4242, issues: issues10 } };
+    sandbox.document.querySelectorAll = () => [{ dataset: { reviewIssue: '2' } }, { dataset: { reviewIssue: '6' } }];
+    containers['#modal-root'].innerHTML = '';
+    await P.refineByChecklist();
+    const selReq = since().find((r) => r.url.includes('/novel/revision/selection'));
+    const selBody = jsonBody(selReq);
+    check('116E-c（E02）报告 10 项只勾第 3/7 项 → 选择记录写稳定编号 3/7（不重编成 1/2）',
+      !!selBody && JSON.stringify(selBody.selected_issue_ids) === JSON.stringify(['3', '7']),
+      JSON.stringify(selBody && selBody.selected_issue_ids));
+    check('116E-d（E02）review_id 从审稿报告带到选择记录（旧写法从已清空的 pendingReview 读，恒为 undefined）',
+      !!selBody && Number(selBody.review_id) === 4242, JSON.stringify(selBody && selBody.review_id));
+    const firstPost = posts()[0];
+    const prompt116 = String((jsonBody(firstPost) || {}).prompt || '');
+    check('116E-e（E02/E05）补丁请求里的编号也是稳定编号 3/7，且只列本次选中问题',
+      /【本次选择的稳定编号[^\n]*】\n3\/7/.test(prompt116) && /^3\. /m.test(prompt116) && /^7\. /m.test(prompt116)
+      && !/^1\. 问题 1/m.test(prompt116),
+      prompt116.slice(prompt116.indexOf('【本次选择的稳定编号'), prompt116.indexOf('【本次选择的稳定编号') + 40));
+
+    // ③ E05：授权跨度目录只列热点所在段落（K1 的正面：收窄真的生效）
+    const plan116 = P.revisionPlanFor(article, [issues10[2], issues10[6]], { snapshot: P.revisionSnapshotFor(article, 303), chapterId: 303, issueIds: ['3', '7'] });
+    const auth116 = P.revisionAuthorizationFor(plan116);
+    const promptNarrow = P.buildAIRevisionPatchPrompt(article, [issues10[2], issues10[6]], {
+      snapshot: P.revisionSnapshotFor(article, 303), chapterId: 303, plan: plan116, issueIds: ['3', '7'],
+    });
+    check('116E-f（E05）计划把两条问题都登记成授权跨度，授权表按稳定编号给出',
+      Object.keys(auth116.authorized).sort().join(',') === '3,7' && auth116.authorized_span_count === 2,
+      JSON.stringify(Object.keys(auth116.authorized)));
+    const ctx116 = promptNarrow.slice(promptNarrow.indexOf('【相关段落'), promptNarrow.indexOf('【待修正文】'));
+    check('116E-g（E05）只读上下文只含热点所在段落，未授权段落不作为跨度下发',
+      ctx116.includes('第二段：他站着没动。') && !ctx116.includes('第一段：陈默走进雨里。')
+      && !promptNarrow.includes('【授权跨度（span_id'),
+      ctx116.replace(/\s+/g, ' ').slice(0, 90));
+    check('116E-m（E01-B 续，2026-10-10 现场事故）计划在手时提示词里只有一套 span_id：原生 `span_id｜原文` 目录不再下发',
+      !promptNarrow.includes('【授权跨度（span_id') && !/(^|\n)p\d+(s\d+)?｜/.test(promptNarrow),
+      JSON.stringify({ idCatalogue: promptNarrow.includes('【授权跨度（span_id'), pipeId: /(^|\n)p\d+(s\d+)?｜/.test(promptNarrow) }));
+    check('116E-h（E05）修稿提示词不夹带诊断阈值/逐项评分（rewrite 不再次自由审评全文）',
+      !/逐项评分|AI 综合分|统一性得分|阈值/.test(promptNarrow));
+
+    // ③′ S04-1（补充轮）：**未传 plan 时默认也不得下发整章跨度目录**。
+    // 取证结论（重要，避免把结论说大）：本函数在拿到 plan 时**总是**按热点收窄（历史上就是），
+    // 真正的潜在退化面只有一处 —— `strictPlan = opts.plan !== undefined` 让"未传 plan"落进旧语义，
+    // 而**今天的调用点恰好都传 plan**，所以现场没有越权。硬化目标是让"忘记传 plan"这件事
+    // 也变得安全：默认严格，要旧语义必须显式 `allowCatalogueWithoutPlan: true`。
+    const wholeMarker = '因此给整章跨度';
+    const promptNoPlan = P.buildAIRevisionPatchPrompt(article, [issues10[2], issues10[6]], {
+      snapshot: P.revisionSnapshotFor(article, 304), chapterId: 304,
+    });
+    check('S04-1a 未传 plan → 不再下发"整章跨度"目录（只下发收窄后的相关段落，或明确不授权）',
+      !promptNoPlan.includes(wholeMarker),
+      JSON.stringify({ wholeChapter: promptNoPlan.includes(wholeMarker) }));
+    check('S04-1b 未传计划且无任何可定位热点时 → 明确说"没有任何被授权的可编辑跨度"（不沉默、不整章放行）',
+      (() => {
+        const noHit = '这一章还有些别的东西。\n\n中间也有别的东西。\n\n最后也是这样。';
+        const p = P.buildAIRevisionPatchPrompt(noHit, ['中间某处写得机械。'], {
+          snapshot: P.revisionSnapshotFor(noHit, 305), chapterId: 305, plan: null,
+        });
+        return p.includes('【本次没有任何被授权的可编辑跨度】') && !p.includes(wholeMarker);
+      })(),
+      'plan=null');
+    // 阴性对照：显式 opt-in 的旧语义仍可用（不能把整条路堵死），且必须**显式**要求。
+    const promptOptIn = P.buildAIRevisionPatchPrompt(article, [issues10[2], issues10[6]], {
+      snapshot: P.revisionSnapshotFor(article, 304), chapterId: 304, allowCatalogueWithoutPlan: true,
+    });
+    check('S04-1c（阴性对照）显式 allowCatalogueWithoutPlan:true 时恢复旧语义：不再强制"没有任何可编辑跨度"这条路',
+      !promptOptIn.includes('【本次没有任何被授权的可编辑跨度】') || promptOptIn.includes('【授权跨度（span_id'),
+      JSON.stringify({ noScope: promptOptIn.includes('【本次没有任何被授权的可编辑跨度】') }));
+
+    // ③″ 闭环缺陷回归（2026-10-11）：自洽检测把 strength↔issue 的重叠从 conflicts 降级为 advisories 之后，
+    // **呈现层没有跟着改** —— 那段信号在界面上彻底消失（只改数据层、没改展示层）。
+    // 这条断言把"advisories 必须真的渲染出来，且措辞不得像指控"钉住。
+    const consistencyWithAdvisory = {
+      status: 'ok',
+      conflicts: [],
+      advisories: [{ type: 'strength_vs_issue_overlap', strength: '等级分量全靠事件给出，不靠旁白建体系。', issue: '开篇时间线与既有设定冲突。' }],
+      note: 'x',
+    };
+    const htmlAdv = P.reportConsistencyHtml(consistencyWithAdvisory);
+    check('S04-2a（闭环回归）advisories 必须渲染出来，不能只躺在数据层',
+      typeof htmlAdv === 'string' && htmlAdv.includes('不靠旁白建体系'),
+      JSON.stringify({ rendered: String(htmlAdv).slice(0, 60), len: String(htmlAdv).length }));
+    check('S04-2b（闭环回归）advisories 的措辞是"建议核对"，不得像 conflicts 那样指控"互相矛盾"',
+      !/互相否认|自相矛盾/.test(String(htmlAdv)) || /建议核对|请核对/.test(String(htmlAdv)),
+      String(htmlAdv).slice(0, 120));
+    check('S04-2c（阴性对照）既无 conflicts 也无 advisories 时不得凭空出现该区块',
+      P.reportConsistencyHtml({ status: 'ok', conflicts: [], advisories: [] }) === '',
+      JSON.stringify(P.reportConsistencyHtml({ status: 'ok', conflicts: [], advisories: [] })));
+    // S04-2d（第二条闭环回归）：**回读**「查看上次审稿」时 consistency 的来源与新鲜路径**不一致** ——
+    // 新鲜路径放在 `review.consistency`（顶层），而落库报告里它在 `report.consistency`（嵌套），
+    // 回读路径把 `report` 交给 showReviewReport → 顶层没有该字段 → **警告静默消失**。
+    // 渲染器必须同时接受两种形状（否则"落库后仍可追溯"只是数据层成立）。
+    const nested = { summary: 's', review_id: 7, consistency: consistencyWithAdvisory };
+    check('S04-2d（回读闭环）把整个报告对象传进来（consistency 嵌在 report 上）时同样必须渲染出来',
+      P.reportConsistencyHtml(nested).includes('不靠旁白建体系')
+      && P.reportConsistencyHtml(consistencyWithAdvisory).includes('不靠旁白建体系'),
+      JSON.stringify({ viaReport: P.reportConsistencyHtml(nested).length, viaConsistency: P.reportConsistencyHtml(consistencyWithAdvisory).length }));
+
+    // ④ E05-B：重试预算跨刷新共享（刷新不等于重新领一次额度）
+    sandbox.localStorage.removeItem('ns_revision_retry_budget');
+    const budgetKey = P.revisionRetryBudgetKey(P.revisionSnapshotFor(article, 302), ['3', '7']);
+    const b1 = P.revisionRetryBudgetFor(budgetKey);
+    check('116E-i（E05-B）预算键绑定"章号|快照|勾选集合"：同一个键只领一份额度',
+      typeof budgetKey === 'string' && budgetKey.includes('302') && budgetKey.includes('3,7'),
+      budgetKey.slice(0, 60));
+    const t1 = b1.take();
+    const b2 = P.revisionRetryBudgetFor(budgetKey);
+    check('116E-j（E05-B）刷新后重建预算读到已用次数（不能重新领一次格式重试额度）',
+      t1.ok === true && b2.used === 1 && b2.remaining === 0 && b2.take().ok === false,
+      JSON.stringify({ first: t1.ok, used: b2.used, remaining: b2.remaining }));
+    const b3 = P.revisionRetryBudgetFor(P.revisionRetryBudgetKey(P.revisionSnapshotFor(article, 302), ['1']));
+    const b3UsedBeforeTake = b3.used;
+    check('116E-k（E05-B）换勾选集合就是新任务：应当领新额度（不因旧预算残留被误拒）',
+      b3UsedBeforeTake === 0 && b3.take().ok === true, JSON.stringify({ used_before_take: b3UsedBeforeTake }));
+    sandbox.localStorage.removeItem('ns_revision_retry_budget');
+
+    // ⑤ E01-B（分段命名空间）：整章编译的授权表在**片**底稿上仍精确生效
+    //    为什么必须单独测：分片与整章的 span 命名空间不同（片里的 `p2s1` 与整章的 `p2s1` 是两句不同的话），
+    //    认 id 就会认错位置 —— 这是本轮修掉的第二个真实缺口（见 implementation-report 的 K2′）。
+    const whole = '第一段：陈默走进雨里。\n\n第二段：他站着没动。\n\n第三段：雨还在下。';
+    const segText = '第二段：他站着没动。\n\n第三段：雨还在下。';
+    const wholePlan = P.revisionPlanFor(whole, ['把「第二段：他站着没动。」改掉'], { snapshot: P.revisionSnapshotFor(whole, 305), chapterId: 305, issueIds: ['5'] });
+    const wholeAuth = P.revisionAuthorizationFor(wholePlan);
+    const segSnap = P.revisionSnapshotFor(segText, 305);
+    const seg = { segment_id: 'seg-2', target: { text: segText } };
+    const metaSeg = () => P.longTextKindMeta('revision_patch', {
+      text: whole, chapterId: 305, issues: ['把「第二段：他站着没动。」改掉'], issueIds: ['5'], authorization: wholeAuth,
+    });
+    const segOut = metaSeg().parse(seg, JSON.stringify({
+      schema_version: 2, snapshot_id: segSnap.snapshot_id, base_hash: segSnap.body_hash,
+      patches: [{
+        patch_id: 'p1', group_id: 'p1', issue_ids: ['5'], span_id: wholePlan.hotspots[0].span.span_id, op: 'replace',
+        original: '第二段：他站着没动。', replacement: '第二段：他把伞收了。',
+      }],
+      dispositions: [{ issue_id: '5', status: 'patched', reason: '收紧动作' }],
+    }));
+    check('116E-l（E01-B）分段修稿：整章编译的授权表在**片**底稿上仍精确生效（命名空间不同也认对位置）',
+      String(segOut.output) === '第二段：他把伞收了。\n\n第三段：雨还在下。',
+      JSON.stringify(segOut.output));
+    let segRejected = null;
+    try {
+      metaSeg().parse(seg, JSON.stringify({
+        schema_version: 2, snapshot_id: segSnap.snapshot_id, base_hash: segSnap.body_hash,
+        patches: [{
+          patch_id: 'p1', group_id: 'p1', issue_ids: ['5'], span_id: 'p2s1', op: 'replace',
+          original: '第三段：雨还在下。', replacement: '第三段：雨停了。',
+        }],
+      }));
+    } catch (e) { segRejected = e; }
+    check('116E-m（E01-B）分段修稿：同名的整章 span_id 指向片内另一句 → 仍被拒（授权不因分片放宽）',
+      !!segRejected && /out_of_scope|未能定位/.test(String(segRejected.message)),
+      segRejected ? String(segRejected.message).slice(0, 50) : 'no-error');
+  } catch (e) {
+    check('116E-x 应用层断言未抛异常（桩环境缺模型不影响接线判定）', false, String(e && e.message ? e.message : e));
+  } finally {
+    P.state.pendingReview = saved116.pendingReview;
+    P.state.aiTaskRunning = saved116.aiTaskRunning;
+    P.state.longTextSettings = saved116.longTextSettings;
+    sandbox.document.querySelectorAll = saved116.qsa;
+    containers['#modal-root'].innerHTML = saved116.modal;
+  }
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

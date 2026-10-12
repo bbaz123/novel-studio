@@ -1,0 +1,58 @@
+{
+  "results": [
+    {
+      "id": "IT0",
+      "desc": "隔离实例可建作品与章节",
+      "pass": true,
+      "detail": "work=1 chapter=1"
+    },
+    {
+      "id": "IT1",
+      "desc": "PUT /novel/review 201 且回带 consistency",
+      "pass": true,
+      "detail": "{\"status\":201,\"conflicts\":1,\"advisories\":1}"
+    },
+    {
+      "id": "IT2",
+      "desc": "可确证矛盾进 conflicts（strength_vs_body）",
+      "pass": true,
+      "detail": "[\"strength_vs_body\"]"
+    },
+    {
+      "id": "IT3",
+      "desc": "话题重叠进 advisories（strength_vs_issue_overlap），**不得**混进 conflicts",
+      "pass": true,
+      "detail": "{\"advisories\":1,\"types\":[\"strength_vs_issue_overlap\"]}"
+    },
+    {
+      "id": "IT3b",
+      "desc": "无绝对措辞的普通优点**不产生** advisories（不过度报警）",
+      "pass": true,
+      "detail": "[\"本章对白完全没有推进信息，读起来很拖\"]"
+    },
+    {
+      "id": "IT4",
+      "desc": "conflicts 与 advisories **分开计数**（不得合并）",
+      "pass": true,
+      "detail": "{\"conflicts\":1,\"advisories\":1}"
+    },
+    {
+      "id": "IT5",
+      "desc": "GET 回读仍带 consistency（\"落库可追溯\"在回读路径上成立）",
+      "pass": true,
+      "detail": "{\"parsed\":true,\"has\":true}"
+    },
+    {
+      "id": "IT6",
+      "desc": "回读的 conflicts/advisories 内容与写入一致",
+      "pass": true,
+      "detail": "{\"c\":1,\"a\":1}"
+    },
+    {
+      "id": "IT7",
+      "desc": "阴性对照：正常报告 status=ok 且 conflicts=0（不误伤）",
+      "pass": true,
+      "detail": "{\"status\":\"ok\"}"
+    }
+  ]
+}

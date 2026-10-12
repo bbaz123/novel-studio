@@ -1,0 +1,9 @@
+﻿PASS  E00-narrative-repair-suite  exit=0  断言 10/10（未通过 0）
+PASS  E00-narrative-acceptance  exit=0  汇总行非标准（以退出码判定）
+PASS  E00-frontend  exit=0  汇总行非标准（以退出码判定）
+PASS  E00-editing-rules  exit=0  断言 79/79（未通过 0）
+PASS  E00-plugin-tools  exit=0  汇总行非标准（以退出码判定）
+PASS  E00-preset-copy  exit=0  汇总行非标准（以退出码判定）
+
+[after] 通过 6 / 未通过 0（共 6 条，零计费）
+清单：.narrative-repair-116/after-run.json

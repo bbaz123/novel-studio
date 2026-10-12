@@ -1,7 +1,7 @@
 /*
  * 局部补丁协议 v2（Revision Patch v2）——纯函数、零依赖、浏览器与 Node 测试共用（UMD）。
  *
- * 为什么需要它（2026-10-08，《叙事性专项修复》E01／P0）：现有链路有四个真实缺陷，
+ * 为什么需要它（2026-10-08，《叙事性专项修复》E01／P0）：**当时的**现有链路有四个真实缺陷，
  * 每一个都会把"只改被点名的几处"变成"改坏正文"或"多花一次钱"：
  *   ① **删不掉**：`applyRevisionPatches` 把「改后内容为空」一律判成 unresolved，
  *      于是"然后她不一样了。"这种整段删除只能靠换一句同样多余的旁白来绕开。
@@ -10,6 +10,8 @@
  *   ③ **少量定位授权整段替换**：`anchor` 落在某段内部时，旧实现直接替换**整段**，
  *      与"只授权这一句"的授权范围不一致（P06）。
  *   ④ **失败扩大为整章重写**：解析失败/全部未命中都会回退整章重写（一次付费、且没有门禁的整章覆盖）。
+ *      —— **该行为已在本模块落地时移除**：现在失败一律终态拒绝（见 ERROR_CODES 的说明与
+ *      `status_note` 里的"未回退整章重写"），整章重写只能由作者在界面里主动选。
  *
  * 本模块只做**确定性**的那一半：严格解码 → 跨度校验 → 分组原子化 → 精确定位 → 写回 → 组合核验。
  * 它不调用模型、不产生费用、同一输入同一输出。语义判断（"这句该不该改"）仍在审稿/修稿侧。
@@ -50,6 +52,15 @@
     UNSUPPORTED_MAPPING: 'unsupported_mapping',
     BUDGET_EXHAUSTED: 'budget_exhausted',
     CANCELLED: 'cancelled',
+    /** 新任务（expected_schema_version:2）收到旧格式响应：格式不兼容，不按旧语义应用（K4/E01-D）。 */
+    INCOMPATIBLE_LEGACY: 'incompatible_legacy_format',
+    /**
+     * 期望 v2 语义却**没有拿到 Host 授权表**：第②重授权（"这个 issue 有权改这个跨度吗"）无从校验。
+     * 2026-10-11（S05-1 / §6.3 双重授权）：旧实现在这种输入下**静默降级**成弱校验——只查
+     * "issue 是否属于本次已选"，然后照常把补丁应用掉。这与"必须双重授权"的契约相反，且属 fail-open
+     * （审计状态缺失时朝"放行"方向出错）。现在改为 fail-closed，正文一个字符都不动。
+     */
+    AUTHORIZATION_REQUIRED: 'authorization_required',
   };
 
   // ── 一、严格 JSON ──────────────────────────────────────────────────────────
@@ -369,10 +380,17 @@
    *      但**坏元素不得被折叠成合法空补丁**（旧实现的事故形态）。
    *
    * @param {string|object} raw 模型原始输出或已解析对象
+   * @param {{expectedSchemaVersion?:number, allowLegacy?:boolean}} [opts]
+   *   · `expectedSchemaVersion: 2` —— 本次是**新**的 v2 修稿作业：响应里没有 schema_version（旧
+   *     `anchor/revised` 形态）时按格式不兼容拒绝，**不**落进 legacy 分支。
+   *     为什么：旧分支带着"anchor 唯一包含 → 替换整段"的历史语义，新请求一旦能落进去，
+   *     就等于让新任务用兼容路径绕过 PatchV2 的跨度约束（《修复.md》E01-D）。存量仍需可读 →
+   *     由默认（不传）或显式 `allowLegacy: true` 提供**独立**通道。
+   *   · `allowLegacy: false` —— 与上等价的显式"不要兼容"姿态。
    * @returns {{ok:true, mode:'v2'|'legacy', patch:object, legacy:boolean}
    *          |{ok:false, error_code:string, errors:Array, mode:string}}
    */
-  function decodePatchOutput(raw) {
+  function decodePatchOutput(raw, opts = {}) {
     const errors = [];
     let parsed = null;
     let mode = 'unknown';
@@ -443,6 +461,19 @@
       };
     }
     mode = isV2 ? 'v2' : 'legacy';
+
+    // 新任务不接受 legacy 自动应用（E01-D / K4）：兼容是给**存量**读的独立通道。
+    if (!isV2 && (Number(opts.expectedSchemaVersion) === SCHEMA_VERSION || opts.allowLegacy === false)) {
+      return {
+        ok: false, error_code: ERROR_CODES.INCOMPATIBLE_LEGACY, mode: 'legacy',
+        errors: [{
+          code: ERROR_CODES.INCOMPATIBLE_LEGACY, path: '$.schema_version',
+          message: `本次是协议 v${SCHEMA_VERSION} 修稿作业，但响应是旧格式（没有 schema_version，用 anchor/revised）：`
+            + '按格式不兼容处理 —— 不会用旧"包含命中即替换整段"的语义应用；请按 v2 重发，'
+            + '或走显式的存量兼容入口（allowLegacy）。',
+        }],
+      };
+    }
 
     if (!Array.isArray(parsed.patches)) {
       return { ok: false, error_code: ERROR_CODES.SCHEMA_ERROR, mode, errors: [{ code: 'missing_patches', path: '$.patches', message: '缺少 patches 数组（不能把"没有 patches 字段"当成空补丁）' }] };
@@ -560,8 +591,16 @@
           return { ok: false, error_code: ERROR_CODES.SCHEMA_ERROR, mode, errors: [{ code: 'bad_disposition', path: at, message: '每条处置必须有非空 issue_id' }] };
         }
         const status = String(d.status || '');
-        if (!['patched', 'keep', 'deferred', 'blocked'].includes(status)) {
-          return { ok: false, error_code: ERROR_CODES.SCHEMA_ERROR, mode, errors: [{ code: 'bad_disposition_status', path: `${at}.status`, message: `未知处置状态：${JSON.stringify(d.status)}（只接受 patched / keep / deferred / blocked）` }] };
+        // 2026-10-11（T19，《修改方案.md》§8 E04）：接受 `partially_resolved`。
+        // 为什么必须显式接收而不是让模型改写：本文档把"只解决局部"列为一等完成态，
+        // 而旧白名单只有 patched/keep/deferred/blocked —— 模型想说"只改了一半"时只能被迫说
+        // `patched`，于是**局部解决被显示成完全解决**（正是 §6.4 与 T19 要禁止的）。
+        if (!['patched', 'keep', 'deferred', 'blocked', 'partially_resolved'].includes(status)) {
+          return { ok: false, error_code: ERROR_CODES.SCHEMA_ERROR, mode, errors: [{ code: 'bad_disposition_status', path: `${at}.status`, message: `未知处置状态：${JSON.stringify(d.status)}（只接受 patched / partially_resolved / keep / deferred / blocked）` }] };
+        }
+        // 声明"只解决局部"必须给理由，否则与"完全解决"无从区分（且不得进可采纳集）。
+        if (status === 'partially_resolved' && !String(d.reason || '').trim()) {
+          return { ok: false, error_code: ERROR_CODES.SCHEMA_ERROR, mode, errors: [{ code: 'partial_without_reason', path: `${at}.reason`, message: 'partially_resolved 必须说明"哪一部分仍未解决"（缺理由时无法与完全解决区分）' }] };
         }
         dispositions.push({ issue_id: d.issue_id, status, reason: isStr(d.reason) ? d.reason : '' });
       }
@@ -613,6 +652,111 @@
 
   // ── 四、跨度校验与计划编译 ────────────────────────────────────────────────
   /**
+   * Host 授权表条目是否覆盖这条补丁（E01-B）。
+   *
+   * 三条等价判据（任一成立即算授权）：
+   *   · span_id 相同；或
+   *   · start/end 与 Host 登记值完全一致；或
+   *   · `original` 与 Host 登记的**逐字原文**相等。
+   * 为什么保留第三条：分段修稿时 Host 的计划与分片的 span 命名空间不同（p12 在整章 vs p3 在片内），
+   * 但 `original` 必须与快照切片逐字相等（上面已判），而 Host 侧 `locateFragment` 又保证被登记的原文
+   * 在快照里唯一可定位 —— 于是"逐字相等"就是"同一处"，不是近似匹配。
+   *
+   * `ops` 提供时按它限制操作类型；不提供表示该条目不限制（默认登记的是 replace/delete）。
+   */
+  function authorizationEntryMatches(entry, resolved) {
+    if (!entry || typeof entry !== 'object') return false;
+    if (Array.isArray(entry.ops) && entry.ops.length && !entry.ops.includes(resolved.op)) return false;
+    // ⚠️ 2026-10-10（分段命名空间）：Host 登记了**逐字原文**时，身份以原文为准 ——
+    //    `span_id` 与偏移在"整章"和"分片"两种命名空间下含义不同（分片的 p2s1 与整章的 p2s1
+    //    是两句不同的话）。若还让 span_id 单独放行，就会在分片里把 A 句的授权用到 B 句上。
+    //    位置仍由下方既有的 `p.original === text.slice(start,end)` 逐字校验兜住，
+    //    而 Host 侧 `locateFragment` 已保证被登记的原文在快照里唯一可定位。
+    const hasText = typeof entry.text === 'string' && entry.text !== '';
+    if (hasText) return entry.text === resolved.original;
+    const spanId = entry.span_id == null ? '' : String(entry.span_id);
+    const idOk = !!spanId && spanId === resolved.span_id;
+    const rangeOk = Number.isFinite(Number(entry.start)) && Number.isFinite(Number(entry.end))
+      && Number(entry.start) === resolved.start && Number(entry.end) === resolved.end;
+    return idOk || rangeOk;
+  }
+
+  /** 授权表里的 protected 条目：跨度 id 命中，或补丁范围与该条目登记的区间有交集。 */
+  function authorizationRangeHit(entry, resolved) {
+    if (authorizationEntryMatches(entry, resolved)) return true;
+    const s = Number(entry && entry.start);
+    const e = Number(entry && entry.end);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+    return resolved.start < e && s < resolved.end;
+  }
+
+  /**
+   * 删除时的分隔符边界（**两条路径共用同一口径**：原生跨度分支与授权表分支）。
+   *
+   * 为什么必须共用：同一个意图（"删掉这一段"）不能因为模型写的是整段 span_id 还是片段原文
+   * 而得到两种文本（留下一行空段 vs 干净删除）。旧实现只在前一条路径上做这件事，
+   * 片段级授权路径会把 `\n\n` 留在原地 —— 那正是"执行器里悄悄多删/少删分隔符"的反面。
+   */
+  function expandDeleteRange(text, paraSpans, start, end) {
+    const para = (paraSpans || []).find((sp) => sp.start <= start && end <= sp.sep_end);
+    if (!para) return { start, end };
+    let s = start;
+    let e = end;
+    // ① 授权范围正好等于它所在的一整段 → 连同段尾分隔符一起删（否则凭空多一个空段）。
+    if (String(para.text) === text.slice(start, end)) e = para.sep_end;
+    // ② 删的是文末那一段 → 把紧邻在前的分隔符一并纳入，否则候选会以 "\n\n" 结尾。
+    if (e >= text.length) {
+      const m = text.slice(0, s).match(/[\r\n]+$/);
+      if (m) s -= m[0].length;
+    }
+    return { start: s, end: e };
+  }
+
+  /**
+   * 解析 **Host 登记过的片段级跨度**（E01-B 的后半句："若允许局部 fragment 的显式 offset，
+   * 范围必须由 Host 计划事先登记，`original` 与 Host 快照逐字相等"）。
+   *
+   * 为什么需要：`buildRevisionPlan` 把授权跨度收紧到"那一刻文字"时，span_id 是
+   * `${包含它的跨度}~${相对偏移}`（例如 `p1s1~11`）——它是**计划的身份**，不是 `buildSpans`
+   * 的原生 id，因此执行器 `spans.get(...)` 必然找不到它。旧行为会直接判 `out_of_scope`，
+   * 结果是"最窄、最该被允许的那一类授权补丁一条也执行不了"（而整段跨度反而能用）。
+   *
+   * 现在：只有 **授权表里登记过** 的同名条目才算数，并且要逐字核验
+   * `patch.original === entry.text`，且这段原文在当前底稿里**唯一可定位**。
+   * 也就是说"能不能改这里"仍然完全由 Host 数据决定，模型无法凭自造 span_id 获得位置。
+   *
+   * ⚠️ 为什么用"逐字原文 + 唯一性"定位、而**不**直接采信 entry 的 start/end：
+   * 分段修稿的校验底稿是**片**（`seg.target.text`），而 Host 计划登记的是**整章**偏移 ——
+   * 两个命名空间不同，直接拿整章偏移切片必然错位，会把**合法授权全判成越权**，
+   * 而片段级授权恰恰是分段修稿唯一能用的那类补丁。逐字原文 + "在底稿里唯一"
+   * 在整章与分片下同时成立，且不放松任何约束：定位到之后仍要满足下方既有的
+   * `p.original === text.slice(start, end)` 逐字校验。
+   */
+  function resolveAuthorizedRange(authorization, p, text, spans) {
+    if (!authorization || !authorization.authorized || !p.span_id) return null;
+    const table = authorization.authorized;
+    const want = String(p.original == null ? '' : p.original);
+    if (!want) return null;
+    for (const key of Object.keys(table)) {
+      const list = Array.isArray(table[key]) ? table[key] : [];
+      for (const e of list) {
+        if (!e || String(e.span_id || '') !== String(p.span_id)) continue;
+        if (String(e.text == null ? '' : e.text) !== want) continue;   // Host 登记的原文必须逐字相等
+        const at = text.indexOf(want);
+        if (at < 0) continue;
+        if (text.indexOf(want, at + 1) >= 0) continue;                 // 底稿里出现多次 → 位置不唯一，不认
+        const para = (spans || []).find((sp) => sp.kind === 'paragraph' && sp.start <= at && at < sp.sep_end);
+        return {
+          start: at, end: at + want.length, span_id: String(p.span_id),
+          paragraph_index: para ? para.paragraph_index : Number(e.paragraph_index),
+          kind: 'authorized_fragment',
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
    * 把解好的补丁落到具体跨度上，并做**授权范围**校验。
    *
    * 校验项（§6.3/§6.4/§6.5）：
@@ -620,6 +764,8 @@
    *   · `original` 必须与快照跨度**逐字相等** —— 否则 `anchor_mismatch`；
    *   · issue_ids 必须是**本次已选**的问题 —— 否则 `out_of_scope` / `selection_mismatch`；
    *   · 跨度必须属于本章 —— 否则 `out_of_scope`（别章 / 上下文专用跨度）；
+   *   · 给了 `opts.authorization` 时，补丁的跨度/逐字原文必须落在**该 issue 的授权表**里 ——
+   *     否则 `out_of_scope`（同章但未授权同样拒绝，E01-B）；命中 `protected` 同样拒绝；
    *   · 同一跨度上多条互不一致的操作 → 整组拒绝（`overlap`）；
    *   · 不同补丁跨度重叠 → 整组拒绝，不做"先到先得"；
    *   · 同跨度、同操作的多条合并为一条（避免同一处写两遍）。
@@ -647,7 +793,10 @@
     // `opts.chapter_id`，于是下面那条"别章跨度"判据恒成立（跨度章 == 调用章），永远不触发。
     // 现在跨度带的是快照的章号，调用方只有在编辑**同一章**时才通得过 —— 判据才真的可判。
     const spanChapter = String((snapshot && snapshot.chapter_id) || '') || (opts.chapter_id == null ? '' : String(opts.chapter_id));
-    for (const sp of buildSpans(text, { sentences: true, chapter_id: spanChapter })) spans.set(sp.span_id, sp);
+    const spanList = buildSpans(text, { sentences: true, chapter_id: spanChapter });
+    for (const sp of spanList) spans.set(sp.span_id, sp);
+    // 段落跨度单独留一份（数组）：片段级授权要按"落在哪一段"归位，组合核验按段号重放。
+    const paraSpans = spanList.filter((sp) => sp.kind === 'paragraph');
     const selected = opts.selectedIssueIds ? new Set(opts.selectedIssueIds.map(String)) : null;
     const contextOnly = new Set((opts.contextOnlySpanIds || []).map(String));
     const chapterId = opts.chapter_id == null ? '' : String(opts.chapter_id);
@@ -673,26 +822,52 @@
         end = p.span.end;
         bodyStart = start;
         bodyEnd = end;
-        spanObj = spanObj || { span_id: p.span_id || `${start}-${end}`, kind: 'explicit', start, end, text: text.slice(start, end), chapter_id: chapterId };
+        // span_id 与显式 span 同时出现且互相矛盾 → 无法证明改动落在授权范围内：直接拒绝。
+        // （旧实现取 span 的偏移、却保留 span_id 的身份，于是"身份"与"位置"可以各说各话。）
+        const declared = p.span_id ? spans.get(p.span_id) : null;
+        if (declared && (declared.start !== start || declared.end !== end)) {
+          failGroup(p, ERROR_CODES.OUT_OF_SCOPE, `$.patches[${p.patch_id}]`,
+            `补丁同时声明了 span_id「${p.span_id}」与不一致的 span:{start,end}：两者必须一致，否则无法证明改动落在授权范围内`);
+          continue;
+        }
+        spanObj = declared || { span_id: p.span_id || `${start}-${end}`, kind: 'explicit', start, end, text: text.slice(start, end), chapter_id: spanChapter };
+      } else if (opts.authorization) {
+        // ⚠️ 有授权表时，位置**一律**由 Host 登记（span_id + 逐字原文）决定，
+        //    **不**采信 buildSpans 的原生 id —— 分段修稿的底稿是"片"，
+        //    片内的 `p2s1` 与整章的 `p2s1` 是两句不同的话，认 id 就等于认错位置。
+        const authorized = resolveAuthorizedRange(opts.authorization, p, text, paraSpans);
+        if (!authorized) {
+          failGroup(p, ERROR_CODES.OUT_OF_SCOPE, `$.patches[${p.patch_id}]`,
+            `补丁不在授权表登记的跨度内（span_id ${p.span_id}，原文「${String(p.original).slice(0, 20)}」）：`
+            + 'Host 只授权了计划里登记过的跨度 / 逐字原文');
+          continue;
+        }
+        start = authorized.start;
+        end = authorized.end;
+        if (p.op === 'delete') {
+          // 删除的分隔符边界与原生跨度分支同一口径（见 expandDeleteRange 的说明）。
+          const rng = expandDeleteRange(text, paraSpans, start, end);
+          start = rng.start;
+          end = rng.end;
+        }
+        bodyStart = authorized.start;
+        bodyEnd = authorized.end;
+        spanObj = {
+          span_id: authorized.span_id, kind: authorized.kind, start, end, sep_end: end,
+          text: text.slice(start, end), paragraph_index: authorized.paragraph_index,
+          chapter_id: spanChapter, granularity_hint: 'fragment',
+        };
       } else if (span) {
         bodyStart = span.start;
         bodyEnd = span.end;
         start = span.start;
         end = span.end;
         if (p.op === 'delete') {
-          // 删除整段时连同段尾分隔符一起授权（否则会凭空多出一个空段）。
-          // ① 句子跨度正好等于它的父段落（单句成段）→ 按段落删除处理：
-          //    否则同一意图"删掉这一句"会因为模型选 p1 还是 p1s1 而得到两种文本（空段 vs 干净）。
-          const parent = span.kind === 'sentence' && span.parent_span_id ? spans.get(span.parent_span_id) : null;
-          const whole = parent && String(parent.text) === text.slice(span.start, span.end) ? parent : null;
-          const target = whole || span;
-          end = target.sep_end;
-          // ② 删的是文末那一段：把紧邻在前的分隔符一并纳入，
-          //    否则候选会以 "\n\n" 结尾（差别预览与采纳后都多一个空段）。
-          if (end >= text.length) {
-            const m = text.slice(0, target.start).match(/[\r\n]+$/);
-            if (m) start = target.start - m[0].length;
-          }
+          // 删除的分隔符边界：与授权表分支共用同一口径（见 expandDeleteRange 的说明）。
+          // 旧实现把这段逻辑内联在这里，于是片段级授权路径漏掉了它（会留空段）。
+          const rng = expandDeleteRange(text, paraSpans, span.start, span.end);
+          start = rng.start;
+          end = rng.end;
         }
         spanObj = { ...span, end };
       } else {
@@ -725,6 +900,28 @@
       if (selected && !p.issue_ids.length) {
         failGroup(p, ERROR_CODES.SELECTION_MISMATCH, `$.patches[${p.patch_id}]`, '补丁没有声明它处理哪个已选问题（selection_mismatch）');
         continue;
+      }
+      // ── 授权表（E01-B）："问题被选中"不等于"这个跨度被授权" ──────────────────
+      // 只有 Host 计划事先登记的跨度/逐字原文才放行；**同章但没授权的跨度同样拒绝**。
+      // 旧实现只判 issue_ids ⊆ 已选 → 模型挑一个已选 issue 就能改全章任意一处（K2）。
+      if (opts.authorization) {
+        const table = (opts.authorization.authorized && typeof opts.authorization.authorized === 'object')
+          ? opts.authorization.authorized : {};
+        const resolved = { span_id: String(spanObj.span_id || ''), start, end, original: p.original, op: p.op };
+        const missing = p.issue_ids.filter((id) => !(Array.isArray(table[id]) ? table[id] : []).some((e) => authorizationEntryMatches(e, resolved)));
+        if (missing.length) {
+          failGroup(p, ERROR_CODES.OUT_OF_SCOPE, `$.patches[${p.patch_id}]`,
+            `补丁落在 issue「${missing.join('、')}」未授权的跨度上`
+            + `（span_id ${resolved.span_id}，原文「${String(p.original).slice(0, 20)}」）：`
+            + 'Host 只授权了这些问题在计划里登记的跨度/逐字原文，同章其它跨度一律不可改');
+          continue;
+        }
+        const prot = Array.isArray(opts.authorization.protected) ? opts.authorization.protected : [];
+        if (prot.some((e) => authorizationRangeHit(e, resolved))) {
+          failGroup(p, ERROR_CODES.OUT_OF_SCOPE, `$.patches[${p.patch_id}]`,
+            `补丁落在授权表标记为 protected 的范围上（span_id ${resolved.span_id}）：不得作为改动对象`);
+          continue;
+        }
       }
       evaluated.push({ p, spanObj, start, end, bodyStart, bodyEnd });
     }
@@ -798,7 +995,14 @@
     for (const id of selected ? [...selected] : []) {
       const d = dispositionMap.get(String(id));
       if (patchedIssues.has(String(id))) {
-        coverage.push({ issue_id: String(id), status: 'patched', reason: d ? d.reason : '' });
+        // T19：模型明确声明"只解决局部"时，覆盖表必须如实照搬 —— 不能因为"有补丁落在授权跨度上"
+        // 就把它显示成完全解决（"改了 2 个 span" ≠ "2 个问题全部解决"，§6.4）。
+        const partial = d && d.status === 'partially_resolved';
+        coverage.push({
+          issue_id: String(id),
+          status: partial ? 'partially_resolved' : 'patched',
+          reason: d ? d.reason : '',
+        });
         continue;
       }
       if (d && (d.status === 'keep' || d.status === 'deferred' || d.status === 'blocked')) {
@@ -1208,13 +1412,36 @@
   }
 
   /** 一次完整解码+校验+门禁+写回+组合核验的编排（确定性部分），供 app.js 与测试共用同一入口。 */
-  function runRevisionPipeline({ snapshot, raw, selectedIssueIds, contextOnlySpanIds, chapterId, engine, gateOpts } = {}) {
+  function runRevisionPipeline({ snapshot, raw, selectedIssueIds, contextOnlySpanIds, chapterId, engine, gateOpts, authorization, expectedSchemaVersion, allowLegacy } = {}) {
     const baseText = String(snapshot && snapshot.body_text != null ? snapshot.body_text : '');
-    const decoded = decodePatchOutput(raw);
+    const decoded = decodePatchOutput(raw, { expectedSchemaVersion, allowLegacy });
     if (!decoded.ok) {
       return { ok: false, error_code: decoded.error_code, errors: decoded.errors, mode: decoded.mode, text: baseText, applied: [], unresolved: [], coverage: [], noop: false };
     }
-    const planned = planPatchApplication(snapshot, decoded, { selectedIssueIds, contextOnlySpanIds, chapter_id: chapterId });
+    // 双保险：调用方显式 `allowLegacy:false` 时，即便载荷没有版本字段也不接受兼容语义。
+    if (decoded.legacy && allowLegacy === false) {
+      return {
+        ok: false, error_code: ERROR_CODES.INCOMPATIBLE_LEGACY, mode: 'legacy',
+        errors: [{ code: ERROR_CODES.INCOMPATIBLE_LEGACY, path: '$', message: '本次修稿不接受旧格式（anchor/revised）：按格式不兼容处理，未改动任何文字' }],
+        text: baseText, applied: [], unresolved: [], coverage: [], noop: false,
+      };
+    }
+    // ⚠️ 2026-10-11（S05-1，§6.3 双重授权）：期望 v2 的作业**必须**带 Host 授权表。
+    //   授权表缺失时 `planPatchApplication` 会退到"只认 issue 在已选集合里 + 采信模型自报的
+    //   span_id/span 偏移"这条**弱校验**路径 —— 那正是"选中 ≠ 授权"的越权面。
+    //   fail-closed：这里在规划之前就拒绝，而不是让它带着一半校验跑完。
+    if (Number(expectedSchemaVersion) === SCHEMA_VERSION && !authorization) {
+      return {
+        ok: false, error_code: ERROR_CODES.OUT_OF_SCOPE, mode: decoded.mode,
+        errors: [{
+          code: ERROR_CODES.AUTHORIZATION_REQUIRED, path: '$',
+          message: '本次是 v2 修稿作业但缺少 Host 授权表：无法校验"该问题是否有权改这个跨度"，'
+            + '按双重授权契约拒绝执行，未改动任何文字',
+        }],
+        text: baseText, applied: [], unresolved: [], coverage: [], noop: false,
+      };
+    }
+    const planned = planPatchApplication(snapshot, decoded, { selectedIssueIds, contextOnlySpanIds, chapter_id: chapterId, authorization });
     if (!planned.ok) {
       return { ok: false, error_code: planned.error_code, errors: planned.errors, conflicts: planned.conflicts, mode: decoded.mode, text: baseText, applied: [], unresolved: [], coverage: [], noop: false };
     }
@@ -1228,7 +1455,9 @@
     }
     const unresolved = [];
     for (const c of plan.coverage) {
-      if (c.status === 'unaccounted' || c.status === 'blocked') unresolved.push({ issue_id: c.issue_id, reason: c.reason || c.status, status: c.status });
+      // T19：`partially_resolved` 也是"未完成项"——作者必须能看到"这条还没解决完"，
+      // 不能因为它是模型主动声明的就把它从未完成清单里漏掉。
+      if (c.status === 'unaccounted' || c.status === 'blocked' || c.status === 'partially_resolved') unresolved.push({ issue_id: c.issue_id, reason: c.reason || c.status, status: c.status });
     }
     // 失败的依赖组里的**已解析**补丁不会进候选，但必须显示给作者（"未完成项"）。
     for (const s of plan.skipped_spans || []) {

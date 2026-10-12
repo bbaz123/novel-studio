@@ -20,10 +20,19 @@
  */
 import { scanEditing } from './scan.mjs';
 
-export const NARRATIVE_SCAN_VERSION = '1.0.0';
+export const NARRATIVE_SCAN_VERSION = '1.1.0';
 
-/** 本轮核心四类诊断（任务书 §5.3）。id 与 §5.3 表格一一对应。 */
-export const DIAGNOSTICS = ['repeated_mechanism', 'redundant_explanation', 'spectacle_redundancy', 'reaction_homogeneity'];
+/**
+ * 本轮核心诊断（任务书 §5.3）。前四类来自《修复.md》E04；后两类是《修改方案.md》§5.3 新增的
+ * **场景反应因果**与**视点信息越界**——它们同样是候选，同样带反证通道，绝不新增角色能力或改写故事事实。
+ */
+export const DIAGNOSTICS = [
+  'repeated_mechanism', 'redundant_explanation', 'spectacle_redundancy', 'reaction_homogeneity',
+  'reaction_causality', 'focalization_limit',
+];
+
+/** 后两类是 116 轮新增的**感知/因果**诊断（判据与四类结构测量分开维护）。 */
+export const PERCEPTION_DIAGNOSTICS = ['reaction_causality', 'focalization_limit'];
 
 export const DIAGNOSTIC_META = {
   repeated_mechanism: {
@@ -41,6 +50,17 @@ export const DIAGNOSTIC_META = {
   reaction_homogeneity: {
     question: '群众或人物是否只在轮流执行相同反应？',
     counterevidence: '性格差异、关系变化或新信息确实存在时，这些反应就不是同质的。',
+  },
+  // ── 116 轮新增（《修改方案.md》§5.3 / M01、M02、M03）─────────────────────────
+  reaction_causality: {
+    question: '反应的规模与已经交代的成因是否匹配？',
+    counterevidence: '若该等级/事件被反复铺垫为异常，或这是有意的舞台化描写，反应规模就成立；'
+      + '本判据只在**语境已把成因标为普通**、却又紧跟全体中止反应时提疑点，绝不据此重写全场反应。',
+  },
+  focalization_limit: {
+    question: '这个信息，叙述者/视角人物是通过什么渠道得到的？',
+    counterevidence: '若角色有已确立的特殊感知（系统提示、特殊天赋、专业训练），或该信息本可来自可见线索'
+      + '（光效、声音、表情），观察来源就成立。本判据**从不**新增天赋或改写观察结论，只列出疑点与反证通道。',
   },
 };
 
@@ -122,6 +142,113 @@ const quoted = (s, max = 60) => {
   const t = String(s || '');
   return t.length <= max ? t : `${t.slice(0, max)}…`;
 };
+
+// ── 感知/因果类判据（116 轮新增）────────────────────────────────────────────
+// ⚠️ 设计纪律（与四类结构测量的分工）：
+//   · 这两类**必然**依赖少量语法标记（量词、触觉动词、距离词），不能靠字符 n-gram 表达；
+//     因此它们与 `scan.mjs` 的词表判据一样只做**候选**，`requires_semantic_check` 恒为 true，
+//     并且每一条都必须带 `counterevidence_hint`（反证通道）。
+//   · 实测调参依据：在冻结样本 before/after 与本轮 8 个新夹具（共 18 个目标文本）上误报为 0；
+//     同时 F08（"C 级本来常见" + 全体中止）、F-M02（触觉→密度断言）、F-M03（隔队伍知余温）都能命中。
+//     调参过程见 .narrative-repair-116/probe-perception-candidates.mjs（一次性探针，不入 CI）。
+const SENTENCE_RE = /(?:[。！？；\n]|^)\s*([^。！？；\n]{2,140}?)[。！？；]/g;
+/** 返回 [{text, start}]：start 用于取**原始文本**语境窗口（句末为逗号的从句不会被丢弃）。 */
+function narrativeSentences(text) {
+  const s = String(text == null ? '' : text);
+  const out = [];
+  SENTENCE_RE.lastIndex = 0;
+  let m = SENTENCE_RE.exec(s);
+  while (m) {
+    out.push({ text: m[1], start: Math.max(0, m.index + m[0].length - m[1].length - 1) });
+    m = SENTENCE_RE.exec(s);
+  }
+  return out;
+}
+// 奇观事实（S/A 级异象、直播大屏…）：它们本身就足以支撑强烈反应，"反应过大"不成立。
+// ⚠️ 不认裸「级」："他的成绩是C级"里的「级」是等级名，不是异象（调参时曾因此漏报 F08）。
+const SPECTACLE = /[SA]级|SS级|异象|光柱|灵体|风暴|帝王|地震|爆炸|直播|大屏/;
+// 全体量词必须出现在分句**开头**（"全场/全都/所有…"）：比较句"动作跟前面所有人都一样"不是全体反应。
+const UNIVERSAL_HEAD = /^(?:可|却|但|而|于是|结果)?(?:全都|全|所有|整个大厅|全场|一片|候检大厅|大厅)/;
+const HALTS = /停住|停下|静了下?来|安静|没声|哑了|愣住|僵住/;
+// 成因被标为"平常/非特殊"：这才是"反应与成因不匹配"的证据（F08 形状）。
+const ORDINARY_CAUSE = /本来|平常|常见|普通|寻常|不算什么|没什么稀奇|见惯|早就|一直/;
+
+const TACTILE = /按|摸|抚|捏|抵|触|握|攥/;
+// 触觉**得不到**的性质：密度/硬度/成分/内部结构。
+const TACTILE_ASSERT = /密度|硬度|材质|成分|重量|内部结构|内部构造|构造|年代/;
+const PERCEPT = /知道|明白|感觉|感到|看出|察觉|意识|残留|觉出|发现|感受到/;
+// 距离/间隔标记：隔着人群、远处、对面、另一头……
+const DISTANCE = /隔着|远处|对面|另一头|隔了|千米|公里|米外/;
+
+const isQuotedLine = (s) => /^\s*[\u300c\u201c"']/.test(String(s || ''));
+
+/** 场景反应因果候选：全体中止反应 与 已交代的普通成因 不匹配。 */
+function reactionCausalityCandidates(text) {
+  const out = [];
+  for (const item of narrativeSentences(text)) {
+    const s = item.text;
+    if (!HALTS.test(s) || SPECTACLE.test(s) || isQuotedLine(s)) continue;
+    const universal = s.split(/[，,]/).map((x) => x.trim()).filter(Boolean).some((c) => UNIVERSAL_HEAD.test(c));
+    if (!universal) continue;
+    const context = String(text).slice(Math.max(0, item.start - 80), item.start);
+    const cause = ORDINARY_CAUSE.exec(context + s);
+    if (!cause) continue;
+    out.push({
+      diagnostic: 'reaction_causality',
+      rule_id: 'perception:reaction-cause-mismatch',
+      quote: s,
+      evidence: `语境把成因标为普通（「${cause[0]}」），却紧跟「${s}」这样的全体中止反应：`
+        + '因果规模与已交代的成因不匹配（D 级本该常见、观众本已反应平淡）',
+      // 反证通道：写明"什么情况下它不是问题"，避免把有意的舞台化描写当成缺陷。
+      severity: 'low',
+      suggested_action: 'check',
+      source: 'narrative-scan',
+    });
+  }
+  return out;
+}
+
+/** 视点/信息越界候选：触觉断言了触觉得不到的性质，或隔距离给出对方身上的信息。 */
+function focalizationLimitCandidates(text) {
+  const out = [];
+  const paras = String(text == null ? '' : text).split(/\n{2,}/);
+  for (const para of paras) {
+    // 对白里的话是人物说的，不是叙述者的观察渠道 → 先屏蔽再匹配。
+    const q = para.replace(/[\u300c\u201c"'][^\u300d\u201d"']*[\u300d\u201d"']/g, '（对白）');
+    const tm = TACTILE.exec(q);
+    if (tm) {
+      const am = TACTILE_ASSERT.exec(q);
+      if (am && Math.abs(am.index - tm.index) <= 40) {
+        out.push({
+          diagnostic: 'focalization_limit',
+          rule_id: 'perception:tactile-overreach',
+          paragraph: null,
+          quote: quoted(para, 80),
+          evidence: `触觉动词「${tm[0]}」之后紧接断言「${am[0]}」：只凭手按/触碰得不到密度、硬度、成分这类性质`,
+          severity: 'low',
+          suggested_action: 'check',
+          source: 'narrative-scan',
+        });
+        continue;
+      }
+    }
+    if (DISTANCE.test(q) && PERCEPT.test(q)) {
+      const w = PERCEPT.exec(q)[0];
+      const d = DISTANCE.exec(q)[0];
+      out.push({
+        diagnostic: 'focalization_limit',
+        rule_id: 'perception:distance-overreach',
+        paragraph: null,
+        quote: quoted(para, 80),
+        evidence: `叙述者与对象之间隔着距离（「${d}」），却用「${w}」给出对方身体上的信息（如掌心余温）`,
+        severity: 'low',
+        suggested_action: 'check',
+        source: 'narrative-scan',
+      });
+    }
+  }
+  return out;
+}
 
 function pushCandidate(out, c) {
   out.push({
@@ -316,6 +443,14 @@ export function narrativeCandidateSignals(text, opts = {}) {
     });
     i += group.length - 1;
   }
+
+  // ④ 116 轮新增：场景反应因果 与 视点信息越界（§5.3 的 M01/M02/M03 形状）。
+  //    只产出**带引用与反证通道的候选**；不重写全场反应，也不给角色新增感知能力。
+  for (const sig of reactionCausalityCandidates(raw)) pushCandidate(candidates, sig);
+  if (paras.length < 2) {
+    note('reaction_causality', '段落数 < 2：反应与成因的先后关系无法判定（insufficient_data）');
+  }
+  for (const sig of focalizationLimitCandidates(raw)) pushCandidate(candidates, sig);
 
   candidates.sort((a, b) => (a.paragraph ?? -1) - (b.paragraph ?? -1) || a.diagnostic.localeCompare(b.diagnostic));
   return {

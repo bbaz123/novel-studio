@@ -1,0 +1,16 @@
+{
+  "id": "F-B05",
+  "kind": "delete_noop_illegal",
+  "body": "甲段。\n\n乙段。",
+  "legal_delete": { "op": "delete", "replacement": "", "issue_ids": ["q1"], "span_id": "p2", "original": "乙段。" },
+  "illegal": [
+    { "label": "replace 缺 replacement", "patch": { "issue_ids": ["q1"], "span_id": "p1", "op": "replace", "original": "甲段。" } },
+    { "label": "replace 的 replacement 为空串", "patch": { "issue_ids": ["q1"], "span_id": "p1", "op": "replace", "original": "甲段。", "replacement": "" } },
+    { "label": "replacement 为 null", "patch": { "issue_ids": ["q1"], "span_id": "p1", "op": "replace", "original": "甲段。", "replacement": null } },
+    { "label": "delete 缺 replacement", "patch": { "issue_ids": ["q1"], "span_id": "p1", "op": "delete", "original": "甲段。" } },
+    { "label": "delete 的 replacement 非空", "patch": { "issue_ids": ["q1"], "span_id": "p1", "op": "delete", "original": "甲段。", "replacement": "甲段改。" } },
+    { "label": "未知 op", "patch": { "issue_ids": ["q1"], "span_id": "p1", "op": "rewrite", "original": "甲段。", "replacement": "甲段改。" } }
+  ],
+  "noop": { "patches": [], "dispositions": [{ "issue_id": "q1", "status": "keep", "reason": "读起来没问题" }] },
+  "expected": { "illegal_strictly_rejected": true, "text_changed_on_illegal": false, "noop_is_legal": true }
+}

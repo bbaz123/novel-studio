@@ -47,6 +47,8 @@
     cross_paragraph_duplicate: '同一句在多个段落里逐字重复',
     percent_sum_mismatch: '百分比合计不为 100%',
     safety_unavailable: '安全门禁不可用（本次未拦截任何补丁）',
+    // 2026-10-10（《修复.md》E03 · A01）：
+    information_truncation: '删掉引导语后的具体内容，改后只剩一个孤立的栏目名/引导语',
   };
 
   // ── 词表（集中定义：判据与"为什么"文案共用同一份口径，避免两处漂移） ──────────────
@@ -329,6 +331,66 @@
    * @param {object} opts      { characters?: string[], protectedContent?: string[] }
    * @returns {Array<{code, paragraph, excerpt, token?, subject?, markers?, reason}>}
    */
+  /**
+   * ⑤ information_truncation（E03-A / A01 事故样例）：删掉的是"引导语后面的具体内容"，
+   * 改后只剩一个**孤立的栏目名/引导语**。
+   *
+   * 为什么要单列这条信号：这类改动在协议层**完全合法**（授权跨度逐字相等、单条门禁也看不出
+   * 物件来源/人称先行语/场景锚点的断裂），但阅读效果是"信息被削掉一半"：
+   *   `屏幕下方滚过一行小字：职业方向——材料修复、灵植培育、检测辅助。`
+   *   → `屏幕下方滚过一行小字：职业方向。`
+   * 它不是格式错，也不是"AI 味"，而是**局部句意不完整**。
+   *
+   * 判据刻意窄（不做"所有短句都判错"的扫描器），必须同时满足：
+   *   ① 原稿里存在「短引导语 + 分隔符（——/—/：/:）+ 具体内容」；
+   *   ② 具体内容在改后**消失**（不是被压缩改写，而是整段不见了）；
+   *   ③ 引导语仍在，且它在改后紧跟句末标点/段尾（孤零零地挂着）。
+   * 三条缺一不报 —— 与"作者就是要删掉整句提示"区分开：那种情况下引导语也一起没了（②/③不成立）。
+   */
+  const LABEL_BEFORE_RE = /([^。！？!?…，,；;：:—\n]{1,12})$/;
+  function informationTruncationRisks(paraBefore, paraAfter, paraIndex) {
+    const out = [];
+    const beforeText = String(paraBefore == null ? '' : paraBefore);
+    const keptText = String(paraAfter == null ? '' : paraAfter);
+    if (!beforeText || !keptText || beforeText === keptText) return out;
+    const paragraph = Math.max(0, Number(paraIndex) || 0);
+    for (const sep of ['——', '—', '：', ':']) {
+      for (let at = beforeText.indexOf(sep); at >= 0; at = beforeText.indexOf(sep, at + sep.length)) {
+        const labelMatch = beforeText.slice(0, at).match(LABEL_BEFORE_RE);
+        if (!labelMatch) continue;
+        const label = labelMatch[1].trim();
+        if (!label) continue;
+        // 具体内容：分隔符之后到该句结束为止（原稿里真的"列了东西"）。
+        const tailMatch = beforeText.slice(at + sep.length).match(/^([^。！？!?\n]*)/);
+        const tail = tailMatch ? tailMatch[1].trim() : '';
+        if (tail.length < 3) continue;
+        if (keptText.includes(tail)) continue;            // ② 内容还在 → 不是截断
+        if (!keptText.includes(label)) continue;          // ③a 引导语也一起删了 → 是"整句删除"，不是留半截
+        const atKept = keptText.lastIndexOf(label);
+        // ③b 引导语在改后**自成一句**（后面到句末标点之间没有任何内容）→ 孤零零地挂着。
+        //     用"句"而不是"段"作边界：`能力。他闭上眼。` 里"能力。"同样是残缺句，
+        //     只是它后面还跟着别的句子；而 `他说：“今天别出门。”` 的 label 后面接着内容 → 不报。
+        const rest = keptText.slice(atKept + label.length);
+        const restOfSentence = (rest.match(/^([^。！？!?\n]*)/) || [''])[1];
+        if (restOfSentence.trim() !== '') continue;
+        out.push({
+          code: 'information_truncation',
+          subtype: 'orphaned_label',
+          label,
+          separator: sep,
+          lost: tail,
+          paragraph,
+          excerpt: beforeText.slice(0, 60),
+          reason: `删掉了「${label}」后面的具体内容（原稿：${label}${sep}${tail}）：`
+            + `改后只剩一个孤立的栏目名/引导语（"${label}"），读者拿不到本来列出的信息 —— `
+            + '这不等于"质量改善"，建议人工确认是否补回或改写成完整句',
+        });
+        return out;   // 一处段落只报一条（同一段里的重复引导语不值得重复占用作者注意力）
+      }
+    }
+    return out;
+  }
+
   function deletionRisks(baseText, before, afterKept, paraIndex, opts = {}) {
     const beforeText = String(before == null ? '' : before);
     const keptText = String(afterKept == null ? '' : afterKept);
@@ -413,6 +475,11 @@
         });
       }
     }
+
+    // ⑤ information_truncation：与上面四条不同，它不依赖后文 —— 只比"这一段改前/改后"。
+    // 为什么放在这里而不是另建扫描器：它和上面四条一样回答"这条改动该不该自动应用"，
+    // 只是证据面是**局部句意**而不是后文回指。放进同一个返回值，门禁与组合核验两条路径都自动带上它。
+    risks.push(...informationTruncationRisks(beforeText, keptText, idx));
 
     return risks;
   }
@@ -954,6 +1021,7 @@
     classifyEditScope,
     classifyObjectUse,
     deletionRisks,
+    informationTruncationRisks,
     gatePatches,
     verifyPatchedText,
     // v1.1.0 新增：三项第四批判据（前两项被 verifyPatchedText 与 gatePatches 使用；

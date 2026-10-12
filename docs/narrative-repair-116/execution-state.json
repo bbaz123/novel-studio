@@ -1,0 +1,75 @@
+{
+  "task_id": "narrative-repair-116",
+  "base_commit": "6f9a14b0d1f7e11117b68d0536aee5ca238969cd",
+  "target_version": "1.1.6",
+  "stage": "E07",
+  "status": "passed",
+  "completed_stages": [
+    { "stage": "E00", "status": "passed", "note": "本地确认为 1.1.6；真实源码映射与调用链见 source-map.md；修改前基线 6 条命令全部 exit 0" },
+    { "stage": "E01", "status": "passed", "note": "授权表强制 / 定位歧义拒绝 / plan 不放宽 / legacy 隔离；先失败测试（14 红）后修复（20 绿）" },
+    { "stage": "E02", "status": "passed", "note": "review_id 与稳定编号端到端保真（116E-c/d/e）；采纳幂等与 stale 归入 already_satisfied（作者既有裁决见 implementation-report）" },
+    { "stage": "E03", "status": "passed", "note": "information_truncation（soft）可指出 A01 丢失内容；A02 作为合理精简通过" },
+    { "stage": "E04", "status": "passed", "note": "四类叙事诊断在新样本上的正/反对照；semantic_status 恒为 not_run" },
+    { "stage": "E05", "status": "passed", "note": "阶段化规则已在既有 03-stage-rules 覆盖（already_satisfied）；本轮补齐重试预算跨刷新持久化" },
+    { "stage": "E06", "status": "passed", "note": "tests/narrative-repair/fixtures/new-3751-spring/ 8 个夹具 + manifest；旧冻结样本未被覆盖（哈希断言）" },
+    { "stage": "E07", "status": "passed", "note": "回归矩阵与交付文档；ci-offline 54/54；T25 变异对照完成" }
+  ],
+  "changed_paths": [
+    "public/revision-patch.js",
+    "public/revision-plan.js",
+    "public/app.js",
+    "public/patch-safety.js",
+    "frontend-test.mjs",
+    "scripts/test-narrative-repair.mjs",
+    "scripts/run-narrative-repair-116.mjs",
+    ".p1-baseline/verify-phase-map.mjs",
+    "tests/narrative-repair/08-authorization.test.mjs",
+    "tests/narrative-repair/09-information-truncation.test.mjs",
+    "tests/narrative-repair/10-new-sample.test.mjs",
+    "tests/narrative-repair/fixtures/new-3751-spring/",
+    "docs/narrative-repair-116/",
+    ".narrative-repair-116/",
+    "docs/narrative-repair/e07-run-manifest.json"
+  ],
+  "tests": {
+    "baseline": { "cmd": "node scripts/run-narrative-repair-116.mjs --label baseline", "exit_code_overall": 1, "note": "整体非零来自运行器判定器的首版缺陷（已当场修正）；6 条被指向的命令真实退出码均为 0" },
+    "after": { "cmd": "node scripts/run-narrative-repair-116.mjs --label after", "exit_code_overall": 0, "checks": "6/6 passed" },
+    "narrative_suite": { "cmd": "node scripts/test-narrative-repair.mjs", "exit_code": 0, "assertions": "10 套件 / 202 条" },
+    "ci_offline": { "cmd": "node scripts/ci-offline-checks.mjs", "exit_code": 0, "assertions": "54/54" },
+    "frontend": { "cmd": "node frontend-test.mjs", "exit_code": 0, "note": "=== ALL PASS ===（本轮新增 13 条）" },
+    "editing_rules": { "cmd": "node .p1-baseline/test-editing-rules.mjs", "exit_code": 0, "assertions": "79/79" },
+    "mutation_check": { "cmd": "node tests/narrative-repair/08-authorization.test.mjs（授权表后置校验短路）", "exit_code": 1, "note": "18/20；按字节还原后 20/20 绿（mutation-backup 逐字节校验通过）" },
+    "phase_map": { "cmd": "node .p1-baseline/verify-phase-map.mjs", "exit_code": 1, "verdict": "pre_existing_failed（未归属项 100 → 97；本轮新增路径全部由 SE7 认领，SE7 证据齐备、rollback 声明与推导一致；docs/phase-map.md 过期属既有问题）" },
+    "check_utf8": { "cmd": "node .p1-baseline/check-utf8.mjs", "exit_code": 0, "note": "首跑因我用 Tee-Object 落盘的控制台实录是 UTF-16 而红（非法 UTF-8 2 个，均为本轮新增的 .narrative-repair-116/*-console.txt）；已整份重写为 UTF-8，复跑 0 个非法" }
+  },
+  "artifacts": [
+    "docs/narrative-repair-116/source-map.md",
+    "docs/narrative-repair-116/baseline.json",
+    "docs/narrative-repair-116/implementation-report.md",
+    "docs/narrative-repair-116/test-report.md",
+    "docs/narrative-repair-116/issue-patch-coverage.json",
+    "docs/narrative-repair-116/comparison-report.md",
+    "docs/narrative-repair-116/rollback.md",
+    "docs/narrative-repair-116/final-summary.md",
+    "docs/narrative-repair-116/execution-state.json",
+    ".narrative-repair-116/baseline-run.json",
+    ".narrative-repair-116/after-run.json",
+    "scripts/run-narrative-repair-116.mjs"
+  ],
+  "blockers": [
+    {
+      "id": "B1",
+      "status": "pre_existing",
+      "what": "docs/phase-map.md 与真实改动集不一致（文档记 503，实跑 523+），且 97 项旧改动无阶段归属",
+      "resume_condition": "由后续独立的 docs 整理任务处理（本轮不重写生成文档，避免无关大范围改动）"
+    },
+    {
+      "id": "B2",
+      "status": "not_run",
+      "what": "真实模型语义审稿与文学效果 A/B",
+      "resume_condition": "用户明确授权预算与样本策略后执行（SKIPPED: paid_evaluation_not_authorized）"
+    }
+  ],
+  "next_task": "等待作者裁决：是否需要为「引用不可唯一定位」补一个让作者点选具体那一处的交互（当前为 ambiguous_anchor + 提示作者补引用）",
+  "resume_protocol": "跨刷新恢复前先复核：git rev-parse HEAD 仍为 6f9a14b0d1（本任务未提交任何改动），并复核 public/revision-patch.js 中同时存在 `planAuthorization` 调用与 `resolveAuthorizedRange`；文本 hash 以本次 worktree 为准。"
+}

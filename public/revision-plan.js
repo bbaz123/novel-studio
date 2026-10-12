@@ -64,20 +64,85 @@
     return out.sort((a, b) => b.length - a.length);
   }
 
-  /** 在正文学里找片段：优先"整句恰好等于"，其次"句子包含"，最后"段落包含"；**再把范围收紧到片段本身**。 */
-  function locateFragment(text, fragment, spans) {
+  /**
+   * 在正文学里找片段：优先"整句恰好等于"，其次"句子包含"，最后"段落包含"。
+   *
+   * ⚠️ 2026-10-10（《修复.md》E01-C / K3）：**唯一性是硬前提**。
+   *   旧实现对 exact 句用 `spans.find(...)`、对子串候选排序取第一个 —— 同一句在两处出现时，
+   *   它会静默改"第一个碰巧匹配的那一处"。那不是定位，是猜测；作者点的是第 2 处，被改的是第 1 处。
+   *   现在：出现多次 → 返回 `{ambiguous:true, count, starts}`，由调用方如实报 `ambiguous_anchor`；
+   *   只有 Host 显式给出唯一 span/上下文标识（`opts.span_id`）时才认那一处。
+   *
+   * ⚠️ 2026-10-10（作者授权，现场事故续）：命中"包含"分支时**授权哪一段**取决于引用来源与跨度：
+   *   · 散文里的「」**提及**（`opts.widen === true`）且**恰好被一句话包含** → 授权那一整句。
+   *     引号外的标点不在提及里（issue 1 只授权 20 字不含句号、issue 8 只授权 11 字不含前引号），
+   *     模型"在句后补一拍"时要么被逐字相等判死，要么写出"。。"这类重叠标点。
+   *   · 跨句提及（没有单独一句装得下）→ 保持**片段精度**：片段本身能逐字照抄，不会错位；
+   *     而放宽到"包含它的段落"在"一段=整章"的样本上会把整章变成可改范围（实测 before.txt 3148 字）。
+   *   · 结构化引用 / 显式 quote（默认）→ 始终**收紧到片段本身**：作者已经指定要动的就是这几个字，
+   *     放大只会把"只压列举、保留句式"变成"连句式一起交给模型"。
+   *
+   * @param {string} text 正文
+   * @param {string} fragment 引用片段
+   * @param {Array} spans buildSpans 的产物
+   * @param {{span_id?:string, widen?:boolean}} [opts] Host 显式指定的唯一跨度（作者/计划已经指明"就是这一处"）；
+   *        `widen` 为 true 时把"包含命中"放宽到包含它的最短跨度（优先句子）
+   * @returns {null|{ambiguous:true,count:number,starts:number[],fragment:string}
+   *                 |{start:number,end:number,span_id:string,paragraph_index:number,exact:boolean,host_given?:boolean,widened_to?:string}}
+   */
+  function locateFragment(text, fragment, spans, opts = {}) {
     const body = String(text == null ? '' : text);
     const frag = String(fragment == null ? '' : fragment).trim();
     if (!frag) return null;
-    const sentence = spans.find((sp) => sp.kind === 'sentence' && sp.text === frag);
+    const list = Array.isArray(spans) ? spans : [];
+    // ① Host 显式指定的跨度优先：作者/Host 已经指明是这一处，本函数不参与猜测。
+    const hostSpanId = opts && opts.span_id != null ? String(opts.span_id) : '';
+    if (hostSpanId) {
+      const hit = list.find((sp) => sp.span_id === hostSpanId);
+      if (!hit) return null;
+      return {
+        start: hit.start, end: hit.end, span_id: hit.span_id,
+        paragraph_index: hit.paragraph_index, exact: hit.text === frag, host_given: true,
+      };
+    }
+    // ② 唯一性核验：同一片段在正文里出现多次 → 定位歧义（绝不取第一处）。
+    const occurrences = [];
+    for (let at = body.indexOf(frag); at >= 0; at = body.indexOf(frag, at + 1)) occurrences.push(at);
+    if (occurrences.length > 1) {
+      return { ambiguous: true, count: occurrences.length, starts: occurrences.slice(0, 8), fragment: frag };
+    }
+    if (occurrences.length === 0) return null;
+    // 2026-10-11（S06-1 复核结论，**未采纳改动**）：曾尝试把唯一性判据从"字面片段出现次数"
+    // 扩展到"能装下该片段的候选跨度数"，但实测它把 E01-6/E01-6b/E01-6d/E01-6e/E05-f 五条既有断言判红：
+    //   原因是"段落跨度包含该片段"与"句子跨度包含该片段"会被计成两个候选，而
+    //   E01-6 的形状恰恰是"片段=某句真前缀"——它本来就该由下面的 `kind==='sentence' && text===frag`
+    //   精确命中（shift 必为 0），不该被判歧义。
+    // 同时穷举也表明：凡是"同一句真的出现在两处"的输入，②的字面出现次数核验已经拦住，
+    // 因此该扩展**没有可复现的真实缺口**，属于以回归为代价的过度收紧。故保持原判据。
+    const sentence = list.find((sp) => sp.kind === 'sentence' && sp.text === frag);
     if (sentence) return { start: sentence.start, end: sentence.end, span_id: sentence.span_id, paragraph_index: sentence.paragraph_index, exact: true };
-    const containing = spans
+    const containing = list
       .filter((sp) => (sp.kind === 'sentence' || sp.kind === 'paragraph') && sp.text.includes(frag))
-      .sort((a, b) => a.text.length - b.text.length)[0];
+      // 最短优先；**长度相同时优先句子**：整段就是一句话时若让段落抢先，同一处文字会同时存在
+      // `p1` 与 `p1s1` 两个身份 —— 提示词给一个、授权表登记另一个，就是 2026-10-10 那场越权误判的成因。
+      .sort((a, b) => (a.text.length - b.text.length) || (a.kind === 'sentence' ? -1 : 1))[0];
     if (!containing) return null;
-    // 收紧：只授权片段本身，而不是它所在的那一句/那一段。
     const rel = containing.text.indexOf(frag);
     if (rel < 0) return null;
+    if (opts.widen === true && containing.kind === 'sentence') {
+      // 放宽的边界**只到那一句话**（多句片段/跨句提及不放宽）：
+      // "包含"一旦退到段落，遇到"一段=整章"的样本就会把整章变成可改范围 —— 那不是修缺陷，是越权。
+      // 跨句提及保持片段精度：片段本身就能被逐字照抄，不存在"引号外标点被切掉"的错位。
+      return {
+        start: containing.start,
+        end: containing.end,
+        span_id: containing.span_id,
+        paragraph_index: containing.paragraph_index,
+        exact: containing.text === frag,
+        widened_to: containing.kind,
+      };
+    }
+    // 收紧：只授权片段本身，而不是它所在的那一句/那一段。
     return {
       start: containing.start + rel,
       end: containing.start + rel + frag.length,
@@ -130,16 +195,36 @@
       const wanted = String(f.suggested_action || '').trim();
       const op = PLAN_OPS.includes(wanted) ? wanted : 'replace';
       // 目标原文优先级：结构化引用 > 显式 quote > 问题描述里的引号片段。
+      // ⚠️ 2026-10-10（作者授权）：**来源决定授权口径**（见 locateFragment 的说明）——
+      //   结构化引用 / 显式 quote 是"作者已指定逐字目标"，保持片段精度；
+      //   问题描述里的「」只是**提及**（引号外的标点不在引用里），命中时放宽到所在整句。
       const candidates = [
         ...(Array.isArray(f.evidence) ? f.evidence.map((e) => String((e && e.quote) || '')).filter(Boolean) : []),
         String(f.quote || ''),
-        ...extractQuotedFragments(f.text),
-      ].filter(Boolean);
+      ].filter(Boolean).map((frag) => ({ frag, widen: false }))
+        .concat(extractQuotedFragments(f.text).map((frag) => ({ frag, widen: true })));
       let hit = null;
       let usedFragment = '';
-      for (const frag of candidates) {
-        const found = locateFragment(text, frag, spans);
-        if (found) { hit = found; usedFragment = frag; break; }
+      let ambiguous = null;
+      for (const cand of candidates) {
+        const found = locateFragment(text, cand.frag, spans, {
+          span_id: f.span_id || (Array.isArray(f.evidence) ? (f.evidence.find((e) => e && e.span_id) || {}).span_id : ''),
+          widen: cand.widen === true,
+        });
+        // 歧义候选**不**立刻放弃：换一个更长/更短但仍唯一的引文也许能定位到。
+        // 只有所有候选都歧义时才如实报 ambiguous_anchor（比 needs_scope 更准确：作者给了引用，是位置不唯一）。
+        if (found && found.ambiguous) { if (!ambiguous) ambiguous = found; continue; }
+        if (found) { hit = found; usedFragment = cand.frag; break; }
+      }
+      if (!hit && ambiguous) {
+        coverage.push({
+          issue_id: id,
+          status: 'ambiguous_anchor',
+          reason: `引用「${clip(ambiguous.fragment, 24)}」在正文里出现 ${ambiguous.count} 处：定位歧义，`
+            + '只有 Host 给出唯一 span/上下文标识才能改（本模块不猜第一处）',
+        });
+        unlocated.push({ issue_id: id, text: clip(f.text, 80), ambiguous: true, occurrences: ambiguous.count });
+        continue;
       }
       if (!hit) {
         coverage.push({ issue_id: id, status: 'needs_scope', reason: '问题里没有可逐字定位的原文引用：要么请作者指出原句，要么由 Host 显式扩大授权范围（本模块不自动放宽）' });
@@ -168,7 +253,7 @@
       hotspots.push({
         issue_id: id,
         op,
-        span: { start: hit.start, end: hit.end, span_id: hit.span_id, exact: hit.exact },
+        span: { start: hit.start, end: hit.end, span_id: hit.span_id, exact: hit.exact, widened_to: hit.widened_to || null },
         original,
         paragraph_index: hit.paragraph_index,
         read_only: { before: readOnlyBefore, after: readOnlyAfter },
@@ -228,6 +313,11 @@
       : null;
 
     const selectionHash = sha16(findings.map((f) => String(f.id == null ? '' : f.id)).sort().join('|'));
+    // 授权是否完整（E01-A）：只要有一个已选问题没能被**唯一、具体**地定位，
+    // 这个计划就只覆盖了一部分问题 —— 上层必须据此决定"能不能发付费修稿请求"，
+    // 而不是把"计划不全"悄悄当成"整章都可以改"。
+    const scopeIncomplete = unlocated.length > 0
+      || coverage.some((c) => c.status === 'needs_scope' || c.status === 'ambiguous_anchor');
     const plan = {
       schema_version: 1,
       plan_version: VERSION,
@@ -245,14 +335,76 @@
       dry_run: true,
       writes_to_disk: false,
       selection_hash: selectionHash,
+      // 计划是否覆盖了全部已选问题；false 表示"有一部分问题没能定位"（不是"授权更大"）。
+      scope_incomplete: scopeIncomplete,
       coverage_complete: coverage.every((c) => c.status !== 'dropped'),
     };
     plan.plan_hash = sha16(JSON.stringify({
       snapshot: plan.snapshot_id, base: plan.base_hash, sel: selectionHash,
       hotspots: hotspots.map((h) => `${h.issue_id}:${h.span.start}-${h.span.end}:${h.op}:${h.group_id}`),
       invariants,
+      scope_incomplete: scopeIncomplete ? 1 : 0,
     }));
     return plan;
+  }
+
+  /**
+   * 把计划编译成 **Host 授权表**（E01-B）——给协议执行器强制执行的许可清单，而不是写在提示词里的希望。
+   *
+   * 为什么必须有它：`planPatchApplication` 只检查"issue 属于已选"，无法回答
+   * "这个补丁引用了已选 issue，但它改的是**这一章的另一段**"。于是模型只要挑一个已选 issue，
+   * 就能改全章任意跨度（K2）。授权表把"issue → 允许改的确切跨度"变成 Host 侧数据。
+   *
+   * 匹配口径（执行器按顺序判）：
+   *   · span_id 相同；或
+   *   · start/end 与 Host 登记的完全一致；或
+   *   · `original` 与 Host 登记的**逐字原文**相等。
+   * 第三条是分段修稿（分片命名空间与整章不同）下仍然可判的关键：协议层已经保证
+   * `original` 与快照切片逐字相等，而本模块的 `locateFragment` 又保证被登记的原文在快照里**唯一可定位**，
+   * 因此"逐字相等"等价于"就是 Host 授权的那一处"，而不是近似匹配。
+   *
+   * op：默认放行 replace/delete 两种（同一个授权跨度上的"改"与"删"是同一授权范围；
+   * 协议里没有第三种操作）。`condense` 之类跨跨度语义不在这里 —— 它们必须由 Host 显式扩充跨度。
+   *
+   * @param {object|null} plan buildRevisionPlan 的产物（null = 没有计划）
+   * @returns {{authorized:object, protected:Array, context_only:Array, authorized_span_count:number, scope_complete:boolean, ...}}
+   */
+  function planAuthorization(plan) {
+    const p = plan && typeof plan === 'object' ? plan : {};
+    const hotspots = Array.isArray(p.hotspots) ? p.hotspots : [];
+    const authorized = {};
+    for (const h of hotspots) {
+      const key = String(h.issue_id);
+      const entry = {
+        span_id: h.span && h.span.span_id ? String(h.span.span_id) : '',
+        start: h.span ? Number(h.span.start) : NaN,
+        end: h.span ? Number(h.span.end) : NaN,
+        text: String(h.original == null ? '' : h.original),
+        // 片段级 span_id（形如 `p1s1~11`）不是 buildSpans 的原生 id，执行器靠
+        // `start/end + text` 与这段原文重建位置；段号一并登记，组合核验按段号归位。
+        paragraph_index: h.paragraph_index == null ? null : Number(h.paragraph_index),
+        ops: ['replace', 'delete'],
+      };
+      if (!authorized[key]) authorized[key] = [];
+      authorized[key].push(entry);
+    }
+    const incomplete = p.scope_incomplete === true
+      || (Array.isArray(p.unlocated_hotspots) && p.unlocated_hotspots.length > 0)
+      || (Array.isArray(p.coverage) && p.coverage.some((c) => c.status === 'needs_scope' || c.status === 'ambiguous_anchor'));
+    return {
+      plan_hash: String(p.plan_hash || ''),
+      selection_hash: String(p.selection_hash || ''),
+      snapshot_id: String(p.snapshot_id || ''),
+      base_hash: String(p.base_hash || ''),
+      authorized,
+      authorized_span_count: hotspots.length,
+      protected: [],
+      // 只读上下文由调用方（Host）另行下发 span id；计划本身不产生"可读不可改"的跨度，
+      // 这里留空而不是把 protected_spans 误当上下文（那会把"不得改"读成"可读"）。
+      context_only: [],
+      // true 才是"每个已选问题都拿到了确切授权"；false 时上层**不得**扩大成整章。
+      scope_complete: hotspots.length > 0 && !incomplete,
+    };
   }
 
   /** 作者改了勾选 → 旧计划（以及由它产出的候选）一律作废（§7 E05 通过条件）。 */
@@ -392,6 +544,7 @@
     PLAN_OPS,
     buildRevisionPlan,
     buildRevisionPatchPromptFromPlan,
+    planAuthorization,
     isPlanStale,
     planCoverageTable,
     candidateWithoutIssue,

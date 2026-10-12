@@ -52,8 +52,9 @@
 | **SE4** | 2026-10-08 第四批：一致性判据（事实锁 / 跨段整句重复 / 转场桥）+ 保护规则接线 + 允许人味 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **SE5** | 2026-10-08 第五批：叙事结构机械感（同形流程 / 时间轴 / 群众反应 / 镜头越界）+ P0 场景要求矛盾修复 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **SE6** | 2026-10-09 第六批：叙事性专项修复（E00—E07：局部补丁执行正确性 / 阶段化规则 / 审稿与选择保真 / 叙事诊断 / 编辑计划 / 可解释报告） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **SE7** | 2026-10-10 第七批：叙事审稿—局部修稿闭环的授权边界修复（《修复.md》E00—E07：选中问题 → 获准跨度 → 实际补丁不可越权） | ✅ 可独立回滚 |
 
-**可独立回滚的阶段：U、V、Z4、V1。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
+**可独立回滚的阶段：U、V、Z4、V1、SE7。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
 ## 二、逐阶段明细
 
@@ -338,8 +339,8 @@
   - .p1-baseline/fake-llm.mjs 被 .p1-baseline/golden-novel.mjs（验收工具，Z3）import——撤掉会让该工具失效
   - 文件 .p1-baseline/probe-cold-start.mjs 同时属于 S/Z2——改动改在同一批代码里，撤不干净
   - 文件 ai/harness-pool.mjs 同时属于 S/Z2——改动改在同一批代码里，撤不干净
+  - api-test-suite.mjs 被**生产代码** .narrative-repair-116/run-api-suite-isolated.mjs（SE7）import——撤掉会打断线上路径
   - debug-trace.js 被**生产代码** harness.js（P0/Z1）import——撤掉会打断线上路径
-  - debug-trace.js 被**生产代码** openviking-sync.js（D8/L/Z6）import——撤掉会打断线上路径
 - **说明**：本会话改动落在已被 P0–P6/D8 认领的共享文件里（server.js / public/app.js / harness.js / ai/policy.mjs / db.js），所以**不能单独回滚**：撤掉 openviking.js 会打断 server.js 的启动路径，撤掉 logger.js/debug-trace.js 会打断全仓日志与追踪。完整回滚用改动前的快照（data/backup-model-flash-*、data/backup-novice-guide-*、data/backup-batchD-*）。
 - **验收证据**：`.p1-baseline/test-policy-tiers.mjs`、`env-tools-test.mjs`、`.p1-baseline/test-harness-pool.mjs`、`.p1-baseline/mutation-check-harness-pool.mjs`、`docs/self-review-2026-09-18.md`
 - **本阶段认领的文件**（24 个）：
@@ -1025,12 +1026,12 @@
   - 文件 .p1-baseline/test-editing-rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-migration-idempotent.mjs 同时属于 R/Z6/SE6——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - ai/editing/narrative-review.mjs 被**生产代码** .narrative-repair-116/paid-eval-consistency.mjs（SE7）import——撤掉会打断线上路径
+  - ai/editing/narrative-review.mjs 被**生产代码** .narrative-repair-116/probe-review-records.mjs（SE7）import——撤掉会打断线上路径
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5）import——撤掉会打断线上路径
-  - ai/editing/narrative-scan.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5）import——撤掉会打断线上路径
-  - 文件 ai/editing/rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
 - **说明**：**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`； 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`）， `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`， 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`， 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）； ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价， Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）； ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）； ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）； ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）； ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）； ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。 `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、 `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*` 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级； 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。 ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`）， 故交付文档只写"机制已实现、文学效果待评测"。
 - **验收证据**：`docs/narrative-repair/implementation-report.md`、`docs/narrative-repair/test-report.md`、`docs/narrative-repair/e07-run-manifest.json`、`docs/narrative-repair/coverage-report.json`、`docs/narrative-repair/rollback.md`、`scripts/run-narrative-acceptance.mjs`
-- **本阶段认领的文件**（42 个）：
+- **本阶段认领的文件**（55 个）：
   - `.p1-baseline/test-editing-rules.mjs`
   - `.p1-baseline/test-migration-idempotent.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -1068,16 +1069,71 @@
   - `tests/narrative-repair/05-revision-plan.test.mjs`
   - `tests/narrative-repair/06-report.test.mjs`
   - `tests/narrative-repair/07-review-structure.test.mjs`
+  - `tests/narrative-repair/08-authorization.test.mjs`
+  - `tests/narrative-repair/09-information-truncation.test.mjs`
+  - `tests/narrative-repair/10-new-sample.test.mjs`
+  - `tests/narrative-repair/11-review-closure.test.mjs`
   - `tests/narrative-repair/fixtures/after.txt`
   - `tests/narrative-repair/fixtures/before.txt`
   - `tests/narrative-repair/fixtures/manifest.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-A01-information-truncation.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-A02-positive-compression.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-B01-out-of-scope-attack.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-B02-ambiguous-anchor.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-B03-plan-failed-no-widening.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-B04-legacy-in-new-job.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-B05-delete-noop-illegal.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/F-C01-narrative-contrast.json`
+  - `tests/narrative-repair/fixtures/new-3751-spring/manifest.json`
   - `tests/narrative-repair/harness.mjs`
   - `叙事性专项修复.md`
 
+### SE7 · 2026-10-10 第七批：叙事审稿—局部修稿闭环的授权边界修复（《修复.md》E00—E07：选中问题 → 获准跨度 → 实际补丁不可越权）
+
+- **回滚方式**：可独立回滚
+- **说明**：**只收紧授权、不改模型契约**：新增 `planAuthorization`（计划 → Host 授权表）、`planPatchApplication(opts.authorization)`（授权跨度白名单 + protected 拒绝）、`locateFragment` 的定位歧义拒绝（`ambiguous_anchor`）、`decodePatchOutput(raw,{expectedSchemaVersion,allowLegacy})` 的"新任务不吃 legacy"、以及 `deletionRisks` 的 `information_truncation`（soft 码，只提醒不硬拦）。 ⚠️ 回滚口径：本批**自身的**新增物（`docs/narrative-repair-116/`、`.narrative-repair-116/`、 `scripts/run-narrative-repair-116.mjs`）可独立撤回；而上面的代码改动落在 `public/app.js`、`public/revision-patch.js`、`public/revision-plan.js`、`public/patch-safety.js`、 `frontend-test.mjs`、`scripts/test-narrative-repair.mjs` —— 这些文件由 SE/SE4/SE5/SE6 等更早阶段共同认领， 撤回时必须与那些阶段一起处理（见 `docs/narrative-repair-116/rollback.md` §2 的按责任单元回滚）。 ⚠️ 已知边界：真实模型语义审稿与文学效果 A/B 未执行（`SKIPPED: paid_evaluation_not_authorized`）； 分段修稿的授权表按"逐字原文"匹配（分片与整章的 span 命名空间不同），已由 08/09 套件取证。
+- **验收证据**：`docs/narrative-repair-116/source-map.md`、`docs/narrative-repair-116/baseline.json`、`docs/narrative-repair-116/implementation-report.md`、`docs/narrative-repair-116/test-report.md`、`docs/narrative-repair-116/rollback.md`、`scripts/run-narrative-repair-116.mjs`
+- **本阶段认领的文件**（35 个）：
+  - `.narrative-repair-116/after-console.txt`
+  - `.narrative-repair-116/after-run.json`
+  - `.narrative-repair-116/baseline-console.txt`
+  - `.narrative-repair-116/baseline-run.json`
+  - `.narrative-repair-116/it-review-consistency.json`
+  - `.narrative-repair-116/it-review-consistency.mjs`
+  - `.narrative-repair-116/mutate.mjs`
+  - `.narrative-repair-116/paid-eval-analyze.mjs`
+  - `.narrative-repair-116/paid-eval-build-prompts.mjs`
+  - `.narrative-repair-116/paid-eval-consistency.json`
+  - `.narrative-repair-116/paid-eval-consistency.mjs`
+  - `.narrative-repair-116/paid-eval-harness.mjs`
+  - `.narrative-repair-116/paid-eval-prompts.json`
+  - `.narrative-repair-116/paid-eval-s01-analysis.json`
+  - `.narrative-repair-116/paid-eval-s01.json`
+  - `.narrative-repair-116/paid-eval-s01.mjs`
+  - `.narrative-repair-116/paid-eval-step1.json`
+  - `.narrative-repair-116/paid-eval-step1.mjs`
+  - `.narrative-repair-116/probe-consistency-fp.mjs`
+  - `.narrative-repair-116/probe-perception-candidates.mjs`
+  - `.narrative-repair-116/probe-review-records.mjs`
+  - `.narrative-repair-116/probe-s06-plural.mjs`
+  - `.narrative-repair-116/probe-t16-merge.mjs`
+  - `.narrative-repair-116/revision-patch.js.mutation-backup`
+  - `.narrative-repair-116/run-api-suite-isolated.mjs`
+  - `docs/narrative-repair-116/baseline.json`
+  - `docs/narrative-repair-116/comparison-report.md`
+  - `docs/narrative-repair-116/execution-state.json`
+  - `docs/narrative-repair-116/final-summary.md`
+  - `docs/narrative-repair-116/implementation-report.md`
+  - `docs/narrative-repair-116/issue-patch-coverage.json`
+  - `docs/narrative-repair-116/rollback.md`
+  - `docs/narrative-repair-116/source-map.md`
+  - `docs/narrative-repair-116/test-report.md`
+  - `scripts/run-narrative-repair-116.mjs`
+
 ## 三、归属核对
 
-- 真实改动集：**503** 个文件
-- 未被任何阶段认领：**96** 个
+- 真实改动集：**568** 个文件
+- 未被任何阶段认领：**113** 个
 
 ⚠️ 以下改动没有归属——没人能说清怎么回滚它们：
   - `.p1-baseline/_split-own-diff-20261006.mjs`
@@ -1170,9 +1226,26 @@
   - `docs/deai-trace-baseline-20261002.md`
   - `docs/draft-dismiss-20261004.md`
   - `docs/empty-guard-no-exit-20261004.md`
+  - `docs/review-closure-116/baseline.json`
+  - `docs/review-closure-116/diff-audit.md`
+  - `docs/review-closure-116/execution-state.json`
+  - `docs/review-closure-116/final-summary.md`
+  - `docs/review-closure-116/implementation-report.md`
+  - `docs/review-closure-116/issue-coverage.json`
+  - `docs/review-closure-116/paid-eval-20261011.md`
+  - `docs/review-closure-116/recon-S04-S08.md`
+  - `docs/review-closure-116/review-quality-report.md`
+  - `docs/review-closure-116/rollback.md`
+  - `docs/review-closure-116/source-map.md`
+  - `docs/review-closure-116/supplement-round-20261011.md`
+  - `docs/review-closure-116/t-matrix.md`
+  - `docs/review-closure-116/test-report.md`
+  - `docs/review-closure-116/verify-round-20261011.md`
   - `docs/review-merge-empty-body-20261006.md`
   - `docs/review-merge-force-20261006.md`
   - `docs/save-incident-20261002.md`
   - `docs/spawn-eperm-20261002.md`
   - `docs/wiring-fix-20261008.md`
   - `scripts/cleanup-stale-blueprints-20261006.mjs`
+  - `修复.md`
+  - `修改方案.md`

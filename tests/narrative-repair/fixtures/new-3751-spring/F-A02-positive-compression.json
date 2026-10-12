@@ -1,0 +1,17 @@
+{
+  "id": "F-A02",
+  "kind": "positive_compression",
+  "body": "岳宸炎在台阶下面等王磊。等了十几分钟，王磊才从侧门挤出来，额头上是汗，耳机挂在脖子上晃，手里也捏着一张登记表。",
+  "finding": {
+    "id": "A02",
+    "text": "删掉重复出现的耳机状态：把「耳机挂在脖子上晃，」去掉",
+    "quote": "耳机挂在脖子上晃，"
+  },
+  "patch": { "op": "delete", "replacement": "", "issue_ids": ["A02"] },
+  "expected": {
+    "signal": null,
+    "hard": false,
+    "kept": ["等了十几分钟", "从侧门挤出来", "登记表"],
+    "verdict": "允许的局部精简：不丢等待时长/出场/登记表；不得据此宣称整章人物塑造已改善"
+  }
+}

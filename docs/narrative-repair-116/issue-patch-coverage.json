@@ -1,0 +1,117 @@
+{
+  "task_id": "narrative-repair-116",
+  "generated_at": "2026-10-10",
+  "base_commit": "6f9a14b0d1f7e11117b68d0536aee5ca238969cd",
+  "target_version": "1.1.6",
+  "note": "逐条问题 → 选中/授权跨度 → 补丁 → 处置 → 回归用例。授权跨度一律以 Host 计划登记为准（issue_id 与稳定编号同源）。",
+  "rows": [
+    {
+      "issue_id": "A01",
+      "source": "用户新样本摘录（《修复.md》§1.1）",
+      "review_id": null,
+      "selected_by_author": "hypothesis（本轮不写回真实作品）",
+      "authorized_span": { "kind": "fragment", "span_id": "p1s1~11", "original": "职业方向——材料修复、灵植培育、检测辅助。", "op": ["replace"] },
+      "patch_applied_in_test": { "op": "replace", "replacement": "职业方向。", "issue_ids": ["A01"] },
+      "disposition_status": "patched（test-only）",
+      "disposition_reason": "协议层合法；修后核验给出 information_truncation（soft）：提醒「只剩孤立栏目名」并点名丢失内容，不硬拦、不自动回滚",
+      "verification": "E03-1 / E03-1b / E03-1c / E03-1d / E03-1e / E03-3b / T16",
+      "residual": "文学效果未评测（未做真实模型 A/B）"
+    },
+    {
+      "issue_id": "A02",
+      "source": "用户新样本摘录（《修复.md》§1.1）",
+      "review_id": null,
+      "selected_by_author": "hypothesis（合理精简候选）",
+      "authorized_span": { "kind": "fragment", "span_id": "p1s2~18", "original": "耳机挂在脖子上晃，", "op": ["delete"] },
+      "patch_applied_in_test": { "op": "delete", "replacement": "", "issue_ids": ["A02"] },
+      "disposition_status": "patched（test-only）",
+      "disposition_reason": "不丢等待时长/出场/登记表；无 information_truncation、无硬码命中",
+      "verification": "E03-2 / E03-2b / T17",
+      "residual": "不得据此宣称整章人物塑造已改善"
+    },
+    {
+      "issue_id": "I-甲（F-B01 安全攻击）",
+      "source": "《修复.md》§10 Fixture F-B01",
+      "review_id": null,
+      "selected_by_author": "I-甲",
+      "authorized_span": { "kind": "paragraph", "span_id": "p1", "original": "甲说：“今天别出门。”", "op": ["replace", "delete"] },
+      "patch_attempted": { "issue_ids": ["I-甲"], "span_id": "p2", "op": "replace", "original": "乙把围巾放在椅子上。" },
+      "disposition_status": "blocked",
+      "disposition_reason": "out_of_scope：补丁落在该 issue 未授权的跨度上；原文逐字未变；未产生整章请求",
+      "verification": "E01-1 / E01-1c / E01-1d",
+      "residual": null
+    },
+    {
+      "issue_id": "I-低（F-B02 重复 anchor）",
+      "source": "《修复.md》§10 Fixture F-B02",
+      "review_id": null,
+      "selected_by_author": "I-低",
+      "authorized_span": null,
+      "patch_attempted": null,
+      "disposition_status": "ambiguous_anchor",
+      "disposition_reason": "引用在正文出现 2 处：不产生热点、不猜第一处；只有 Host 给出唯一 span_id 才放行",
+      "verification": "E01-2 / E01-2b / E01-2c",
+      "residual": "前端暂无「让作者点选具体那一处」的交互（属后续可选增强，未在本轮范围）"
+    },
+    {
+      "issue_id": "M-1（F-B03 plan 失败）",
+      "source": "《修复.md》§10 Fixture F-B03",
+      "review_id": null,
+      "selected_by_author": "M-1",
+      "authorized_span": null,
+      "patch_attempted": null,
+      "disposition_status": "needs_scope",
+      "disposition_reason": "无可逐字定位的引用 → 授权表为空（scope_complete=false）→ 不发付费修稿、不下发整章跨度",
+      "verification": "E01-3 / E01-3b / E01-3c / E01-3d / 116E-a / 116E-b",
+      "residual": "作者需要在审稿里指出原句（或用带逐字引用的结构化审稿）后重试"
+    },
+    {
+      "issue_id": "F-B04（新任务收到 legacy）",
+      "source": "《修复.md》§10 Fixture F-B04",
+      "review_id": null,
+      "selected_by_author": "q1（测试）",
+      "authorized_span": null,
+      "patch_attempted": "{\"patches\":[{\"anchor\":\"他低下头。\",\"revised\":\"他低着头。\"}]}",
+      "disposition_status": "blocked",
+      "disposition_reason": "incompatible_legacy_format：新 v2 作业不接受旧格式自动应用（原文逐字未变）；legacy 仍可由默认或 allowLegacy 独立读取",
+      "verification": "E01-4 / E01-4b / E01-4c / E01-4d / 58ad2",
+      "residual": null
+    },
+    {
+      "issue_id": "N05（显式 delete，已授权）",
+      "source": "既有专项样本（tests/narrative-repair/01）",
+      "review_id": null,
+      "selected_by_author": "N05",
+      "authorized_span": { "kind": "sentence", "span_id": "p2s1", "original": "然后她不一样了。", "op": ["delete"] },
+      "patch_applied_in_test": { "op": "delete", "replacement": "", "issue_ids": ["N05"] },
+      "disposition_status": "patched",
+      "disposition_reason": "授权跨度上的显式删除真正生效，边界之外零字符变化",
+      "verification": "E01-5 / E01-5c",
+      "residual": null
+    },
+    {
+      "issue_id": "x + y（组合删除）",
+      "source": "既有专项样本（tests/narrative-repair/01 P08 形状）",
+      "review_id": null,
+      "selected_by_author": "x, y（两条都在各自授权跨度内）",
+      "authorized_span": { "kind": "paragraph", "span_id": "p1|p2", "original": "队伍前面那个女生走上台阶。|另一个女生从通道走出来。", "op": ["replace"] },
+      "patch_applied_in_test": "两条 replace",
+      "disposition_status": "partially_blocked",
+      "disposition_reason": "单条各自安全，组合后删光「她」的先行语 → reference_anchor 硬码；候选保留但不得称「已验证」",
+      "verification": "E01-5b",
+      "residual": null
+    }
+  ],
+  "coverage_summary": {
+    "total_items": 8,
+    "planned_test_only": 7,
+    "blocked_by_authorization": 2,
+    "needs_scope_or_ambiguous": 2,
+    "already_satisfied_items": [
+      "operation_key 幂等（P11c + server.js adoption_operations）",
+      "取消后晚到响应不写回（app.js runHarnessJob cancelled 守卫）",
+      "阶段化规则编译与审计（03-stage-rules 17 条）",
+      "四类叙事诊断的四类 id 与 not_run 口径（04-narrative-scan 24 条）"
+    ]
+  }
+}

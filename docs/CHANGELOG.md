@@ -5,7 +5,39 @@
 
 ---
 
-### 🛠️ 最近更新（2026-10-08 · **v1.1.6** 实验版：叙事结构机械感）
+### 🛠️ 最近更新（2026-10-11 · **v1.1.7** 实验版：审稿—局部修稿闭环硬化）
+
+**这就是当前版本。** 上一版解决"生成端为什么把结构写成机械的"；这一版解决**从审稿到落笔这条链路上，判断与授权是否真的守得住**。
+
+两轮专项（`修复.md` 的 E00–E07、`修改方案.md` 的 E00–E06）都指向同一件事：审稿报告说对了话，
+不代表修稿动作被正确约束。本轮把 S01–S09 九个风险点逐个复现，**其中多数已在 1.1.6 满足**
+（S02/S03/S05/S07/S08/S09 判 `already_satisfied`），只对真实缺口做最小修复。
+
+- **红线扫描改成候选信号**（`public/app.js` `buildAIReviewPrompt` ~10980-10990）：命中不再"必须进 issues"，
+  改为逐条判断 + `not_applicable` 出口 + `counterevidence` 反例通道。`微微` 在合法语境下确定性层 0 候选，
+  被判 `not_applicable` 的命中**仍保留在报告里**且 `auto_eligible=false`
+- **报告自洽检查不再滥报**（`ai/editing/narrative-review.mjs` 新增 `checkReportConsistency` 257 + `withConsistency` 326）：
+  判据原是"绝对措辞 + 同话题 → `needs_calibration`"，**实测在 12 份真实报告上误报 6 份**；
+  已改为**只有可确证的"绝对措辞 × 正文反例"才置 `needs_calibration`**（并给出反例原句）；
+  优点与问题的字面话题重叠降级为 `advisories`（建议核对，**不改 status、不断言矛盾**）；不同维度不报。
+  **不新增模型轮**
+- **授权 fail-closed 硬化**（`public/revision-patch.js` `ERROR_CODES` 61 + `runRevisionPipeline` 1414-1427）：
+  期望补丁协议 v2 却缺授权表 → `authorization_required`，**正文一字不动**；
+  未传计划时不再下发"整章跨度"目录（`S04-1a/1b/1c`），阴性对照 `allowCatalogueWithoutPlan:true` 恢复旧语义
+- **两个候选诊断**（`ai/editing/narrative-scan.mjs` `DIAGNOSTICS`/`DIAGNOSTIC_META` 26/55 + 判据 186-244）：
+  `reaction_causality`、`focalization_limit` —— 自带反证通道，**只报线索、不定罪、不带 delete**
+- **差异预览给出净收益**（`public/app.js` `showReviewDiff` 形参 + 12442/12465）：
+  显示 `before → after / net_delta / remaining_to_target`，达标与否分别措辞
+- **审稿报告回带自洽结论**（`server.js` 9052-9054）：`consistency` / `consistency_conflicts`
+  随 `report_json` 落库，**无需迁移**
+- **验证**（零计费）：`tests/narrative-repair/` **11 套件 240 条断言 0 失败**（含 9 条阴性对照）
+  + `frontend-test.mjs` ALL PASS；`scripts/test-narrative-repair.mjs` 增加沙箱禁管道时的同进程回退
+  （断言与退出码判定不变）。证据见 [docs/review-closure-116](review-closure-116/final-summary.md)
+  与 [docs/narrative-repair-116](narrative-repair-116/final-summary.md)
+- **能力边界（如实说）**：**文学效果提升标 `not_run`** —— 未获付费评测授权，
+  离线断言只证明工程行为，不构成"写得更好"的证据
+
+### 🛠️ 之前更新（2026-10-08 · **v1.1.6** 实验版：叙事结构机械感）
 
 **这就是当前版本。** 上一版解决"改字时别改坏事实"；这一版解决**生成端为什么把结构写成机械的**。
 作者对第一章《觉醒日》的结构层审稿结论是一句话：**「AI 太认真地把所有事情都交代清楚了」**——
