@@ -1636,6 +1636,42 @@ async function refreshChapterRecovery(chapterId) {
     state.chapterBlueprints = [];
   }
   refreshRecoveryBar(id);
+  // 2026-10-13：本章既然已经在取可恢复任务，就顺手把"还在跑的那条"接回来。
+  // 为什么不能只留一个按钮：任务执行体早已不绑 HTTP 请求（见 server.js 的作业设施），
+  // 刷新**不会**杀掉它 —— 丢的是"页面与它之间的联系"（进度、轮询、完成后的落地回调）。
+  // 作者不点那个按钮，就永远看不到结果，观感就是"刷新就断"。自动接回补的正是这条联系。
+  autoResumeChapterJob();
+}
+
+/**
+ * 刷新后自动接回本章仍在跑的任务（2026-10-13）。
+ *
+ * 边界（都必须守住，否则"自动"会变成一种打扰）：
+ *   · **一次只接一条**，且仅当当前没有 AI 任务在跑（复用既有互斥锁 `aiTaskRunning`，不新造状态）；
+ *   · 只接 `resumable` 且状态为 `queued`/`running` 的 —— `done`/`failed`/`interrupted` 一律不碰，
+ *     它们要的是**作者裁决**（取回结果 / 重试 / 放弃），自动取回会把未审阅的产出悄悄落进正文；
+ *   · 同一条 job 在一次页面生命里只自动接**一次**（记在 sessionStorage）；
+ *     否则 `render → 接回 → 完成回调里再 render` 会反复触发；
+ *   · 失败**不弹错、不重试**：自动路径要安静，作者仍可用原有的「接回进度」按钮走显式路径。
+ */
+function autoResumeChapterJob() {
+  try {
+    if (state.aiTaskRunning) return;
+    const jobs = Array.isArray(state.chapterJobs) ? state.chapterJobs : [];
+    const running = jobs.filter((j) => j && j.resumable === true && (j.status === 'running' || j.status === 'queued'));
+    if (!running.length) return;
+    // 服务端按 updated_at 倒序返回，第一条即最近在跑的那条。
+    const job = running[0];
+    if (!job.id) return;
+    const key = `ns_auto_resume:${job.id}`;
+    let seen = null;
+    try { seen = sessionStorage.getItem(key); } catch (_) { /* 存储不可用：退化为"每次加载尝试一次" */ }
+    if (seen) return;
+    try { sessionStorage.setItem(key, '1'); } catch (_) { /* 同上 */ }
+    toast('检测到本章有 AI 任务仍在运行，正在自动接回进度…');
+    // 接回本身是既有函数：它自己会在完成时按 kind 落地，并在失败时给出可读提示。
+    resumeHarnessJob(job.id).catch(() => { /* 自动路径静默；失败时按钮仍在 */ });
+  } catch (_) { /* 自动接回永不阻塞渲染 */ }
 }
 
 /**

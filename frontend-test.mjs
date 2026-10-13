@@ -949,6 +949,7 @@ globalThis.__probe = {
   contentHashOf, classifyChapterLength, writingPolicyLines, writingStageAudit,
   WRITING_POLICY_FALLBACK_RULES, WRITING_POLICY_FALLBACK_VERSION,
   pollHarnessJob, showAITaskProgress, runHarnessJob, handleAction,
+  autoResumeChapterJob, resumeHarnessJob,
   ATTRIBUTIONS, renderThanks, AI_TABS,
   loadEditRules, renderEditRulesCard, collectEditSelection, saveEditRules, scanEditRules, renderEditScanHtml,
   loadAuthorStyle, renderAuthorStyleCard, authorIntentRow, openAuthorSampleModal, saveAuthorSample, toggleAuthorSample, deleteAuthorSample, analyzeAuthorProfile, saveAuthorIntents,
@@ -4620,6 +4621,86 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   P.state.chapters = savedChapters;
   P.state.chapterDraft = savedDraft;
   P.state.chapterReview = savedReview;
+}
+
+// --- 15d-2) 刷新后**自动**接回在跑的任务（2026-10-13）---
+// 背景：任务执行体早已不绑 HTTP 请求（server.js 的作业设施），刷新不会杀它，
+// 但页面与它之间的联系会丢（进度 / 轮询 / 完成后的落地回调全在页面内存里）。
+// 旧行为只给一个「接回进度」按钮，作者不点就永远看不到结果 —— 观感就是"刷新就断"。
+// 判据：自动接回必须**安静且克制**：只在没有任务在跑时、只接还在跑的、同一条只接一次。
+{
+  const savedApi = sandbox.api;
+  const savedToast = sandbox.toast;
+  const savedJobs = P.state.chapterJobs;
+  const savedRunning = P.state.aiTaskRunning;
+  const savedChapterId = P.state.currentChapterId;
+
+  const runningJob = { id: 'job-auto-1', chapter_id: 121, kind: 'prose', stage: 'AI 写作', status: 'running', resumable: true, has_output: false };
+  const queuedJob = { id: 'job-auto-2', chapter_id: 121, kind: 'prose', stage: 'AI 写作', status: 'queued', resumable: true, has_output: false };
+  const doneJob = { id: 'job-auto-3', chapter_id: 121, kind: 'prose', status: 'done', resumable: false, has_output: true };
+  const interruptedJob = { id: 'job-auto-4', chapter_id: 121, kind: 'prose', status: 'interrupted', resumable: false, has_output: false };
+
+  const probeReattach = async (jobs, { aiRunning = false } = {}) => {
+    const hits = [];
+    sandbox.api = async (path, opts) => {
+      hits.push(String(path));
+      if (String(path).includes('/harness/recovered')) {
+        // 只回一条可接回的任务；其余字段按服务端形状给足。
+        return { job: { id: 'job-auto-1', chapter_id: 121, kind: 'prose', status: 'running', resumable: true, chapter_id: 121 } };
+      }
+      return null;
+    };
+    sandbox.toast = () => {};
+    P.state.chapterJobs = jobs;
+    P.state.aiTaskRunning = aiRunning;
+    P.state.currentChapterId = 121;
+    try { sandbox.sessionStorage.clear(); } catch (_) { /* 沙箱存储不可用则跳过 */ }
+    const fn = P.autoResumeChapterJob;
+    if (typeof fn !== 'function') return { missing: true, hits };
+    await fn();
+    // 让 fire-and-forget 的接回有机会发出请求
+    await new Promise((r) => setTimeout(r, 0));
+    return { missing: false, hits };
+  };
+
+  const onlyRunning = await probeReattach([runningJob, doneJob, interruptedJob]);
+  check('AR-1 刷新后本章有「在跑」的任务 → 自动发起接回（不再等作者点按钮）',
+    !onlyRunning.missing && onlyRunning.hits.some((u) => u.includes('/harness/recovered')),
+    JSON.stringify(onlyRunning.missing ? 'autoResumeChapterJob 不存在' : onlyRunning.hits.slice(0, 4)));
+
+  const quiet = await probeReattach([doneJob, interruptedJob]);
+  check('AR-2 阴性对照：只有「已完成 / 已中断」的任务 → 不自动接（那要作者裁决：取回 / 重试 / 放弃）',
+    !quiet.missing && !quiet.hits.some((u) => u.includes('/harness/recovered')),
+    JSON.stringify(quiet.hits.slice(0, 4)));
+
+  const busy = await probeReattach([runningJob], { aiRunning: true });
+  check('AR-3 阴性对照：已有 AI 任务在跑 → 不抢锁、不自动接（复用既有互斥语义，不新造状态）',
+    !busy.missing && !busy.hits.some((u) => u.includes('/harness/recovered')),
+    JSON.stringify(busy.hits.slice(0, 4)));
+
+  // 同一条 job 在一次页面生命里只自动接一次：否则 render → resume → render 会反复触发。
+  const twice = await probeReattach([runningJob]);
+  const firstHits = twice.hits.filter((u) => u.includes('/harness/recovered')).length;
+  P.state.chapterJobs = [runningJob];
+  P.state.aiTaskRunning = false;
+  if (typeof P.autoResumeChapterJob === 'function') await P.autoResumeChapterJob();
+  await new Promise((r) => setTimeout(r, 0));
+  const secondHits = twice.hits.filter((u) => u.includes('/harness/recovered')).length;
+  check('AR-4 同一条任务只自动接回一次（否则 render→接回→render 会反复触发）',
+    !twice.missing && firstHits === 1 && secondHits === 1,
+    JSON.stringify({ firstHits, secondHits }));
+
+  const many = await probeReattach([runningJob, queuedJob]);
+  check('AR-5 同时有多条在跑时只接**一条**（不并发抢模型槽位）',
+    !many.missing && many.hits.filter((u) => u.includes('/harness/recovered')).length === 1,
+    JSON.stringify(many.hits.slice(0, 4)));
+
+  sandbox.api = savedApi;
+  sandbox.toast = savedToast;
+  P.state.chapterJobs = savedJobs;
+  P.state.aiTaskRunning = savedRunning;
+  P.state.currentChapterId = savedChapterId;
+  try { sandbox.sessionStorage.clear(); } catch (_) { /* 同上 */ }
 }
 
 // --- 15e) 第三处（同一形状的最后一个出口）：🔍 上次审稿 那一条 ---
