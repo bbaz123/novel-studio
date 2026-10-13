@@ -49,6 +49,17 @@
     STALE: 'stale',
     SAFETY_BLOCKED: 'safety_blocked',
     SAFETY_UNAVAILABLE: 'safety_unavailable',
+    /**
+     * 2026-10-13（T33，《0731 增补方案》§2 P0-A）：理由与它声称处理的问题对不上。
+     *
+     * 事故形态（R06）：#6 号码纸动作的补丁，理由却写的是 #9 深海母神角色卡的时点。
+     * 原实现把补丁带的理由原样当成"已改理由"渲染，作者会据此相信一个错误的因果说明 ——
+     * 比没有理由更糟，因为它看起来可信。
+     *
+     * 注意：这不是"补丁被拒"的终态，而是**该理由不得显示为可信依据**的标记。
+     * 补丁本身照常按跨度与 ops 校验应用（理由错配 ≠ 改错了地方）。
+     */
+    REASON_UNVERIFIED: 'reason_unverified',
     UNSUPPORTED_MAPPING: 'unsupported_mapping',
     BUDGET_EXHAUSTED: 'budget_exhausted',
     CANCELLED: 'cancelled',
@@ -61,7 +72,100 @@
      * （审计状态缺失时朝"放行"方向出错）。现在改为 fail-closed，正文一个字符都不动。
      */
     AUTHORIZATION_REQUIRED: 'authorization_required',
+    /**
+     * 2026-10-13（P0-B 第三重授权）：跨度与逐字原文都对了，但**这个 op 不在该条授权里**。
+     *
+     * 为什么需要独立的码：授权表一直带着 `ops` 字段（`08-authorization.test.mjs:51` 就在传
+     * `ops:['replace','delete']`），可引擎**从未读过它** —— 于是"授权了这个跨度"被悄悄
+     * 放大成"这个跨度上想做什么都行"。`delete` 落到只授权 `replace` 的跨度上就是这种放大。
+     * 归到 out_of_scope 会丢失"哪一重授权没过"的信息，作者无法区分
+     * "你改的不是我批的那段"与"我批了这段、但没批这种改法"。
+     */
+    OP_NOT_AUTHORIZED: 'op_not_authorized',
   };
+
+  /**
+   * 从一段文字里取出它**显式引用**的 issue 编号（2026-10-13，T33）。
+   *
+   * 只认带编号标记的两种写法：`#6`、`问题6`。为什么必须带标记：
+   *   正文与理由里到处都是数字（"改了 2 处""第 3 句"），裸数字会把正常理由判成错配，
+   *   而这条判据的代价是"作者看到一个不可信的理由"，误报会直接损害可信度。
+   *
+   * 为什么不用全局正则字面量：`/g` 的 `lastIndex` 会在多次调用之间残留，
+   *   导致**偶发漏检**（本文件第三次踩"有状态正则"的坑，见 gradeBefore 的 match 事件）。
+   */
+  function referencedIssueIds(text) {
+    const ids = new Set();
+    const re = /(?:\uFF03|#)\s*([0-9A-Za-z\u4e00-\u9fa5_-]{1,12})|\u95ee\u9898\s*([0-9A-Za-z\u4e00-\u9fa5_-]{1,12})/g;
+    let m = re.exec(String(text == null ? '' : text));
+    while (m) {
+      ids.add(String(m[1] || m[2]));
+      m = re.exec(String(text == null ? '' : text));
+    }
+    return ids;
+  }
+
+  /**
+   * 判定一条理由是否与它声称处理的问题对不上（T33）。
+   *
+   * 只做**可判定的那一半**：理由里显式引用的编号不属于本补丁/本处置的 issue 集合时，
+   * 该理由不得显示为可信依据。不做语义相似度判断 —— 那既不可离线断言，
+   * 也会把"模型用了不同措辞"误判成错配。
+   *
+   * @returns {{ok:boolean, foreign:string[]}} foreign = 被引用的、不属于本 issue 集合的编号
+   */
+  function checkReasonBinding(reason, ownIssueIds) {
+    const text = String(reason == null ? '' : reason).trim();
+    if (!text) return { ok: true, foreign: [] };
+    const own = new Set((ownIssueIds || []).map((x) => String(x)));
+    const foreign = [...referencedIssueIds(text)].filter((id) => !own.has(id));
+    return { ok: foreign.length === 0, foreign };
+  }
+
+  /**
+   * 修后核验：`issue_coverage` 候选（《0731 增补方案》§4）。
+   *
+   * 覆盖表说某个问题 `patched` / `partially_resolved`，但它当初的**逐字证据**在修后正文里
+   * 仍然原样存在 —— 这时"已解决"这个结论站不住，必须作为**候选**如实列出。
+   * 这正是方案里 R05 的形态（"假装没看见"改成"没人再看他"之后，陌生人那句通用安慰仍在）。
+   *
+   * 为什么是候选而不是阻断：证据句可能被**有意**保留（改了别处，或那句话本身还承载别的功能）。
+   * 判据只做可判定的那一半（逐字仍在 / 已不在），不做语义相似度 —— 与 reason_unverified 同一口径。
+   *
+   * 为什么设最小长度：短句（"嗯。""好。"）在章内反复出现属正常节奏，
+   * 拿它当"问题仍在"的证据会持续误报；而误报的代价是作者不再看这份清单。
+   * 4 字是实测定的下限：R05 的真实证据句「假装没看见」是 5 字，必须保留；
+   * 而"嗯。""他不知道。"（2–5 字的应答/常规叙述）不该触发。第一版设 6 字，
+   * 结果把 5 字的真实证据一起滤掉了（由 IC-a 断言当场抓到）。
+   */
+  const MIN_COVERAGE_QUOTE_CHARS = 4;
+  function issueCoverageCandidates({ issues, coverage, revisedText } = {}) {
+    const text = String(revisedText == null ? '' : revisedText);
+    const cov = new Map((Array.isArray(coverage) ? coverage : []).map((c) => [String(c && c.issue_id), c]));
+    const candidates = [];
+    if (text) {
+      for (const item of (Array.isArray(issues) ? issues : [])) {
+        const id = String(item && item.id != null ? item.id : '');
+        if (!id) continue;
+        const c = cov.get(id);
+        if (!c || (c.status !== 'patched' && c.status !== 'partially_resolved')) continue;
+        const quotes = (Array.isArray(item.quotes) ? item.quotes : [item.quote])
+          .map((q) => String(q == null ? '' : q).trim())
+          .filter((q) => q.length >= MIN_COVERAGE_QUOTE_CHARS);
+        const still = quotes.filter((q) => text.includes(q));
+        if (!still.length) continue;
+        candidates.push({
+          issue_id: id,
+          status: c.status,
+          quote: still[0],
+          still_present: still.length,
+          note: `本条声称已处理（${c.status}），但它当初的逐字证据在修后正文里仍原样存在`
+            + `${still.length > 1 ? `（共 ${still.length} 处）` : ''}：请确认这一条是否真的解决了。`,
+        });
+      }
+    }
+    return { candidates, count: candidates.length };
+  }
 
   // ── 一、严格 JSON ──────────────────────────────────────────────────────────
   /**
@@ -497,6 +601,42 @@
       const replacementRaw = legacy ? pickField(p, ['revised', 'replacement', 'new']) : pickField(p, ['replacement']);
       const opRaw = 'op' in p ? p.op : (legacy ? undefined : undefined);
 
+      // ⚠️ 顺序很重要：`op` 必须在"original 非空"检查**之前**解析出来，
+      // 因为 `insert` 的 original 按定义就是空串（零宽插入点）。
+      // 旧实现在这里就先要求非空，等于从语法上封死了插入 —— 这正是 R07 无合法路径的原因。
+      let op = opRaw;
+      if (op === undefined || op === null) op = 'replace';
+      if (op !== 'replace' && op !== 'delete' && op !== 'insert') {
+        opError(errors, 'unknown_op', `${at}.op`, `未知操作：${JSON.stringify(opRaw)}（只接受 replace / delete / insert）`);
+        dropped += 1;
+        return;
+      }
+
+      if (op === 'insert') {
+        // 2026-10-13（P0-B / R07）：零宽插入。四道约束，缺一不可 ——
+        //   ① original 必须为空串：insert 不认领任何原文，所以不能用它顺带"替换"掉一段正文；
+        //   ② 必须显式给 replacement，且非空（空插入没有意义，应直接不发这条）；
+        //   ③ 位置只能由 span_id 对应的**授权插入点**给出（见 resolveAuthorizedRange）；
+        //   ④ 该授权条目必须显式包含 'insert'（缺 ops 字段的历史条目视为未声明 → 拒绝）。
+        // 为什么不用"anchor 处插入"：那会让插入位置随原文匹配漂移，而 P0-B 要的是精确授权范围。
+        if (isStr(originalRaw) && originalRaw !== '') {
+          opError(errors, 'insert_requires_empty_original', `${at}.original`,
+            'insert 的 original 必须是空字符串 ""（零宽插入点）；要替换原文请用 op:"replace"');
+          dropped += 1;
+          return;
+        }
+        if (!isStr(replacementRaw) || replacementRaw.length === 0) {
+          opError(errors, 'insert_requires_nonempty_replacement', `${at}.replacement`,
+            'insert 必须给出非空 replacement（插入的内容）');
+          dropped += 1;
+          return;
+        }
+        if (replacementRaw.length > MAX_VALUE_CHARS) {
+          opError(errors, 'value_too_long', `${at}.replacement`, `插入内容超过 ${MAX_VALUE_CHARS} 字符上限`);
+          dropped += 1;
+          return;
+        }
+      } else {
       if (!isStr(originalRaw) || !originalRaw.trim()) {
         opError(errors, 'missing_original', at, '缺少 original/anchor（无法定位要改的原文）');
         dropped += 1;
@@ -507,17 +647,10 @@
         dropped += 1;
         return;
       }
-      let op = opRaw;
-      if (op === undefined || op === null) op = 'replace';
-      if (op !== 'replace' && op !== 'delete') {
-        opError(errors, 'unknown_op', `${at}.op`, `未知操作：${JSON.stringify(opRaw)}（只接受 replace / delete）`);
-        dropped += 1;
-        return;
-      }
       if (!hasReplacement) {
         // 关键区分：**缺失** replacement 不是删除。
         opError(errors, 'missing_replacement', `${at}.replacement`,
-          op === 'delete' ? 'delete 必须显式给出 replacement:""（缺失不等于删除）' : 'replace 缺少 replacement 字段');
+          op === 'delete' ? 'delete 必须显式给出 replacement:""（缺失不等于删除）' : `${op} 缺少 replacement 字段`);
         dropped += 1;
         return;
       }
@@ -540,6 +673,7 @@
         opError(errors, 'delete_requires_empty', `${at}.replacement`, 'delete 的 replacement 必须是空字符串 ""');
         dropped += 1;
         return;
+      }
       }
 
       const issueIds = normalizeIssueIds(p.issue_ids != null ? p.issue_ids : (p.issue != null ? p.issue : []), at, errors);
@@ -569,6 +703,10 @@
         op,
         original: originalRaw,
         replacement: replacementRaw,
+        // 2026-10-13（T33）：可选理由 + 它是否可核验。**纯增量**：旧载荷不带该字段时
+        // reason 为空串、reason_unverified 为 false，与改动前逐字节等价。
+        reason: isStr(p.reason) ? p.reason : '',
+        reason_unverified: !checkReasonBinding(isStr(p.reason) ? p.reason : '', issueIds).ok,
         legacy,
       });
     });
@@ -602,7 +740,17 @@
         if (status === 'partially_resolved' && !String(d.reason || '').trim()) {
           return { ok: false, error_code: ERROR_CODES.SCHEMA_ERROR, mode, errors: [{ code: 'partial_without_reason', path: `${at}.reason`, message: 'partially_resolved 必须说明"哪一部分仍未解决"（缺理由时无法与完全解决区分）' }] };
         }
-        dispositions.push({ issue_id: d.issue_id, status, reason: isStr(d.reason) ? d.reason : '' });
+        // 2026-10-13（T33，R06 的实际形态）：处置声明它处理 issue X，理由里却写着"#Y"（Y≠X）
+        // ——例如 #6 号码纸动作的处置，理由谈的是 #9 深海母神角色卡。这种理由必须被标成
+        // 不可核验，而不是原样渲染成"已改理由"。补丁照常应用：理由错配不代表改错了地方。
+        const reasonBinding = checkReasonBinding(isStr(d.reason) ? d.reason : '', [d.issue_id]);
+        dispositions.push({
+          issue_id: d.issue_id,
+          status,
+          reason: isStr(d.reason) ? d.reason : '',
+          reason_unverified: !reasonBinding.ok,
+          foreign_reference: reasonBinding.foreign,
+        });
       }
     }
 
@@ -662,11 +810,35 @@
    * 但 `original` 必须与快照切片逐字相等（上面已判），而 Host 侧 `locateFragment` 又保证被登记的原文
    * 在快照里唯一可定位 —— 于是"逐字相等"就是"同一处"，不是近似匹配。
    *
-   * `ops` 提供时按它限制操作类型；不提供表示该条目不限制（默认登记的是 replace/delete）。
+   * `ops` / `allowed_ops` 提供时按它限制操作类型；都不提供表示该条目不限制。
    */
+  /**
+   * 一条授权条目声明的允许操作（2026-10-13）。
+   *
+   * 为什么同时接受两种拼写：方案《0731 增补方案》§2 P0-B 把该字段写成
+   * `authorizations:[{issue_id,span_id,start,end,allowed_ops}]`，而宿主既有的授权表用的是
+   * `ops`。同时接受两者，既让引擎兑现方案写明的契约，又不会让已经按 `ops` 写好的授权表失效。
+   * 两者都缺 → 返回空数组（"未声明"），调用方据此保持"不限制"的老行为，
+   * 不追溯否决历史授权。
+   */
+  function entryAllowedOps(entry) {
+    if (!entry || typeof entry !== 'object') return [];
+    const raw = Array.isArray(entry.allowed_ops) ? entry.allowed_ops : entry.ops;
+    return Array.isArray(raw) ? raw : [];
+  }
+
   function authorizationEntryMatches(entry, resolved) {
     if (!entry || typeof entry !== 'object') return false;
-    if (Array.isArray(entry.ops) && entry.ops.length && !entry.ops.includes(resolved.op)) return false;
+    const allowed = entryAllowedOps(entry);
+    if (allowed.length && !allowed.includes(resolved.op)) return false;
+    // 2026-10-13（P0-B / R07）：`insert` 的 original 按定义是空串，与入口登记的 `text` **永不相等**，
+    // 于是下面那条"身份以逐字原文为准"的规则会把所有合法插入一律判成未授权
+    // （实测：授权写对了仍报 out_of_scope）。插入不认领原文，身份只能靠 span_id + 显式 ops 声明。
+    // 位置由 resolveAuthorizedRange 从授权条目自身给出，不随原文匹配漂移。
+    if (resolved.op === 'insert') {
+      if (!allowed.includes('insert')) return false;
+      return String(entry.span_id == null ? '' : entry.span_id) === String(resolved.span_id);
+    }
     // ⚠️ 2026-10-10（分段命名空间）：Host 登记了**逐字原文**时，身份以原文为准 ——
     //    `span_id` 与偏移在"整章"和"分片"两种命名空间下含义不同（分片的 p2s1 与整章的 p2s1
     //    是两句不同的话）。若还让 span_id 单独放行，就会在分片里把 A 句的授权用到 B 句上。
@@ -736,11 +908,38 @@
     if (!authorization || !authorization.authorized || !p.span_id) return null;
     const table = authorization.authorized;
     const want = String(p.original == null ? '' : p.original);
-    if (!want) return null;
+    // ⚠️ `op === 'insert'` 时 original 按定义就是空串，**不能**在这里提前返回 null ——
+    //    否则插入永远走不到下面那条"授权插入点"分支（本函数的第一个实现就是这么错的：
+    //    授权写对了却报 out_of_scope，等于新能力一上线就是死的）。
+    if (!want && p.op !== 'insert') return null;
     for (const key of Object.keys(table)) {
       const list = Array.isArray(table[key]) ? table[key] : [];
       for (const e of list) {
         if (!e || String(e.span_id || '') !== String(p.span_id)) continue;
+        // 2026-10-13（P0-B 第三重授权）：授权表一直带 `ops`，但引擎从没读过它 ——
+        // "授权了这个跨度"被当成了"这个跨度上想做什么都行"。现在按 op 逐条校验。
+        // 字段名同时接受 `allowed_ops`（方案 §2 P0-B 的写法）与 `ops`（既有授权表写法）。
+        // ⚠️ 两者都缺的历史条目**保持放行**（08/11 号套件里就有一批不带 ops 的写法）：
+        //    新约束只能收紧显式声明过的授权，不能把老条目一并判死。
+        const declaredOps = entryAllowedOps(e);
+        if (declaredOps.length && !declaredOps.includes(p.op)) {
+          return { denied: 'op_not_authorized', span_id: String(p.span_id), allowed: [...declaredOps] };
+        }
+        // 零宽插入点：insert 不认领原文，位置完全由"哪条授权"给出。
+        // 必须显式授权（未声明或声明里没有 insert 都拒绝）——"哪里都能插"是最危险的放宽。
+        if (p.op === 'insert') {
+          if (!declaredOps.includes('insert')) {
+            return { denied: 'op_not_authorized', span_id: String(p.span_id), allowed: [...declaredOps] };
+          }
+          const at = Number.isInteger(e.start) ? e.start : text.indexOf(String(e.text == null ? '' : e.text));
+          if (!Number.isInteger(at) || at < 0) return { denied: 'anchor_mismatch', span_id: String(p.span_id) };
+          const para = (spans || []).find((sp) => sp.kind === 'paragraph' && sp.start <= at && at < sp.sep_end);
+          return {
+            start: at, end: at, span_id: String(p.span_id),
+            paragraph_index: para ? para.paragraph_index : Number(e.paragraph_index),
+            kind: 'authorized_insert',
+          };
+        }
         if (String(e.text == null ? '' : e.text) !== want) continue;   // Host 登记的原文必须逐字相等
         const at = text.indexOf(want);
         if (at < 0) continue;
@@ -836,6 +1035,19 @@
         //    **不**采信 buildSpans 的原生 id —— 分段修稿的底稿是"片"，
         //    片内的 `p2s1` 与整章的 `p2s1` 是两句不同的话，认 id 就等于认错位置。
         const authorized = resolveAuthorizedRange(opts.authorization, p, text, paraSpans);
+        // 第三重授权没过时给**专属**错误码：作者要能区分"你改的不是我批的那段"
+        // （out_of_scope）与"我批了这段、但没批这种改法"（op_not_authorized）。
+        if (authorized && authorized.denied) {
+          if (authorized.denied === 'op_not_authorized') {
+            failGroup(p, ERROR_CODES.OP_NOT_AUTHORIZED, `$.patches[${p.patch_id}]`,
+              `op「${p.op}」不在该跨度的授权操作内（该跨度已获授权，但 Host 只批了：`
+              + `${(authorized.allowed || []).length ? authorized.allowed.join(' / ') : '未声明任何操作'}）`);
+          } else {
+            failGroup(p, ERROR_CODES.ANCHOR_MISMATCH, `$.patches[${p.patch_id}]`,
+              `授权插入点无法在底稿中确定（span_id ${p.span_id}）：不猜位置`);
+          }
+          continue;
+        }
         if (!authorized) {
           failGroup(p, ERROR_CODES.OUT_OF_SCOPE, `$.patches[${p.patch_id}]`,
             `补丁不在授权表登记的跨度内（span_id ${p.span_id}，原文「${String(p.original).slice(0, 20)}」）：`
@@ -967,6 +1179,11 @@
         replacement,
         issue_ids: [...bucket.issueIds],
         patch_ids: bucket.patches.map((x) => x.patch_id),
+        // 2026-10-13（T33）：理由与"是否可核验"必须跟着跨度一起带出来，
+        // 否则覆盖表只能显示理由、显示不出它不可信（＝把错误理由当可信依据渲染）。
+        // 同一跨度上多条补丁时，只要有一条理由对不上，整条跨度就标为不可核验。
+        reason: (bucket.patches.find((x) => String(x.reason || '').trim()) || {}).reason || '',
+        reason_unverified: bucket.patches.some((x) => x.reason_unverified === true),
       });
     }
 
@@ -991,6 +1208,22 @@
     const patchedIssues = new Set();
     const noopIssues = [];
     for (const pl of planned) pl.issue_ids.forEach((id) => patchedIssues.add(id));
+    /**
+     * 2026-10-13（T33）：把"理由是否可核验"一路带到覆盖表。
+     * 之前只搬 reason，新加的标记会被这一层**静默丢掉** —— 也就是"实现写了但界面拿不到"，
+     * 与 §2 P0-A 要求的"不能直接渲染成已改理由"正相反。
+     * 取"第一个处理该 issue 的补丁"的理由：同 issue 多补丁时只要有一条理由对不上，
+     * 就不该把整条处置显示为可信。
+     */
+    const reasonUnverifiedFor = (issueId) => {
+      const own = planned.filter((pl) => pl.issue_ids.map(String).includes(String(issueId)));
+      const bad = own.find((pl) => pl.reason_unverified === true);
+      const first = own.find((pl) => String(pl.reason || '').trim());
+      return {
+        unverified: !!bad || (first ? first.reason_unverified === true : false),
+        reason: first ? first.reason : '',
+      };
+    };
     const coverage = [];
     for (const id of selected ? [...selected] : []) {
       const d = dispositionMap.get(String(id));
@@ -998,15 +1231,25 @@
         // T19：模型明确声明"只解决局部"时，覆盖表必须如实照搬 —— 不能因为"有补丁落在授权跨度上"
         // 就把它显示成完全解决（"改了 2 个 span" ≠ "2 个问题全部解决"，§6.4）。
         const partial = d && d.status === 'partially_resolved';
+        const rv = reasonUnverifiedFor(id);
         coverage.push({
           issue_id: String(id),
           status: partial ? 'partially_resolved' : 'patched',
           reason: d ? d.reason : '',
+          // 理由错配的两种来源：处置自述（R06 形态）或补丁自述。**任一**就算不可核验。
+          reason_unverified: !!(d && d.reason_unverified) || rv.unverified,
+          ...(d && d.foreign_reference && d.foreign_reference.length ? { foreign_reference: d.foreign_reference } : {}),
         });
         continue;
       }
       if (d && (d.status === 'keep' || d.status === 'deferred' || d.status === 'blocked')) {
-        coverage.push({ issue_id: String(id), status: d.status, reason: d.reason });
+        coverage.push({
+          issue_id: String(id),
+          status: d.status,
+          reason: d.reason,
+          reason_unverified: !!d.reason_unverified,
+          ...(d.foreign_reference && d.foreign_reference.length ? { foreign_reference: d.foreign_reference } : {}),
+        });
         continue;
       }
       if (d && d.status === 'patched') {
@@ -1324,7 +1567,6 @@
    * 为什么要先过门禁再写回，而不是写完再核验：
    *   "命中的那一条补丁**不进差异稿**"是既有产品语义（frontend-test 94b/94d/94e/94k），
    *   全部命中时正文必须**原样保留**、且**不产生整章重写**。
-   * 门禁不可用/抛错 → 放行全部但标 `safety_unavailable`（候选可看，不得称为已验证）。
    *
    * ⚠️ 2026-10-09（审查修复，高）：门禁的定位/应用模型是**段落级**（patch-safety 的
    *   `locateParagraph` + `applyOne` 里 `next[at] = revised` / `splice(at,1)`），因此**不能**
@@ -1333,17 +1575,35 @@
    *   "删掉了后文仍在使用的物件来源"，而实际上那个词还在同一段里）。
    *   这里改成按**段落级 before/after** 构造模拟补丁：anchor = 该跨度所属段落的原文，
    *   revised = 该段落应用本补丁后的全文（整段删除 → 空串，与门禁的 splice 语义一致）。
+   *
+   * 门禁不可用/抛错 → **fail-closed：`allowed: []`** + `safety_unavailable`
+   * （2026-10-12，0731 增补方案 P0-C）。
+   *
+   * ⚠️ 为什么这里从"放行全部"改成"全部不放行"：旧行为在门禁缺失或抛错时返回
+   *   `allowed: patches.slice()`，虽然界面会显示"未验证 / 安全阻断"，但**候选文本仍被形成**，
+   *   于是"安全门禁没跑"这件事的实际后果是"补丁照常可被采纳"——门禁失灵时保护恰好消失，
+   *   这是最坏的一种默认值。改成 fail-closed 后：拿不到安全结论就不产出可应用候选，
+   *   原文哈希不变；作者仍有明确的手动编辑、独立授权的整章任务与历史报告浏览能力，
+   *   机器门禁失灵**不阻断人的自主编辑**。
    */
   function gatePlanPatches(baseText, plan, engine, opts = {}) {
     const patches = (plan && Array.isArray(plan.patches) ? plan.patches : []);
     if (!patches.length) return { available: true, allowed: [], blocked: [], findings: [], allBlocked: false };
+    // fail-closed：不产出可应用候选，但把每一条都列进 blocked 并说明"安全结论缺失"，
+    // 而不是静默丢弃——作者需要看到"这些补丁为什么没被应用"。
+    const unavailableBlocked = () => patches.map((p) => ({
+      span_id: p.span_id, patch_ids: p.patch_ids, issue_ids: p.issue_ids,
+      code: ERROR_CODES.SAFETY_UNAVAILABLE,
+      reason: '安全门禁不可用：本次不产出任何可自动应用的候选（原文未改动）。请人工核对后再决定是否手改。',
+      conflict: null, risks: [],
+    }));
     if (!engine || typeof engine.gatePatches !== 'function') {
       return {
         available: false,
-        allowed: patches.slice(),
-        blocked: [],
-        findings: [{ code: ERROR_CODES.SAFETY_UNAVAILABLE, reason: '安全门禁模块未加载：本次没有任何补丁被拦截（这一版需要人工复核）' }],
-        allBlocked: false,
+        allowed: [],
+        blocked: unavailableBlocked(),
+        findings: [{ code: ERROR_CODES.SAFETY_UNAVAILABLE, reason: '安全门禁模块未加载：本次没有任何补丁被放行（原文未改动，需人工复核）' }],
+        allBlocked: patches.length > 0,
       };
     }
     try {
@@ -1403,16 +1663,16 @@
     } catch (e) {
       return {
         available: false,
-        allowed: patches.slice(),
-        blocked: [],
-        findings: [{ code: ERROR_CODES.SAFETY_UNAVAILABLE, reason: `安全门禁执行出错（${e && e.message ? e.message : e}）：本次没有任何补丁被拦截` }],
-        allBlocked: false,
+        allowed: [],
+        blocked: unavailableBlocked(),
+        findings: [{ code: ERROR_CODES.SAFETY_UNAVAILABLE, reason: `安全门禁执行出错（${e && e.message ? e.message : e}）：本次没有任何补丁被放行（原文未改动，需人工复核）` }],
+        allBlocked: patches.length > 0,
       };
     }
   }
 
   /** 一次完整解码+校验+门禁+写回+组合核验的编排（确定性部分），供 app.js 与测试共用同一入口。 */
-  function runRevisionPipeline({ snapshot, raw, selectedIssueIds, contextOnlySpanIds, chapterId, engine, gateOpts, authorization, expectedSchemaVersion, allowLegacy } = {}) {
+  function runRevisionPipeline({ snapshot, raw, selectedIssueIds, contextOnlySpanIds, chapterId, engine, gateOpts, authorization, expectedSchemaVersion, allowLegacy, issueQuotes } = {}) {
     const baseText = String(snapshot && snapshot.body_text != null ? snapshot.body_text : '');
     const decoded = decodePatchOutput(raw, { expectedSchemaVersion, allowLegacy });
     if (!decoded.ok) {
@@ -1480,23 +1740,41 @@
       allBlocked: gate.allBlocked,
       coverage, coverage_ok: coverage.every((c) => c.status !== 'unaccounted'),
       unaccounted: coverage.filter((c) => c.status === 'unaccounted'),
+      // §4 修后核验：候选（不阻断），需要调用方提供每个 issue 的逐字引用（来自结构化审稿的
+      // `findings[].evidence[].quote`）。缺它时为空 —— 如实"没做这项核验"，不伪造结论。
+      issue_coverage: issueCoverageCandidates({ issues: issueQuotes, coverage, revisedText: result.text }),
       noop_reasons: result.noop,
     };
 
-    // ② 没有任何补丁进候选：可能是"合法无修改"（模型说都是 keep），也可能是"全被拦下"。
+    // ② 没有任何补丁进候选：三种情况必须分开（2026-10-12，0731 增补方案 P0-C）——
+    //    a) 门禁不可用/抛错 → fail-closed：正文不变，状态如实是 `safety_unavailable`；
+    //    b) 补丁全部被门禁拦下 → 正文不变，状态如实是 `blocked`；
+    //    c) 模型本来就都是 keep → 才是真正的 `unchanged`（"没有需要核验的改动"）。
+    //    ⚠️ 旧实现在这里只问 `result.text === baseText` 就返回 `unchanged`：于是 a)/b) 两件
+    //    **安全事件**被降级成 c) 那句"没有需要核验的改动"——把一次门禁失效说成无事发生。
     if (!activePlan.patches.length) {
       const noop = !gate.blocked.length;
-      const combined = result.text === baseText
-        ? { status: 'unchanged', findings: [], hard: [], blocked: false, verified: false, note: '候选与原文逐字相同：没有需要核验的改动' }
-        : verifyCombinedCandidate(baseText, result.text, { engine, opts: gateOpts, plan: activePlan });
+      const safetyUnavailable = !gate.available;
+      const combined = safetyUnavailable
+        ? {
+          status: ERROR_CODES.SAFETY_UNAVAILABLE,
+          findings: gate.findings,
+          hard: [], blocked: false, verified: false,
+          note: '安全门禁不可用：本次未核验任何补丁，正文保持原样（未核验 ≠ 安全，可人工编辑后重试）',
+        }
+        : (result.text === baseText
+          ? { status: 'unchanged', findings: [], hard: [], blocked: false, verified: false, note: '候选与原文逐字相同：没有需要核验的改动' }
+          : verifyCombinedCandidate(baseText, result.text, { engine, opts: gateOpts, plan: activePlan }));
       return {
         ...base,
         noop,
         allBlocked: gate.allBlocked || (!noop && result.text === baseText),
         combined,
-        status_note: noop
-          ? '合法无修改：本批次没有任何补丁需要应用'
-          : '本批次的补丁全部被安全门禁拦下（正文保持原样），未回退整章重写',
+        status_note: safetyUnavailable
+          ? '安全门禁不可用：本次没有任何补丁被放行（正文保持原样），需人工复核'
+          : (noop
+            ? '合法无修改：本批次没有任何补丁需要应用'
+            : '本批次的补丁全部被安全门禁拦下（正文保持原样），未回退整章重写'),
         verified: false,
         safety_blocked: !noop && gate.blocked.length > 0,
       };
@@ -1538,5 +1816,7 @@
     staleCheck,
     createRetryBudget,
     runRevisionPipeline,
+    // §4 修后核验：单独导出，便于离线断言直接喂 (issues, coverage, revisedText) 而不必经整条管线。
+    issueCoverageCandidates,
   };
 });

@@ -43,7 +43,7 @@ Novel Studio 把它做成**确定性、可检查的机制**：本机跑一个 No
 
 **一句实话**：Novel Studio 写不出比托管 AI 写作服务更漂亮的**单句**，也不会像人类编辑那样给你一份成熟大纲。它做的是那些工具不做的事——**不让设定漂移、死人复活和伏笔失踪悄悄过去**，而且是在你自己的机器上、免费做这件事。
 
-> 📌 版本 **v1.1.7**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.1.7](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.7)。
+> 📌 版本 **v1.1.8**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.1.8](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.8)。
 >
 > 🔎 **English keywords**：local-first AI novel writing studio / novel writing software · AI writing assistant · AI 小说写作软件 · Chinese web novel (网文) / long-form fiction · character consistency & foreshadowing tracker · worldbuilding tool · story bible · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted & privacy-first, your data never leaves your machine.
 
@@ -727,6 +727,38 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 ---
 
 ## 📝 更新记录
+
+### 🛠️ 最近更新（2026-10-13 · **v1.1.8** 实验版：补丁协议 v2 的三重授权与修后核验）
+
+**这就是当前版本。** 上一版（v1.1.7）让这条链路**fail-closed**；这一版按《0731 增补方案》把剩下的
+结构性缺口补齐，并修掉一个把整个项目误判成红的环境缺陷。
+
+- **协议 v2 的 patch 载荷新增可选 `reason` + `reason_unverified`**（`public/revision-patch.js`）：
+  理由显式引用了**不属于本条**的问题编号时（R06 的实际形态：`#6` 号码纸动作的理由写成 `#9`
+  深海母神角色卡），该理由被标为**不可核验**，不再原样渲染成"已改理由"。理由错配**不等于**改错地方 ——
+  补丁照常按跨度与 op 校验应用。裸数字（"改了 2 处""第 3 句"）不算引用，避免误报。
+- **第三重授权：op 必须在授权范围内**（新增 `op_not_authorized`）。授权条目一直带着 `ops`/`allowed_ops`，
+  但引擎**从未读过它** —— "我批了这个跨度"被悄悄放大成"这个跨度上想怎么改就都行"。
+  字段名同时接受 `allowed_ops`（方案 §2 P0-B 的写法）与既有的 `ops`；**缺该字段的历史授权条目仍放行**，
+  新判据不追溯否决旧授权。
+- **零宽 `insert`**（R07）：op 白名单加入 `insert`，位置只能来自**显式含 `'insert'`** 的授权条目，
+  `original` 必须为空串、`replacement` 非空。此前"插入一个主动动作"只能伪装成 `replace`（等于偷改原文）。
+- **结构化 findings 不再被前端丢弃**（`public/app.js`）：旧实现只留 `summary/issues/strengths/deferred`，
+  每个问题的**逐字引用 / 反证 / verdict 全没了**，于是修后无法核验"这条问题的证据是否还在正文里"。
+  现在保留 findings，并据此做 **`issue_coverage` 修后核验**：覆盖表说已处理、而它的逐字证据仍原样存在 →
+  作为**候选**列出（不阻断：证据可能被有意保留）。
+- **验证门的一个真实缺陷也被修掉**：插件调 `shell.resolve` 时漏传 `sandboxPolicy`/`session`，
+  宿主只能落到部署默认沙箱，于是**门禁比它正在验证的会话更严**，17 条用管道 stdio 起子进程的检查
+  全部 `EPERM`、`0–1 ms` 假失败（项目被误报成红）。修复后门禁实测 **54/54、`exitCode 0`**。
+- **验证（零计费）**：`tests/narrative-repair/` **16 套件 / 全部通过**（新增 12–16 号，含 T31–T45、
+  P0B-a…o、IC-a…g 等十余组**阴性对照**）、`frontend-test.mjs` **566 PASS / 0 FAIL**、
+  `npm test` **54/54**、阶段映射与编码门禁全绿；门禁技术验收 `verified`。
+- **诚实边界**：文学质量仍是 `not_run` —— 全程零计费，离线断言证明的是**工程行为**，
+  不是"文字变得更好看"。真实作品（R01–R09）仍需作者侧复核；`ambiguous_anchor`/`needs_scope` 时
+  **不发付费修稿**的上游闸门在服务端链路，本轮未动；结构化选择记录的**持久化**需改 `revision_selections`
+  表结构，与"不改真实数据库"的边界冲突，故仍只在内存中驱动核验。
+
+---
 
 ### 🛠️ 最近更新（2026-10-11 · **v1.1.7** 实验版：审稿—局部修稿闭环硬化）
 

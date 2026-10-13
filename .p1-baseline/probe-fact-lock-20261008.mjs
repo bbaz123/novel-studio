@@ -74,16 +74,34 @@ console.log('\n2. 事实锁 · 同一编号两个主人（需要人物卡名字�
 }
 
 // ── 正例 3：百分比合计 ───────────────────────────────────────────────────────
+// ⚠️ 2026-10-12（0731 增补方案 §3）口径收紧：**只有完整互斥的等级分布才判"合计必须 100%"**。
+//   作者只写 D/C/B 三档时，A/S 没写 —— 旧断言把这种"缺档"当成"缺了 4.99%"来报，
+//   是拿作者没写的东西问罪。现在缺档一律 `percent_distribution_incomplete`，不再产出 percent-sum。
+//   因此本组断言按新口径改写：**能力没变弱**（真缺陷仍能命中，见 p2/p4），
+//   变的是"什么输入才配得上合计判定"。
 console.log('\n3. 事实锁 · 百分比合计');
 {
-  const bad = 'D级，出现概率百分之九十五。C级，万分之一。B级，十万分之一。';
-  const p1 = K.scanFactLock(bad).filter((f) => f.code === 'percent_sum_mismatch');
-  const bad2 = 'D级 95%，C级 4%，B级 0.09%。';
-  const p2 = K.scanFactLock(bad2).filter((f) => f.code === 'percent_sum_mismatch');
-  const good = 'D级 95%，C级 4.9%，B级 0.09%，A级 0.0099%，S级 0.0001%。';
-  const p3 = K.scanFactLock(good).filter((f) => f.code === 'percent_sum_mismatch');
-  check('正例：95% + 4% + 0.09% = 99.09% → 命中', p2.length === 1, JSON.stringify(p2[0] || null));
-  check('正例：中文百分比（百分之九十五）也能认出来', p1.length === 1, JSON.stringify(p1[0] || null));
+  const partial = 'D级，出现概率百分之九十五。C级，万分之一。B级，十万分之一。';
+  const p1 = K.scanFactLock(partial).filter((f) => f.code === 'percent_sum_mismatch');
+  const p1inc = K.scanFactLock(partial).filter((f) => f.code === 'percent_distribution_incomplete');
+  const partial2 = 'D级 95%，C级 4%，B级 0.09%。';
+  const p2 = K.scanFactLock(partial2).filter((f) => f.code === 'percent_sum_mismatch');
+  const partial3 = 'D级 95%，C级 4.9%，B级 0.09%，A级 0.0099%，S级 0.0001%。';
+  const p3 = K.scanFactLock(partial3).filter((f) => f.code === 'percent_sum_mismatch');
+  // 完整分布（五档齐全）且确实差 0.91% → 必须照报（证明能力没被收紧削掉）。
+  const fullBad = 'D级 95%，C级 4.9%，B级 0.09%，A级 0.009%，S级 0.0001%。';
+  const p4 = K.scanFactLock(fullBad).filter((f) => f.code === 'percent_sum_mismatch');
+  // 显式声明是整套分布（"从D念到S"）时，即便只列了三档，也按"作者在给分类概率表"处理 → 照报。
+  const declared = '广播从D念到S。D级 95%，C级 4%，B级 0.09%。';
+  const p5 = K.scanFactLock(declared).filter((f) => f.code === 'percent_sum_mismatch');
+  check('正例：完整五档 95+4.9+0.09+0.009+0.0001 = 99.9989%（约 100，容差内）→ 不报',
+    p4.length === 0, JSON.stringify(p4[0] || null));
+  check('正例：五档齐全但合计明显不到 100% → 命中',
+    K.scanFactLock('D级 80%，C级 10%，B级 5%，A级 1%，S级 0.1%。').filter((f) => f.code === 'percent_sum_mismatch').length === 1);
+  check('正例：显式声明整套分布 + 合计 99.09% → 命中', p5.length === 1, JSON.stringify(p5[0] || null));
+  check('负例：只列部分等级（缺 A/S）→ 不报"合计不为 100%"，改报分布不完整',
+    p1.length === 0 && p2.length === 0 && p1inc.length === 1,
+    JSON.stringify({ sum: p2.length, incomplete: p1inc[0] && p1inc[0].code }));
   check('负例：合计正好 100% → 不报', p3.length === 0, JSON.stringify(p3[0] || null));
   check('负例：只有一个百分比时不判合计', K.scanFactLock('D级 95%。').filter((f) => f.code === 'percent_sum_mismatch').length === 0);
 }

@@ -176,8 +176,15 @@
    *      把 0.0001 读成 1（正确稿于是被算成 199.99% → 误报）；
    *   ② `百分之九十五` 这种**裸中文数字**（不带"百分之"前缀）没被认出来，
    *      而作者这一章写的正是"D级，出现概率百分之九十五"。 */
-  /** 百分比表达：`95%` / `95％`。中文数字单独一遍处理（见 collectPercents 的四层口径）。 */
-  const PERCENT_RE = /([0-9]{1,2}(?:\.[0-9]{1,4})?)\s*[%％]/g;
+  /** 百分比表达：`95%` / `95％`。中文数字单独一遍处理（见 collectPercents 的四层口径）。
+   *
+   * ⚠️ 2026-10-12（0731 增补方案 T44/T45）修掉的两个边界缺陷：
+   *   ① 整数部分只允许 1–2 位 → `100%` 从数字**内部**起匹配出 `00%`（值 0 被 `v > 0` 丢弃，
+   *      于是 100 整个消失），`100.00%` 同样匹配不到。现在放宽到 1–3 位。
+   *   ② 没有**左边界**约束 → `123%` 会截出尾部 `23%`，把非法占比伪装成一个合法的 23%，
+   *      再被卷进"合计应为 100%"的加总。现在要求数字前面不是数字/小数点。
+   * 两条都是"错在抽取"，不是"错在判据"：抽取一旦截错，后面的加总再准也没有意义。 */
+  const PERCENT_RE = /(?<![\d.])([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*[%％]/g;
   /** 中文数字串（含"百分之"前缀）：逐位数字显式判定，避免 `(?:百分之)?` 把"分之一"的尾巴吃进来。 */
   const CN_NUM_RE = /百分之[零一二两三四五六七八九十百]{1,5}|[零一二两三四五六七八九十百]{1,5}/g;
   /**
@@ -187,8 +194,15 @@
    */
   const RARITY_FORMS = /(百万分之一|十万分之一|万分之一|千分之一|百分之一)/g;
   const RARITY_VALUE = { 百万分之一: 0.0001, 十万分之一: 0.001, 万分之一: 0.01, 千分之一: 0.1, 百分之一: 1 };
-  /** 裸中文数字（不带"百分之"）只有在**概率语境**里才算百分比：否则"倒了一勺铁水"的"一"会被算进去。 */
-  const PROBABILITY_CONTEXT_RE = /(概率|几率|占比|出现率|觉醒率|约|大约|将近|不足|不到|超过|以上|以下|分之)/;
+  /** 裸中文数字（不带"百分之"）只有在**概率语境**里才算百分比：否则"倒了一勺铁水"的"一"会被算进去。
+   *
+   * ⚠️ 2026-10-12（0731 增补方案 T38）删掉了旧词表里的 `分之`：
+   *   它的本意是覆盖"概率九十五分之…"这类写法，但它是个**任意两字子串**，
+   *   于是 `江陵这种地方一年能出一个吗` 里的"一"前面隔着 16 字的窗口里只要有
+   *   "部分/分之"这类字就被判成概率语境 —— 实测该句因此收出 `[1, 0.0001]`，
+   *   再被加总成"合计 1.0001%，应为 100%"（对一个**根本没在说等级分布**的句子误报）。
+   *   概率语境只保留真正的概率词：稀有度词本身由 RARITY_FORMS 那一层负责，不需要"分之"兜底。 */
+  const PROBABILITY_CONTEXT_RE = /(概率|几率|占比|出现率|觉醒率|约|大约|将近|不足|不到|超过|以上|以下)/;
   const ctxHasProbability = (s) => PROBABILITY_CONTEXT_RE.test(String(s || ''));
 
   /**
@@ -198,19 +212,52 @@
    * 每一层都可能静默失效——只从 `scanFactLock` 的 output 看，会分不清"合计对"与"根本没收到数"
    * （2026-10-08 探针就是这样连吃两次亏：一次是 `0.0001%` 被读成 1%，一次是裸中文数字没进来）。
    * 单独导出后，离线测试可以直接断言"这段话收出了哪些数"。
+   *
+   * ⚠️ 2026-10-12（0731 增补方案 §3 / T38 / T39 / T45）第三次修正 —— 这次改的是**口径**：
+   *   旧实现把"抽取到的数"直接当成"一组分类概率"，于是任何两个不同数值都会被拿去加总，
+   *   再判"应为 100%"。但"等级分布加起来 100%"只对**完整、互斥、同一口径**的一组分类概率成立：
+   *     · `百万分之一啊。那你说，江陵这种地方一年能出一个吗？`
+   *       里没有"一年"这个**概率**——它是口语里的时间量词，却被 `1` 加权进合计（T38 误报）；
+   *     · `A级百万分之一` 连说三遍是**同一个**等级的同一份稀有度，不是三种分类概率（T39 重复累计）；
+   *     · 缺档的部分数据（只报 D/C/B）根本无"合计"可言，报"应为 100%"是拿作者没写的东西问罪。
+   *   因此口径改成：**只把"绑定到某个等级 / 或显式概率语境"的数当候选，并按等级去重**。
+   *   去重与同口径筛选都在这一层做，`scanFactLock` 只负责对**已归一的**候选判合计。
    */
   function collectPercents(text) {
+    return collectPercentClaims(text).map((c) => c.value);
+  }
+
+  /** 百分比数值 > 100 不是占比（`123%`）：既不参与合计，也不当作合法值。
+   *  注意**零概率是合法的**（`0%` 表示"该等级不存在"），所以下界是 `>= 0` 而不是 `> 0`——
+   *  旧实现的 `v > 0` 会把 `0%` 整条丢掉，等于让一个合法的分类项缺席（T45）。 */
+  const isValidPercentValue = (v) => Number.isFinite(v) && v >= 0 && v <= 100;
+
+  /**
+   * 概率陈述的**候选**（带等级与来源）：抽取与证据位置，不是无条件的世界观合计。
+   *
+   * 口径（三层，全部显式判定）：
+   *   ① `95%` / `95％`：出现即算（`%` 本身就是概率标记，不需要额外语境）；
+   *   ② `百分之九十五`：前缀即概率标记；
+   *   ③ 裸中文数字：**必须**落在显式概率语境里，否则"倒了一勺铁水"的"一"会被算成 1%；
+   *   ④ 稀有度词（`万分之一`）：它本身就是概率陈述，但**同样要过概率语境**——
+   *      "十万分之一"出现在别处的比喻里时不应污染等级分布。
+   *
+   * @returns {Array<{value:number, grade:string|null, source:string}>}
+   */
+  function collectPercentClaims(text) {
     const base = String(text == null ? '' : text);
-    const out = [];
-    // ① `95%` 这类显式百分比：出现即算。
+    const claims = [];
+    const push = (value, grade, source) => {
+      if (!isValidPercentValue(value)) return;
+      claims.push({ value, grade, source });
+    };
+
+    // ① `95%` / `95％`：数值本身即概率。
     for (const m of base.matchAll(PERCENT_RE)) {
-      const v = Number(m[1]);
-      if (Number.isFinite(v) && v > 0 && v <= 100) out.push(v);
+      push(Number(m[1]), gradeBefore(base, m.index), 'percent');
     }
-    // ② `百分之九十五` / ③ 裸中文数字（`出现概率百分之九十五` 与 `概率九十五`）。
-    //    口径（三层，全部显式判定，不依赖正则的可选组）：
-    //      · 带"百分之"前缀 → 一定是百分比（"百分之九十五"）；
-    //      · 不带前缀 → 必须在概率语境里，且**不能**落在"X分之一"结构里（那是稀有度词，由 ④ 处理）。
+
+    // ②/③ 中文数字：带"百分之"前缀即概率；裸数字必须在概率语境里，且不能落在"X分之一"结构内。
     for (const m of base.matchAll(CN_NUM_RE)) {
       const raw = m[0];
       const tail = base.slice(m.index + raw.length, m.index + raw.length + 3);
@@ -223,14 +270,93 @@
       const inFraction = /^(分之|万分|千分)/.test(tail) || /分之$/.test(before2);
       if (inFraction) continue;
       if (!raw.startsWith('百分之')) {
-        const before = base.slice(Math.max(0, m.index - 16), m.index);
-        if (!ctxHasProbability(before)) continue;
+        if (!ctxHasProbability(base.slice(Math.max(0, m.index - 16), m.index))) continue;
       }
-      const v = raw.startsWith('百分之') ? cnNumber(raw.slice(3)) : cnNumber(raw);
-      if (Number.isFinite(v) && v > 0 && v <= 100) out.push(v);
+      push(cnNumber(raw.startsWith('百分之') ? raw.slice(3) : raw), gradeBefore(base, m.index), 'cn');
     }
-    // ④ 稀有度词（`万分之一` / `十万分之一`）：它本身就是概率陈述，换算成百分比值参与合计。
-    for (const m of base.matchAll(RARITY_FORMS)) out.push(RARITY_VALUE[m[1]]);
+
+    // ④ 稀有度词（`万分之一` / `十万分之一`）：换算成百分比值参与合计。
+    //    ⚠️ 这一层**不做**概率语境检查（2026-10-12 实测的回归）：`万分之一` 本身就是概率陈述，
+    //    而 `D级，出现概率百分之九十五。C级，万分之一。B级，十万分之一。` 里，
+    //    紧跟 `十万分之一` 之前的是 `万分之一。B级，` —— 回看窗口没有任何概率词，
+    //    于是真正的那一档 `0.001` 被语境闸门整个丢掉，合计从 95.01% 变成 95%，
+    //    恰好**掩盖**了原文那一处真实缺陷。语境闸门只针对**有歧义的**裸中文数字（③），
+    //    对显式的 `%` 与显式的 `X分之一` 都不需要——它们不会在普通叙述里被误认成占比。
+    for (const m of base.matchAll(RARITY_FORMS)) {
+      push(RARITY_VALUE[m[1]], gradeBefore(base, m.index), 'rarity');
+    }
+
+    return dedupePercentClaims(claims);
+  }
+
+  /**
+   * 取这个数值**前面最近**的一个等级标记（`A级` / `D级，` / `S级`）。
+   *
+   * ⚠️ 必须是"最近"（窗口内**最后一个**），不能是"窗口内第一个"——这是本文件第三次踩同一类坑：
+   *   `D级 95%，C级 4.9%，B级 0.09%，A级 0.0099%，S级 0.0001%。` 一句里有五个等级，
+   *   取第一个会把五个数值**全部**标成 `D`（2026-10-12 实测正是如此），
+   *   于是"五档齐全"永远判不出来，判据被静默关掉。这与 nearestName 取"最近名字"是同一条纪律。
+   */
+  function gradeBefore(base, index) {
+    const win = base.slice(Math.max(0, index - GRADE_LOOKBACK), index);
+    let grade = null;
+    const re = new RegExp(GRADE_LABEL_RE.source, 'g');
+    for (const m of win.matchAll(re)) grade = m[1];
+    return grade;
+  }
+  const GRADE_LABEL_RE = /(SSS|SS|S|A|B|C|D|E|F|[一二三四五六七八九十])\s*级/;
+  /** 等级前缀的回看窗口（字符）：`D级，出现概率百分之九十五。` 这类句式需要跨过中间描述。 */
+  const GRADE_LOOKBACK = 96;
+
+  /** 判"等级分布是否构成完整口径"时认的等级全集（世界观主线用 D→S）。 */
+  const CANONICAL_GRADES = ['D', 'C', 'B', 'A', 'S'];
+  /** 显式声明"这是一整套分布"的说法：出现它们才认为作者在给分类概率表。
+   *  ⚠️ `从D念到S` 这类要单独放一条可选的"级"——写成 `从…级?念到…` 时，
+   *  前半段的 `[^。！？]{0,6}` 会把 `D念到` 整段吃掉，于是永远匹配不上（实测踩过）。 */
+  const COMPLETE_DISTRIBUTION_RE = /(各等级|所有等级|全部等级|等级分布|概率分布|完整概率|完整分布|从[^。！？\n]{0,8}念到[^。！？\n]{0,8})/;
+
+  /**
+   * 这一章是否**有资格**做"百分比合计必须为 100%"的判定（0731 增补方案 §3）。
+   *
+   * 契约（很重要，这条把"误报"从判据里摘掉）：
+   *   "等级分布是否加起来 100%"只对**完整、互斥、同一口径**的一组分类概率成立。
+   *   作者只写 `D级95% + C级万分之一 + B级十万分之一` 时，A/S 两档**没写** ——
+   *   报"合计 95.01%，应为 100%"就是拿作者没写的东西问罪（实测会把 D/C/B 三档的真实分级
+   *   说成"漏了 4.99%"）。所以要满足下面任一条才判定：
+   *     · 五个主线等级（D/C/B/A/S）**都**拿到带等级的概率；
+   *     · 正文里出现显式声明（"各等级/所有等级/等级分布/从D念到S…"）。
+   *   否则返回 `null` —— 调用方不得拿它当"合计正确"，而要如实说明"分布不完整"。
+   *
+   * @returns {{grades:string[], missing:string[], declared:boolean}|null}
+   */
+  function distributionEvidence(claims, base) {
+    const grades = [...new Set(claims.map((c) => c.grade).filter(Boolean))];
+    const declared = COMPLETE_DISTRIBUTION_RE.test(String(base || ''));
+    const missing = CANONICAL_GRADES.filter((g) => !grades.includes(g));
+    const coversAll = missing.length === 0;
+    if (!coversAll && !declared) return null;
+    return { grades, missing, declared };
+  }
+
+  /**
+   * 归一：**完全相同的概率声明**只算一次（同一等级 + 同一数值）。
+   *
+   * 为什么这是判据的必要条件而不是可选优化：合计检查的语义是"不同**声明**的概率之和"，
+   * 所以 `A级百万分之一` 连说三遍必须在加总**之前**折叠成一条（T39：3×0.0001 不是三个分类概率）。
+   *
+   * ⚠️ 键必须是 `等级 + 数值`，不能只用 `等级`：等级抽取失败时会退化成"每个等级只留一个数"，
+   * 把 `D级95% / B级0.09%` 折成一个声明（2026-10-12 实测 p1/p2/p3 三处正例因此丢掉数值）。
+   * 也不能只用 `数值`：那是正常的两档同概率（B级与C级都是 1%）被误折叠。
+   */
+  function dedupePercentClaims(claims) {
+    const seen = new Set();
+    const out = [];
+    for (const c of claims) {
+      const key = `${c.grade == null ? '' : c.grade}\u0000${c.value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(c);
+    }
     return out;
   }
 
@@ -722,25 +848,45 @@
       });
     }
     // ③ 百分比合计（只报告；它是"这一版的设定陈述不自洽"，与某一条补丁无关）
-    const pcts = collectPercents(base);
+    //
+    // ⚠️ 2026-10-12（0731 增补方案 §3）加了**资格判定**：不再"收到两个数就判 100%"。
+    //   只有完整互斥的等级分布才谈得上合计；否则如实报"分布不完整"，而不是拿作者没写的
+    //   档位去问罪（旧行为会把 `D级95%+万分之一+十万分之一` 说成"漏了 4.99%"）。
+    const claims = collectPercentClaims(base);
+    const pcts = claims.map((c) => c.value);
+    const coverage = distributionEvidence(claims, base);
     if (new Set(pcts).size >= 2) {
-      const sum = Math.round(pcts.reduce((a, b) => a + b, 0) * 100) / 100;
-      // 容差 0.5%：判据是**数值加总**（不是语言判断），所以可以卡得很死。
-      // 口径演变（两次都栽在同一个地方，留痕）：
-      //   · 1.0% → 「95 + 4 + 0.09 = 99.09」差 0.91%，刚好躲过，真缺陷被判成"没问题"；
-      //   · 1.5% → 更松，同样躲过；
-      //   现在 0.5%：作者按两位小数四舍五入时的正常误差（≤0.05%）照过，
-      //   而复核稿里这种"不到 100%"的真缺陷能命中。
-      if (Math.abs(sum - 100) > 0.5) {
+      if (!coverage) {
+        // 分布不完整：这不是缺陷，是"没写全"。如实说明，且**不**产出 percent_sum_mismatch。
         push({
-          code: 'percent_sum_mismatch',
-          value: String(sum),
+          code: 'percent_distribution_incomplete',
+          value: '',
           label: '',
           paragraph: null,
           excerpt: `本章出现的百分比：${[...new Set(pcts)].join(' / ')}`,
-          conflict: `合计 ${sum}%`,
-          reason: `本章列出的百分比合计为 ${sum}%（应为 100%）：等级概率是世界观事实，读者会拿计算器核对`,
+          conflict: '分布不完整',
+          reason: `本章只列了部分等级的占比（未覆盖 ${CANONICAL_GRADES.filter((g) => !claims.some((c) => c.grade === g)).join('/')}）：`
+            + '缺档的分布没有"合计"可言，因此不做"应为 100%"的判断',
         });
+      } else {
+        const sum = Math.round(pcts.reduce((a, b) => a + b, 0) * 100) / 100;
+        // 容差 0.5%：判据是**数值加总**（不是语言判断），所以可以卡得很死。
+        // 口径演变（两次都栽在同一个地方，留痕）：
+        //   · 1.0% → 「95 + 4 + 0.09 = 99.09」差 0.91%，刚好躲过，真缺陷被判成"没问题"；
+        //   · 1.5% → 更松，同样躲过；
+        //   现在 0.5%：作者按两位小数四舍五入时的正常误差（≤0.05%）照过，
+        //   而复核稿里这种"不到 100%"的真缺陷能命中。
+        if (Math.abs(sum - 100) > 0.5) {
+          push({
+            code: 'percent_sum_mismatch',
+            value: String(sum),
+            label: '',
+            paragraph: null,
+            excerpt: `本章出现的百分比：${[...new Set(pcts)].join(' / ')}`,
+            conflict: `合计 ${sum}%`,
+            reason: `本章列出的百分比合计为 ${sum}%（应为 100%）：等级概率是世界观事实，读者会拿计算器核对`,
+          });
+        }
       }
     }
     return facts;
@@ -1038,5 +1184,10 @@
     nearestName,
     cnNumber,
     collectPercents,
+    // 2026-10-12（0731 增补方案 §3）：概率**候选**单独导出 —— 离线测试要能验"按等级去重"这一步，
+    // 只从 collectPercents 的数值数组看，分不清"去重了"与"根本没抽到"。
+    collectPercentClaims,
+    // §3 的"资格判定"也导出：它决定"要不要判 100%"，是本次收紧的核心，必须能被单独断言。
+    distributionEvidence,
   };
 });

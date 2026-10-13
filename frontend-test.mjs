@@ -1372,6 +1372,32 @@ P.trace.filters.onlyError = false;
   const strict = P.extractReviewFromText(good);
   check('33 合法 JSON 仍走严格解析且结果一致', !!strict && strict.summary === '总评' && strict.issues[0] === 'A' && strict.strengths[0] === 'B');
   check('34 完全不可解析时返回 null（交由上层存原文）', P.extractReviewFromText('这不是 JSON') === null);
+  // 2026-10-13（《0731 增补方案》§2 P0-A）：结构化 findings 不得在浏览器侧的解析里被丢掉。
+  // 旧实现只留下 summary/issues/strengths/deferred —— 每个问题的**逐字引用/反证/verdict** 全没了，
+  // 于是下游只能拿到一句自然语言，修后无法核验"这条问题的证据是否还在正文里"（§4 issue_coverage）。
+  const structured = P.extractReviewFromText(JSON.stringify({
+    summary: '总评',
+    issues: ['把「他站着没动。」改掉'],
+    findings: [{ id: '2', verdict: 'confirmed', counterevidence: '也可能是有意留白', evidence: [{ span_id: 'p1s1', quote: '他站着没动。' }] }],
+  }));
+  check('34b 结构化 findings 被保留（id / verdict / 反证 / 逐字引用），供下游核验使用',
+    !!structured && Array.isArray(structured.findings) && structured.findings.length === 1
+    && structured.findings[0].id === '2' && structured.findings[0].verdict === 'confirmed'
+    && structured.findings[0].evidence[0].quote === '他站着没动。'
+    && structured.findings[0].counterevidence === '也可能是有意留白',
+    JSON.stringify(structured && structured.findings));
+  const legacy = P.extractReviewFromText('{"summary":"总评","issues":["A"]}');
+  check('34c 老报告（无 findings）如实留空数组 —— 不伪造逐字引用（伪造会让修后核验得出错误结论）',
+    !!legacy && Array.isArray(legacy.findings) && legacy.findings.length === 0,
+    JSON.stringify(legacy && legacy.findings));
+  const evObj = P.extractReviewFromText(JSON.stringify({
+    summary: '总评', issues: ['A'],
+    findings: [{ id: 1, evidence: { quote: '单条证据写成对象而非数组' } }],
+  }));
+  check('34d evidence 写成单个对象（不是数组）时同样归一，不静默丢掉引用',
+    !!evObj && evObj.findings[0].evidence.length === 1
+    && evObj.findings[0].evidence[0].quote === '单条证据写成对象而非数组',
+    JSON.stringify(evObj && evObj.findings));
 }
 
 // ==================== 新手引导：AI 设置页三张卡 + 界面内帮助 ====================
@@ -2565,13 +2591,18 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   const protectKeep = P.patchSafetyGate(protectBase, [{ issue: 1, anchor: '“我信A级存在。没说你。”他说。', revised: '“我信A级存在。没说你。”他把杯子放下。' }], protectOpts);
   check('94o 保护句原样保留时不算命中（逐字子串判据，零误报）', protectKeep.blocked.length === 0 && protectKeep.allowed.length === 1);
 
-  // 失败姿态：门禁模块不可用时**放行**（不阻塞作者修稿），但必须产出可见的"本次没有拦截"
+  // 失败姿态：门禁模块不可用时 **fail-closed**（2026-10-12，0731 增补方案 P0-C）。
+  // 旧行为是"放行但明示 safety_unavailable"——问题是"放行"意味着候选文本被真的形成，
+  // 保护恰好在门禁失灵的那一刻消失。现在不产出可应用候选，并把每条补丁连同原因列出来。
   const savedEngine = sandbox.NovelPatchSafety;
   try {
     sandbox.NovelPatchSafety = undefined;
     const noEngine = P.patchSafetyGate(breadBase, [{ issue: 1, anchor: '王磊把面包递给岳宸炎，一个字没说。', revised: '岳宸炎接过来。' }], {});
-    check('94p 门禁不可用时放行但明示 safety_unavailable（不静默降级）',
-      noEngine.allowed.length === 1 && noEngine.blocked.length === 0 && noEngine.findings.some((f) => f.code === 'safety_unavailable'));
+    check('94p 门禁不可用时 fail-closed：不放行任何补丁但明示 safety_unavailable（不静默降级）',
+      noEngine.allowed.length === 0 && noEngine.blocked.length === 1
+      && noEngine.blocked[0].code === 'safety_unavailable'
+      && noEngine.findings.some((f) => f.code === 'safety_unavailable'),
+      JSON.stringify({ allowed: noEngine.allowed.length, blocked: noEngine.blocked.map((b) => b.code) }));
   } finally { sandbox.NovelPatchSafety = savedEngine; }
 
   // 接线：差异预览必须把"未自动应用"的补丁与原因显示给作者（而不是静默吞掉）

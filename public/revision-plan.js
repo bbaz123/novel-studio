@@ -383,6 +383,11 @@
         // 片段级 span_id（形如 `p1s1~11`）不是 buildSpans 的原生 id，执行器靠
         // `start/end + text` 与这段原文重建位置；段号一并登记，组合核验按段号归位。
         paragraph_index: h.paragraph_index == null ? null : Number(h.paragraph_index),
+        // 2026-10-13（《0731 增补方案》§2 P0-B）：该字段在方案里叫 `allowed_ops`
+        // （`authorizations:[{issue_id,span_id,start,end,allowed_ops}]`），而这里原本只发 `ops`。
+        // 两个都发：`allowed_ops` 兑现方案写明的契约，`ops` 保证既有读取方（含历史页面缓存、
+        // 已写好的测试夹具）不受影响。执行器两个名字都认。
+        allowed_ops: ['replace', 'delete'],
         ops: ['replace', 'delete'],
       };
       if (!authorized[key]) authorized[key] = [];

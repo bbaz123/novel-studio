@@ -10,6 +10,11 @@ data/
 # 隔离测试运行产生的数据目录（可再生的数据库副本与日志）
 .test-data-*/
 
+# 聚合器回退的临时输出目录（scripts/ci-offline-checks.mjs 在管道被拒时改用文件重定向）。
+# 正常路径下 runCheck 的 finally 会删掉它；进程被中断时删不掉，于是变成 `?? .ci-out-xxxxxx/`。
+# 脚本启动时会扫掉上一轮的残骸（见 sweepOrphanOutputDirs），这里再兜一层，防止被 git add -A 带走。
+.ci-out-*/
+
 # 每轮验收的过程证据目录（探针 / 日志 / 隔离实例数据库副本 / 一次性修复脚本）。
 # 为什么要显式写这两条：`.verify-enh/`、`.verify-post/` 里既有实测证据，也有**隔离实例的
 # SQLite 三件套副本**，而 `*.log` 只挡得住日志，挡不住 .json / .db / .png。2026-09-28 逐哈希

@@ -9557,6 +9557,8 @@ function longTextKindMeta(kind, opts) {
             // E01-B：把 Host 授权表交给执行器；E01-D：本次是新 v2 作业 → legacy 一律不接受。
             authorization: authFor(),
             expectedSchemaVersion: 2,
+            // §4：分段路径同样带上逐字引用（由整章调用方一次算好，逐片复用同一份）。
+            issueQuotes: o.issueQuotes || null,
           });
           if (!patched || !patched.ok) throw new Error('补丁未能定位到本片段落（该片将标为失败并可续跑）');
           const blocked = patched.blocked || [];
@@ -10458,7 +10460,13 @@ function parseReviewText(text) {
           summary: String(obj.summary || ''),
           issues: Array.isArray(obj.issues) ? obj.issues.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [],
           strengths: Array.isArray(obj.strengths) ? obj.strengths.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [],
-          deferred: reviewDeferredItems(obj.deferred)
+          deferred: reviewDeferredItems(obj.deferred),
+          // ⚠️ 2026-10-13（《0731 增补方案》§2 P0-A）：结构化 findings **不能在这里被丢掉**。
+          //   旧实现只把 issues 拍平成字符串，于是每个问题的**逐字引用 / 反证 / verdict** 全没了，
+          //   下游只能拿到一句自然语言："作者勾选了什么"可追溯，"它到底指哪句话"不可追溯，
+          //   修后也无法核验"这一条的证据是否还在正文里"（§4 的 issue_coverage 因此做不成）。
+          //   保留但**不伪造**：老报告没有 findings 就是空数组，由下游如实表示"这项核验没做成"。
+          findings: reviewFindingsOf(obj.findings),
         }
       };
     }
@@ -10472,6 +10480,53 @@ function parseReviewText(text) {
   };
   if (salvaged.summary || salvaged.issues.length) return { stage: 'salvaged', report: salvaged };
   return { stage: 'raw', report: null };
+}
+
+/**
+ * 归一化审稿的结构化 findings（浏览器侧，只保留下游真正要用的字段）。
+ *
+ * 为什么只留这四个：修稿链只需要 `id`（稳定编号）、`evidence[].quote`（逐字引用，
+ * 修后核验的判据）、`counterevidence`（反证，界面已在用）、`verdict`（是否已确认）。
+ * 其余字段留给服务端 ReviewV2 口径，不在这里再造一份判据。
+ */
+function reviewFindingsOf(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  list.forEach((f, i) => {
+    if (!f || typeof f !== 'object') return;
+    const rawEvidence = Array.isArray(f.evidence) ? f.evidence : (f.evidence ? [f.evidence] : []);
+    const evidence = rawEvidence
+      .map((e) => ({
+        span_id: String((e && e.span_id) || ''),
+        quote: String((e && (e.quote || e.text)) || '').trim(),
+      }))
+      .filter((e) => e.quote);
+    out.push({
+      id: String(f.id == null || f.id === '' ? i + 1 : f.id),
+      verdict: String(f.verdict || 'unknown'),
+      counterevidence: String(f.counterevidence || ''),
+      evidence,
+    });
+  });
+  return out;
+}
+
+/**
+ * 把"这次勾选的问题"整理成带**逐字引用**的选择记录（§2 P0-A）。
+ *
+ * 引用只能来自结构化审稿；老报告没有它时返回空引用数组 —— 由修后核验如实表示
+ * "这项没做成"，**绝不编造引用**（伪造引用会让核验得出一个看似可信的错误结论）。
+ */
+function revisionIssueQuotes(review, selectedIssueIds) {
+  const findings = Array.isArray(review && review.findings) ? review.findings : [];
+  const byId = new Map(findings.map((f, i) => [String(f && f.id != null ? f.id : i + 1), f]));
+  return (Array.isArray(selectedIssueIds) ? selectedIssueIds : []).map((id) => {
+    const f = byId.get(String(id));
+    return {
+      id: String(id),
+      quotes: f && Array.isArray(f.evidence) ? f.evidence.map((e) => String(e && e.quote || '')).filter(Boolean) : [],
+    };
+  });
 }
 
 /** 只要结构化报告对象（救不回来返回 null）。前端测试与外部调用用它，正常界面路径直接用 parseReviewText。 */
@@ -11335,6 +11390,10 @@ async function refineByChecklist() {
     allowCondense, protectedSpans: extraProtected, issueIds: selectedIssueIds,
   });
   const authorization = revisionAuthorizationFor(revisionPlan);
+  // §4 修后核验：逐字引用**在这里一次算好**。不能等到后面 `applyCtx` 才取——
+  // 下方 longTextRunTask 的 opts 与分段回调都要用它，而 `const applyCtx` 的声明在那之后，
+  // 在 opts 里直接读它会撞上 TDZ（ReferenceError 被上层 catch 吞掉，表现为"没发任何请求"）。
+  const revisionIssueQuotesForRun = revisionIssueQuotes(review, selectedIssueIds);
   // ⚠️ 没有**任何**被授权的跨度 → 不发起付费修稿。
   //   为什么不是"退回整章目录继续跑"：那等于让模型拿到整章自由修改权（K1/K2 的越权面），
   //   而且"模型改哪一段都不被允许"的请求本身就是必花钱、必无用的调用（旧实现正是在这里回退）。
@@ -11367,6 +11426,8 @@ async function refineByChecklist() {
       text: info.article, chapterId: revisionChapterId, issues: confirmed, singleRunByCaller: true,
       // 授权表 / 计划 / 快照 / 稳定编号由 Host 一次编译，分段提示词与执行器共用同一份。
       issueIds: selectedIssueIds, plan: revisionPlan, authorization, snapshot: revisionSnapshot,
+      // §4：逐字引用同样一次算好（来自结构化审稿），分段与整章共用同一份。
+      issueQuotes: revisionIssueQuotesForRun,
       currentText: () => (Number(state.currentChapterId) === Number(revisionChapterId)
         ? longTextLiveEditorText(info.article)
         : info.article),
@@ -11457,6 +11518,7 @@ async function refineByChecklist() {
     const applyCtx = {
       snapshot: revisionSnapshot, chapterId: revisionChapterId, selectedIssueIds,
       authorization, expectedSchemaVersion: 2,
+      issueQuotes: revisionIssueQuotesForRun,
     };
     let patched = tryApplyRevisionOutput(raw, info.article, applyOpts, applyCtx);
     // §6.6：格式失败允许**一次仅格式重试**（同一授权范围、不扩大编辑范围、不整章重写）。
@@ -12108,16 +12170,30 @@ function editorSelectionPlainText() {
   } catch (_) { return ''; }
 }
 
-/** 门禁：把不可自动应用的补丁摘出来（不修改调用方传入的任何数据）。 */
+/** 门禁：把不可自动应用的补丁摘出来（不修改调用方传入的任何数据）。
+ *
+ * ⚠️ 2026-10-12（0731 增补方案 P0-C）：引擎缺失/抛错一律 **fail-closed**。
+ *   旧行为返回 `allowed: all`——"本次没有任何补丁被拦截"听起来只是"没拦"，
+ *   实际后果却是"这些补丁会被自动写进正文"。门禁失灵时保护恰好消失是最坏的默认值。
+ *   现在不产出可应用候选，并把每一条连同原因交给差异预览的「安全门禁」分区，
+ *   与 `revision-patch.js/gatePlanPatches` 的 fail-closed 语义保持一致（两处不得漂移）。
+ *   作者的手动编辑、独立授权的整章任务与历史报告浏览都不经过这里，不受影响。
+ */
 function patchSafetyGate(baseArticle, patches, safetyOpts) {
   const K = patchSafetyEngine();
   const all = Array.isArray(patches) ? patches : [];
+  const unavailableBlocked = () => all.map((p, index) => ({
+    index, issue: Number(p && p.issue) || 0,
+    anchor: String((p && p.anchor) || ''), revised: String((p && p.revised) || ''),
+    scope: null, code: 'safety_unavailable',
+    reason: '安全门禁不可用：本次不自动应用任何补丁（原文未改动），请人工核对后决定是否手改',
+  }));
   if (!K || typeof K.gatePatches !== 'function') {
     return {
-      allowed: all,
-      allowedMeta: all.map((p, index) => ({ index, issue: Number(p && p.issue) || 0, scope: null, risks: [] })),
-      blocked: [],
-      findings: [{ index: -1, issue: 0, code: 'safety_unavailable', reason: '安全门禁模块未加载：本次没有任何补丁被拦截（这一版需要人工复核）' }],
+      allowed: [],
+      allowedMeta: [],
+      blocked: unavailableBlocked(),
+      findings: [{ index: -1, issue: 0, code: 'safety_unavailable', reason: '安全门禁模块未加载：本次没有任何补丁被放行（原文未改动，这一版需要人工复核）' }],
     };
   }
   try {
@@ -12130,10 +12206,10 @@ function patchSafetyGate(baseArticle, patches, safetyOpts) {
     };
   } catch (e) {
     return {
-      allowed: all,
-      allowedMeta: all.map((p, index) => ({ index, issue: Number(p && p.issue) || 0, scope: null, risks: [] })),
-      blocked: [],
-      findings: [{ index: -1, issue: 0, code: 'safety_unavailable', reason: `安全门禁执行出错（${e && e.message ? e.message : e}）：本次没有任何补丁被拦截` }],
+      allowed: [],
+      allowedMeta: [],
+      blocked: unavailableBlocked(),
+      findings: [{ index: -1, issue: 0, code: 'safety_unavailable', reason: `安全门禁执行出错（${e && e.message ? e.message : e}）：本次没有任何补丁被放行（原文未改动，需人工复核）` }],
     };
   }
 }
@@ -12357,6 +12433,9 @@ function tryApplyRevisionOutput(output, baseArticle, safetyOpts, ctx = {}) {
       selectedIssueIds: ctx.selectedIssueIds || null,
       contextOnlySpanIds: ctx.contextOnlySpanIds || null,
       authorization: ctx.authorization || null,
+      // §4 修后核验：把每个 issue 的逐字引用交给引擎，供 issue_coverage 判定。
+      // 老审稿没有结构化引用时这里是空数组 → 引擎如实返回"候选 0 条"，不伪造已核验。
+      issueQuotes: ctx.issueQuotes || null,
       expectedSchemaVersion: expectV2 ? 2 : undefined,
       engine: patchSafetyEngine(), gateOpts: opts,
     });

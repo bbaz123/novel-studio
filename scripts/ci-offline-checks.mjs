@@ -19,10 +19,76 @@
  *   node scripts/ci-offline-checks.mjs --only 上下文   # 只跑名字含该子串的检查
  */
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 清掉上一轮**被中断**时留下的回退目录（2026-10-12 自查发现的真实残骸）。
+ *
+ * 为什么 `runCheck` 里的 `finally` 不够：`finally` 只在进程正常走到收尾时执行。
+ * 跑测试期间被 Ctrl-C / 超时 / 工具调用取消杀掉时，`finally` 不执行，`.ci-out-*` 就留在仓库里；
+ * 它不被 gitignore 覆盖，于是变成 `git status --short` 里的 `?? .ci-out-xxxxxx/`，
+ * 并让 `verify-phase-map.mjs` 报"改动没有归属"（实测：`.ci-out-7bTRoL/` 就是这么来的）。
+ * 在这里扫一遍是幂等的：正常结束时目录已被 `finally` 删掉，扫到 0 个。
+ */
+function sweepOrphanOutputDirs() {
+  let names = [];
+  try { names = fs.readdirSync(REPO); } catch (_) { return; }
+  for (const name of names) {
+    if (!name.startsWith('.ci-out-')) continue;
+    try { fs.rmSync(path.join(REPO, name), { recursive: true, force: true }); } catch (_) { /* 删不掉不影响检查结果 */ }
+  }
+}
+sweepOrphanOutputDirs();
+
+/**
+ * 跑一条子检查，返回 `{ status, stdout, stderr }`（`status` 与 `spawnSync` 同义：0/非0/null）。
+ *
+ * ⚠️ 为什么不能只有一行 `spawnSync(..., stdio:'pipe')`（2026-10-12，0731 增补方案在受限环境下暴露）：
+ *   在 DSH 的文件沙箱（Windows）里，`child_process.spawn` **打开管道**会被拒（EPERM，errno -4048），
+ *   而 `spawnSync` 遇到 spawn 失败时返回 **`status: null`、`error.code = 'EPERM'`**。本文件的判定是
+ *   `r.status === 0`，于是 `null` 被记成"失败"——**54 条子检查会在 0–1ms 内全部变红**，
+ *   报告里 `└` 后还没有任何输出（因为根本没跑起来）。那不是被测代码的回归，是"测试没跑"。
+ *   同一现象已被记录过一次（验证门侧同样的 0ms 全红 + 多一个 `pnpm` 前缀）。
+ *
+ * 处置原则（与 `scripts/test-narrative-repair.mjs` 对同一 EPERM 边界的既有做法一致）：
+ *   **只换传输方式，绝不改断言**。管道被拒时退到"stdout/stderr 重定向到临时文件"，
+ *   子进程照常真实执行、退出码照常参与判定；断言、清单、通过标准一个字都没动。
+ *   换句话说：这一层保证的只是"检查真的跑了"，不是"检查一定通过"。
+ */
+function runCheck(cmd) {
+  const piped = spawnSync(process.execPath, cmd, {
+    cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+  });
+  // 正常路径（管道可用）逐字节不变。
+  if (!(piped.status === null && piped.error && piped.error.code === 'EPERM')) {
+    return { status: piped.status, stdout: piped.stdout || '', stderr: piped.stderr || '' };
+  }
+  // 回退路径：继承 stdio + 文件重定向。临时文件建在仓库内（沙箱允许写工作区）。
+  const dir = fs.mkdtempSync(path.join(REPO, '.ci-out-'));
+  const outPath = path.join(dir, 'stdout.txt');
+  const errPath = path.join(dir, 'stderr.txt');
+  try {
+    const out = fs.openSync(outPath, 'w');
+    const err = fs.openSync(errPath, 'w');
+    const r = spawnSync(process.execPath, cmd, {
+      cwd: REPO, stdio: ['ignore', out, err], encoding: 'utf8',
+    });
+    fs.closeSync(out);
+    fs.closeSync(err);
+    const readOr = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return ''; } };
+    return {
+      status: r.status,
+      stdout: readOr(outPath),
+      stderr: readOr(errPath) || (r.error ? `spawn ${r.error.code || r.error.message}` : ''),
+    };
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* 清理失败不掩盖检查结果 */ }
+  }
+}
 
 /** @type {{name: string, cmd: string[], why: string}[]} */
 export const CHECKS = [
@@ -92,7 +158,9 @@ const list = only ? CHECKS.filter((c) => c.name.includes(only)) : CHECKS;
 const results = [];
 for (const c of list) {
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, c.cmd, { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  // 走到 runCheck：管道可用时与旧写法逐字节等价；管道被沙箱拒时改用文件重定向重跑，
+  // 从而把"检查没跑起来"（status=null）与"检查真的失败"区分开。
+  const r = runCheck(c.cmd);
   const ms = Date.now() - t0;
   const ok = r.status === 0;
   results.push({ ...c, ok, ms });

@@ -314,14 +314,29 @@ const P = (span, op, original, replacement, issueIds = ['q1'], patchId = 'p1') =
   const p1 = spans.find((x) => x.text === '甲段。');
   const raw = V2(snap, [P(p1, 'replace', '甲段。', '改过。', ['q1'])]);
   const noEngine = RP.runRevisionPipeline({ snapshot: snap, raw, selectedIssueIds: ['q1'], chapterId: 12, engine: null });
+  // ⚠️ 2026-10-12（0731 增补方案 P0-C）改判据：门禁不可用时由"放行全部"改为 **fail-closed**。
+  //    旧行为返回 allowed=全部补丁，虽然 status 标了 safety_unavailable，但**候选文本仍被形成**，
+  //    于是"门禁没跑"的实际后果是"补丁照常可采纳"——保护恰好在失效的那一刻消失。
+  //    现在：不产出可应用候选、正文逐字不变，且状态必须**如实**是 safety_unavailable，
+  //    不能退化成 `unchanged`（那读起来像"本来就没有要改的"，把一次安全失效说成了无事发生）。
   check('P12', '门禁模块未加载 → safety_unavailable，且**不**被称为已验证',
     noEngine.ok === true && noEngine.combined.status === 'safety_unavailable' && noEngine.verified === false,
     JSON.stringify({ status: noEngine.combined.status, verified: noEngine.verified }));
-  check('P12b', '候选仍可看（手工编辑与明确采纳不受影响）', noEngine.text !== base && noEngine.applied.length === 1, JSON.stringify(noEngine.text));
+  check('P12b', 'fail-closed：门禁不可用时不产出可应用候选，正文逐字不变（原文哈希不变）',
+    noEngine.text === base && noEngine.applied.length === 0
+    && noEngine.blocked.length === 1 && noEngine.blocked[0].code === 'safety_unavailable',
+    JSON.stringify({ text: noEngine.text, applied: noEngine.applied.length, blocked: noEngine.blocked.map((b) => b.code) }));
+  check('P12b2', '被拦下的补丁仍逐条列给作者（不静默吞掉，作者才知道为什么没改）',
+    noEngine.unresolved.length === 1 && noEngine.unresolved[0].code === 'safety_unavailable'
+    && noEngine.allBlocked === true,
+    JSON.stringify({ unresolved: noEngine.unresolved, allBlocked: noEngine.allBlocked }));
   const boom = { HARD_CODES: K.HARD_CODES, paragraphsOf: K.paragraphsOf, deletionRisks: () => { throw new Error('boom'); }, verifyPatchedText: () => { throw new Error('boom'); } };
   const threw = RP.runRevisionPipeline({ snapshot: snap, raw, selectedIssueIds: ['q1'], chapterId: 12, engine: boom });
   check('P12c', '门禁抛异常 → safety_unavailable（不静默降级成"安全"）',
     threw.combined.status === 'safety_unavailable' && threw.verified === false, String(threw.combined.status));
+  check('P12c2', '门禁抛异常 → fail-closed，正文逐字不变（异常不得变成"放行"）',
+    threw.text === base && threw.applied.length === 0,
+    JSON.stringify({ text: threw.text, applied: threw.applied.length }));
   const malformed = { HARD_CODES: K.HARD_CODES, paragraphsOf: K.paragraphsOf, verifyPatchedText: () => ({ findings: 'not-an-array' }), deletionRisks: () => 'not-an-array' };
   const bad = RP.runRevisionPipeline({ snapshot: snap, raw, selectedIssueIds: ['q1'], chapterId: 12, engine: malformed });
   check('P12d', '门禁返回畸形结果 → 不冒充安全通过（如实标注未验证）',

@@ -41,6 +41,24 @@ export const NARRATIVE_REPAIR_TESTS = [
   // E01/§5.1-5.3 + §6.3（116 轮·第二轮）：扫描命中候选化、报告自洽、感知/因果候选、
   // 缺授权 fail-closed 与篇幅缺口如实呈现。
   'tests/narrative-repair/11-review-closure.test.mjs',
+  // 《0731 号觉醒日》增补方案 §3 + T38–T45：概率抽取的边界（100%/123%/0%/极小数）、
+  // 稀有度口语不得当等级分布、同等级去重、以及两份实现（public/ 与 ai/editing/）口径一致。
+  'tests/narrative-repair/12-percent-claims.test.mjs',
+  // 《0731 号觉醒日》增补方案 T31/T32/T34/T35/T36/T37：授权身份稳定（immutable id /
+  // selection_hash / 快照可追溯）+ 越权与失效姿态（out_of_scope / ambiguous_anchor /
+  // needs_scope / 选中≠授权 / fail-closed）。T33 需改协议 schema，本轮不含。
+  'tests/narrative-repair/13-closure-0731.test.mjs',
+  // 《0731 号觉醒日》增补方案 §4 + §5 T41/T42/T43：问题解决状态与补丁条数必须分开读
+  // （partially_resolved 不得升级成 patched、keep/deferred 不产生改章补丁、空口 patched 记
+  // unaccounted）、同校同名的字面重复不得被当成可删的冗余事实。
+  'tests/narrative-repair/14-plan-coverage-0731.test.mjs',
+  // 《0731 号觉醒日》增补方案 §2 P0-A 末条 + §5 T33：补丁理由与它声称处理的问题必须对得上。
+  // 协议 v2 的 patch 载荷新增可选 reason 字段；理由显式引用别的 issue 编号时标为
+  // reason_unverified（不得渲染成可信理由），但不阻断补丁本身（理由错配 ≠ 改错地方）。
+  'tests/narrative-repair/15-reason-binding.test.mjs',
+  // 《0731 号觉醒日》增补方案 §2 P0-B：第三重授权（op 必须在授权 ops 内）+ 零宽 insert（R07）。
+  // 与 08-authorization 的分工：08 管"跨度有没有被授权"，本套管"这种改法有没有被授权"。
+  'tests/narrative-repair/16-op-authorization.test.mjs',
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();

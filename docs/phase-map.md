@@ -1031,7 +1031,7 @@
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5）import——撤掉会打断线上路径
 - **说明**：**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`； 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`）， `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`， 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`， 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）； ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价， Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）； ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）； ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）； ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）； ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）； ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。 `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、 `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*` 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级； 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。 ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`）， 故交付文档只写"机制已实现、文学效果待评测"。
 - **验收证据**：`docs/narrative-repair/implementation-report.md`、`docs/narrative-repair/test-report.md`、`docs/narrative-repair/e07-run-manifest.json`、`docs/narrative-repair/coverage-report.json`、`docs/narrative-repair/rollback.md`、`scripts/run-narrative-acceptance.mjs`
-- **本阶段认领的文件**（55 个）：
+- **本阶段认领的文件**（60 个）：
   - `.p1-baseline/test-editing-rules.mjs`
   - `.p1-baseline/test-migration-idempotent.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -1073,6 +1073,11 @@
   - `tests/narrative-repair/09-information-truncation.test.mjs`
   - `tests/narrative-repair/10-new-sample.test.mjs`
   - `tests/narrative-repair/11-review-closure.test.mjs`
+  - `tests/narrative-repair/12-percent-claims.test.mjs`
+  - `tests/narrative-repair/13-closure-0731.test.mjs`
+  - `tests/narrative-repair/14-plan-coverage-0731.test.mjs`
+  - `tests/narrative-repair/15-reason-binding.test.mjs`
+  - `tests/narrative-repair/16-op-authorization.test.mjs`
   - `tests/narrative-repair/fixtures/after.txt`
   - `tests/narrative-repair/fixtures/before.txt`
   - `tests/narrative-repair/fixtures/manifest.json`
@@ -1132,7 +1137,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**568** 个文件
+- 真实改动集：**573** 个文件
 - 未被任何阶段认领：**113** 个
 
 ⚠️ 以下改动没有归属——没人能说清怎么回滚它们：
@@ -1214,8 +1219,10 @@
   - `.p1-baseline/verify-ch121-untouched.mjs`
   - `.p1-baseline/verify-ch121-untouched2.mjs`
   - `.p1-baseline/verify-thinking-heartbeat-20261002.mjs`
+  - `AGENTS.md`
   - `ai/writing/compile.mjs`
   - `ai/writing/scopes.mjs`
+  - `docs/0731增补方案-执行与交付报告.md`
   - `docs/adopt-guard-20261006.md`
   - `docs/blueprint-regenerate-20261004.md`
   - `docs/ch121-cast-fix-20261002.md`
@@ -1247,5 +1254,3 @@
   - `docs/spawn-eperm-20261002.md`
   - `docs/wiring-fix-20261008.md`
   - `scripts/cleanup-stale-blueprints-20261006.mjs`
-  - `修复.md`
-  - `修改方案.md`

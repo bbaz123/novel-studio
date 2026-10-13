@@ -135,10 +135,19 @@ const LABEL_EDGE_CHARS = new Set('的了是把在就也都和与被给着过这�
 /** 稀有度词（`万分之一` 这一级）：它本身就是概率陈述。 */
 const RARITY_FORMS = /(百万分之一|十万分之一|万分之一|千分之一|百分之一)/g;
 const RARITY_VALUE = { 百万分之一: 0.0001, 十万分之一: 0.001, 万分之一: 0.01, 千分之一: 0.1, 百分之一: 1 };
-const PERCENT_RE = /([0-9]{1,2}(?:\.[0-9]{1,4})?)\s*[%％]/g;
+// ⚠️ 2026-10-12（0731 增补方案 T44）：整数部分放宽到 1–3 位，并加**左边界**约束。
+//   · 旧的 `[0-9]{1,2}` 让 `100%` 从数字内部起匹配出 `00%`（值 0 又被 `v > 0` 丢掉，
+//     于是 100 整个消失），`100.00%` 同样匹配不到；
+//   · 没有左边界时 `123%` 会截出尾部 `23%`，把一个非法占比伪装成合法值再卷进加总。
+//   两条都是"错在抽取"：抽取一旦截错，后面的合计判据再准也没有意义。
+const PERCENT_RE = /(?<![\d.])([0-9]{1,3}(?:\.[0-9]{1,4})?)\s*[%％]/g;
 const CN_NUM_RE = /百分之[零一二两三四五六七八九十百]{1,5}|[零一二两三四五六七八九十百]{1,5}/g;
 const CN_DIGITS = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 百: 100 };
-const PROBABILITY_CONTEXT_RE = /(概率|几率|占比|出现率|觉醒率|约|大约|将近|不足|不到|超过|以上|以下|分之)/;
+// ⚠️ 2026-10-12（0731 增补方案 T38）：删掉旧词表里的 `分之`。
+//   它是个任意两字子串，会让 `江陵这种地方一年能出一个吗` 里的"一"被判成概率语境，
+//   实测该句因此收出 `[1, 0.0001]` 并误报"合计应为 100%"（对一个没说等级分布的句子）。
+//   稀有度词本身由 RARITY_FORMS 那一层负责，不需要"分之"兜底。
+const PROBABILITY_CONTEXT_RE = /(概率|几率|占比|出现率|觉醒率|约|大约|将近|不足|不到|超过|以上|以下)/;
 
 /** 外景标记：只可能来自室外/场地外的具体景物（不含"外面""远处"这类通用方位词，误报太高）。 */
 const EXTERIOR_MARKERS = ['下雪', '雪落', '雪花', '雨点', '暴雨', '广场', '街头', '街上', '马路', '车顶', '屋顶', '天空', '夜空', '天色', '风吹', '风声'];
@@ -1386,14 +1395,64 @@ function factCandidates(paras, ctx) {
   return out;
 }
 
-/** 本章列出的所有概率数值（百分比 + 稀有度词；口径与 patch-safety.js 的 collectPercents 同源）。 */
+/** 本章列出的所有概率数值（百分比 + 稀有度词；口径与 patch-safety.js 的 collectPercents 同源）。
+ *
+ * ⚠️ 两份实现必须同步改（本项目已知事故：同一判据两份文本漂移）。
+ * 2026-10-12（0731 增补方案 §3 / T38 / T39 / T45）与 public/patch-safety.js 同步修正：
+ *   · 零概率合法（`0%`）：上界判据从 `v > 0` 改成 `v >= 0`，否则合法的"该等级不存在"被丢掉；
+ *   · 非法占比（`> 100`）整条不计入；
+ *   · 按**声明**（等级 + 数值）去重：`A级百万分之一` 说三遍是同一份稀有度，不是三种分类概率。
+ */
 function collectPercents(text) {
+  return collectPercentClaims(text).map((c) => c.value);
+}
+
+/** 百分比数值 > 100 不是占比（`123%`）：既不参与合计，也不当作合法值。
+ *  零概率是合法的（`0%`）——旧实现的 `v > 0` 会把这一档整个丢掉。 */
+const isValidPercentValue = (v) => Number.isFinite(v) && v >= 0 && v <= 100;
+
+// ── 百分比合计的**资格判定**（2026-10-12 · 0731 增补方案 §3）──────────────────
+// "等级分布是否加起来 100%"只对完整、互斥、同一口径的一组分类概率成立。作者只写
+// D/C/B 三档时，A/S 没写 —— 报"合计 95.01%，应为 100%"是拿作者没写的东西问罪。
+const CANONICAL_GRADES = ['D', 'C', 'B', 'A', 'S'];
+/** 显式声明"这是一整套分布"的说法：出现它们才认为作者在给分类概率表。 */
+const COMPLETE_DISTRIBUTION_RE = /(各等级|所有等级|全部等级|等级分布|概率分布|完整概率|完整分布|从[^。！？\n]{0,8}念到[^。！？\n]{0,8})/;
+
+/**
+ * 这一章是否有资格判"合计必须 100%"。
+ * 满足任一条才判定：① 五个主线等级都拿到带等级的概率；② 正文显式声明是整套分布。
+ * 否则返回 null —— 调用方不得把它当"合计正确"，要如实报"分布不完整"。
+ * @returns {{grades:string[], missing:string[], declared:boolean}|null}
+ */
+function distributionEvidence(claims, base) {
+  const grades = [...new Set(claims.map((c) => c.grade).filter(Boolean))];
+  const declared = COMPLETE_DISTRIBUTION_RE.test(String(base || ''));
+  const missing = CANONICAL_GRADES.filter((g) => !grades.includes(g));
+  if (missing.length && !declared) return null;
+  return { grades, missing, declared };
+}
+const GRADE_LABEL_RE = /(SSS|SS|S|A|B|C|D|E|F|[一二三四五六七八九十])\s*级/;
+const GRADE_LOOKBACK = 96;
+/** 取数值前面**最近**（窗口内最后一个）的等级标记 —— 取第一个会把一句里的多个等级全标成同一个
+ *  （实测：`D级 95%，C级 4.9%，B级 0.09%，A级 0.0099%，S级 0.0001%。` 全被标成 D，判据静默失效）。 */
+function gradeBefore(base, index) {
+  const win = base.slice(Math.max(0, index - GRADE_LOOKBACK), index);
+  let grade = null;
+  for (const m of win.matchAll(new RegExp(GRADE_LABEL_RE.source, 'g'))) grade = m[1];
+  return grade;
+}
+
+/** 概率陈述的**候选**（带等级与来源）：抽取与证据位置，不是无条件的世界观合计。 */
+function collectPercentClaims(text) {
   const base = String(text || '');
-  const out = [];
-  for (const m of base.matchAll(PERCENT_RE)) {
-    const v = Number(m[1]);
-    if (Number.isFinite(v) && v > 0 && v <= 100) out.push(v);
-  }
+  const claims = [];
+  const push = (value, grade, source) => {
+    if (!isValidPercentValue(value)) return;
+    claims.push({ value, grade, source });
+  };
+  // ① `95%` / `95％`：数值本身即概率，不需要额外语境。
+  for (const m of base.matchAll(PERCENT_RE)) push(Number(m[1]), gradeBefore(base, m.index), 'percent');
+  // ②/③ 中文数字：带"百分之"即概率；裸数字必须在概率语境里，且不能落在"X分之一"结构里。
   for (const m of base.matchAll(CN_NUM_RE)) {
     const raw = m[0];
     const tail = base.slice(m.index + raw.length, m.index + raw.length + 3);
@@ -1401,10 +1460,20 @@ function collectPercents(text) {
     // "X分之一"结构交给稀有度词表；"十万分之一"里的"十"后面跟的是"万分"，两个方向都要判。
     if (/^(分之|万分|千分)/.test(tail) || /分之$/.test(before2)) continue;
     if (!raw.startsWith('百分之') && !PROBABILITY_CONTEXT_RE.test(base.slice(Math.max(0, m.index - 16), m.index))) continue;
-    const v = raw.startsWith('百分之') ? cnNumber(raw.slice(3)) : cnNumber(raw);
-    if (Number.isFinite(v) && v > 0 && v <= 100) out.push(v);
+    push(cnNumber(raw.startsWith('百分之') ? raw.slice(3) : raw), gradeBefore(base, m.index), 'cn');
   }
-  for (const m of base.matchAll(RARITY_FORMS)) out.push(RARITY_VALUE[m[1]]);
+  // ④ 稀有度词：**不做**概率语境检查——它本身就是概率陈述。
+  //    加了语境闸门会丢掉紧跟 `万分之一。B级，` 之后的 `十万分之一`（真实正例因此漏报）。
+  for (const m of base.matchAll(RARITY_FORMS)) push(RARITY_VALUE[m[1]], gradeBefore(base, m.index), 'rarity');
+  // 归一：完全相同的声明（等级 + 数值）只算一次。
+  const seen = new Set();
+  const out = [];
+  for (const c of claims) {
+    const key = `${c.grade == null ? '' : c.grade}\u0000${c.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
   return out;
 }
 
@@ -1464,19 +1533,38 @@ function scanNumberLock(paras, out, ctx) {
     });
   }
   // ③ 百分比合计
-  const pcts = collectPercents(text);
+  //
+  // ⚠️ 2026-10-12（0731 增补方案 §3）加了**资格判定**：不再"收到两个数就判 100%"。
+  //   只有完整互斥的等级分布才谈得上合计。缺档时如实报"分布不完整"（一条 info 级提示），
+  //   而**不**产出 percent-sum —— 拿作者没写的档位去问罪是误报，不是发现缺陷。
+  const claims = collectPercentClaims(text);
+  const pcts = claims.map((c) => c.value);
   if (new Set(pcts).size >= 2) {
-    const sum = Math.round(pcts.reduce((a, b) => a + b, 0) * 100) / 100;
-    if (Math.abs(sum - 100) > FACT_LOCK.percentTolerance) {
+    const coverage = distributionEvidence(claims, text);
+    if (!coverage) {
+      const missing = CANONICAL_GRADES.filter((g) => !claims.some((c) => c.grade === g));
       pushFinding(out, {
-        rule_id: 'deterministic:percent-sum',
-        severity: 'medium',
+        rule_id: 'deterministic:percent-distribution-incomplete',
+        severity: 'low',
         paragraph: null,
         excerpt: `本章出现的百分比：${[...new Set(pcts)].join(' / ')}`,
-        message: `本章列出的百分比合计为 ${sum}%（应为 100%）`,
-        suggestion: '等级概率是世界观事实，读者会拿计算器核对：'
-          + '补齐缺的那一档，或改成"绝大多数 / 不到千分之一"这类不报精确数字的写法。',
+        message: `本章只列了部分等级的占比（未覆盖 ${missing.join('/')}）：缺档的分布没有"合计"可言`,
+        suggestion: '要么补全所有等级的占比，要么改成不报精确数字的写法（"绝大多数 / 不到千分之一"）。'
+          + '这一条**不是**"百分比算错了"，只是提示分布没写全。',
       });
+    } else {
+      const sum = Math.round(pcts.reduce((a, b) => a + b, 0) * 100) / 100;
+      if (Math.abs(sum - 100) > FACT_LOCK.percentTolerance) {
+        pushFinding(out, {
+          rule_id: 'deterministic:percent-sum',
+          severity: 'medium',
+          paragraph: null,
+          excerpt: `本章出现的百分比：${[...new Set(pcts)].join(' / ')}`,
+          message: `本章列出的百分比合计为 ${sum}%（应为 100%）`,
+          suggestion: '等级概率是世界观事实，读者会拿计算器核对：'
+            + '补齐缺的那一档，或改成"绝大多数 / 不到千分之一"这类不报精确数字的写法。',
+        });
+      }
     }
   }
 }
@@ -1791,4 +1879,9 @@ export const __internals = {
   processShapeOf,
   storyShapeMeasures,
   scanStoryShape,
+  // 2026-10-12（0731 增补方案 §3 / T38–T45）：概率抽取单独暴露 ——
+  // 它的缺陷（100% 被截成 00%、"一年"被当概率）只从 scanEditing 的 findings 看不出来，
+  // 而这一层正是两份实现最容易漂移的地方，离线断言必须能直接比它们。
+  collectPercents,
+  collectPercentClaims,
 };
