@@ -11285,8 +11285,35 @@ function reportConsistencyHtml(consistency) {
   const c = (consistency && consistency.consistency) ? consistency.consistency : consistency;
   const conflicts = (c && Array.isArray(c.conflicts)) ? c.conflicts : [];
   const advisories = (c && Array.isArray(c.advisories)) ? c.advisories : [];
-  if (!conflicts.length && !advisories.length) return '';
+  // 2026-03-17（v118 §3/§5 · V118-06～09）：把两个**新判据**也渲染出来。
+  //   ⚠️ 为什么必须在这里补：`structureReviewReport` 早就把 `quote_audit` 与
+  //   `strength_qualifications` 挂在返回值上，但界面只读 conflicts/advisories ——
+  //   与 2026-10-11 那次"只改数据层、没改渲染层导致信号彻底消失"是同一个坑（见上面的长注释）。
+  //   引文归属同样有两条读路径：新建时 `report.quote_audit`，旧形状里可能在 `c.quote_audit`。
+  const quoteAudit = (c && c.quote_audit) || (consistency && consistency.quote_audit) || null;
+  const notFound = (quoteAudit && Array.isArray(quoteAudit.items))
+    ? quoteAudit.items.filter((i) => i && i.found === false) : [];
+  const qualifications = (c && Array.isArray(c.strength_qualifications)) ? c.strength_qualifications : [];
+  if (!conflicts.length && !advisories.length && !notFound.length && !qualifications.length) return '';
   const blocks = [];
+  if (notFound.length) {
+    // 只**指出**引号内容没有逐字出处，不猜模型想引哪一句（猜错比不报更坏），也不删整条优点。
+    const items = notFound.slice(0, 3).map((i) => `<div class="review-item issue">⚠️ 引号内容「${esc(String(i.quote || '').slice(0, 50))}」`
+      + '在这份正文里**没有逐字出处**（可能是转述、也可能是虚构引用）。'
+      + '请删除引号改成概括，或核对后补上真实原话。</div>').join('');
+    blocks.push(`<div class="ref-group-title">引文归属（${notFound.length} 处对不上原文）</div>`
+      + '<div class="redline-scan warn">只核验**用引号表示逐字原文**的地方；不带引号的概括与文学分析不参与核验，'
+      + '不会因此被要求附原话。</div>' + items);
+  }
+  if (qualifications.length) {
+    // §5：绝对局限措辞的**限定建议** —— 只要求核对措辞，**不删整条优点、也不机械删正文句子**。
+    const items = qualifications.slice(0, 3).map((q) => `<div class="review-item">✏️ 优点「${esc(String(q.strength || '').slice(0, 50))}」`
+      + '用了绝对措辞，而正文里有反例：'
+      + `<div class="muted">${esc(String(q.evidence || '').slice(0, 80))}</div>`
+      + '<div class="muted">建议限定为它真正覆盖的范围（例如"动作有效，另有少量自我解释"）。本条只提示加限定，不删优点评语。</div></div>').join('');
+    blocks.push(`<div class="ref-group-title">优点需加限定（${qualifications.length} 处）</div>`
+      + '<div class="redline-scan">这些优点本身可能成立，需要改的只是那个绝对断言。</div>' + items);
+  }
   if (conflicts.length) {
     const items = conflicts.slice(0, 3).map((c) => `<div class="review-item issue">⚠️ 优点「${esc(String(c.strength || '').slice(0, 60))}」`
       + `与${c.type === 'strength_vs_issue' ? '问题' : '正文'}「${esc(String(c.issue || c.evidence || '').slice(0, 60))}」互相否认：`
@@ -11310,11 +11337,27 @@ function showReviewReport(review) {
   const issues = review.issues || [];
   const condenseOn = revisionPreference('allow_condense');
   const protectOn = revisionPreference('protect_selection');
+  // 2026-03-17（v118 §5）：绝对局限措辞的限定标记要**逐条落在优点行上**（作者看的是这一行）。
+  //   判据来自 `checkReportConsistency` 的 `strength_qualifications`；这里只做匹配，不重算。
+  const strengthQualMap = (() => {
+    const c = (review && review.consistency && review.consistency.consistency) ? review.consistency.consistency : (review && review.consistency);
+    const qs = (c && Array.isArray(c.strength_qualifications)) ? c.strength_qualifications : [];
+    const m = new Map();
+    for (const q of qs) if (q && q.strength) m.set(String(q.strength), String(q.evidence || ''));
+    return m;
+  })();
   openModal({
     title: '🔍 AI 审稿报告',
     body: `
       <div class="review-summary">${esc(review.summary || '（无总评）')}</div>
-      ${(review.strengths || []).length ? `<div class="ref-group-title">优点</div>${review.strengths.map((s) => `<div class="review-item strength">✓ ${esc(s)}</div>`).join('')}` : ''}
+      ${(review.strengths || []).length ? `<div class="ref-group-title">优点</div>${review.strengths.map((s) => {
+        const evidence = strengthQualMap.get(String(s));
+        const needsLimit = strengthQualMap.has(String(s));
+        return `<div class="review-item strength">✓ ${esc(s)}`
+          + (needsLimit ? ` <span class="chip">建议加限定</span>`
+            + (evidence ? `<div class="muted">正文反例：${esc(evidence.slice(0, 80))}</div>` : '') : '')
+          + '</div>';
+      }).join('')}` : ''}
       ${reportConsistencyHtml(review.consistency)}
       ${(review.deferred || []).length ? '<div class="ref-group-title">待后续核验（不算问题，不会进入修稿清单）</div>' + review.deferred.map((d) => {
         const text = String((d && d.text) || d);
@@ -11585,8 +11628,8 @@ async function refineByChecklist() {
         // 2026-10-09（审查修复）：模型说"改不了/证据不足"时，不能转述成"不需要改"——
         // 那会让作者以为模型看过、没问题。处置与理由必须原样呈现（§6.4 规则 5 / §6.7）。
         if (unaccounted.length) toast(`模型没有逐条回答这次勾选的 ${unaccounted.length} 个问题（本次未改动正文；也不会自动整章重写）`, 'error');
-        else if (notDone.length) showRevisionDispositions(`模型对 ${notDone.length} 个问题给出了"不自动改"的处置（未改动正文）`, cov);
-        else showRevisionDispositions('模型判断这份清单不需要改动（未改动正文）', cov);
+        else if (notDone.length) showRevisionDispositions(`模型对 ${notDone.length} 个问题给出了"不自动改"的处置（未改动正文）`, cov, { issueCoverage: patched.issue_coverage });
+        else showRevisionDispositions('模型判断这份清单不需要改动（未改动正文）', cov, { issueCoverage: patched.issue_coverage });
         return;
       }
       // 全部被安全门禁拦下：正文原样保留，并且**不回退整章重写**（那是一次付费且无门禁的整章覆盖）。
@@ -11600,6 +11643,10 @@ async function refineByChecklist() {
         blocked: patched.blocked,
         findings: patched.findings,
         coverage: patched.coverage,
+        // §4（v118）：修后核验候选一并进预览，供覆盖表显示"最终结论"。
+        //   ⚠️ 这条路径**没有**语义层输出 → semantic 传 null → coverageVerdict 一律
+        //   返回 needs_review（"待语义复核，不能算已解决"）。语义未跑时**绝不显示已解决**。
+        issueCoverage: patched.issue_coverage,
         // E06：逐条改动 + 校验状态一起进预览；相对结论在没读 diff 时只返回"需要先看 diff"。
         patches: patched.applied,
         verification: {
@@ -12265,23 +12312,63 @@ function patchSafetyVerify(baseArticle, patchedArticle, safetyOpts) {
  * 无法解释。表里刻意分开三件事：作者是否选中/是否产生补丁/结果，并且不把"补丁条数"当"解决的问题数"。
  */
 const REVISION_STATUS_LABEL = { patched: '已改（候选里）', partially_resolved: '只解决局部（未完全解决）', keep: '保留（模型说明无需改）', deferred: '待核验（证据不足）', blocked: '被拦下/无法应用', unaccounted: '未回答' };
-function revisionCoverageHtml(coverage) {
+/**
+ * 2026-03-17（v118 §4 · V118-12）：覆盖表右侧的**最终结论**标签。
+ *
+ * 为什么必须与 `status` 并排、而不是替换它：`status` 是**处置**（模型做了什么），
+ * `verdict` 是**结论**（问题到底解决没有）。本仓的纪律原话是"补丁条数 ≠ 解决的问题数"，
+ * 这里再加一条：**旧引文消失 ≠ 问题被解决**。
+ *
+ * ⚠️ 两条刻意的文案约束（都由断言钉住，别改回去）：
+ *   ① 语义层没跑时（`semantic_status: not_run`）**永不出现"已解决"三个字** ——
+ *      所以这里是"语义未运行，不得当作解决"而不是"不能算已解决"（后者自带那三个字，
+ *      会让"扫描标签里有没有'已解决'"这类断言自造假红）。
+ *   ② 这条判定由 `coverageVerdict` 给，界面只转述，**不自己写阈值**。
+ */
+const REVISION_VERDICT_LABEL = { resolved: '结论：已解决（语义层通过）', partially_resolved: '结论：部分解决（旧证据仍在）', needs_review: '结论：待语义复核（语义未运行，不得当作解决）', not_selected: '本轮未选中（不算已改，也不算失败）' };
+function revisionCoverageHtml(coverage, verdictOpts = {}) {
   const rows = Array.isArray(coverage) ? coverage.filter((c) => c && c.issue_id) : [];
   if (!rows.length) return '';
+  const RP = revisionPatchEngine();
+  const stillByIssue = (() => {
+    const m = new Map();
+    const cands = verdictOpts && Array.isArray(verdictOpts.issueCoverage) ? verdictOpts.issueCoverage : [];
+    for (const c of cands) if (c && c.issue_id) m.set(String(c.issue_id), Number(c.still_present) || 0);
+    return m;
+  })();
   const items = rows.map((c) => {
     const status = String(c.status || 'unaccounted');
     const reason = String(c.reason || '').trim();
+    // 最终结论：**调用引擎**，不在这里重写阈值（同一判据只有一份）。
+    let verdict = null;
+    if (RP && typeof RP.coverageVerdict === 'function') {
+      try {
+        verdict = RP.coverageVerdict({
+          semantic: (verdictOpts && verdictOpts.semantic) || null,
+          stillPresent: stillByIssue.get(String(c.issue_id)) || 0,
+          covered: status === 'patched' || status === 'partially_resolved',
+        });
+      } catch (_) { verdict = null; }
+    }
+    const verdictLabel = verdict && REVISION_VERDICT_LABEL[verdict.status] ? REVISION_VERDICT_LABEL[verdict.status] : '';
     return `<div class="review-item${status === 'patched' ? '' : ' issue'}">`
       + `<b>#${esc(String(c.issue_id))}</b> · ${esc(REVISION_STATUS_LABEL[status] || status)}`
+      + (verdictLabel ? ` <span class="chip">${esc(verdictLabel)}</span>` : '')
       + (reason ? `<div class="muted">${esc(reason.slice(0, 200))}</div>` : '')
+      + (verdict && verdict.reason ? `<div class="muted">${esc(String(verdict.reason).slice(0, 160))}</div>` : '')
       + '</div>';
   }).join('');
   return `<div class="ref-group-title">问题覆盖（每个已选问题的处置；补丁条数 ≠ 解决的问题数）</div>${items}`;
 }
 
-/** 只展示处置、不展示差异的弹窗（空补丁/全被拦时用：没有 diff 可看，但理由必须让作者看到）。 */
-function showRevisionDispositions(title, coverage) {
-  const html = revisionCoverageHtml(coverage);
+/**
+ * 只展示处置、不展示差异的弹窗（空补丁/全被拦时用：没有 diff 可看，但理由必须让作者看到）。
+ *
+ * 2026-03-17（v118 §4）：额外把**修后核验候选**（`issue_coverage`）透给覆盖表 ——
+ *   这条路径正是"模型说没改"时最需要"旧证据是否还在"的地方（R02/R07 的形态）。
+ */
+function showRevisionDispositions(title, coverage, verdictOpts = {}) {
+  const html = revisionCoverageHtml(coverage, verdictOpts);
   if (!html) { toast(title, 'success'); return; }
   openModal({
     title,
@@ -12545,7 +12632,7 @@ function textFingerprint(text) {
   return `fnv1a:${h.toString(16)}:${s.length}`;
 }
 
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], notice = '', chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [], coverage = [], patches = [], verification = null, targetWords = null } = {}) {
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], notice = '', chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [], coverage = [], issueCoverage = [], patches = [], verification = null, targetWords = null } = {}) {
   // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
   // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
@@ -12629,7 +12716,7 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
       ${notes.length ? `<div class="redline-scan warn">⚠️ 有 ${notes.length} 条改动没能自动定位，已保持原样、需要你手工处理：${notes.map((n) => esc(String(n).slice(0, 60))).join('；')}</div>` : ''}
       ${notice ? `<div class="redline-scan">ℹ️ ${esc(String(notice).slice(0, 120))}</div>` : ''}
       ${patchSafetyNotesHtml(blocked, findings)}
-      ${revisionCoverageHtml(coverage)}
+      ${revisionCoverageHtml(coverage, { issueCoverage, semantic: null })}
       ${revisionAppliedHtml(patches, coverage)}
       ${revisionVerificationHtml(verification)}
       <div class="diff-view">${body || '<div class="muted">无差异</div>'}</div>`,

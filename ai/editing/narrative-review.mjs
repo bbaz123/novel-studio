@@ -46,6 +46,67 @@ export function locateQuote(text, quote) {
   return { found: true, index: at, ambiguous: hay.indexOf(needle, at + needle.length) >= 0 };
 }
 
+// ── 2026-03-17（v118 0317 专项 §3）：审稿报告不能虚构"原话" ───────────────────────
+//
+// 事故形态（本轮真实审稿）：AI 的 strengths 把两句**原文里根本没有的对白**放进引号：
+//   · 报告写「你就不能配合一下气氛」——正文实际是「羡慕不？」那一段；
+//   · 报告写「你先上去吧」——正文实际是「算了。你上去吧。」。
+// 这与 §6.2 的 finding 引用核验不同：findings 走 `validateNarrativeFinding`，而
+// **summary / strengths / issues 里的行内引号**此前根本没有人核验，于是"看起来像原话"的
+// 虚构台词可以被直接展示给作者。本段只补这一半，且**只**核验"用引号表示逐字原文"的地方。
+//
+// 三条纪律：
+//   ① **不因为一句话没加引号就核验它**：概括性转述（"王磊喜欢用插科打诨应对紧张"）不是引用，
+//      不得报——这是本判据最容易滥报的方向。
+//   ② 引号边界先剥除，再逐字比对；**剥除范围只限引号本身**（"："、句号、逗号这类属于引语的
+//      收尾标点可以容忍，但台词内部的词、次序一律不许归一）。
+//   ③ 找不到引用时标 `quote_not_found` 并要求删除引号或改为不引用的概括/人工复核；
+//      **不删掉整条优点评价**（评价本身可能成立，错的只是"这是原话"这个断言）。
+const QUOTED_SPAN_RE = /[「『“"]([^」』”"]{2,120})[」』”"]/g;
+/** 引号内部两侧的收尾标点（剥它不算"归一化台词"）。 */
+const QUOTE_EDGE_PUNCT = /^[\s：:，,。.、；;！!？?…—－-]+|[\s：:，,。.、；;！!？?…—－-]+$/g;
+
+/**
+ * 核验审稿报告里的**行内引文**是否真的逐字来自正文。
+ *
+ * @param {string[]} lines 报告里可能出现引用的文本行（summary / strengths / issues …）
+ * @param {string} text 正文（比对底本）
+ * @returns {{items:Array, quote_not_found_count:number, checked_count:number, note:string}}
+ */
+export function auditReviewQuotes(lines, text) {
+  const hay = norm(text);
+  const list = (Array.isArray(lines) ? lines : [lines]).map((x) => String(x == null ? '' : x));
+  const items = [];
+  for (const line of list) {
+    QUOTED_SPAN_RE.lastIndex = 0;
+    let m = QUOTED_SPAN_RE.exec(line);
+    while (m) {
+      const raw = String(m[1] || '').trim();
+      if (raw) {
+        const stripped = raw.replace(QUOTE_EDGE_PUNCT, '');
+        const found = hay.includes(norm(raw)) || (!!stripped && hay.includes(norm(stripped)));
+        items.push({
+          quote: raw,
+          status: found ? 'verbatim_ok' : 'quote_not_found',
+          found,
+          line: clip(line, 60),
+          // 找不到时只**如实**指出"这段话没有逐字出处"，不猜模型想引哪一句（猜错比不报更坏）。
+          required_fix: found ? '' : '这段引号内容在正文里没有逐字出处：'
+            + '请删除引号改为概括（不带引号的转述不受本核验约束），或由人工核对后补上真实原话',
+        });
+      }
+      m = QUOTED_SPAN_RE.exec(line);
+    }
+  }
+  const notFound = items.filter((i) => !i.found);
+  return {
+    items,
+    quote_not_found_count: notFound.length,
+    checked_count: items.length,
+    note: '只核验**用引号表示逐字原文**的地方；不带引号的概括与文学分析不参与核验，也不因此被要求附原话。',
+  };
+}
+
 /**
  * 校验单条 finding 的形状与引用（Host 侧；模型不能自己声明"引用存在"）。
  * @returns {{ok:boolean, errors:string[], normalized:object|null}}
@@ -283,6 +344,52 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
   const I = (Array.isArray(issues) ? issues : []).map((x) => String(x || '').trim()).filter(Boolean);
   const conflicts = [];
   const advisories = [];
+  const qualifications = [];
+  /** 声称"某类东西不存在"时必须能指出的对应正文反例（`probe` 在正文里找得到才算数）。 */
+  const ABSENT_FAMILIES = [
+    { family: 'explanation', claim: /(解释|说明|交代)/, probe: EXPLANATION_RE, what: '解释性句子' },
+    { family: 'psychology', claim: /(内心独白|内心活动|心理|自我说明|自言自语)/, probe: /(他|她|我)[^。！？\n]{0,12}(从小|一直|觉得|明白|想|知道|记得)/, what: '内心/自我解释句' },
+  ];
+  // ── 2026-03-17（v118 0317 专项 §5 · V118-09）：绝对局限措辞要**限定**，不删句 ──────
+  //    事故形态：报告称"林清雪只给动作、没有内心独白"，而正文仍有
+  //    「他从小觉得人应该是这样。」；称"李拓是本章唯一一次写足检测流程"，而主角 D 级流程同样完整。
+  //    ⚠️ 纪律：**不按硬词表机械删句**。这里只产出"请核对并加限定"的候选与正文反例引用；
+  //    优点本身可能完全成立（动作确实写得好），错的只是那个绝对断言。
+  const ABSOLUTE_LIMIT = [
+    { re: /(完全没有|完全没有过|没有|无)/, kind: 'completely_absent', family: /(内心|心理|解释|说明|独白|动作|对白)/ },
+    { re: /(唯一|只有一次|仅有一处|只此一次)/, kind: 'only_once' },
+    { re: /(从头到尾都|全程都|一律|全部都是)/, kind: 'uniform' },
+  ];
+  for (const s of S) {
+    const limit = ABSOLUTE_LIMIT.find((c) => c.re.test(s));
+    if (!limit) continue;
+    let quote = '';
+    let family = '';
+    // ① 与正文打架：只在**能指出正文反例**时才报（没有反例就不报，宁可不响）。
+    for (const fam of ABSENT_FAMILIES) {
+      if (!fam.claim.test(s)) continue;
+      if (limit.family && !limit.family.test(s)) continue;
+      const hit = (String(text || '').split(/(?<=[。！？…])/).map((x) => x.trim()).filter(Boolean))
+        .find((sentence) => fam.probe.test(sentence));
+      if (hit) { quote = hit; family = fam.family; break; }
+    }
+    if (!quote && limit.kind === 'only_once') {
+      // "唯一一次"这类**穷尽**断言：指出正文里其他同类流程段作为反例（可逐字复核）。
+      const hit = (String(text || '').split(/(?<=[。！？…])/).map((x) => x.trim()).filter(Boolean))
+        .find((sentence) => /(走上|上台|按|测|流程)/.test(sentence) && !s.includes(sentence));
+      if (hit) { quote = hit; family = 'only_once'; }
+    }
+    if (!quote) continue;
+    qualifications.push({
+      code: 'strengths_needs_qualification',
+      type: 'strength_vs_body',
+      strength: s,
+      family,
+      evidence: quote,
+      note: `这条优点的绝对措辞（${limit.kind}）与正文反例并存：请限定为"动作有效，另有少量自我解释"`
+        + '这类表述。**不要因此删掉整条优点评价**，也不要机械删正文句子。',
+    });
+  }
   for (const s of S) {
     const claim = ABSOLUTE_CLAIM.find((c) => c.re.test(s));
     if (!claim) continue;
@@ -316,9 +423,12 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
     status: conflicts.length ? 'needs_calibration' : 'ok',
     conflicts,
     advisories,
+    // 2026-03-17 新增：绝对局限措辞的**限定建议**（不改 status、不删句，只要求核对）。
+    strength_qualifications: qualifications,
     checked_strengths: S.length,
     note: 'status=needs_calibration 只在**可确证**的情况给出（绝对措辞 × 正文反例，证据是那句原文）；'
-      + '优点与问题的话题重叠只进 advisories 供人工核对，不改变 status —— 因为字面重叠无法证明语义矛盾。',
+      + `优点与问题的话题重叠只进 advisories 供人工核对，不改变 status —— 因为字面重叠无法证明语义矛盾。`
+      + `绝对局限措辞（唯一/完全没有）另进 strength_qualifications：只给"加限定"的建议与正文反例，不删句。`,
   };
 }
 
@@ -348,7 +458,22 @@ export function structureReviewReport(report = {}, ctx = {}) {
   const strengths = asList(report.strengths);
   // E01 §5.2：每条返回路径都带上自洽性结论（strengths/issues/正文三者的绝对断言不能互相否认）。
   // 在**返回处**统一附加，避免"某条早退分支漏了它"这类只在一部分报告上生效的缺陷。
-  const withConsistency = (out) => ({ ...out, consistency: checkReportConsistency({ strengths, issues: asList(out.issues), text: ctx.text || '' }) });
+  // 2026-03-17（v118 0317 §3）：同时附加**行内引文归属核验**（summary/strengths/issues 里的引号内容）。
+  // 为什么在返回处统一算：虚构引文的形态可能出现在任何一条早退分支上，只在一条路径上算就等于漏一半。
+  const withConsistency = (out) => {
+    const issuesList = asList(out.issues);
+    const quoteAudit = auditReviewQuotes([summary, ...strengths, ...issuesList], ctx.text || '');
+    const consistency = checkReportConsistency({ strengths, issues: issuesList, text: ctx.text || '' });
+    return {
+      ...out,
+      consistency,
+      quote_audit: quoteAudit,
+      strength_audit: {
+        checked: strengths.length,
+        needs_qualification: (consistency.strength_qualifications || []).length,
+      },
+    };
+  };
   let rawFindings = report.findings;
   if (typeof rawFindings === 'string') {
     // 模型常把 JSON 放进字符串；解析失败要**如实报告**，不能让整份审稿因格式问题消失。

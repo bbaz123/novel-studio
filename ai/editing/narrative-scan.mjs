@@ -168,10 +168,23 @@ function narrativeSentences(text) {
 // ⚠️ 不认裸「级」："他的成绩是C级"里的「级」是等级名，不是异象（调参时曾因此漏报 F08）。
 const SPECTACLE = /[SA]级|SS级|异象|光柱|灵体|风暴|帝王|地震|爆炸|直播|大屏/;
 // 全体量词必须出现在分句**开头**（"全场/全都/所有…"）：比较句"动作跟前面所有人都一样"不是全体反应。
-const UNIVERSAL_HEAD = /^(?:可|却|但|而|于是|结果)?(?:全都|全|所有|整个大厅|全场|一片|候检大厅|大厅)/;
+// ⚠️ 2026-03-17（v118 0317 专项 · V118-15）：补上**现场地点**词（外场/场内/考场/馆内…）。
+//    本轮样本的真实句子是「外场安静了」——旧词表只有"全场/大厅"，于是这一句**整句漏过**：
+//    全体中止反应根本没有进入判据，成因匹配再准也没用（探针实测 candidates=[]）。
+//    刻意不加裸"场/区"：它们会命中"这场雪""区里"这类普通指代，宁可窄。
+const UNIVERSAL_HEAD = /^(?:可|却|但|而|于是|结果)?(?:全都|全|所有|整个大厅|整个外场|全场|一片|候检大厅|大厅|外场|场内|场外|馆内|考场|广场|队伍里|人群里|候场区|候检区|等候区)/;
 const HALTS = /停住|停下|静了下?来|安静|没声|哑了|愣住|僵住/;
 // 成因被标为"平常/非特殊"：这才是"反应与成因不匹配"的证据（F08 形状）。
 const ORDINARY_CAUSE = /本来|平常|常见|普通|寻常|不算什么|没什么稀奇|见惯|早就|一直/;
+/**
+ * 等级结果的**稀有度**标记（V118-15）：`等级:common` 表示"该等级是绝大多数考生的普通结果"。
+ * 为什么需要它：判据要问的不是"这句话里有没有'普通'这个词"，而是"**这个结果**在设定里普不普通"。
+ * 本轮样本里 D 级是常见结果，而正文里没有任何"本来/平常"的字样——只靠 ORDINARY_CAUSE 永远匹配不上。
+ * 允许 'common' / 'ordinary' / '常见' / '普通' 这类显式标记；值缺省或 'rare' 一律不认（不猜设定）。
+ */
+const COMMON_RARITY = new Set(['common', 'ordinary', 'normal', 'usual', '常见', '普通', '寻常', '大多数']);
+/** 等级结果句（独立成句的"D级。"也算）：只认拉丁等级，不认裸"级"字。 */
+const GRADE_RESULT_RE = /(?:SSS|SS|S|A|B|C|D|E|F)\s*级/;
 
 const TACTILE = /按|摸|抚|捏|抵|触|握|攥/;
 // 触觉**得不到**的性质：密度/硬度/成分/内部结构。
@@ -182,24 +195,58 @@ const DISTANCE = /隔着|远处|对面|另一头|隔了|千米|公里|米外/;
 
 const isQuotedLine = (s) => /^\s*[\u300c\u201c"']/.test(String(s || ''));
 
-/** 场景反应因果候选：全体中止反应 与 已交代的普通成因 不匹配。 */
-function reactionCausalityCandidates(text) {
+/** 场景反应因果候选：全体中止反应 与 已交代的普通成因 不匹配。
+ *
+ * 2026-03-17（v118 0317 专项 §6 · V118-15）扩了一条**等级稀有度**通道：
+ *   事故形态：D 级在设定里是"绝大多数考生的普通结果"，而一个普通 D 级让**整个外场**安静。
+ *   旧实现只认 ORDINARY_CAUSE 词表（本来/平常/常见…），而这一章正文里一个这样的词都没有——
+ *   设定事实在正文之外，判据却只在正文里找，于是永远匹配不上。
+ *   现在：调用方可以用 `opts.gradeRarity`（如 `{ D: 'common' }`）显式告知"这个等级是常见结果"，
+ *   它等价于"成因已被标为普通"的证据；仍然只产出带反证通道的候选，绝不据此改写全场反应。
+ *
+ * @param {string} text 章节正文
+ * @param {{gradeRarity?:Object}} opts
+ */
+function reactionCausalityCandidates(text, opts = {}) {
   const out = [];
+  const rarity = opts && typeof opts.gradeRarity === 'object' && opts.gradeRarity ? opts.gradeRarity : {};
+  const commonGrades = Object.keys(rarity).filter((k) => COMMON_RARITY.has(String(rarity[k])));
   for (const item of narrativeSentences(text)) {
     const s = item.text;
     if (!HALTS.test(s) || SPECTACLE.test(s) || isQuotedLine(s)) continue;
+    // ⚠️ 「安静」既是中止反应，也可能是**安静这个结果本身**（"外场安静了"）：
+    //    本判据要的是"全体中止"，因此必须有全体量词（全场/外场/整个大厅…）才算。
     const universal = s.split(/[，,]/).map((x) => x.trim()).filter(Boolean).some((c) => UNIVERSAL_HEAD.test(c));
     if (!universal) continue;
     const context = String(text).slice(Math.max(0, item.start - 80), item.start);
-    const cause = ORDINARY_CAUSE.exec(context + s);
-    if (!cause) continue;
+    let cause = ORDINARY_CAUSE.exec(context + s);
+    let causeText = cause ? cause[0] : '';
+    let evidence = '';
+    if (cause) {
+      evidence = `语境把成因标为普通（「${causeText}」），却紧跟「${s}」这样的全体中止反应：`
+        + '因果规模与已交代的成因不匹配（该等级本该常见、观众本已反应平淡）';
+    } else if (commonGrades.length) {
+      // 设定侧证据：在这一句**附近**（前 120 字窗口）出现被标为常见的结果等级时才算，
+      // 免得把"远处另一次 A 级"的常见标记错配到这一句上。
+      const windowText = context + s;
+      const gradeHit = commonGrades.find((g) => new RegExp(`(?:^|[^A-Za-z])${g}\\s*级`).test(windowText));
+      if (!gradeHit) continue;
+      causeText = `${gradeHit}级（该等级按设定为常见结果）`;
+      evidence = `设定把 ${gradeHit} 级标为**常见结果**（绝大多数考生的普通结果），`
+        + `而这里却写「${s}」这样的全体中止反应：需要一个额外动因（例如前面已有人把期望抬高）才成立；`
+        + '若只是附近熟人安静、或本章另有铺垫，则本条不成立';
+    } else {
+      continue;
+    }
     out.push({
       diagnostic: 'reaction_causality',
       rule_id: 'perception:reaction-cause-mismatch',
       quote: s,
-      evidence: `语境把成因标为普通（「${cause[0]}」），却紧跟「${s}」这样的全体中止反应：`
-        + '因果规模与已交代的成因不匹配（D 级本该常见、观众本已反应平淡）',
+      evidence,
       // 反证通道：写明"什么情况下它不是问题"，避免把有意的舞台化描写当成缺陷。
+      counterevidence: '若该结果/事件已被前文铺垫为异常、或叙述聚焦于附近小群体的注意力'
+        + '（而非全场同步），反应规模就成立；特定人物的特殊背景亦可构成反证。'
+        + '本判据从不据此删改"安静了"这类反应描写。',
       severity: 'low',
       suggested_action: 'check',
       source: 'narrative-scan',
@@ -446,7 +493,7 @@ export function narrativeCandidateSignals(text, opts = {}) {
 
   // ④ 116 轮新增：场景反应因果 与 视点信息越界（§5.3 的 M01/M02/M03 形状）。
   //    只产出**带引用与反证通道的候选**；不重写全场反应，也不给角色新增感知能力。
-  for (const sig of reactionCausalityCandidates(raw)) pushCandidate(candidates, sig);
+  for (const sig of reactionCausalityCandidates(raw, opts)) pushCandidate(candidates, sig);
   if (paras.length < 2) {
     note('reaction_causality', '段落数 < 2：反应与成因的先后关系无法判定（insufficient_data）');
   }

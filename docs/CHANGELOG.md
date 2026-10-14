@@ -5,6 +5,28 @@
 
 ---
 
+### 🛠️ 最近更新（2026-10-14 · **v1.1.9** 实验版：审稿事实归属与"旧引文消失 ≠ 问题解决"）
+
+**这就是当前版本**（正文见 [README.zh-CN.md](../README.zh-CN.md) / [README.md](../README.md)）。要点：
+
+- 新增 `new_workflow_rule`（未经批准的制度/流程事实）与 `temporal_causal_bridge`（底稿已收束、
+  改后只靠"天色已暗"交代时间）两条 `story_fact` 窄候选，并带 `needs_fact_authorization`：
+  **不再把"替检测中心发明一条叫号制度"当成纯表达自动应用**。
+- 新增 `auditReviewQuotes`：审稿报告的 `summary/strengths/issues` 里**用引号表示的逐字原文**
+  第一次进入归属核验，找不到即 `quote_not_found`；**只**核验引号内容，概括与文学分析不参与，也不删整条优点。
+- 新增 `coverageVerdict` **修后结论闸**：**旧引文消失 ≠ 问题解决**。语义层未跑（`semantic_status:not_run`）
+  时最多 `partially_resolved`/`needs_review`，**永不 `resolved`**；只有语义层明确通过且证据已消失才允许 `resolved`。
+- `issueCoverageCandidates` 补 `unaccounted`：**未选中**的问题不再凭空消失——既不算"已改"也不算"失败"。
+- 新增 `propStateCandidates`（同物件状态跨句重叠候选，带反证）、`anchorStatus`（伏笔编号锚可见性，
+  未公开只标 `unknown_anchor`、不判硬冲突、不自动补数）、strengths 绝对局限措辞的**限定建议**
+  （只提示加限定，不删句子）、`reaction_causality` 现场地点词与 `gradeRarity` 通道。
+- **界面接线**：审稿弹窗渲染「引文归属」「优点需加限定」；覆盖表按 `coverageVerdict` 显示最终结论
+  （语义未跑时永不显示"已解决"）。
+- 验证（零计费）：`ci-offline-checks` **54/54**、叙事套件 **17 套件 / 0 未通过**、`frontend-test` **ALL PASS**、
+  阶段映射核对通过（含新增 SE9 历史遗留物追认，使"每个改动都可回滚"覆盖全仓）。
+
+---
+
 ### 🛠️ 最近更新（2026-10-13 · **v1.1.8** 实验版：补丁协议 v2 的三重授权与修后核验）
 
 **这就是当前版本**（正文见 [README.zh-CN.md](../README.zh-CN.md) / [README.md](../README.md)）。要点：

@@ -638,6 +638,166 @@
     return [...new Set((String(after || '').match(re) || []).map((s) => s.replace(/\s+/g, '')))].filter((s) => !seen.has(s));
   }
 
+  // ── 2026-03-17（第五批 · v118 0317 专项：《Novel Studio v1.1.8｜3月17日觉醒日》）─────
+  //
+  // 本批补的是**上一批判据词形之外**的两个真实缺口（不重做 story_fact 保护，只加窄而可否决的候选）：
+  //
+  //   ① `new_workflow_rule`：现行 story_fact 只认"等级/机构/分区/编号/人物"这些**实体词形**。
+  //      可"下午的号按学校分批往下叫"是一条**新的行政机制/流程事实**——它把叫号规则、分批口径、
+  //      以及"下午还有一批人"三件事同时写进正文，却不含任何实体词形，也不到大幅扩写门槛。
+  //      实测（本轮探针）：该改动被分类为 `wording`、signals 为空 —— 也就是**直接自动应用**。
+  //      事故形态可见于本轮 R01：作者报告"中午只剩十几人、十分钟一个变成三五分钟一个、
+  //      王磊测完说走了"，模型为了解释"为何天黑才出门"，**替检测中心发明了一条叫号制度**。
+  //
+  //   ② `temporal_causal_bridge`：新增时间句让"时间对得上"，但**因果缺口仍在**。
+  //      判据只认可逐字指出的形状：底稿已有"离开/结束"类事件收束，而改后出现"天色已暗/入夜"
+  //      这类时间推进，且新增内容**只**是无来源的流程声明。有来源的等待事件（点名到具体行为）
+  //      不触发——这是本批唯一的误报防线，因此它的放行通道不认"分批复核"这类泛词。
+  //
+  // 两条都遵守本文件的三条纪律：必须能指出证据原文；未命中不表态；只产出候选与"待授权"标记，
+  // **不**自行改故事。R01 的叙事修法（把"中午"挪到傍晚、或由作者批准一个有来源的事件）
+  // 属于作者决策，模块只负责"不许静默采纳"。
+  const WORKFLOW_PATTERNS = [
+    { re: /(?:按|以)[\u4e00-\u9fa5]{1,6}(?:分批|分拨|分组|分片)/, code: 'batch_by_group' },
+    { re: /(?:分|按)[一二三四五六七八九十两0-9]{1,2}批/, code: 'numbered_batch' },
+    { re: /(?:分批|分时段|分片区|分学校|分年级)[\u4e00-\u9fa5]{0,4}(?:叫号|往下叫|放行|进场|检测|采样|安排)/, code: 'batched_admission' },
+  ];
+  /** 一句话里同时出现"制度性叫号语"时才认，避免把"下午的号"这类普通叙述当机制。 */
+  const WORKFLOW_LINK = /(?:号|叫|排|批次|名单|单)/;
+
+  /**
+   * 未经批准的制度/流程事实候选（《0317 增补》§2 P0）。
+   *
+   * @param {string} anchor 改前文本
+   * @param {string} revised 改后文本
+   * @param {{baseText?:string}} opts
+   * @returns {Array<{code:string,evidence:string,needs_fact_authorization:boolean}>}
+   */
+  function workflowRuleCandidates(anchor, revised, opts = {}) {
+    // ⚠️ 口径：`baseText` 是"**已批准世界**"（含蓝图已允许的既有机制与本章底稿）。
+    //    它参与两个方向：① 新增句必须不在 baseText 里；② 同一机制若**已存在于 baseText**，
+    //    那么再次应用同一替换不得被永久硬拦（V118-02 的"不过度拒绝"）。
+    const approved = String(opts.baseText == null ? anchor : opts.baseText);
+    const a = String(anchor == null ? '' : anchor);
+    const r = String(revised == null ? '' : revised);
+    // 只看**新增**片段：底稿里本来就有的机制不是这次引入的事实（纯删除/替换形态新增为空）。
+    const added = r.startsWith(a) ? r.slice(a.length) : (a.startsWith(r) ? '' : r);
+    const out = [];
+    for (const pat of WORKFLOW_PATTERNS) {
+      const m = (added.match(pat.re) || [])[0];
+      if (!m) continue;
+      if (approved.includes(m)) continue; // 已批准：不再报
+      if (!WORKFLOW_LINK.test(added)) continue;
+      out.push({ code: 'new_workflow_rule', evidence: m, needs_fact_authorization: true });
+      break; // 一句里同一条机制只报一次
+    }
+    return out;
+  }
+
+  /** 时间推进（时间跳跃的**后**半）：天色/入夜/傍晚这类墙面钟标记。 */
+  const TIME_ADVANCE = /天色|天黑|入夜|傍晚|黄昏|夜幕|路灯|掌灯/;
+  /** "离开/收束"类事件收束（时间跳跃的**前**半）。 */
+  const EVENT_CLOSES = /走了|离开了|结束|散场|测完|散了/;
+
+  /**
+   * 时间因果桥判定（《0317 增补》§2 P0 · R01 形状）。
+   *
+   * 为什么不是"两个时间词的距离够不够大"：那会把**任何**时间描写都当缺口（误报高到没人看）。
+   * 只认一个可逐字复核的形状：**底稿已经写完整件事、且写了人已经走了**，改后却把出门时间
+   * 推到"天色已暗"，而新增内容只是一句**没有来源**的流程声明。
+   *
+   * ⚠️ 它只判"这条改动没有把因果补上"，不判"小说该怎么改"——把"中午"挪到傍晚是作者的决策。
+   *
+   * @returns {{code:string,resolved:boolean|null,time_advance:string,close:string,added:string}}
+   */
+  function assessTemporalBridge(before, after, opts = {}) {
+    const b = String(before == null ? '' : before);
+    const s = String(after == null ? '' : after);
+    const close = (b.match(EVENT_CLOSES) || [])[0] || '';
+    if (!close) return { code: 'not_applicable', resolved: null, time_advance: '', close: '', added: '' };
+    const advance = (s.match(TIME_ADVANCE) || [])[0] || '';
+    if (!advance) return { code: 'not_applicable', resolved: null, time_advance: '', close: '', added: '' };
+    const added = s.startsWith(b) ? s.slice(b.length) : (b.startsWith(s) ? '' : s);
+    // 有来源的等待事件：点名了一个具体行为 + 具体对象/量（"交回排号单复核一趟""等三点那批"）。
+    // 这是**唯一的放行通道**，判据刻意要求"动宾 + 量词/对象"，不接受"分批复核"这类泛词。
+    const sourced = /(陪|等|排队|找到|补交|复核|重新|被叫|叫到|进去|出来)[\u4e00-\u9fa5]{0,10}(单|人|趟|次|号|遍)/.test(added)
+      || /(陪|等)[\u4e00-\u9fa5]{1,4}(王磊|李拓|他)/.test(added);
+    if (sourced) return { code: 'bridged_by_sourced_event', resolved: true, time_advance: advance, close, added };
+    return { code: 'time_gap_unresolved', resolved: false, time_advance: advance, close, added };
+  }
+
+  /**
+   * 同物件状态跨句重叠候选（《0317 增补》§6 · V118-10）。
+   *
+   * 事故形态：手机先"悬在半空"，后又"举起来想拍大屏，举到一半又放下"——
+   * 中间没有复位动作（放下/收回），读者会看到一个物件的状态被两次置位。
+   *
+   * 判据刻意窄：**同一物件**（同一名词）在**前后相邻句**里各出现一次状态动词，两次状态**不同**，
+   * 且中间没有复位动词。不同物件、同一状态重复、或中间有明确复位都不报。
+   * 反证通道写在结果里：它可能是"另一只手""中间已复位只是没写"——本判据只提疑点，不定罪。
+   */
+  const PROP_STATE_VERBS = /(举起|抬起|悬在|放下|收回|掏出|摸出|递出|攥住|捏住|握紧|塞回)/;
+  const PROP_RESET_VERBS = /(放下|收回|塞回|揣回|挂回|放回)/;
+  function propStateCandidates(text, opts = {}) {
+    const s = String(text == null ? '' : text);
+    const sentences = s.split(/(?<=[。！？…])/).map((x) => x.trim()).filter(Boolean);
+    const out = [];
+    for (let i = 0; i < sentences.length; i += 1) {
+      const cur = sentences[i];
+      const vm = PROP_STATE_VERBS.exec(cur);
+      if (!vm) continue;
+      // 物件名：状态动词之前最近的一个名词性片段（去掉人称与功能词后看尾部）。
+      const head = cur.slice(0, vm.index).replace(/[，,、。！？…：:「」“”"'（）()]/g, '');
+      const prop = /(手机|书包|评定单|排号纸|号码纸|号码单|检测石|背包|外套|钥匙|水杯|纸|单)$/.exec(head);
+      if (!prop) continue;
+      for (let j = i + 1; j < Math.min(sentences.length, i + 4); j += 1) {
+        const nxt = sentences[j];
+        if (!nxt.includes(prop[1])) continue;
+        const nm = PROP_STATE_VERBS.exec(nxt);
+        if (!nm) continue;
+        if (vm[1] === nm[1]) break; // 同一状态重复：属于重复描写，不是状态缺桥
+        // 中间有复位动作 → 状态被明确收束，不报。
+        const between = sentences.slice(i, j).join('');
+        if (PROP_RESET_VERBS.test(between.replace(cur, '')) || PROP_RESET_VERBS.test(nxt.slice(0, nm.index))) break;
+        out.push({
+          code: 'prop_state_possible_overlap',
+          prop: prop[1],
+          evidence: `「${prop[1]}」先在「${cur.slice(0, vm.index + vm[1].length)}」处于「${vm[1]}」，`
+            + `随后又在「${nxt.slice(0, nm.index + nm[1].length)}」变为「${nm[1]}」，中间没有复位动作`,
+          counterevidence: '若两次之间物件已复位（放下/收回/换手）、或这是另一件同类物件、'
+            + '又或叙述刻意并置两个时点，本条即不成立——本判据只提疑点，不据此改写正文',
+        });
+        break;
+      }
+    }
+    return { candidates: out, count: out.length };
+  }
+
+  /**
+   * 伏笔编号锚的**可见性**判定（《0317 增补》§6 · V118-13）。
+   *
+   * 事故形态：伏笔 #35 计划用 `0731` 作为身份锚，而正文只写"评定单上是一串数字，没细看"。
+   * 这**不是**硬冲突（可能是有意延后公开），因此只返回 `unknown_anchor`，
+   * 既不自动补数字，也不判矛盾——判"硬冲突"需要一个与它**冲突**的明写值。
+   */
+  function anchorStatus({ text, anchor, label = '' } = {}) {
+    const t = String(text == null ? '' : text);
+    const key = String(anchor == null ? '' : anchor).trim();
+    if (!key) return { status: 'no_anchor', label, anchor: key, hard_conflict: false, note: '未给出待核验锚值' };
+    if (t.includes(key)) return { status: 'confirmed', label, anchor: key, hard_conflict: false, note: `锚值「${key}」已在正文里明写` };
+    // 正文里有**同一锚位**的模糊表述（"一串数字/没细看"）→ 刻意隐藏或尚未披露，均属 unknown。
+    const vague = /(一串数字|没细看|没有细看|几个数字|没看清)/.test(t);
+    return {
+      status: 'unknown_anchor',
+      label,
+      anchor: key,
+      hard_conflict: false,
+      vague_mention: vague,
+      note: `正文未明写「${key}」${vague ? '（只有"一串数字"这类模糊表述）' : ''}：`
+        + '可能是有意延后公开，不判硬冲突、不自动补数；需作者或蓝图确认披露时点',
+    };
+  }
+
   /**
    * 这条补丁属于哪个粒度？
    *   wording         纯表达（压缩、换词），不动事件/人物/物件/地点/时间/因果 → 自动应用
@@ -645,8 +805,13 @@
    *   story_fact      新增事件/制度、改等级/时间线/关系 → **禁止自动应用，只输出建议**
    *
    * story_fact 判据刻意窄：只有"本章此前从未出现过的正式事实形态"才算
-   * （等级 / 地名机构 / 拉丁编号区 / 编号日期 / 新人物名），并且必须能指出证据原文。
-   * 这样"把检测台改写成检测中心"这类同义改写不会被误判成新事实。
+   * （等级 / 地名机构 / 拉丁编号区 / 编号日期 / 新人物名 / **新的制度流程** / 未解释的时间因果），
+   * 并且必须能指出证据原文。这样"把检测台改写成检测中心"这类同义改写不会被误判成新事实。
+   *
+   * ⚠️ 与 UI 保存 / 作者手工编辑 / 明确整章重写授权的边界（本轮硬要求）：
+   *   本函数只在**机器局部补丁**这条通道上被调用。`authorApprovedTimeAnchors`（作者已批准时间锚调整）
+   *   与"整章重写授权"一样属于作者显式决定，此时时间锚类候选直接放行——新 AI 局部门禁**不得**
+   *   阻断人的自主编辑与作者已批准的整章任务。
    */
   function classifyEditScope(anchor, revised, opts = {}) {
     const a = String(anchor == null ? '' : anchor);
@@ -657,6 +822,8 @@
 
     const grade = newMatches(GRADE_RE, a, r).find(isNew);
     if (grade) signals.push({ code: 'new_grade', evidence: grade });
+    // 制度/流程事实（见本批 §2 说明）：在实体词形之外补一条窄候选。
+    for (const wf of workflowRuleCandidates(a, r, opts)) signals.push(wf);
     const inst = newMatches(INSTITUTION_RE, a, r).find(isNew);
     if (inst) signals.push({ code: 'new_institution', evidence: inst });
     const zone = newMatches(LATIN_ZONE_RE, a, r).find(isNew);
@@ -666,10 +833,30 @@
     const who = (Array.isArray(opts.characters) ? opts.characters : []).map(String).filter(Boolean)
       .find((n) => r.includes(n) && !a.includes(n) && isNew(n));
     if (who) signals.push({ code: 'new_character', evidence: who });
+    // 时间因果桥：底稿已收束、改后靠"天色已暗"交代时间而新增内容无来源。
+    // ⚠️ 作者已批准时间锚调整时**不报**：作者显式决定优先于机器门禁（V118-14）。
+    if (!opts.authorApprovedTimeAnchors) {
+      const bridge = assessTemporalBridge(base, r);
+      if (bridge && bridge.code === 'time_gap_unresolved') {
+        signals.push({
+          code: 'temporal_causal_bridge',
+          evidence: `底稿「${bridge.close}」之后以「${bridge.time_advance}」交代时间推进，新增内容未提供有来源的等待事件`,
+          needs_fact_authorization: true,
+        });
+      }
+    }
     // 事实增量过大：改后段落比改前长出一倍以上且多出 60 字以上（B 区式"顺手新增支线"的形状）
     if (r.length > a.length * 2 && r.length - a.length >= 60) signals.push({ code: 'expansion', evidence: `${a.length}→${r.length} 字` });
 
-    if (signals.length) return { scope: SCOPE.STORY_FACT, signals };
+    if (signals.length) {
+      return {
+        scope: SCOPE.STORY_FACT,
+        signals,
+        // 任一信号要求"事实授权"时，调用方必须把该条标成"证据不足的候选"，
+        // 而不是直接当成可信修稿采纳（《0317 增补》§2 的分层要求）。
+        needs_fact_authorization: signals.some((s) => s.needs_fact_authorization === true),
+      };
+    }
     if (r.length <= a.length * 0.95) {
       // 压缩里只有两种：删掉的只是描写（纯表达 = wording），或删掉了带动作/对白/主体的句子（= local_structure）。
       return isPureWording(a, r)
@@ -1189,5 +1376,12 @@
     collectPercentClaims,
     // §3 的"资格判定"也导出：它决定"要不要判 100%"，是本次收紧的核心，必须能被单独断言。
     distributionEvidence,
+    // 2026-03-17（v118 0317 专项）：本批新增的四项判据全部单独导出 ——
+    // 它们分别只在一个窄场景里生效（新制度流程 / 时间因果桥 / 同物件状态 / 伏笔锚可见性），
+    // 只从 gatePatches 的 blocked 列表看，分不清"没命中"与"根本没接上"，必须能单独断言。
+    workflowRuleCandidates,
+    assessTemporalBridge,
+    propStateCandidates,
+    anchorStatus,
   };
 });

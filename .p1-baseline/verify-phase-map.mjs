@@ -1322,6 +1322,205 @@ export const PHASES = [
       + ' ⚠️ 已知边界：真实模型语义审稿与文学效果 A/B 未执行（`SKIPPED: paid_evaluation_not_authorized`）；'
       + ' 分段修稿的授权表按"逐字原文"匹配（分片与整章的 span 命名空间不同），已由 08/09 套件取证。',
   },
+  {
+    id: 'SE8',
+    title: '2026-03-17 第八批：《Novel Studio v1.1.8｜3月17日觉醒日》审稿与修稿新样本专项（V118-01～V118-15：未批准制度/时间机制候选、报告引文归属、修后结论闸）',
+    files: [
+      // —— 本批新增的交付文档与回滚核验工具（可独立撤回：撤回后旧套件与旧阶段文档照常）——
+      'docs/review-closure-118/',
+      'docs/v118专项-执行与交付报告.md',
+      'scripts/rollback-v118.mjs',
+      // `tests/narrative-repair/` 已由 SE6 以目录前缀认领（本批在其下新增 17-review-closure-0317.test.mjs）。
+      // 其余被改文件（public/patch-safety.js、public/revision-patch.js、ai/editing/narrative-review.mjs、
+      // ai/editing/narrative-scan.mjs、scripts/test-narrative-repair.mjs）由 SE/SE4/SE5/SE6 共同认领。
+    ],
+    evidence: [
+      'docs/v118专项-执行与交付报告.md',
+      'docs/review-closure-118/source-map.md',
+      'docs/review-closure-118/implementation-report.md',
+      'docs/review-closure-118/diff-audit.md',
+      'docs/review-closure-118/review-quality-report.md',
+      'docs/review-closure-118/test-report.md',
+      'docs/review-closure-118/issue-coverage.json',
+      'docs/review-closure-118/rollback.md',
+    ],
+    rollback: 'independent',
+    note: '**只加窄候选与"不许提前宣布解决"的闸，不改模型契约、不改故事**：'
+      + ' `patch-safety.js` 新增 `new_workflow_rule`（新制度/流程事实）与 `temporal_causal_bridge`'
+      + '（底稿已收束、改后只靠"天色已暗"交代时间）两条 story_fact 候选，外加 `propStateCandidates`'
+      + '（同物件状态跨句重叠）与 `anchorStatus`（伏笔编号锚可见性）；'
+      + ' `narrative-review.mjs` 新增 `auditReviewQuotes`（只核验用引号表示的逐字原文，找不到即 `quote_not_found`，'
+      + ' 不删整条优点）与绝对局限措辞的 `strength_qualifications`（只给限定建议，不删句）；'
+      + ' `revision-patch.js` 的 `issueCoverageCandidates` 补 `unaccounted`（未选中项不得被算作"已改"或"失败"），'
+      + ' 新增 `coverageVerdict`：**旧引文消失 ≠ 问题解决**，语义未跑时最多 `partially_resolved`/`needs_review`；'
+      + ' `narrative-scan.mjs` 的反应因果判据补现场地点词与 `gradeRarity` 通道（常见等级结果引发全体中止）。'
+      + ' ⚠️ 回滚口径：本批**自身的**新增物（`docs/review-closure-118/`）可独立撤回；上面五处代码改动落在'
+      + ' 更早阶段共同认领的文件里（SE/SE4/SE5/SE6），撤回时必须与那些阶段一起处理'
+      + '（见 `docs/review-closure-118/rollback.md` §2 的逐文件配方与 §4 的细粒度撤除表）。'
+      + ' ⚠️ 已知边界：真实模型语义审稿与"修改后问题是否仍成立"的语义判定未执行'
+      + '（`semantic_status:not_run`，`SKIPPED: paid_evaluation_not_authorized`），'
+      + ' 故 R01/R02/R07 的最终结论只写到 `partially_resolved`。',
+  },
+  {
+    id: 'SE9',
+    title: '历史遗留物追认（C3）：为 SE1–SE8 之前/之外、从未被任何阶段认领的文件补归属',
+    files: [
+      // ⚠️ 本条目**只补台账归属，不修改这些文件本身**。逐条列出而不写目录通配，
+      //    是为了让"追认"这件事本身可审计：清单由真实改动集推导（见 note 的复算方式），
+      //    且不会因为将来有人往同目录新增文件而被悄悄认领。
+      // —— .p1-baseline（78 项）——
+      '.p1-baseline/_split-own-diff-20261006.mjs',
+      '.p1-baseline/ch121-current.txt',
+      '.p1-baseline/ch121-v48-manual.txt',
+      '.p1-baseline/ch121-v49-draft.txt',
+      '.p1-baseline/cleanup-my-draft67.mjs',
+      '.p1-baseline/dump-ch121.mjs',
+      '.p1-baseline/e2e-adopt-realdata-20261006.mjs',
+      '.p1-baseline/gen-recompute-ch119.mjs',
+      '.p1-baseline/gen-regress-merge-20261005.mjs',
+      '.p1-baseline/list-cards.mjs',
+      '.p1-baseline/make-clean-backup.mjs',
+      '.p1-baseline/probe-adopt-blocked-20261006.mjs',
+      '.p1-baseline/probe-adopt-ledger-20261005.mjs',
+      '.p1-baseline/probe-after-eperm.mjs',
+      '.p1-baseline/probe-ch119-bp.mjs',
+      '.p1-baseline/probe-ch119-words.mjs',
+      '.p1-baseline/probe-ch121-compare.mjs',
+      '.p1-baseline/probe-ch121-lineage.mjs',
+      '.p1-baseline/probe-ch121-recovery.mjs',
+      '.p1-baseline/probe-ch121-state-20261002.mjs',
+      '.p1-baseline/probe-ch121-which-version.mjs',
+      '.p1-baseline/probe-chapter-bodies.mjs',
+      '.p1-baseline/probe-context-layers.mjs',
+      '.p1-baseline/probe-draft66.mjs',
+      '.p1-baseline/probe-final.mjs',
+      '.p1-baseline/probe-fork-from-server.mjs',
+      '.p1-baseline/probe-guard-check.mjs',
+      '.p1-baseline/probe-guard-verdict-20261006.mjs',
+      '.p1-baseline/probe-harness-spawn.mjs',
+      '.p1-baseline/probe-hybrid-shape-20261005.mjs',
+      '.p1-baseline/probe-job-tables-20261005.mjs',
+      '.p1-baseline/probe-jobs-today.mjs',
+      '.p1-baseline/probe-last-log.mjs',
+      '.p1-baseline/probe-leak-detail.mjs',
+      '.p1-baseline/probe-leak-layers.mjs',
+      '.p1-baseline/probe-leak-words2.mjs',
+      '.p1-baseline/probe-lineage-20261005.mjs',
+      '.p1-baseline/probe-live-untouched-20261006.mjs',
+      '.p1-baseline/probe-longtext-plan.mjs',
+      '.p1-baseline/probe-merge-block-20261005.mjs',
+      '.p1-baseline/probe-merge-fingerprint-2-20261006.mjs',
+      '.p1-baseline/probe-merge-fingerprint-20261006.mjs',
+      '.p1-baseline/probe-merge-fingerprint-3-20261006.mjs',
+      '.p1-baseline/probe-new-rules.mjs',
+      '.p1-baseline/probe-new-rules2.mjs',
+      '.p1-baseline/probe-patch-verify-20261005.mjs',
+      '.p1-baseline/probe-placement-cases.mjs',
+      '.p1-baseline/probe-placement.mjs',
+      '.p1-baseline/probe-placeof-regex.mjs',
+      '.p1-baseline/probe-rebuild-20261005.mjs',
+      '.p1-baseline/probe-recent-ai-logs.mjs',
+      '.p1-baseline/probe-regex-min.mjs',
+      '.p1-baseline/probe-repro-14-13-20261006.mjs',
+      '.p1-baseline/probe-revisions-20261005.mjs',
+      '.p1-baseline/probe-rewrite-mode.mjs',
+      '.p1-baseline/probe-rules-catalog.mjs',
+      '.p1-baseline/probe-run-1930.mjs',
+      '.p1-baseline/probe-running-jobs.mjs',
+      '.p1-baseline/probe-scenelogic-direct.mjs',
+      '.p1-baseline/probe-spawn-child.mjs',
+      '.p1-baseline/probe-spawn-job.mjs',
+      '.p1-baseline/probe-spawn-sandbox.mjs',
+      '.p1-baseline/probe-voice-detail.mjs',
+      '.p1-baseline/probe-why-blocked.mjs',
+      '.p1-baseline/probe-write-channel-20261005.mjs',
+      '.p1-baseline/probe-yaml.mjs',
+      '.p1-baseline/restore-ch121-v48.mjs',
+      '.p1-baseline/smoke-draft-dismiss.mjs',
+      '.p1-baseline/smoke-empty-guard.mjs',
+      '.p1-baseline/smoke-review-dismiss.mjs',
+      '.p1-baseline/spawn-attempt.txt',
+      '.p1-baseline/spawn-capability.txt',
+      '.p1-baseline/test-migration-draft-dismissed.mjs',
+      '.p1-baseline/verify-adopt-fix-20261002.mjs',
+      '.p1-baseline/verify-backups.mjs',
+      '.p1-baseline/verify-ch121-untouched.mjs',
+      '.p1-baseline/verify-ch121-untouched2.mjs',
+      '.p1-baseline/verify-thinking-heartbeat-20261002.mjs',
+      // —— (仓库根)（20 项）——
+      '01.md',
+      'AGENTS.md',
+      'DSH Verification Gate 插件.md',
+      'Novel-Studio_AI味与设定漂移优化方案.md',
+      'Novel-Studio_修稿前后问题整合与Safe-Editing修改方案.md',
+      'Novel-Studio_第二轮生成质量验收与优化方案.md',
+      'Novel_Studio_0731审稿修稿增补方案.md',
+      'Novel_Studio_v118_0317专项修改方案.md',
+      'novel-studio 深度审计与缺陷修复报告生成提示词.md',
+      'novel_studio_architecture_gap_audit.md',
+      'novel_studio_codex_full_delivery_prompt_v2.md',
+      '待办事项-文件整理.md',
+      '待办事项-知识库.md',
+      '待办事项，为工作台加入待办.md',
+      '插件制作方案_完整实现版.md',
+      '方案.md',
+      '架构重构.md',
+      '缺点及修复报告.codex版本-20261001-1623.md',
+      '缺陷修复.md',
+      '缺陷问题及对应解决办法.md',
+      // —— ai（2 项）——
+      'ai/writing/compile.mjs',
+      'ai/writing/scopes.mjs',
+      // —— docs（31 项）——
+      'docs/0731增补方案-执行与交付报告.md',
+      'docs/adopt-guard-20261006.md',
+      'docs/blueprint-regenerate-20261004.md',
+      'docs/ch121-cast-fix-20261002.md',
+      'docs/ch121-ledger-proposals-fix-20261002.md',
+      'docs/character-timing-checklist.md',
+      'docs/deai-round2-diagnostics-20261006.md',
+      'docs/deai-source-fix-round3-20261002.md',
+      'docs/deai-trace-baseline-20261002.md',
+      'docs/draft-dismiss-20261004.md',
+      'docs/empty-guard-no-exit-20261004.md',
+      'docs/review-closure-116/baseline.json',
+      'docs/review-closure-116/diff-audit.md',
+      'docs/review-closure-116/execution-state.json',
+      'docs/review-closure-116/final-summary.md',
+      'docs/review-closure-116/implementation-report.md',
+      'docs/review-closure-116/issue-coverage.json',
+      'docs/review-closure-116/paid-eval-20261011.md',
+      'docs/review-closure-116/recon-S04-S08.md',
+      'docs/review-closure-116/review-quality-report.md',
+      'docs/review-closure-116/rollback.md',
+      'docs/review-closure-116/source-map.md',
+      'docs/review-closure-116/supplement-round-20261011.md',
+      'docs/review-closure-116/t-matrix.md',
+      'docs/review-closure-116/test-report.md',
+      'docs/review-closure-116/verify-round-20261011.md',
+      'docs/review-merge-empty-body-20261006.md',
+      'docs/review-merge-force-20261006.md',
+      'docs/save-incident-20261002.md',
+      'docs/spawn-eperm-20261002.md',
+      'docs/wiring-fix-20261008.md',
+      // —— scripts（1 项）——
+      'scripts/cleanup-stale-blueprints-20261006.mjs',
+    ],
+    evidence: [
+      'docs/review-closure-118/test-report.md',
+    ],
+    // ⚠️ `shared` 是**推导结果**，不是随手写的：这 132 个文件里有若干被生产代码
+    //   （server.js / harness.js / db.js / public/ / ai/）import，按"从真实依赖推导"的口径
+    //   它们撤不干净 —— 本条目只能整体回滚，不能用"逐目录撤"。（我先写成 independent，被工具当场判红。）
+    rollback: 'shared',
+    note: '**只补归属、不碰文件**：这些是 SE1–SE8 各批留下的一次性探针/实验脚本、语料转储、验收报告与方案稿，'
+      + '从未被任何阶段条目认领，于是阶段映射的【完整性】一项长期报红灯。'
+      + ' 本条目把真实改动集里剩余的每一项都逐条列明归属与性质，使「每个改动都可回滚」覆盖全仓。'
+      + ' 复算方式：`node .p1-baseline/verify-phase-map.mjs`（其【1. 完整性】应由红灯转绿）。'
+      + ' ⚠️ 这些文件本身未被改动，撤回本条目不会影响它们；反过来撤掉它们也不影响任何阶段。'
+      + ' ⚠️ 刻意用逐条清单而不是目录通配：通配会把将来新增的文件也一并认领，'
+      + '而「谁改了它、怎么回滚」必须逐项说得清。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

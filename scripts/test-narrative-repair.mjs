@@ -59,6 +59,11 @@ export const NARRATIVE_REPAIR_TESTS = [
   // 《0731 号觉醒日》增补方案 §2 P0-B：第三重授权（op 必须在授权 ops 内）+ 零宽 insert（R07）。
   // 与 08-authorization 的分工：08 管"跨度有没有被授权"，本套管"这种改法有没有被授权"。
   'tests/narrative-repair/16-op-authorization.test.mjs',
+  // 《Novel Studio v1.1.8｜3月17日觉醒日》专项增补 §7：V118-01～V118-15。
+  // 未经批准的制度/时间机制候选（new_workflow_rule / temporal_causal_bridge）、审稿报告引文的
+  // 归属核验（quote_not_found）、strengths 绝对局限措辞的限定建议、同物件状态跨句桥接候选、
+  // 未选中问题不得假称已改、缺语义核验不得报 resolved、伏笔编号锚可见性、常见等级结果的因果候选。
+  'tests/narrative-repair/17-review-closure-0317.test.mjs',
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();

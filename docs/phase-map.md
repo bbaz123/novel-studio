@@ -53,8 +53,10 @@
 | **SE5** | 2026-10-08 第五批：叙事结构机械感（同形流程 / 时间轴 / 群众反应 / 镜头越界）+ P0 场景要求矛盾修复 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **SE6** | 2026-10-09 第六批：叙事性专项修复（E00—E07：局部补丁执行正确性 / 阶段化规则 / 审稿与选择保真 / 叙事诊断 / 编辑计划 / 可解释报告） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **SE7** | 2026-10-10 第七批：叙事审稿—局部修稿闭环的授权边界修复（《修复.md》E00—E07：选中问题 → 获准跨度 → 实际补丁不可越权） | ✅ 可独立回滚 |
+| **SE8** | 2026-03-17 第八批：《Novel Studio v1.1.8｜3月17日觉醒日》审稿与修稿新样本专项（V118-01～V118-15：未批准制度/时间机制候选、报告引文归属、修后结论闸） | ✅ 可独立回滚 |
+| **SE9** | 历史遗留物追认（C3）：为 SE1–SE8 之前/之外、从未被任何阶段认领的文件补归属 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
-**可独立回滚的阶段：U、V、Z4、V1、SE7。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
+**可独立回滚的阶段：U、V、Z4、V1、SE7、SE8。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
 ## 二、逐阶段明细
 
@@ -202,7 +204,7 @@
   - db.js 被 .p1-baseline/bench-library-index.mjs（验收工具，Z6）import——撤掉会让该工具失效
   - db.js 被 .p1-baseline/probe-recall-direct.mjs（验收工具，P1）import——撤掉会让该工具失效
   - db.js 被 .p1-baseline/test-library-index.mjs（验收工具，Z6）import——撤掉会让该工具失效
-  - db.js 被**生产代码** ai/branch/store.mjs（R）import——撤掉会打断线上路径
+  - db.js 被 .p1-baseline/test-migration-draft-dismissed.mjs（验收工具，SE9）import——撤掉会让该工具失效
 - **说明**：建表是增量迁移（向后兼容），但埋点挂钩落在 server.js 与 public/app.js（与 P3/P4 共享），ai/edit-distance.mjs 还被 server.js import → 无法只撤 P5。
 - **验收证据**：`docs/p5-memory-eval-verification.md`、`ai/edit-distance.mjs`、`.p1-baseline/test-edit-distance.mjs`、`.p1-baseline/verify-eval-metric.mjs`
 - **本阶段认领的文件**（7 个）：
@@ -246,7 +248,7 @@
   - 文件 .p1-baseline/test-recall-gap.mjs 同时属于 D8/Z2——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-task-settings.mjs 同时属于 D8/Z1——改动改在同一批代码里，撤不干净
   - ai/context/cache.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6）import——撤掉会打断线上路径
-  - ai/memory-compress-guard.mjs 被 .p1-baseline/test-memory-compress-guard.mjs（验收工具，Z2）import——撤掉会让该工具失效
+  - ai/memory-compress-guard.mjs 被 .p1-baseline/probe-guard-verdict-20261006.mjs（验收工具，SE9）import——撤掉会让该工具失效
 - **说明**：D8 是对"不足清单"的逐条修复，与 P0–P6 同处一批文件：server.js 已被 P2–P5 认领，ai/context/layers.mjs 属 P1，所以 D8 的代码同样**不能单独撤回**。 它独有认领的只有 openviking-sync.js（此前无人认领）与两个新内核模块。
 - **验收证据**：`.p1-baseline/test-recall-gap.mjs`、`.p1-baseline/test-sync-gate.mjs`、`.p1-baseline/test-context-cache.mjs`、`.p1-baseline/exp-per-task-settings.mjs`、`.p1-baseline/revert-matrix.mjs`
 - **本阶段认领的文件**（32 个）：
@@ -966,7 +968,7 @@
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 ai/editing/rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
-  - ai/editing/rules.mjs 被 .p1-baseline/test-editing-rules.mjs（验收工具，R/SE5/SE6）import——撤掉会让该工具失效
+  - ai/editing/rules.mjs 被 .p1-baseline/probe-rules-catalog.mjs（验收工具，SE9）import——撤掉会让该工具失效
 - **说明**：**只加判据与规则，不改任何模型契约**：补丁 JSON 仍是 `{"patches":[{issue,anchor,revised}]}`， 审稿 JSON 形状与提示词字段一字未动。本批做的事： ① `public/patch-safety.js` 升 v1.1.0，新增 `fact_lock_conflict`（**进 HARD_CODES**：同一实体两个编号 / 同一编号两个主人 / 补丁让有主人的编号整体消失）、`scene_bridge`、`cross_paragraph_duplicate`、 `percent_sum_mismatch`； ② `ai/editing/scan.mjs` 新增四条判据（其中 `duplicate-sentence` **与能力开关无关**） 与 `scanned.promise` 测量值；`ai/editing/rules.mjs` 升 v1.3.0，新增 `number-lock / scene-bridge / promise-identity` 三项**默认关闭、只报告**的能力， `PROTECTION_RULES` 增第 8 条（数字锁）与第 9 条（转场桥）； ③ **接线**：保护规则此前只被 `task:"write"` 的上下文层使用，润色与两条修稿提示词从没收到过它 —— 现在注入 `buildAIPolishMessages / buildAIRevisionPatchPrompt / buildAIRevisionPrompt`， 与 `edit_rules_enabled` 无关（保真底线不是创作偏好）； ④ `ai/writing/policy.mjs` 增 `allow_human_slack`（成文/扩写）与 `protect_human_slack`（修稿） 一对偏好，**不加配额**（配额化即 AI 味的结构性来源）；`public/app.js` 的兜底常量同文同步。 证据：`node .p1-baseline/probe-fact-lock-20261008.mjs`（25/25）、 `node .p1-baseline/probe-scan-round4-20261008.mjs`（20/20，语料是作者真实的两版正文）、 `node frontend-test.mjs` ALL PASS（含新增 118a–118n）。 本轮抓出并修掉七个自身缺陷（两遍 `labelFromWindow` 覆盖、编号前置式不认、后缀取错位置、 百分比正则在小数上错配、稀有度词重叠计数、外景词含单字"下"、百分比容差过松），逐条留痕在交付文档里。 `public/app.js`、`frontend-test.mjs`、`ai/editing/*`、`ai/writing/policy.mjs` 与其它阶段共用， 故 `rollback = shared`；两个探针脚本与交付文档本身可以单独撤回。
 - **验收证据**：`docs/deai-source-fix-round4-20261008.md`、`.p1-baseline/probe-fact-lock-20261008.mjs`、`.p1-baseline/probe-scan-round4-20261008.mjs`
 - **本阶段认领的文件**（15 个）：
@@ -995,7 +997,7 @@
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 ai/editing/rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
-  - ai/editing/rules.mjs 被 .p1-baseline/test-editing-rules.mjs（验收工具，R/SE4/SE6）import——撤掉会让该工具失效
+  - ai/editing/rules.mjs 被 .p1-baseline/probe-rules-catalog.mjs（验收工具，SE9）import——撤掉会让该工具失效
 - **说明**：**只加判据与字段、不改任何模型契约**：修稿补丁 JSON 仍是 `{"patches":[{issue,anchor,revised}]}`， `novel_consistency` 的返回是**追加** `checklist.style_diagnosis`（现有字段一字未动）。本批做的事： ① **P0 根因**：`buildAIWritingProsePrompt` 里"每个场面必须有明确地点/人物/动作/冲突，再补环境、动作、心理、对话与节奏" 与写作策略源 `avoid_repeated_full_mechanism`（同一机制不要完整复现第二遍）**直接冲突** —— 模型只能选后者，这就是"觉醒检测流程完整演示 4 次"的来源；改为**功能驱动**（关键场面展开／过渡场面可略写／ 同类流程第二次只写结果差异与反应／第一次要写足）。 ② `ai/editing/scan.mjs` 新增 `scanStoryShape` 与常驻测量值 `scanned.style_shape`（**与能力开关无关**）： 时间锚点（含"绑定钟点才算推进""时长不算""纯参照不算"三条筛）、同形流程簇、匿名群众反应段、 非转播上下文的镜头词、主视角看/听与主动动作比值； `ai/editing/rules.mjs` 升 v1.4.0，新增 `story-shape`（默认关闭、只报告），`PROTECTION_RULES` 增第 10 条（同类机制只完整演示一次，**第一次必须保留**）； ③ `ai/writing/policy.mjs` 升 2026-10-08.2，只补**真正缺的**三条（`first_showing_stays_complete`、 `prefer_progressive_revelation`、`prefer_result_over_repeated_process`）与 `diag_timeline_density`； 方案原列的其余 6 条诊断与 3 条偏好**已存在**（`diag_repeated_mechanism`／`diag_functional_redundancy`／ `diag_negative_explanation`／`diag_over_explanation`／`allow_human_slack`／`protect_human_slack`／ `avoid_repeated_full_mechanism`），故不新建 —— 同一判据两份文本必然漂移； ④ `server.js` 的 `/api/novel/consistency` 追加 `checklist.style_diagnosis`（自己显式打开 story-shape 跑一次， 不依赖作者是否启用了该能力），`novel-tools.mjs` 渲染为第 ⑨ 项自检 + 结构诊断区块， `agent.cordis.yml` 只追加**一条总原则**（控制规则数量，不加几十条）。 证据：`node .p1-baseline/probe-story-shape-20261008.mjs`（41/41，语料是作者真实的两版正文， 含正例/负例/静默姿态三类断言）、`node .p1-baseline/calibrate-story-shape-20261008.mjs`（阈值实测来源）、 `node .p1-baseline/test-editing-rules.mjs`（含新增派生护栏 C0c）。 本轮在**真实语料上**抓出并修掉六处判据缺陷（时长守卫误删真锚点、`vagueOnlyRe` 被定义却从未使用、 同段两时间词误判过密、镜头上下文只看前一段、`MEDIA_CONTEXT_RE` 自我实现、 群众反应按动词分簇导致正例漏报），逐条留痕在交付文档里。 `public/app.js`、`server.js`、`frontend-test.mjs`、`ai/editing/*`、`ai/writing/policy.mjs`、 两个 harness 插件文件与其它阶段共用，故 `rollback = shared`；探针、语料与交付文档可单独撤回。 ⚠️ 已知边界：本章可复算的"同形流程再现"只有 2 组（不是审稿人目测的 4 次完整复现）， 时间锚点 4–5 个、匿名群众反应 1 段、镜头越界 0 段 —— 即 S1/S3/S5 在本章是**倾向**而非硬性缺陷， 判据据此保持静默（零误报纪律），这是刻意的能力边界而非漏检。
 - **验收证据**：`docs/deai-source-fix-round5-20261008.md`、`.p1-baseline/probe-story-shape-20261008.mjs`、`.p1-baseline/calibrate-story-shape-20261008.mjs`
 - **本阶段认领的文件**（19 个）：
@@ -1031,7 +1033,7 @@
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5）import——撤掉会打断线上路径
 - **说明**：**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`； 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`）， `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`， 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`， 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）； ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价， Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）； ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）； ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）； ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）； ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）； ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。 `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、 `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*` 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级； 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。 ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`）， 故交付文档只写"机制已实现、文学效果待评测"。
 - **验收证据**：`docs/narrative-repair/implementation-report.md`、`docs/narrative-repair/test-report.md`、`docs/narrative-repair/e07-run-manifest.json`、`docs/narrative-repair/coverage-report.json`、`docs/narrative-repair/rollback.md`、`scripts/run-narrative-acceptance.mjs`
-- **本阶段认领的文件**（60 个）：
+- **本阶段认领的文件**（61 个）：
   - `.p1-baseline/test-editing-rules.mjs`
   - `.p1-baseline/test-migration-idempotent.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -1078,6 +1080,7 @@
   - `tests/narrative-repair/14-plan-coverage-0731.test.mjs`
   - `tests/narrative-repair/15-reason-binding.test.mjs`
   - `tests/narrative-repair/16-op-authorization.test.mjs`
+  - `tests/narrative-repair/17-review-closure-0317.test.mjs`
   - `tests/narrative-repair/fixtures/after.txt`
   - `tests/narrative-repair/fixtures/before.txt`
   - `tests/narrative-repair/fixtures/manifest.json`
@@ -1135,12 +1138,32 @@
   - `docs/narrative-repair-116/test-report.md`
   - `scripts/run-narrative-repair-116.mjs`
 
-## 三、归属核对
+### SE8 · 2026-03-17 第八批：《Novel Studio v1.1.8｜3月17日觉醒日》审稿与修稿新样本专项（V118-01～V118-15：未批准制度/时间机制候选、报告引文归属、修后结论闸）
 
-- 真实改动集：**573** 个文件
-- 未被任何阶段认领：**113** 个
+- **回滚方式**：可独立回滚
+- **说明**：**只加窄候选与"不许提前宣布解决"的闸，不改模型契约、不改故事**： `patch-safety.js` 新增 `new_workflow_rule`（新制度/流程事实）与 `temporal_causal_bridge`（底稿已收束、改后只靠"天色已暗"交代时间）两条 story_fact 候选，外加 `propStateCandidates`（同物件状态跨句重叠）与 `anchorStatus`（伏笔编号锚可见性）； `narrative-review.mjs` 新增 `auditReviewQuotes`（只核验用引号表示的逐字原文，找不到即 `quote_not_found`， 不删整条优点）与绝对局限措辞的 `strength_qualifications`（只给限定建议，不删句）； `revision-patch.js` 的 `issueCoverageCandidates` 补 `unaccounted`（未选中项不得被算作"已改"或"失败"）， 新增 `coverageVerdict`：**旧引文消失 ≠ 问题解决**，语义未跑时最多 `partially_resolved`/`needs_review`； `narrative-scan.mjs` 的反应因果判据补现场地点词与 `gradeRarity` 通道（常见等级结果引发全体中止）。 ⚠️ 回滚口径：本批**自身的**新增物（`docs/review-closure-118/`）可独立撤回；上面五处代码改动落在 更早阶段共同认领的文件里（SE/SE4/SE5/SE6），撤回时必须与那些阶段一起处理（见 `docs/review-closure-118/rollback.md` §2 的逐文件配方与 §4 的细粒度撤除表）。 ⚠️ 已知边界：真实模型语义审稿与"修改后问题是否仍成立"的语义判定未执行（`semantic_status:not_run`，`SKIPPED: paid_evaluation_not_authorized`）， 故 R01/R02/R07 的最终结论只写到 `partially_resolved`。
+- **验收证据**：`docs/v118专项-执行与交付报告.md`、`docs/review-closure-118/source-map.md`、`docs/review-closure-118/implementation-report.md`、`docs/review-closure-118/diff-audit.md`、`docs/review-closure-118/review-quality-report.md`、`docs/review-closure-118/test-report.md`、`docs/review-closure-118/issue-coverage.json`、`docs/review-closure-118/rollback.md`
+- **本阶段认领的文件**（10 个）：
+  - `docs/review-closure-118/author-approved-wait-event.md`
+  - `docs/review-closure-118/diff-audit.md`
+  - `docs/review-closure-118/implementation-report.md`
+  - `docs/review-closure-118/issue-coverage.json`
+  - `docs/review-closure-118/review-quality-report.md`
+  - `docs/review-closure-118/rollback.md`
+  - `docs/review-closure-118/source-map.md`
+  - `docs/review-closure-118/test-report.md`
+  - `docs/v118专项-执行与交付报告.md`
+  - `scripts/rollback-v118.mjs`
 
-⚠️ 以下改动没有归属——没人能说清怎么回滚它们：
+### SE9 · 历史遗留物追认（C3）：为 SE1–SE8 之前/之外、从未被任何阶段认领的文件补归属
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - ai/writing/compile.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6）import——撤掉会打断线上路径
+  - ai/writing/scopes.mjs 被**生产代码** ai/writing/policy.mjs（SE4/SE5）import——撤掉会打断线上路径
+- **说明**：**只补归属、不碰文件**：这些是 SE1–SE8 各批留下的一次性探针/实验脚本、语料转储、验收报告与方案稿，从未被任何阶段条目认领，于是阶段映射的【完整性】一项长期报红灯。 本条目把真实改动集里剩余的每一项都逐条列明归属与性质，使「每个改动都可回滚」覆盖全仓。 复算方式：`node .p1-baseline/verify-phase-map.mjs`（其【1. 完整性】应由红灯转绿）。 ⚠️ 这些文件本身未被改动，撤回本条目不会影响它们；反过来撤掉它们也不影响任何阶段。 ⚠️ 刻意用逐条清单而不是目录通配：通配会把将来新增的文件也一并认领，而「谁改了它、怎么回滚」必须逐项说得清。
+- **验收证据**：`docs/review-closure-118/test-report.md`
+- **本阶段认领的文件**（132 个）：
   - `.p1-baseline/_split-own-diff-20261006.mjs`
   - `.p1-baseline/ch121-current.txt`
   - `.p1-baseline/ch121-v48-manual.txt`
@@ -1219,7 +1242,14 @@
   - `.p1-baseline/verify-ch121-untouched.mjs`
   - `.p1-baseline/verify-ch121-untouched2.mjs`
   - `.p1-baseline/verify-thinking-heartbeat-20261002.mjs`
+  - `01.md`
   - `AGENTS.md`
+  - `DSH Verification Gate 插件.md`
+  - `Novel-Studio_AI味与设定漂移优化方案.md`
+  - `Novel-Studio_修稿前后问题整合与Safe-Editing修改方案.md`
+  - `Novel-Studio_第二轮生成质量验收与优化方案.md`
+  - `Novel_Studio_0731审稿修稿增补方案.md`
+  - `Novel_Studio_v118_0317专项修改方案.md`
   - `ai/writing/compile.mjs`
   - `ai/writing/scopes.mjs`
   - `docs/0731增补方案-执行与交付报告.md`
@@ -1253,4 +1283,23 @@
   - `docs/save-incident-20261002.md`
   - `docs/spawn-eperm-20261002.md`
   - `docs/wiring-fix-20261008.md`
+  - `novel-studio 深度审计与缺陷修复报告生成提示词.md`
+  - `novel_studio_architecture_gap_audit.md`
+  - `novel_studio_codex_full_delivery_prompt_v2.md`
   - `scripts/cleanup-stale-blueprints-20261006.mjs`
+  - `待办事项-文件整理.md`
+  - `待办事项-知识库.md`
+  - `待办事项，为工作台加入待办.md`
+  - `插件制作方案_完整实现版.md`
+  - `方案.md`
+  - `架构重构.md`
+  - `缺点及修复报告.codex版本-20261001-1623.md`
+  - `缺陷修复.md`
+  - `缺陷问题及对应解决办法.md`
+
+## 三、归属核对
+
+- 真实改动集：**603** 个文件
+- 未被任何阶段认领：**0** 个
+
+✓ 全部改动都有归属。

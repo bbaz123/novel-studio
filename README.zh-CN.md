@@ -43,7 +43,7 @@ Novel Studio 把它做成**确定性、可检查的机制**：本机跑一个 No
 
 **一句实话**：Novel Studio 写不出比托管 AI 写作服务更漂亮的**单句**，也不会像人类编辑那样给你一份成熟大纲。它做的是那些工具不做的事——**不让设定漂移、死人复活和伏笔失踪悄悄过去**，而且是在你自己的机器上、免费做这件事。
 
-> 📌 版本 **v1.1.8**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.1.8](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.8)。
+> 📌 版本 **v1.1.9**（实验版 · 强化版）。本仓库的**默认分支 `Experimental-Version-v1.0` 就是当前开发线**；`refactor/p0-p6` 保留上一版（v0.9.6），`main` 保留重构前的旧版（v0.9.3）。安装方式与项目结构一律以本页为准，收尾说明见 [Release v1.1.9](https://github.com/bbaz123/novel-studio/releases/tag/v1.1.9)。
 >
 > 🔎 **English keywords**：local-first AI novel writing studio / novel writing software · AI writing assistant · AI 小说写作软件 · Chinese web novel (网文) / long-form fiction · character consistency & foreshadowing tracker · worldbuilding tool · story bible · DeepSeek Harness plugin · Node.js + SQLite · zero npm dependencies · self-hosted & privacy-first, your data never leaves your machine.
 
@@ -727,6 +727,38 @@ $env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
 ---
 
 ## 📝 更新记录
+
+### 🛠️ 最近更新（2026-10-14 · **v1.1.9** 实验版：审稿事实归属与"旧引文消失 ≠ 问题解决"）
+
+**这就是当前版本。** 上一版（v1.1.8）把补丁协议的授权补齐；这一版按《Novel Studio v1.1.8｜3月17日
+觉醒日》专项增补（V118-01～V118-15）解决**报告本身可信不可信**的问题：报告里的"原话"是不是真的、
+好评用了绝对措辞要不要加限定、以及**改完之后问题到底解决没有**。
+
+- **未批准的制度/时间机制不再被当成纯表达**（`public/patch-safety.js`）：新增 `new_workflow_rule`
+  （新制度/流程事实）与 `temporal_causal_bridge`（底稿已收束、改后只靠"天色已暗"交代时间）两条窄候选，
+  落 `story_fact` 并带 `needs_fact_authorization`。事故形态：为了让"中午测完"与"天黑出门"对得上，
+  模型**替检测中心发明了一条叫号制度**（"下午的号按学校分批往下叫"）——它不含任何实体词形，
+  旧判据因此**直接自动应用**。现在它会被拦下并提示需要事实授权。
+- **审稿报告里的"原话"第一次被核验**（`ai/editing/narrative-review.mjs` 的 `auditReviewQuotes`）：
+  `summary/strengths/issues` 中**用引号表示的逐字原文**必须能在正文里逐字找到，否则标 `quote_not_found`
+  并提示"删引号改为概括或人工核对"。**只**核验引号内容：不带引号的概括与文学分析不参与核验，
+  也不会强行要求附原话；找不到时**不删整条优点**。
+- **修后结论闸：旧引文消失 ≠ 问题解决**（`public/revision-patch.js` 的 `coverageVerdict`）：
+  语义层未跑（`semantic_status:not_run`）时最多 `partially_resolved` / `needs_review`，**永不 `resolved`**；
+  只有语义层明确通过且证据已消失才允许 `resolved`。这条直接对应 R01/R07 的形态：删掉了"二十米"，
+  但"再挪两步就能看见"与"几十个人遮挡"的空间关系并没有被证明。
+- **未选中的问题不再凭空消失**（`issueCoverageCandidates` 补 `unaccounted`）：既不算"已改"，也不算"失败"，
+  并区分 `not_selected` 与 `selection_unspecified`（**未提供勾选集合 ≠ 未选中**）。
+- **另三项窄候选**：`propStateCandidates`（同物件状态跨句重叠，如手机"悬在半空"→"举起来"，带反证）、
+  `anchorStatus`（伏笔编号锚可见性——正文只写"一串数字"时标 `unknown_anchor`，**不判硬冲突、不自动补数**）、
+  以及 `reaction_causality` 的现场地点词与 `gradeRarity` 通道（"外场安静了"此前因词表缺"外场"而整句漏过）。
+- **界面接线**（`public/app.js`）：审稿弹窗新增「引文归属（N 处对不上原文）」与「优点需加限定」两个区块，
+  优点逐条附正文反例；覆盖表按 `coverageVerdict` 显示**最终结论**标签（语义未跑时永不显示"已解决"）。
+- **验证（零计费）**：`tests/narrative-repair/17-review-closure-0317.test.mjs` **39 条断言全过**（含 4 条阴性对照）、
+  叙事套件 **17 套件 / 0 未通过**、`frontend-test.mjs` **ALL PASS**（新增 8 条界面断言）、
+  `ci-offline-checks.mjs` **54/54**、阶段映射核对通过（新增 `SE9` 历史遗留物追认，`孤儿 0`）。
+
+---
 
 ### 🛠️ 最近更新（2026-10-13 · **v1.1.8** 实验版：补丁协议 v2 的三重授权与修后核验）
 

@@ -6343,6 +6343,75 @@ P.traceStopStream();
       && P.reportConsistencyHtml(consistencyWithAdvisory).includes('不靠旁白建体系'),
       JSON.stringify({ viaReport: P.reportConsistencyHtml(nested).length, viaConsistency: P.reportConsistencyHtml(consistencyWithAdvisory).length }));
 
+    // ③‴ v118（§3/§4/§5）闭环回归：quote_audit 与 strength_qualifications 同样是"数据层早就有、
+    //     展示层从没读过"的形态（与 S04-2 那次是同一个坑）。四条断言把接线钉住。
+    const quoteAuditReport = {
+      summary: 's', strengths: [],
+      quote_audit: {
+        items: [
+          { quote: '你就不能配合一下气氛', status: 'quote_not_found', found: false, line: 'x' },
+          { quote: '羡慕不？', status: 'verbatim_ok', found: true, line: 'y' },
+        ],
+        quote_not_found_count: 1, checked_count: 2,
+      },
+      consistency: { status: 'ok', conflicts: [], advisories: [], strength_qualifications: [] },
+    };
+    const htmlQuote = String(P.reportConsistencyHtml(quoteAuditReport));
+    check('V118-06u 引文没有逐字出处时必须渲染「引文归属」区块并点名那句引文',
+      htmlQuote.includes('引文归属') && htmlQuote.includes('你就不能配合一下气氛'),
+      htmlQuote.replace(/<[^>]*>/g, ' ').slice(0, 100));
+    check('V118-08u（阴性对照）逐字命中的引文不得被列进"对不上原文"（不误报合法引文）',
+      !/羡慕不[？?][^]{0,40}没有逐字出处/.test(htmlQuote),
+      htmlQuote.replace(/<[^>]*>/g, ' ').slice(0, 160));
+
+    const qualReport = {
+      summary: 's', strengths: ['林清雪只给动作，完全没有内心独白。'],
+      quote_audit: { items: [], quote_not_found_count: 0, checked_count: 0 },
+      consistency: {
+        status: 'ok', conflicts: [], advisories: [],
+        strength_qualifications: [{
+          code: 'strengths_needs_qualification', strength: '林清雪只给动作，完全没有内心独白。',
+          evidence: '他从小觉得人应该是这样。', note: '请加限定',
+        }],
+      },
+    };
+    const htmlQual = String(P.reportConsistencyHtml(qualReport));
+    check('V118-09u 绝对局限措辞必须渲染「优点需加限定」并给出正文反例',
+      htmlQual.includes('优点需加限定') && htmlQual.includes('他从小觉得人应该是这样'),
+      htmlQual.replace(/<[^>]*>/g, ' ').slice(0, 120));
+    check('V118-09v 该区块只提示加限定，不得声称要删掉优点或删正文',
+      /建议限定|只提示加限定/.test(htmlQual) && !/删除该优点|删掉整条优点评价/.test(htmlQual),
+      htmlQual.replace(/<[^>]*>/g, ' ').slice(0, 120));
+    check('V118-09w（阴性对照）无引文问题且无待限定项时不得凭空出现这两个区块',
+      P.reportConsistencyHtml({ status: 'ok', conflicts: [], advisories: [] }) === '',
+      JSON.stringify(String(P.reportConsistencyHtml({ status: 'ok', conflicts: [], advisories: [] })).slice(0, 60)));
+
+    // V118-12u：覆盖表的"最终结论"必须来自引擎、且**语义未跑时绝不显示已解决**。
+    //   ⚠️ 断言只取**结论标签本身**（`<span class="chip">结论：…</span>`），不扫整段 HTML ——
+    //   详情里会引用判据原话（被 esc 成 `&quot;问题已解决&quot;`），扫全串会自造假红。
+    const verdictLabels = (html) => {
+      const out = [];
+      const re = /<span class="chip">(结论：[^<]*)<\/span>/g;
+      let m = re.exec(String(html));
+      while (m) { out.push(m[1]); m = re.exec(String(html)); }
+      return out;
+    };
+    const covPatched = [{ issue_id: '2', status: 'patched', reason: '只删了旁白' }];
+    const htmlStill = String(P.revisionCoverageHtml(covPatched, { issueCoverage: [{ issue_id: '2', still_present: 1 }], semantic: null }));
+    const labelsStill = verdictLabels(htmlStill);
+    check('V118-12u 语义未跑 + 旧证据仍在 → 结论标签是"部分解决"，不是"已解决"',
+      labelsStill.length === 1 && labelsStill[0].includes('部分解决') && !labelsStill[0].includes('已解决'),
+      JSON.stringify(labelsStill));
+    const htmlNoSem = String(P.revisionCoverageHtml(covPatched, { issueCoverage: [], semantic: null }));
+    const labelsNoSem = verdictLabels(htmlNoSem);
+    check('V118-12u2 语义未跑 + 旧证据已消失 → 结论标签是"待语义复核"，不是"已解决"',
+      labelsNoSem.length === 1 && labelsNoSem[0].includes('待语义复核') && !labelsNoSem[0].includes('已解决'),
+      JSON.stringify(labelsNoSem));
+    const htmlResolved = String(P.revisionCoverageHtml(covPatched, { issueCoverage: [], semantic: { status: 'pass' } }));
+    check('V118-12v（反例）语义层明确通过且旧证据已不在时，才允许结论标签为"已解决"',
+      verdictLabels(htmlResolved).some((l) => l.includes('已解决')),
+      JSON.stringify(verdictLabels(htmlResolved)));
+
     // ④ E05-B：重试预算跨刷新共享（刷新不等于重新领一次额度）
     sandbox.localStorage.removeItem('ns_revision_retry_budget');
     const budgetKey = P.revisionRetryBudgetKey(P.revisionSnapshotFor(article, 302), ['3', '7']);

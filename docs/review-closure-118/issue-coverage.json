@@ -1,0 +1,274 @@
+{
+  "report_version": "v118-0317-review-closure-1",
+  "implementation_note": "coverageVerdict 在无证据可清空时返回 needs_review，在仍有证据时返回 partially_resolved；两者都不会是 resolved。旧引文消失的另一种表述是 changed_but_unverified —— 两者都属『改了但没被验证』，本轮实现取 needs_review。",
+  "generated_for": "《Novel Studio v1.1.8｜3月17日觉醒日：审稿与修稿新样本专项增补》§4",
+  "repo": {
+    "branch": "Experimental-Version-v1.0",
+    "head": "18cf102b8f00b1a8fd8281d85c4706de78631769",
+    "package_version": "1.1.8",
+    "node": "v24.19.0",
+    "local_checkout_verified": true,
+    "full_pipeline_tests_run": true,
+    "real_model_semantic_review_run": false
+  },
+  "schema_note": "每条 finding 记录：issue_id → claimed_problem → evidence_quotes[] → required_conditions[] → approved_hotspots[] → applied_diff[] → verify_status → semantic_status。确定性层只判『跨度、引文、不变量』；语义层未跑时必须写 semantic_status=not_run，且不得据此报 resolved。",
+  "defaults": {
+    "semantic_status": "not_run",
+    "approved_hotspots": [],
+    "applied_diff": [],
+    "note": "本轮没有真实章节补丁被执行（缺少作者真实任务快照与勾选记录），因此 approved_hotspots 与 applied_diff 一律为空。空不是『没有改动要审』，而是『没有可审的真实补丁』。"
+  },
+  "findings": [
+    {
+      "issue_id": "R01",
+      "claimed_problem": "中午只剩十几人、十分钟一个变成三五分钟一个、王磊测完说『走了』，却在天黑后才走出检测中心大门；因果缺口没有被补上。",
+      "evidence_quotes": [
+        "走出检测中心大门的时候，天色已经暗了。",
+        "下午的号按学校分批往下叫，他在外场又耽搁了一阵；"
+      ],
+      "required_conditions": [
+        "有一个**有来源**的事件解释从『测完』到『天黑』的等待（点名到具体行为或对象）",
+        "或者由作者批准把已经交代过的阶段（如『中午』）调整到与落日一致",
+        "全程不得新增未获批准的制度性事实（叫号规则、分批口径、复核流程）"
+      ],
+      "approved_hotspots": [],
+      "applied_diff": [],
+      "verify_status": "partially_resolved",
+      "semantic_status": "not_run",
+      "deterministic_status": "new_workflow_rule + temporal_causal_bridge 均已命中（story_fact，建议而非自动应用）",
+      "author_choice_required": true,
+      "why_not_resolved": "新增句是一条无来源的制度事实，它让时间『看起来对得上』，却没有建立等待的因果；判据现在会拦，但**没有**替作者选故事修法。",
+      "source": "SOURCE（用户提供的两份正文与审稿报告）"
+    },
+    {
+      "issue_id": "R02",
+      "claimed_problem": "D 级之后三句匿名安慰语同义重复；本轮只删掉了后面那条解释性旁白。",
+      "evidence_quotes": [
+        "没事，一样能考大学。"
+      ],
+      "required_conditions": [
+        "重复的安慰语本身被合并或改写（不是只删旁白）",
+        "且修后上下文里不再有等价功能的重复安慰"
+      ],
+      "approved_hotspots": [],
+      "applied_diff": [
+        {
+          "type": "deleted_narration",
+          "text": "没有谁特意冲他说，也没有谁刻意避开他。",
+          "clean_codepoints": -19
+        }
+      ],
+      "verify_status": "partially_resolved",
+      "semantic_status": "not_run",
+      "deterministic_status": "issueCoverageCandidates 命中：逐字证据仍在修后正文里（still_present >= 1）",
+      "why_not_resolved": "问题的证据是三句安慰原话，它们一条都没少；删掉的是旁白，不是问题本身。"
+    },
+    {
+      "issue_id": "R03",
+      "claimed_problem": "S 级与 D 级两次『安静』的解说文字在替读者翻译情绪。",
+      "evidence_quotes": [
+        "外场安静了。"
+      ],
+      "required_conditions": [
+        "删掉的是叙述者对情绪的翻译，而不是反应本身",
+        "『外场安静了』这类事实性反应可以保留"
+      ],
+      "approved_hotspots": [
+        {
+          "quote": "外场安静了。",
+          "why": "它是反应事实，不是对情绪的解释；方案 §1 明确要求保留"
+        }
+      ],
+      "applied_diff": [
+        {
+          "type": "deleted_narration",
+          "text": "跟看S级落雪时那种安静不一样。刚才大家是被吓住了，不知道该说什么。这次是不知道该说什么，也笑不出来。",
+          "clean_codepoints": -50
+        }
+      ],
+      "verify_status": "locally_resolved",
+      "semantic_status": "not_run",
+      "deterministic_status": "无需新增判据；删除形态不触发 expansion / new_* 任一信号",
+      "why_not_resolved": "文本层方向正确，但『改动后阅读效果是否变好』只有语义层能判；未跑语义模型，故不升级为 resolved。"
+    },
+    {
+      "issue_id": "R04",
+      "claimed_problem": "S 级场面出现六拍反应，节奏上被反复证明同一规模。",
+      "evidence_quotes": [],
+      "required_conditions": [
+        "作者勾选该条（是否勾选本轮未知）",
+        "改动不得破坏『第一次完整演示』的保留规则"
+      ],
+      "approved_hotspots": [],
+      "applied_diff": [],
+      "verify_status": "not_touched",
+      "semantic_status": "not_run",
+      "selection_status": "unknown",
+      "why_not_resolved": "本轮样本里这一段没有任何变更。**不能**仅据无变化断言修稿失败——未选中既不算已改、也不算失败（V118-11）。"
+    },
+    {
+      "issue_id": "R05",
+      "claimed_problem": "散场布景文字冗余。",
+      "evidence_quotes": [],
+      "required_conditions": [
+        "作者勾选该条（是否勾选本轮未知）"
+      ],
+      "approved_hotspots": [],
+      "applied_diff": [],
+      "verify_status": "not_touched",
+      "semantic_status": "not_run",
+      "selection_status": "unknown",
+      "why_not_resolved": "作者可能刻意保留布景。不按文字数量强制删；未选中不得记为失败。"
+    },
+    {
+      "issue_id": "R06",
+      "claimed_problem": "开篇主角站位动作与解释重复。",
+      "evidence_quotes": [],
+      "required_conditions": [
+        "删掉的是重复的动作，而不是位置信息本身",
+        "『不往前挤』与『这个位置有个好处』的解释叠加也要处理"
+      ],
+      "approved_hotspots": [],
+      "applied_diff": [
+        {
+          "type": "deleted_word",
+          "text": "又停下来。",
+          "clean_codepoints": -5
+        }
+      ],
+      "verify_status": "partially_resolved",
+      "semantic_status": "not_run",
+      "why_not_resolved": "只删了一个动作短语，解释叠加仍在（方案 §1 的 `partially_resolved` 判断保持不变）。"
+    },
+    {
+      "issue_id": "R07",
+      "claimed_problem": "检测台距离与遮挡的空间关系可疑：『再挪两步就能看见检测台』与『几十个人遮挡、踮脚也看不到』并存。",
+      "evidence_quotes": [
+        "检测台离他大概二十米",
+        "再挪两步就能看见检测台",
+        "几十个人"
+      ],
+      "required_conditions": [
+        "『两步可见』与『几十人遮挡』不能同时成立（除非明确是在讲不同方向/不同时点）",
+        "删除距离数字不等于解决了空间关系"
+      ],
+      "approved_hotspots": [],
+      "applied_diff": [
+        {
+          "type": "deleted_clause",
+          "text": "检测台离他大概二十米，",
+          "clean_codepoints": -11
+        }
+      ],
+      "verify_status": "partially_resolved",
+      "semantic_status": "not_run",
+      "deterministic_status": "issueCoverageCandidates 命中：其余证据句仍逐字存在（still_present = 2）",
+      "why_not_resolved": "删掉一个距离数字并没有证明空间关系；而删掉的那个数字本身消失了（阴性提示），因此**只能**写 partially_resolved。"
+    }
+  ],
+  "report_quote_attribution": [
+    {
+      "report_quote": "你就不能配合一下气氛",
+      "verbatim_in_chapter": false,
+      "required_verdict": "quote_not_found",
+      "actual_evidence": "“羡慕不？”“还行。”“还行？”王磊瞪着他，“他A级。”",
+      "implemented_check": "V118-06"
+    },
+    {
+      "report_quote": "你先上去吧",
+      "verbatim_in_chapter": false,
+      "required_verdict": "quote_not_found",
+      "actual_evidence": "“就是，”王磊张了张嘴，“算了。你上去吧。”",
+      "implemented_check": "V118-07"
+    },
+    {
+      "report_quote": "羡慕不？",
+      "verbatim_in_chapter": true,
+      "required_verdict": "verbatim_ok",
+      "implemented_check": "V118-08"
+    },
+    {
+      "report_quote": "算了。你上去吧。",
+      "verbatim_in_chapter": true,
+      "required_verdict": "verbatim_ok",
+      "implemented_check": "V118-08"
+    }
+  ],
+  "strength_claims_to_qualify": [
+    {
+      "strength": "林清雪只给动作，没有内心独白。",
+      "counterexample": "他从小觉得人应该是这样。",
+      "required_action": "限定为『动作有效，另有少量自我解释』",
+      "forbidden_action": "不得删掉整条优点评价，也不得机械删正文句子",
+      "implemented_check": "V118-09"
+    },
+    {
+      "strength": "李拓是本章唯一一次写足检测流程。",
+      "counterexample": "主角 D 级流程同样完整（被叫名 → 上台 → 按石 → 等级播报 → 反应）",
+      "required_action": "把『唯一一次』限定为『两条流程叙事用途不同』",
+      "forbidden_action": "不得按硬词表机械删句",
+      "implemented_check": "V118-09"
+    }
+  ],
+  "keep_or_defer": [
+    {
+      "item": "系统首次出声仅在章末",
+      "status": "keep",
+      "reason": "首章钩子明确要求末尾首次出声；不得为『均匀系统出现次数』补面板/奖励/对答"
+    },
+    {
+      "item": "S 级寒月灵体与 SS 级异象不等同",
+      "status": "keep",
+      "reason": "可延后说明的伏笔"
+    },
+    {
+      "item": "林清雪低头看掌心",
+      "status": "keep",
+      "reason": "人物细节，非缺陷"
+    },
+    {
+      "item": "觉醒评定单的侧袋物件连续性",
+      "status": "deferred",
+      "reason": "需要作者/蓝图确认该物件的来路时点，不在本章自动补写"
+    },
+    {
+      "item": "0731 尚未在该版本正文明确披露",
+      "status": "unknown_anchor",
+      "reason": "正文只写『一串数字，没细看』；可能是有意延后公开 → 不判硬冲突、不自动补数",
+      "implemented_check": "V118-13"
+    }
+  ],
+  "extra_open_candidates": [
+    {
+      "id": "prop_state_continuity",
+      "what": "王磊的手机先『悬在半空』，后又『举起来想拍大屏，举到一半又放下』",
+      "verdict": "prop_state_possible_overlap（候选，允许反证）",
+      "implemented_check": "V118-10"
+    },
+    {
+      "id": "unknown_workflow",
+      "what": "开头『三条队伍』与现场仅见单块石板，不足以证明工位冲突",
+      "verdict": "unknown_workflow（缺具体并行叫号与队列规则，不断言）",
+      "implemented_check": "未建断言（无足够文本证据，按『未命中不表态』保持静默）"
+    },
+    {
+      "id": "reaction_causality",
+      "what": "D 级若属常见结果，一个普通 D 级让整个外场静止需要额外动因",
+      "verdict": "reaction_causality（候选，带反证通道）",
+      "implemented_check": "V118-15"
+    },
+    {
+      "id": "date_line_difference",
+      "what": "本篇开头 3751年3月17日 与前一轮候选稿的时点差异",
+      "verdict": "not_comparable（不同版本第一章的日期不直接相互制约，需先确认是否同一既定时间线）",
+      "implemented_check": "未建断言"
+    }
+  ],
+  "not_run": [
+    "真实模型语义审稿（『修改后问题是否仍成立』）—— semantic_status: not_run",
+    "真实章节复跑（用作者真实任务快照重放 0317 审稿）—— missing_execution_evidence",
+    "文学效果 / 自然度评测 —— paid_evaluation_not_authorized",
+    "docs/phase-map.md 重新生成 —— 沙箱 git 不可用（见 test-report.md §4）",
+    "DSH 验证门技术验收 —— **已通过**。过程：applicable:true 介入（resolvedProjectRoot=novel-studio，via mentioned-paths）后，test 检查连续 4 个 cycle 报 exit 1 / 37 通过 / 17 未通过，根因是受限沙箱拒绝子进程 stdio:'pipe'（17 项 = 15 直接 + 2 包装器），与本批代码无关。用户把沙箱策略放宽为 danger-full-access 后，**零代码改动**下 node scripts/ci-offline-checks.mjs → 54 通过 / 0 未通过 / exit 0；verification_run(release=true) → technicalAcceptance: verified、回归 clean、断言 36 条未决必测项 0、4 条阻塞 finding 全部 [released]。结论更正：那 17 项从来不需要改任何测试文件（见 test-report.md §5.3）"
+  ]
+}

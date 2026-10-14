@@ -139,32 +139,111 @@
    * 结果把 5 字的真实证据一起滤掉了（由 IC-a 断言当场抓到）。
    */
   const MIN_COVERAGE_QUOTE_CHARS = 4;
-  function issueCoverageCandidates({ issues, coverage, revisedText } = {}) {
+  /**
+   * 该条问题是否被作者**选中**？未选中的问题既不评"已改"、也不评"改失败"（V118-11）。
+   * `selectedIssues` 缺省时返回 null（未提供勾选集合 ≠ 未选中）。
+   */
+  function selectionOf(issueId, item, selectedIssues) {
+    if (item && item.selected === false) return false;
+    if (!Array.isArray(selectedIssues)) return null;
+    return selectedIssues.some((x) => String(x && typeof x === 'object' ? x.id : x) === String(issueId));
+  }
+
+  function issueCoverageCandidates({ issues, coverage, revisedText, selectedIssues } = {}) {
     const text = String(revisedText == null ? '' : revisedText);
     const cov = new Map((Array.isArray(coverage) ? coverage : []).map((c) => [String(c && c.issue_id), c]));
     const candidates = [];
-    if (text) {
-      for (const item of (Array.isArray(issues) ? issues : [])) {
-        const id = String(item && item.id != null ? item.id : '');
-        if (!id) continue;
-        const c = cov.get(id);
-        if (!c || (c.status !== 'patched' && c.status !== 'partially_resolved')) continue;
-        const quotes = (Array.isArray(item.quotes) ? item.quotes : [item.quote])
-          .map((q) => String(q == null ? '' : q).trim())
-          .filter((q) => q.length >= MIN_COVERAGE_QUOTE_CHARS);
-        const still = quotes.filter((q) => text.includes(q));
-        if (!still.length) continue;
-        candidates.push({
+    const unaccounted = [];
+    for (const item of (Array.isArray(issues) ? issues : [])) {
+      const id = String(item && item.id != null ? item.id : '');
+      if (!id) continue;
+      const c = cov.get(id);
+      const selected = selectionOf(id, item, selectedIssues);
+      /*
+       * 2026-03-17（v118 0317 专项 §4/§6 · V118-11）：未选中/未处置的问题必须显式入账。
+       *
+       * 事故形态：作者这一轮**没有勾选** R04/R05，报告却把"没有变化"读成"修稿失败"；
+       * 反过来，旧实现在"没有覆盖记录"时直接 `continue`，于是未选中项**凭空消失** ——
+       * 作者既看不到"这两条我没有选"，也看不到"它们没有被处理"。
+       * 现在：只要选中状态为"未选中"，或覆盖状态是 unaccounted/缺失，就进 unaccounted，
+       * 并明确标 disposition/selection_status，供界面渲染成"未选中"而不是"已改"或"失败"。
+       */
+      if (selected === false || !c || c.status === 'unaccounted') {
+        unaccounted.push({
           issue_id: id,
-          status: c.status,
-          quote: still[0],
-          still_present: still.length,
-          note: `本条声称已处理（${c.status}），但它当初的逐字证据在修后正文里仍原样存在`
-            + `${still.length > 1 ? `（共 ${still.length} 处）` : ''}：请确认这一条是否真的解决了。`,
+          disposition: selected === false ? 'not_selected' : 'unaccounted',
+          selection_status: selected === false ? 'not_selected' : (selected === null ? 'selection_unspecified' : 'selected'),
+          status: c ? String(c.status || '') : 'no_coverage_record',
+          note: selected === false
+            ? '作者本轮未勾选这一条：既不算"已改"，也不算"修改失败"（N/A），不产生任何修稿结论'
+            : '这一条没有处置记录：不得据此声称它已解决或已改',
         });
+        continue;
       }
+      if (c.status !== 'patched' && c.status !== 'partially_resolved') continue;
+      const quotes = (Array.isArray(item.quotes) ? item.quotes : [item.quote])
+        .map((q) => String(q == null ? '' : q).trim())
+        .filter((q) => q.length >= MIN_COVERAGE_QUOTE_CHARS);
+      const still = quotes.filter((q) => text.includes(q));
+      if (!still.length) continue;
+      candidates.push({
+        issue_id: id,
+        status: c.status,
+        quote: still[0],
+        still_present: still.length,
+        // ⚠️ 这里**不是**"确定性层已经判定问题解决"，而是"覆盖表声明已处理"。
+        //    两者必须分开读（§4）：claimed_resolved 只转述处置状态，最终结论要过 coverageVerdict。
+        claimed_resolved: c.status === 'patched',
+        note: `本条声称已处理（${c.status}），但它当初的逐字证据在修后正文里仍原样存在`
+          + `${still.length > 1 ? `（共 ${still.length} 处）` : ''}：请确认这一条是否真的解决了。`,
+      });
     }
-    return { candidates, count: candidates.length };
+    return { candidates, count: candidates.length, unaccounted, unaccounted_count: unaccounted.length };
+  }
+
+  /**
+   * 修后核验的**结论闸**（2026-03-17，v118 0317 专项 §4 · V118-12）。
+   *
+   * 本节最重要的一句话（写进代码以免漂回去）：
+   *   **旧引文从正文里消失 ≠ 问题被解决。**
+   *
+   * R01 的新时间句 original 消失了，而"为什么两人测完却没走"的因果缺口仍在；
+   * R07 去掉了"二十米"，而"再挪两步就能看见"与"几十个人遮挡"的空间关系并未得到证明。
+   * 确定性层只能证明"这段字还在不在"，它**没有**语义判断力。因此：
+   *   · 语义未跑（默认）→ `semantic_status:'not_run'`，状态最多 `partially_resolved`，**永不 resolved**；
+   *   · 语义跑了但明确失败 → `needs_review`，同样不给 resolved；
+   *   · 只有语义层**明确跑过并判定通过**，且证据已消失，才允许 `resolved`。
+   *
+   * 这不是"永远不许 resolved"：它只是要求 resolved 必须有**来自语义层**的证据，
+   * 而不是由"补丁存在 / 旧引文不见"倒推出来。
+   */
+  function coverageVerdict({ semantic, stillPresent = 0, covered = false } = {}) {
+    const sem = semantic && typeof semantic === 'object' ? semantic : null;
+    const semStatus = !sem ? 'not_run' : (sem.status == null ? 'not_run' : String(sem.status));
+    const still = Number(stillPresent) || 0;
+    if (semStatus === 'not_run') {
+      return {
+        status: still > 0 ? 'partially_resolved' : 'needs_review',
+        semantic_status: 'not_run',
+        reason: still > 0
+          ? '这条问题当初的逐字证据在修后正文里仍原样存在：不可能是 resolved'
+          : '旧引文已消失，但语义核验未运行 —— 确定性层不证明"问题已解决"，因此不报 resolved',
+      };
+    }
+    if (semStatus !== 'pass' && semStatus !== 'passed' && semStatus !== 'ok') {
+      return {
+        status: 'needs_review',
+        semantic_status: semStatus,
+        reason: `语义核验状态为 ${semStatus}：未给出通过结论，不得据此报 resolved`,
+      };
+    }
+    if (still > 0) {
+      return { status: 'partially_resolved', semantic_status: semStatus, reason: '语义层通过，但其逐字证据仍在正文里：至多 partially_resolved' };
+    }
+    if (!covered) {
+      return { status: 'needs_review', semantic_status: semStatus, reason: '缺少"已被处理"的覆盖记录：不得报 resolved' };
+    }
+    return { status: 'resolved', semantic_status: semStatus, reason: '证据已消失且语义层明确判定通过：允许 resolved' };
   }
 
   // ── 一、严格 JSON ──────────────────────────────────────────────────────────
@@ -1818,5 +1897,8 @@
     runRevisionPipeline,
     // §4 修后核验：单独导出，便于离线断言直接喂 (issues, coverage, revisedText) 而不必经整条管线。
     issueCoverageCandidates,
+    // 2026-03-17（v118 0317 §4 · V118-12）：修后结论闸单独导出 ——
+    // 它是"旧引文消失 ≠ 问题解决"这句契约的唯一落点，必须能被单独断言（含语义层通过的反例）。
+    coverageVerdict,
   };
 });
