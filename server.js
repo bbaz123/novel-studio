@@ -6688,32 +6688,22 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     }));
   }
   if (method === 'POST' && leaf === 'proposal-groups' && leaf2 && segments[5] === 'apply') {
-    if (isAgentRequest(req)) return sendError(res, 403, '确认提案只能由作者发起：模型侧不能确认自己的抽取（该请求带 X-Novel-Agent 标记）');
     const body = await readBody(req);
+    // S03：判据与内核调用都在服务层；onKernelError 把 D3 的 HEAD 冲突映射成 409（HTTP 语义留在路由层）。
+    const svc = confirmProposalGroup(temporalDeps(), {
+      workId: body.work_id, chapterId: body.chapter_id,
+      bindingId: leaf2,
+      events: body.events, eventIds: body.event_ids,
+      approvalId: body.approval_id,
+      expectedHead: body.expected_head,
+      modelRequest: isAgentRequest(req),
+      onKernelError: (e) => (sendTemporalConflictOrThrow(res, e) ? true : null),
+    });
+    if (!svc.ok) return sendError(res, svc.status, svc.message, svc.code ? { code: svc.code } : null);
+    if (svc.handedToRoute) return undefined;
     const workId = workIdOf(body.work_id);
     const chapterId = Number(body.chapter_id) || 0;
-    const bindingId = String(leaf2 || '');
-    if (!workId) return sendError(res, 400, '缺少 work_id');
-    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
-    if (!bindingId || bindingId === 'undefined') return sendError(res, 400, '缺少提案组 id');
-    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
-    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
-    // AC-45：提案组要么整体确认，要么拒绝；不接受客户端提交事件子集，避免原子组被拆开。
-    if (Array.isArray(body.events) || Array.isArray(body.event_ids)) {
-      return sendError(res, 400, '提案组必须整体确认：不接受 events / event_ids 子集（原子组不能拆开采纳）');
-    }
-    let result;
-    try {
-      result = StoryState.Temporal.confirmBinding({
-        workId, chapterId, bindingId,
-        author: 'author',
-        approvalId: body.approval_id ? String(body.approval_id) : null,
-        expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
-      });
-    } catch (e) {
-      // D3：HEAD 冲突 → 409（可判、可恢复）；其它错误照旧冒到通用出口。
-      if (sendTemporalConflictOrThrow(res, e)) return undefined;
-    }
+    const result = svc.result;
     if (result.ok) {
       touchWork(workId);
       notifyChange('story_state', { workId, id: chapterId });
