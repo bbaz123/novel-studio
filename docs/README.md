@@ -151,11 +151,18 @@ node .p1-baseline/audit-llm-calls.mjs --since 2026-09-15T00:00Z   # 真实调用
 | **[`nsdsh/baseline.md`](nsdsh/baseline.md)** | **基线冻结（S00）**：版本与来源清单（含上游 checkout 与全局 npm 是两条线）、F01–F12 逐条核对、本轮新增确认的 D1–D6、既有能力清单、S00–S18 真实状态、改动前门禁基线、执行环境事实（沙箱限制） |
 | **[`nsdsh/adr-001-boundaries.md`](nsdsh/adr-001-boundaries.md)** | 改造边界：允许改什么、**明确不许改什么**（正在执行任务的 DSH 安装、用户全局 `~/.dsh`、同级上游 checkout、作者 `data/`）、上游固定提交取哪条线、冲突时的处置 |
 | `nsdsh/STATUS.md` / `nsdsh/stages.json` | 阶段进度与机器可读阶段清单（由 `scripts/nsdsh/check-stage.mjs` 维护） |
+| **[`nsdsh/STATUS.md`](nsdsh/STATUS.md) S01 段** | **S01 隔离测试底座（DONE，1 项环境阻断）**：`scripts/nsdsh/*`（阶段门禁/隔离夹具/备份演练/假模型）+ `tests/nsdsh/*`（45 条断言）+ `docs/nsdsh/stages.json`；含本轮自查修掉的 5 个自身缺陷 |
 
 > ⚠️ **沙箱限制（会误导验证结论）**：本仓库有若干门禁内部要起子进程（`verify-phase-map.mjs` 起 `git`、
 > 各种隔离实例检查起 `node server.js`）。在 DSH 的文件沙箱里，这类子进程会因为**管道 stdio 被禁止**
 > 而以 `spawn EPERM`（errno `-4048`）失败——**那是环境，不是回归**。
 > 详见 [`nsdsh/baseline.md`](nsdsh/baseline.md) §7–§8：那里逐条记录了 17 条失败如何被归因到该边界。
+> 该边界**已实测解除**：在 `danger-full-access`（无文件沙箱）下同一清单 **55/55 全绿**（2026-10-15）。
+>
+> ⚠️ **另一条执行环境限制（S01 实测，与沙箱开关无关）**：**子进程向"父进程托管的回环 HTTP 服务"取不到响应**
+> ——裸 TCP 可连（`TCP_OK`），HTTP 响应始终等不到（`HTTP_TIMEOUT`），把网络 guard 去掉也一样。
+> 因此"被测服务"与"假模型"必须落在同一进程树里的同一侧（本项目既有的「自托管隔离实例 + 本机假模型」
+> 路线天然满足）。详见 [`nsdsh/STATUS.md`](nsdsh/STATUS.md) 的 S01「环境事实」段。
 
 ---
 

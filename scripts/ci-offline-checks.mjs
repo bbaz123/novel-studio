@@ -150,6 +150,12 @@ export const CHECKS = [
   // 它是**提交前**的核对工具（需要「未提交的工作区」这个前提），跑在 verify-all 与本地流程里。
   { name: '前端执行验证（vm + DOM 桩）', cmd: ['frontend-test.mjs'], why: '界面契约' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
+  // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。
+  // ⚠️ 在 DSH 受限文件沙箱里，本套件内部再起子进程时会撞上"禁止管道 stdio"，
+  // 现象是子进程输出里的 `spawn EPERM`（errno -4048）—— 处置是记 **BLOCKED**（环境阻断），
+  // 不是回归、也不是 PASS。运行器 `scripts/run-nsdsh-tests.mjs` 自带同进程回退，
+  // 所以只有在"回退也不可用"时才会红。见 docs/nsdsh/baseline.md §7/§8。
+  { name: 'NSDSH 阶段门禁（隔离夹具/阶段运行器/备份演练，零计费）', cmd: ['scripts/run-nsdsh-tests.mjs'], why: 'NSDSH 各阶段的隔离与验收底座：清单为空或任一套件失败必须非零退出' },
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();

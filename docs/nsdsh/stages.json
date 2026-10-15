@@ -1,0 +1,380 @@
+{
+  "schema": "nsdsh/stages@1",
+  "planVersion": 1,
+  "updatedAt": "2026-10-15",
+  "notes": [
+    "本文件是 NSDSH 阶段清单的**唯一事实来源**：check-stage.mjs 的 required 文件、命令、依赖、验收项都从这里读。",
+    "status 语义：done=已完成验收；active=本批正在做；pending=依赖已满足、尚未开工；blocked=依赖未到或环境阻断。",
+    "commands 的 argv 是**参数数组**，由 check-stage 直接 spawn，不经过 shell（方案稿 §13.3）。",
+    "blockedSignatures：命中的失败记为 BLOCKED（环境阻断），不记为 FAIL，也不冒充 PASS。",
+    "frozenArtifacts：该阶段完成后**不得再变**的交付物（前置证据校验只比对这些文件）。像 STATUS.md 这种按设计贯穿 S00–S18 追加的文档不在冻结清单里——否则后一阶段一追加就会把前一阶段误判成失效。",
+    "S00 的 commands 为空数组是**如实记录**：它在 check-stage.mjs 存在之前完成，证据是产物文件 + 手工生成的 .nsdsh/reports/S00.json。"
+  ],
+  "commonRegression": [
+    { "id": "utf8", "argv": [".p1-baseline/check-utf8.mjs"], "why": "中文仓库的编码纪律" },
+    { "id": "phase-map", "argv": [".p1-baseline/verify-phase-map.mjs"], "why": "每个改动都要被某个阶段认领（需 git 子进程；受限沙箱下为 BLOCKED）" }
+  ],
+  "stages": [
+    {
+      "id": "S00",
+      "title": "冻结真实基线",
+      "batch": "NS-A",
+      "status": "done",
+      "dependencies": [],
+      "allowedChangeAreas": ["docs/nsdsh/**", ".gitignore", ".p1-baseline/verify-phase-map.mjs", ".p6-cutover/snapshot.mjs", "docs/README.md", "docs/phase-map.md"],
+      "requiredTestFiles": [],
+      "requiredArtifacts": [
+        "docs/nsdsh/baseline.md",
+        "docs/nsdsh/adr-001-boundaries.md",
+        "docs/nsdsh/PLAN.md",
+        "docs/nsdsh/STATUS.md"
+      ],
+      "frozenArtifacts": [
+        "docs/nsdsh/baseline.md",
+        "docs/nsdsh/adr-001-boundaries.md"
+      ],
+      "commands": [],
+      "networkPolicy": "none",
+      "requiredAcceptanceChecks": [
+        "三个阶段文档存在且非空（baseline / adr-001 / PLAN）",
+        "baseline.md 记录了 F01–F12 与 D1–D6 的核对结论",
+        "未触碰作者真实库 data/ 与用户全局 ~/.dsh"
+      ],
+      "rollbackNotes": "仅撤销本阶段新增文档；不涉及业务代码与 schema。"
+    },
+    {
+      "id": "S01",
+      "title": "建立可重复的隔离测试基础（阶段运行器 / 隔离夹具 / 备份演练）",
+      "batch": "NS-A",
+      "status": "done",
+      "dependencies": ["S00"],
+      "allowedChangeAreas": ["scripts/nsdsh/**", "tests/nsdsh/**", "docs/nsdsh/**", "scripts/ci-offline-checks.mjs", ".p1-baseline/verify-phase-map.mjs", "docs/phase-map.md"],
+      "requiredTestFiles": [
+        "tests/nsdsh/isolation.test.mjs",
+        "tests/nsdsh/stage-runner.test.mjs",
+        "tests/nsdsh/backup-restore.test.mjs"
+      ],
+      "requiredArtifacts": [
+        "scripts/nsdsh/preflight.mjs",
+        "scripts/nsdsh/check-stage.mjs",
+        "scripts/nsdsh/isolated-run.mjs",
+        "scripts/nsdsh/backup-restore-check.mjs",
+        "scripts/nsdsh/lib/isolate.mjs",
+        "scripts/nsdsh/lib/network-guard.cjs",
+        "scripts/nsdsh/lib/egress.mjs",
+        "scripts/nsdsh/lib/report.mjs",
+        "scripts/nsdsh/lib/gate.mjs",
+        "scripts/nsdsh/lib/bootstrap-s00-report.mjs",
+        "scripts/run-nsdsh-tests.mjs",
+        "docs/nsdsh/stages.json"
+      ],
+      "frozenArtifacts": [
+        "scripts/nsdsh/preflight.mjs",
+        "scripts/nsdsh/check-stage.mjs",
+        "scripts/nsdsh/isolated-run.mjs",
+        "scripts/nsdsh/backup-restore-check.mjs",
+        "scripts/nsdsh/lib/isolate.mjs",
+        "scripts/nsdsh/lib/network-guard.cjs",
+        "scripts/nsdsh/lib/egress.mjs",
+        "scripts/nsdsh/lib/report.mjs",
+        "scripts/nsdsh/lib/gate.mjs",
+        "scripts/nsdsh/lib/bootstrap-s00-report.mjs",
+        "scripts/run-nsdsh-tests.mjs",
+        "tests/nsdsh/isolation.test.mjs",
+        "tests/nsdsh/stage-runner.test.mjs",
+        "tests/nsdsh/backup-restore.test.mjs"
+      ],
+      "commands": [
+        { "id": "tests-nsdsh", "argv": ["scripts/run-nsdsh-tests.mjs"], "cwd": ".", "zeroTestGuard": true, "why": "S01 新增能力的专项套件（隔离/运行器/备份演练）" },
+        { "id": "preflight", "argv": ["scripts/nsdsh/preflight.mjs", "--offline", "--json"], "cwd": ".", "why": "环境、版本、路径、隔离前置检查（不调用模型）" },
+        { "id": "utf8", "argv": [".p1-baseline/check-utf8.mjs"], "cwd": ".", "why": "新增脚本必须是合法 UTF-8" }
+      ],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": [
+        "隔离夹具把数据目录/home/端口/Provider 全部指向临时位置，并断言不出现非回环出网",
+        "check-stage 拒绝空测试清单（0 tests = 失败）、拒绝缺失的 required 文件、拒绝无效前置证据",
+        "check-stage 区分 PASS / PARTIAL / FAIL / BLOCKED，required SKIPPED 不能通过",
+        "备份-恢复演练在测试库上比对正文、事件与快照摘要一致；篡改后必须不一致",
+        "S00 的阶段报告可被 check-stage 作为前置证据校验通过"
+      ],
+      "rollbackNotes": "纯新增脚本与测试；删除 scripts/nsdsh、tests/nsdsh、docs/nsdsh/stages.json 即回退，不涉及业务代码、schema 与数据。"
+    },
+    {
+      "id": "S02",
+      "title": "先复现，再重构（F01–F12 与 D1–D6 表征）",
+      "batch": "NS-A",
+      "status": "pending",
+      "dependencies": ["S01"],
+      "allowedChangeAreas": ["tests/nsdsh/**", "docs/nsdsh/**", "scripts/nsdsh/**"],
+      "requiredTestFiles": [
+        "tests/nsdsh/baseline-contract.test.mjs",
+        "tests/nsdsh/regression-findings.test.mjs",
+        "tests/nsdsh/historical-trust.test.mjs"
+      ],
+      "requiredArtifacts": [
+        "docs/nsdsh/known-issues.json"
+      ],
+      "commands": [
+        { "id": "tests-nsdsh", "argv": ["scripts/run-nsdsh-tests.mjs"], "cwd": ".", "zeroTestGuard": true, "why": "S02 新增行为表征套件" }
+      ],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": [
+        "F01–F12 每条都有可执行表征或明确记录替代实现",
+        "D1–D6 每条绑定修复阶段与到期条件",
+        "报告区分「旧行为已被描述」与「目标正确性已通过」"
+      ],
+      "rollbackNotes": "仅新增测试与证据，不改业务代码。"
+    },
+    {
+      "id": "S03",
+      "title": "渐进拆分入口（并修 D1/D2/D3/D5）",
+      "batch": "NS-C",
+      "status": "pending",
+      "dependencies": ["S02"],
+      "allowedChangeAreas": ["server.js", "server/**", "ai/story-state/**", "tests/nsdsh/**", "docs/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/module-boundaries.test.mjs"],
+      "requiredArtifacts": [],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": [
+        "既有夹具的业务输出不变",
+        "import 领域模块不启动服务、不调用模型"
+      ],
+      "rollbackNotes": "保留兼容门面，可逐模块撤回。"
+    },
+    {
+      "id": "S04",
+      "title": "持久任务 / 租约 / outbox / 恢复",
+      "batch": "NS-B",
+      "status": "pending",
+      "dependencies": ["S03"],
+      "allowedChangeAreas": ["db.js", "server.js", "ai/jobs/**", "ai/events/**", "ai/story-state/temporal/**", "scripts/nsdsh/**", "tests/nsdsh/**", "docs/nsdsh/**"],
+      "requiredTestFiles": [
+        "tests/nsdsh/task-queue.test.mjs",
+        "tests/nsdsh/outbox-atomicity.test.mjs",
+        "tests/nsdsh/task-recovery.test.mjs",
+        "tests/nsdsh/task-fencing.test.mjs"
+      ],
+      "requiredArtifacts": ["scripts/nsdsh/reconcile-tasks.mjs"],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": [
+        "队列不丢已提交意图；未提交业务没有事件",
+        "重复调用不重复正式应用；旧 worker 无写入权"
+      ],
+      "rollbackNotes": "先停新 dispatcher 再回退代码；新表保留，不与旧调度器并发启动。"
+    },
+    {
+      "id": "S05",
+      "title": "稳定实体 ID 与迁移解析器",
+      "batch": "NS-C",
+      "status": "pending",
+      "dependencies": ["S04"],
+      "allowedChangeAreas": ["ai/story-state/**", "ai/story-state/temporal/**", "scripts/nsdsh/**", "tests/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/identity-resolution.test.mjs"],
+      "requiredArtifacts": ["scripts/nsdsh/identity-migration.mjs"],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["歧义不自动合并；v2 dry-run 与旧数据等价"],
+      "rollbackNotes": "旧算法保留 reader；正式切换留给 S16 且需作者批准。"
+    },
+    {
+      "id": "S06",
+      "title": "完整抽取 / 覆盖 / schema / 摘要（修 D4）",
+      "batch": "NS-B",
+      "status": "pending",
+      "dependencies": ["S05"],
+      "allowedChangeAreas": ["ai/story-state/temporal/**", "db.js", "tests/nsdsh/**", "docs/nsdsh/**"],
+      "requiredTestFiles": [
+        "tests/nsdsh/extraction-coverage.test.mjs",
+        "tests/nsdsh/extraction-schema.test.mjs",
+        "tests/nsdsh/request-digest.test.mjs",
+        "tests/nsdsh/evidence-anchors.test.mjs"
+      ],
+      "requiredArtifacts": [],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": [
+        "部分抽取不得伪装成「完整、没有变化」",
+        "request_digest_v2 覆盖完整渲染请求与输入快照",
+        "迁移包事务并有 schema_migrations 账本"
+      ],
+      "rollbackNotes": "可暂停 v2 分析；已保存正文不受影响。"
+    },
+    {
+      "id": "S07",
+      "title": "统一时点读取与兼容投影（只补溯源）",
+      "batch": "NS-C",
+      "status": "pending",
+      "dependencies": ["S06"],
+      "allowedChangeAreas": ["ai/context/**", "ai/story-state/temporal/**", "tests/nsdsh/**"],
+      "requiredTestFiles": [
+        "tests/nsdsh/state-query-boundary.test.mjs",
+        "tests/nsdsh/projection-provenance.test.mjs"
+      ],
+      "requiredArtifacts": [],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["第 20 章不得从投影或检索取得第 80 章事实"],
+      "rollbackNotes": "不回写旧快照；恢复兼容路由前先验证 reader 版本。"
+    },
+    {
+      "id": "S08",
+      "title": "领域事件流与前端闭环",
+      "batch": "NS-C",
+      "status": "pending",
+      "dependencies": ["S07"],
+      "allowedChangeAreas": ["server.js", "public/**", "ai/events/**", "tests/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/domain-stream.test.mjs", "tests/nsdsh/frontend-revision-guard.test.mjs"],
+      "requiredArtifacts": [],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["断线不漏确认；重复事件不重复渲染业务动作"],
+      "rollbackNotes": "新 stream 可关闭，保留显式刷新。"
+    },
+    {
+      "id": "S09",
+      "title": "收紧工具能力与作者权限（修 D6）",
+      "batch": "NS-C",
+      "status": "pending",
+      "dependencies": ["S08"],
+      "allowedChangeAreas": ["harness-plugins/novel-writing/**", "server.js", "docs/host-contract*", "tests/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/tool-capabilities.test.mjs", "tests/nsdsh/cross-work-isolation.test.mjs"],
+      "requiredArtifacts": [],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["伪造 work/session/确认请求全部被拒绝"],
+      "rollbackNotes": "可禁用模型写提案入口，不恢复越权写入。"
+    },
+    {
+      "id": "S10",
+      "title": "统一模型 broker 与运行时接口（修 F04）",
+      "batch": "NS-B",
+      "status": "pending",
+      "dependencies": ["S09"],
+      "allowedChangeAreas": ["ai/model-broker/**", "ai/runtime/**", "ai/policy.mjs", "server.js", "tests/nsdsh/**"],
+      "requiredTestFiles": [
+        "tests/nsdsh/model-routing.test.mjs",
+        "tests/nsdsh/runtime-adapter-contract.test.mjs",
+        "tests/nsdsh/task-budget.test.mjs"
+      ],
+      "requiredArtifacts": ["scripts/nsdsh/capture-model-contract.mjs"],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["模型路由符合任务设置；无模型仍可保存；未授权自动分析不计费"],
+      "rollbackNotes": "保留旧实现但经适配器入口控制。"
+    },
+    {
+      "id": "S11",
+      "title": "固定并内置完整 DSH 基线",
+      "batch": "NS-D",
+      "status": "pending",
+      "dependencies": ["S10"],
+      "allowedChangeAreas": ["third_party/deepseek-harness/**", "scripts/nsdsh/**", "docs/nsdsh/**", ".gitignore"],
+      "requiredTestFiles": [],
+      "requiredArtifacts": ["scripts/nsdsh/vendor-dsh.mjs", "docs/nsdsh/runtime-compatibility.md"],
+      "commands": [],
+      "networkPolicy": "build-prereq-explicit",
+      "requiredAcceptanceChecks": ["固定提交可构建；来源与许可齐全；不动用户全局 DSH"],
+      "rollbackNotes": "只撤回新 vendor 与启动选项；external adapter 仍可用。"
+    },
+    {
+      "id": "S12",
+      "title": "小说专用 bundle / profile",
+      "batch": "NS-D",
+      "status": "pending",
+      "dependencies": ["S11"],
+      "allowedChangeAreas": ["harness-plugins/novel-writing/**", "scripts/nsdsh/**", "docs/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/novel-profile.test.mjs"],
+      "requiredArtifacts": ["scripts/nsdsh/runtime-smoke.mjs"],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["模型实际拿到的工具集合与审批允许集合一致"],
+      "rollbackNotes": "禁用新 profile，恢复已验证 legacy 路径。"
+    },
+    {
+      "id": "S13",
+      "title": "SDK 子进程、任务会话与取消",
+      "batch": "NS-D",
+      "status": "pending",
+      "dependencies": ["S12"],
+      "allowedChangeAreas": ["ai/runtime/**", "tests/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/sdk-lifecycle.test.mjs", "tests/nsdsh/session-scope.test.mjs"],
+      "requiredArtifacts": [],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["无进程泄漏、无跨任务结果混淆、无假取消 API"],
+      "rollbackNotes": "关闭 SDK adapter，使用已验证回退。"
+    },
+    {
+      "id": "S14",
+      "title": "裁剪发行物与依赖闭包（修 F10）",
+      "batch": "NS-D",
+      "status": "pending",
+      "dependencies": ["S13"],
+      "allowedChangeAreas": ["runtime/**", "scripts/nsdsh/**", "docs/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/distribution-closure.test.mjs"],
+      "requiredArtifacts": ["scripts/nsdsh/build-runtime.mjs", "scripts/nsdsh/verify-runtime-closure.mjs"],
+      "commands": [],
+      "networkPolicy": "build-prereq-explicit",
+      "requiredAcceptanceChecks": ["manifest 可验证、依赖不越界、B/C 契约等价"],
+      "rollbackNotes": "切回完整构建 B。"
+    },
+    {
+      "id": "S15",
+      "title": "全矩阵 / 跨平台 / 性能",
+      "batch": "NS-E",
+      "status": "pending",
+      "dependencies": ["S14"],
+      "allowedChangeAreas": ["scripts/nsdsh/**", "docs/nsdsh/**", "tests/nsdsh/**"],
+      "requiredTestFiles": [],
+      "requiredArtifacts": ["scripts/nsdsh/benchmark.mjs"],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["正确性门槛全过；未测平台有明确标记"],
+      "rollbackNotes": "不以降低正确性换速度。"
+    },
+    {
+      "id": "S16",
+      "title": "迁移演练与灰度",
+      "batch": "NS-E",
+      "status": "pending",
+      "dependencies": ["S15"],
+      "allowedChangeAreas": ["scripts/nsdsh/**", "docs/nsdsh/**", "tests/nsdsh/**"],
+      "requiredTestFiles": ["tests/nsdsh/migration-cutover.test.mjs"],
+      "requiredArtifacts": ["docs/nsdsh/migration-runbook.md", "docs/nsdsh/rollback-runbook.md"],
+      "commands": [],
+      "networkPolicy": "loopback-only",
+      "requiredAcceptanceChecks": ["只在真实库拷贝上演练；等价检查与恢复演练通过"],
+      "rollbackNotes": "按 PLAN 保留新正文，不盲目恢复旧库。"
+    },
+    {
+      "id": "S17",
+      "title": "清理旧桥接与上游维护纪律",
+      "batch": "NS-E",
+      "status": "pending",
+      "dependencies": ["S16"],
+      "allowedChangeAreas": ["server.js", "harness.js", "docs/nsdsh/**", "docs/**"],
+      "requiredTestFiles": [],
+      "requiredArtifacts": ["docs/nsdsh/upstream-maintenance.md"],
+      "commands": [],
+      "networkPolicy": "none",
+      "requiredAcceptanceChecks": ["没有两个调度所有者；import 时不修改用户全局设置"],
+      "rollbackNotes": "逐个兼容模块撤回，不整体回滚 schema。"
+    },
+    {
+      "id": "S18",
+      "title": "最终验收与交付",
+      "batch": "NS-E",
+      "status": "pending",
+      "dependencies": ["S17"],
+      "allowedChangeAreas": ["docs/nsdsh/**", "scripts/nsdsh/**"],
+      "requiredTestFiles": [],
+      "requiredArtifacts": ["scripts/nsdsh/verify-delivery.mjs", "docs/nsdsh/final-verification.md"],
+      "commands": [],
+      "networkPolicy": "none",
+      "requiredAcceptanceChecks": ["required 检查全过；SKIPPED/BLOCKED 不冒充 PASS"],
+      "rollbackNotes": "交付报告包含最后安全版本与禁用入口。"
+    }
+  ]
+}
