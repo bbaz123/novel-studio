@@ -38,6 +38,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/save-service-parity.test.mjs',
   // S03：模块边界 —— import 领域模块不启动服务、不打开数据库、不调用模型
   'tests/nsdsh/module-boundaries.test.mjs',
+  // S04：持久化分析队列（F01 重启可恢复 / F02 trailing+cap / 租约代际 fencing / 已发送不自动重发）
+  'tests/nsdsh/task-queue.test.mjs',
 ];
 
 /**

@@ -762,6 +762,62 @@ CREATE TABLE IF NOT EXISTS story_repair_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_temporal_repair_work ON story_repair_runs(work_id, created_at DESC);
 
+-- ── S04：**持久化**分析任务（2026-10-16）────────────────────────────────────────
+-- 为什么要有这张表：改造前"保存后自动分析"用的是 server.js 里的 temporalAnalysisQueue = new Map()
+-- 加 setTimeout（F01/F03）。后果有两类，都是实打实的：
+--   ① 进程重启 → 待分析意图**彻底消失**（库里没有任何载体，作者以为它在排队）；
+--   ② 定时副作用发生在保存事务**内部**，事务回滚后定时器还活着。
+-- 这张表把"意图"变成一行数据：保存事务只写意图，由独立 dispatcher 在事务**外**领取并执行。
+--
+-- 字段语义（与方案稿 §4.1 对齐）：
+--   not_before_ms  = 最早可执行时刻（trailing debounce：每次保存把它往后推）
+--   max_wait_ms    = 无论怎么推，都不得晚于这个时刻（F02 的"最长等待"封顶）
+--   lease_owner / lease_generation / lease_expires_at = 租约与 fencing：
+--     旧 worker 拿着过期租约回写时，generation 对不上 → 拒绝写入（不让旧结果覆盖新修订）
+--   transport_state = 'not_sent' | 'sent' | 'unknown'
+--     启动 reconciliation 时：'not_sent' 可以安全回到 queued；
+--     'sent' 说明模型请求可能已经发出（可能已计费）→ 进 'unknown'，**不自动重发**，交作者决定
+CREATE TABLE IF NOT EXISTS story_analysis_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'analysis' CHECK(kind IN ('analysis','impact')),
+  status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','done','failed','cancelled','unknown')),
+  -- 本次任务要分析的那个修订（过期结果不得覆盖更新的修订，靠它做前置条件）
+  revision_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload_json)),
+  not_before_ms INTEGER NOT NULL DEFAULT 0,
+  max_wait_ms INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_generation INTEGER NOT NULL DEFAULT 0,
+  lease_expires_at_ms INTEGER NOT NULL DEFAULT 0,
+  transport_state TEXT NOT NULL DEFAULT 'not_sent' CHECK(transport_state IN ('not_sent','sent','unknown')),
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+-- 领取扫描走这条索引：按"最早可执行"取，且只取还活着的状态。
+CREATE INDEX IF NOT EXISTS idx_story_analysis_tasks_ready ON story_analysis_tasks(status, not_before_ms, id);
+-- 同一章同一 kind 只保留**一个未完成任务**（合并最新修订），避免重复分析同章。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_analysis_tasks_open
+  ON story_analysis_tasks(chapter_id, kind) WHERE status IN ('queued','running');
+
+-- 每次执行尝试的记账：谁领的、第几代租约、结果如何。
+-- 为什么单独一张表而不是往任务表加列：一次任务可能被领取多次（重试/接管），
+-- 只留"最后一次"会丢掉"曾经有旧 worker 回写过"这条审计线索。
+CREATE TABLE IF NOT EXISTS story_analysis_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES story_analysis_tasks(id) ON DELETE CASCADE,
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_generation INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','ok','failed','fenced','abandoned')),
+  error TEXT NOT NULL DEFAULT '',
+  started_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_attempts_task ON story_analysis_attempts(task_id, id);
+
 -- 逐章断点：分析为 stale 标记；修复为每章验证/修订/保留/阻塞的持久状态机。
 CREATE TABLE IF NOT EXISTS story_repair_steps (
   id TEXT PRIMARY KEY,

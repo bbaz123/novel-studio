@@ -143,26 +143,30 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F01 调度状态只在进程内 Map / setTimeout；数据库里没有对应的队列表（→ S04）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F01 [静态+schema] 分析调度只活在进程内 Map/setTimeout，schema 里没有任何时态分析队列表（F01→S04）', () => {
-    // 静态：队列就是模块级 Map，调度就是 setTimeout（无定时器落库、无队列行）。
-    assert.match(serverSrc, /const TEMPORAL_ANALYSIS_DEBOUNCE_MS = 800;/);
-    assert.match(serverSrc, /const temporalAnalysisQueue = new Map\(\);/);
-    const scheduleBody = sliceBetween(serverSrc, 'function scheduleTemporalAnalysis(', '\n}\n');
-    assert.ok(scheduleBody.includes('const timer = setTimeout('), 'F01：排队靠内存里的 setTimeout');
-    assert.ok(!/\.prepare\(|INSERT INTO|UPDATE |DELETE FROM/.test(scheduleBody),
-      'F01：调度函数本身不写任何持久化行（状态只活在进程里）');
-
-    // schema：查真实临时库的 sqlite_master（不是"我记得 db.js 里没有"）。
+  ['F01 [静态+schema] 分析调度必须有持久化载体（S04 已建表；server.js 尚未接线）', () => {
+    // S04 起：队列的**持久化载体**已经建出来了 —— 这是 F01 修复的第一半。
     const tables = tableNames();
     assert.ok(tables.length > 40, `临时库应当建出全部表，实际 ${tables.length} 张`);
     const queueLike = tables.filter((t) => /(temporal|analysis)/i.test(t) && /(queue|job|task|schedul|run)/i.test(t));
-    assert.deepEqual(queueLike, [], `F01：不该存在时态分析队列表，实际 ${queueLike.join(', ')}`);
+    assert.ok(queueLike.includes('story_analysis_tasks'),
+      `F01 已修（第一半）：必须存在持久化分析任务表，实际 ${queueLike.join(', ')}`);
+    assert.ok(tables.includes('story_analysis_attempts'), 'F01：每次尝试也要留账（租约/代际审计）');
+    // 关键列必须在：没有 lease / fencing 就只是"一张表"，不算可恢复队列。
+    const cols = db.prepare('PRAGMA table_info(story_analysis_tasks)').all().map((c) => c.name);
+    for (const c of ['lease_owner', 'lease_generation', 'lease_expires_at_ms', 'transport_state', 'not_before_ms', 'max_wait_ms', 'revision_id']) {
+      assert.ok(cols.includes(c), `F01：story_analysis_tasks 必须含列 ${c}`);
+    }
 
-    // 阴性对照：其它子系统**确实**有持久化的排队/作业表 —— 所以上面的空结果
-    // 不是"schema 里根本没有队列这个概念"，而是"时态分析这一条没有落库"。
+    // 阴性对照：其它子系统**本来就有**持久化排队表 —— 说明"有队列表"在这个仓库里是常态，
+    // 上面对 story_analysis_tasks 的要求不是凭空加码。
     assert.ok(tables.includes('harness_jobs'), '对照：harness_jobs 是持久化作业表');
     assert.ok(tables.includes('story_repair_runs'), '对照：story_repair_runs 是持久化运行表');
     assert.ok(tables.includes('projection_outbox'), '对照：projection_outbox 是可恢复 outbox');
+
+    // ⚠️ 第二半（**生产接线**）尚未完成：server.js 里仍是进程内 Map + setTimeout。
+    // 这里刻意把"仍未接线"也钉住，避免"只建了表"就被当成 F01 已经修好。
+    assert.match(serverSrc, /const temporalAnalysisQueue = new Map\(\);/,
+      'F01 第二半待办：server.js 仍在用进程内 Map（S04 的 dispatcher 接线尚未落地）');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────

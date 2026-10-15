@@ -1557,6 +1557,10 @@ export const PHASES = [
       'tests/nsdsh/baseline-contract.test.mjs',
       'tests/nsdsh/regression-findings.test.mjs',
       'tests/nsdsh/historical-trust.test.mjs',
+      // S04：持久化分析队列（表 + store + 套件）
+      'ai/jobs/queue-store.mjs',
+      'tests/nsdsh/task-queue.test.mjs',
+
       // S03：四用例判据抽到服务层（HTTP 组装留在路由层）+ 两份对应套件
       'server/services/temporal-services.mjs',
       'tests/nsdsh/module-boundaries.test.mjs',
