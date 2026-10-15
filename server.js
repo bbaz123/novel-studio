@@ -59,6 +59,9 @@ import * as RebuildStore from './ai/import/rebuild-store.mjs';
 import { createContextCache } from './ai/context/cache.mjs';
 import { sha16, stableStringify } from './ai/story-state/hash.mjs';
 import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities, partitionByAppearance, agentMemoryUpdateVerdict, needsAgentMemoryGuard, AGENT_GUARD_MARKER } from './ai/memory-compress-guard.mjs';
+// S03：时态四用例（保存确认/提案确认/分析/状态查询）的**用例判据**已抽到 server/services/。
+// 这一层不碰 HTTP、不 import db.js，也不启动任何东西；路由层只负责把结论写成响应。
+import { confirmEvents, confirmProposalGroup, analyzeChapterUseCase, queryStoryState, makeTemporalDeps } from './server/services/temporal-services.mjs';
 import { buildCompressionPrompt } from './ai/memory-compress-prompt.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 // 2026-09-22 报告 · 第 1 步：审稿前的**零 token 确定性连续性预检**。
@@ -6381,6 +6384,16 @@ function sendTemporalConflictOrThrow(res, err) {
     });
   return true;
 }
+/**
+ * S03：给 `server/services/temporal-services.mjs` 注入它需要的依赖。
+ *
+ * 为什么用工厂而不是模块级单例：注入的 `prepare` 是 server.js 里那一套（含它的
+ * 语句缓存与数据库句柄），而服务模块本身**不 import db.js** —— 这样
+ * "import 领域模块不会打开数据库 / 启动服务"就是结构上の事实，而不是靠纪律维持。
+ */
+function temporalDeps() {
+  return makeTemporalDeps({ prepare, temporal: StoryState.Temporal });
+}
 async function handleStoryStateRoute({ segments, method, query, req, res }) {
   const sub = segments[2];
   const leaf = segments[3] || '';
@@ -6632,29 +6645,23 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     return sendError(res, 405, 'backfill 只支持 GET / 以及 POST step|confirm|bootstrap/plan|bootstrap/decide');
   }
   if (method === 'POST' && leaf === 'confirm') {
-    if (isAgentRequest(req)) return sendError(res, 403, '状态确认只能由作者发起：模型侧不能确认自己的抽取（该请求带 X-Novel-Agent 标记）');
     const body = await readBody(req);
+    // S03：判据与内核调用都在 server/services/temporal-services.mjs；这里只做 HTTP 映射。
+    // onKernelError 把 D3 的 HEAD 冲突映射成 409 —— 状态码是 HTTP 语义，留在路由层。
+    const svc = confirmEvents(temporalDeps(), {
+      workId: body.work_id, chapterId: body.chapter_id,
+      events: Array.isArray(body.events) ? body.events : [],
+      source: asString(body.source, '') || 'author_confirm',
+      expectedHead: body.expected_head,
+      contentHtml: body.content_html === undefined ? null : body.content_html,
+      modelRequest: isAgentRequest(req),
+      onKernelError: (e) => (sendTemporalConflictOrThrow(res, e) ? true : null),
+    });
+    if (!svc.ok) return sendError(res, svc.status, svc.message, svc.code ? { code: svc.code } : null);
+    if (svc.handedToRoute) return undefined;
     const workId = workIdOf(body.work_id);
     const chapterId = Number(body.chapter_id) || 0;
-    if (!workId) return sendError(res, 400, '缺少 work_id');
-    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
-    const ch = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
-    if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
-    const events = Array.isArray(body.events) ? body.events : [];
-    if (!events.length) return sendError(res, 400, 'events 不能为空（确认清单必须带具体操作）');
-    let result;
-    try {
-      result = StoryState.Temporal.applyChapterEvents({
-        workId, chapterId, events,
-        source: asString(body.source, '') || 'author_confirm',
-        author: 'author',
-        expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
-        contentHtml: body.content_html === undefined ? null : body.content_html,
-      });
-    } catch (e) {
-      // D3：HEAD 冲突 → 409（可判、可恢复）；其它错误照旧冒到通用出口。
-      if (sendTemporalConflictOrThrow(res, e)) return undefined;
-    }
+    const result = svc.result;
     if (result.ok) {
       touchWork(workId);
       notifyChange('events', { workId, id: chapterId });

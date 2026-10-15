@@ -34,6 +34,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/baseline-contract.test.mjs',
   // S02：历史边界、lineage 与提交级信任不得混为一谈
   'tests/nsdsh/historical-trust.test.mjs',
+  // S03：用例抽取的**平权证明**（把抽取前的判据重写成基线，穷举输入空间逐条对照）
+  'tests/nsdsh/save-service-parity.test.mjs',
+  // S03：模块边界 —— import 领域模块不启动服务、不打开数据库、不调用模型
+  'tests/nsdsh/module-boundaries.test.mjs',
 ];
 
 /**

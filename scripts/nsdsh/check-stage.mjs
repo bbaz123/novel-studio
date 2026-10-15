@@ -21,6 +21,7 @@
  *   node scripts/nsdsh/check-stage.mjs <STAGE_ID> [--offline] [--json] [--write-report] [--force] [--allow-blocked]
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { looksEnvironmentBlocked, parseTestCounts, runCommand } from './lib/gate.mjs';
@@ -422,6 +423,91 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
         ? `声明已修但无证据=${fixedWithoutEvidence.map((i) => i.id).join(',') || '无'}；未修却缺到期条件=${openNoExpiry.map((i) => i.id).join(',') || '无'}`
         : `已修 ${claimedFixed.length} 条（均有修复证据）；未修 ${ledger.doc.issues.length - claimedFixed.length} 条（均有到期条件）`,
     });
+    return out;
+  }
+
+  if (id === 'S03') {
+    const svcRel = 'server/services/temporal-services.mjs';
+    const svcPath = abs(svcRel);
+    if (!fs.existsSync(svcPath)) {
+      out.push({ name: '服务模块存在', passed: false, detail: `缺少 ${svcRel}` });
+      return out;
+    }
+    const src = fs.readFileSync(svcPath, 'utf8');
+
+    // (a) 载荷分裂：服务层不得 import server.js / db.js / HTTP / 网络模块。
+    const imports = [...src.matchAll(/^\s*import\s[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+    const forbidden = imports.filter((s) => /(^|\/)(server\.js|db\.js)$/.test(s) || /^(node:)?(http|https|net|dgram|tls)$/.test(s));
+    out.push({
+      name: '服务模块不 import server.js / db.js / HTTP / 网络模块',
+      passed: forbidden.length === 0,
+      detail: forbidden.length ? `违规依赖：${forbidden.join(', ')}` : `import 共 ${imports.length} 个（${imports.join(', ') || '无'}）`,
+    });
+    const sideEffects = [];
+    if (/createServer\s*\(/.test(src)) sideEffects.push('createServer');
+    if (/\.listen\s*\(/.test(src)) sideEffects.push('listen');
+    if (/new\s+DatabaseSync\s*\(/.test(src)) sideEffects.push('DatabaseSync');
+    if (/^\s*await\s/m.test(src)) sideEffects.push('顶层 await');
+    out.push({
+      name: '服务模块无顶层副作用（不建 server / 不 listen / 不自开数据库 / 无顶层 await）',
+      passed: sideEffects.length === 0,
+      detail: sideEffects.length ? `发现：${sideEffects.join(', ')}` : '无',
+    });
+
+    // (b) 动态：干净子进程 import，断言不监听端口、数据目录仍为空。
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nsdsh-s03-check-'));
+    const dataDir = path.join(tmp, 'data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    try {
+      const probe = `
+import fs from 'node:fs';
+const t0 = Date.now();
+await import(${JSON.stringify(`file:///${svcPath.replace(/\\/g, '/')}`)});
+const handles = (process._getActiveHandles ? process._getActiveHandles() : [])
+  .map((h) => h && h.constructor && h.constructor.name).filter(Boolean);
+console.log(JSON.stringify({
+  ms: Date.now() - t0,
+  servers: handles.filter((n) => /Server/.test(n)),
+  sockets: handles.filter((n) => /Socket/.test(n)),
+  files: fs.readdirSync(${JSON.stringify(dataDir)}),
+}));
+process.exit(0);`;
+      const pr = runCommand([process.execPath, '--input-type=module', '-e', probe], {
+        cwd: REPO, timeoutMs: 60000,
+        env: { NOVELSTUDIO_DATA_DIR: dataDir, NOVELSTUDIO_OV_DISABLED: '1' },
+      });
+      if (pr.status !== 0) {
+        out.push({ name: 'import 服务模块不启动服务、不打开数据库', passed: false, blocked: pr.environmentBlocked, detail: `探针 exit=${pr.status} ${(pr.stderr || '').slice(0, 200)}` });
+      } else {
+        const info = JSON.parse(String(pr.stdout || '').trim().split('\n').pop());
+        const clean = info.servers.length === 0 && info.sockets.length === 0 && info.files.length === 0;
+        out.push({
+          name: 'import 服务模块不启动服务、不打开数据库',
+          passed: clean,
+          detail: clean ? `无 Server/Socket 句柄，数据目录仍为空（${info.ms}ms）` : `servers=${info.servers} sockets=${info.sockets} files=${info.files}`,
+        });
+      }
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* 清理失败不掩盖结论 */ }
+    }
+
+    // (c) 平权与边界：跑真实套件，只信退出码 + 断言计数。
+    for (const [file, label] of [
+      ['tests/nsdsh/save-service-parity.test.mjs', '既有夹具的业务输出不变（判据层穷举对照全绿）'],
+      ['tests/nsdsh/module-boundaries.test.mjs', '模块边界套件全绿（HTTP 组装留在路由层，用例判据在服务层）'],
+    ]) {
+      const r = runCommand([process.execPath, file], { cwd: REPO });
+      const counts = parseTestCounts(`${r.stdout || ''}\n${r.stderr || ''}`);
+      if (r.status === null || r.environmentBlocked) {
+        out.push({ name: label, passed: false, blocked: true, detail: `没能跑起来：${r.error || 'status=null'}` });
+      } else {
+        out.push({
+          name: label,
+          passed: r.status === 0 && (counts.total || 0) > 0 && (counts.failed || 0) === 0,
+          detail: r.status === 0 ? `通过 ${counts.passed} / 未通过 ${counts.failed}` : `exit=${r.status}，counts=${JSON.stringify(counts)}`,
+        });
+      }
+    }
     return out;
   }
 

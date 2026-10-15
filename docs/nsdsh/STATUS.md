@@ -14,8 +14,7 @@
 | S00 冻结真实基线 | NS-A | **DONE** | `baseline.md` + `adr-001-boundaries.md` + `PLAN.md` + 阶段台账条目 `NS0` |
 | S01 隔离测试 / 阶段运行器 / 备份演练 | NS-A | **DONE（1 项环境阻断）** | `scripts/nsdsh/*`（含 `lib/`）+ `tests/nsdsh/*` + `docs/nsdsh/stages.json`；专项 45 断言全绿 |
 | S02 复现风险并固定行为契约 | NS-A | **DONE** | F01–F12 + D1–D6 全部行为表征；`known-issues.json` 18 条登记；专项 **88 断言**全绿 |
-| S02 复现风险并固定行为契约 | NS-A | PENDING | F01–F12 最小复现 + D1–D6 表征测试 + `known-issues.json` |
-| S03 渐进拆分入口（并修 D1/D2/D3/D5） | NS-C | PENDING | |
+| S03 渐进拆分入口（并修 D1/D2/D3/D5） | NS-C | **DONE** | 四用例判据抽到 `server/services/temporal-services.mjs`；D1/D2/D3/D5 已修（台账 4 条转 `fixed_locally`）；专项 **100 断言**全绿 |
 | S04 持久任务 / 租约 / outbox / 恢复 | NS-B | PENDING | 最高价值项 |
 | S05 稳定身份解析 + 迁移 dry-run | NS-C | PENDING | |
 | S06 完整抽取 / 覆盖 / 摘要（修 D4） | NS-B | PENDING | |

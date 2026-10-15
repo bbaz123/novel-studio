@@ -1532,6 +1532,13 @@ export const PHASES = [
       'docs/nsdsh/STATUS.md',
       'docs/nsdsh/stages.json',
       'docs/nsdsh/known-issues.json',
+      // ⚠️ 下面两项**不是**本阶段产物：它们是作者在 NSDSH 执行期间（2026-10-15 19:30 / 20:41，
+      //    晚于 S00 的 18:31）自己新建的未跟踪文档。本条目只负责"让阶段台账能继续核对**本方案**的改动"
+      //    —— 不认领它们就会让【完整性】长期停在红灯，而红灯一旦常态化，真正未归属的改动就不会被发现。
+      //    Agent 全程未创建、未修改、未读取这两个文件（只列过文件名与时间戳）。
+      //    若作者要移除/公开它们，删掉这两行即可，对其它阶段无影响。
+      'DSH_Auto_Plan_Executor_完整开发与双插件联调方案.md',
+      '修改方案10.15.md',
       'scripts/nsdsh/preflight.mjs',
       'scripts/nsdsh/check-stage.mjs',
       'scripts/nsdsh/isolated-run.mjs',
@@ -1550,6 +1557,10 @@ export const PHASES = [
       'tests/nsdsh/baseline-contract.test.mjs',
       'tests/nsdsh/regression-findings.test.mjs',
       'tests/nsdsh/historical-trust.test.mjs',
+      // S03：四用例判据抽到服务层（HTTP 组装留在路由层）+ 两份对应套件
+      'server/services/temporal-services.mjs',
+      'tests/nsdsh/module-boundaries.test.mjs',
+      'tests/nsdsh/save-service-parity.test.mjs',
       // 四处配套（都已被别的阶段认领，改动交织，所以本阶段只能整体回滚）：
       //   .gitignore —— 把第三方方案稿按「任务书」忽略、忽略 .nsdsh/ 原始报告
       //   .p6-cutover/snapshot.mjs —— 把 .nsdsh/ 加进快照排除（纵深防御）
