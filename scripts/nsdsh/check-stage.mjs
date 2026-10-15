@@ -409,16 +409,18 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
         : dIds.map((x) => `${x}→${byId.get(x).fixStage}`).join(' '),
     });
 
-    // (c) 报告必须区分"旧行为已被描述"与"目标正确性已通过"：S02 只描述现状，
-    //     因此不允许在本阶段把任何条目声明成已修复，也不允许任何条目缺少到期条件（那等于永久跳过）。
-    const prematureFixed = ledger.doc.issues.filter((i) => i.status === 'fixed_locally');
-    const noExpiry = ledger.doc.issues.filter((i) => !String(i.expiry || '').trim());
+    // (c) 报告必须区分"旧行为已被描述"与"目标正确性已通过"。
+    //     S02 期间：任何条目都不许声明已修复（那时还没修）；S03 起：允许声明已修复，
+    //     但**必须带修复证据**（evidenceNote），且未修的条目仍必须有到期条件（不许永久跳过）。
+    const claimedFixed = ledger.doc.issues.filter((i) => i.status === 'fixed_locally');
+    const fixedWithoutEvidence = claimedFixed.filter((i) => !String(i.evidenceNote || '').trim());
+    const openNoExpiry = ledger.doc.issues.filter((i) => i.status !== 'fixed_locally' && !String(i.expiry || '').trim());
     out.push({
-      name: '区分「旧行为已描述」与「目标正确性已通过」（S02 不得声明已修复、不得缺到期条件）',
-      passed: prematureFixed.length === 0 && noExpiry.length === 0,
-      detail: prematureFixed.length || noExpiry.length
-        ? `声称已修复=${prematureFixed.map((i) => i.id).join(',') || '无'}；缺到期条件=${noExpiry.map((i) => i.id).join(',') || '无'}`
-        : `全部 ${ledger.doc.issues.length} 条均为"描述现状"且都有到期条件`,
+      name: '区分「旧行为已描述」与「目标正确性已通过」（已修必须带修复证据；未修必须有到期条件）',
+      passed: fixedWithoutEvidence.length === 0 && openNoExpiry.length === 0,
+      detail: fixedWithoutEvidence.length || openNoExpiry.length
+        ? `声明已修但无证据=${fixedWithoutEvidence.map((i) => i.id).join(',') || '无'}；未修却缺到期条件=${openNoExpiry.map((i) => i.id).join(',') || '无'}`
+        : `已修 ${claimedFixed.length} 条（均有修复证据）；未修 ${ledger.doc.issues.length - claimedFixed.length} 条（均有到期条件）`,
     });
     return out;
   }

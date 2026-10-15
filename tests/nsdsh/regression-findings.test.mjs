@@ -473,53 +473,76 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // D1 HEAD 读-比-写不是 CAS；null parent 时整段校验被跳过（→ S03）
   // ────────────────────────────────────────────────────────────────────────────
-  ['D1 [静态+动态] HEAD 用无条件 UPDATE 推进；expectedHead 为 null 时整段比较被跳过（D1→S03）', () => {
+  ['D1 [静态+动态] HEAD 推进必须是行级 CAS，且期望值取自本次读到的 HEAD（S03 已修）', () => {
     const wlSrc = readRepo('ai/story-state/temporal/worldline-store.mjs');
-    assert.match(wlSrc, /UPDATE story_worldlines SET head_commit_id = \? WHERE id = \?/,
-      'D1(a)：推进 HEAD 的语句只按 id 定位');
-    assert.ok(!/WHERE head_commit_id/.test(wlSrc),
-      'D1(a)：WHERE 里没有 CAS 守卫（旧 HEAD 值没有参与更新条件）');
-    assert.match(wlSrc, /expectedHead = null/, 'CAS 参数存在，但默认关闭');
-    assert.ok(!/BEGIN IMMEDIATE/.test(wlSrc), 'D1：没有排他事务把读-比-写圈起来');
+    // (a) 推进 HEAD 的唯一入口是 advanceHeadCas，它的 UPDATE 把**读到的旧 HEAD 值**带进 WHERE。
+    assert.match(wlSrc, /function advanceHeadCas\(\{ worldlineId, expectedHead, newHead \}\)/,
+      'D1 已修：CAS 必须由唯一入口承担');
+    assert.match(wlSrc, /WHERE id = \? AND head_commit_id IS \?/,
+      'D1 已修：推进 HEAD 的 UPDATE 必须带 CAS 守卫（WHERE head_commit_id IS ?）');
+    assert.match(wlSrc, /advanceHeadCas\(\{ worldlineId: wl\.id, expectedHead: expectedHead !== null \? expectedHead : head, newHead: id \}\)/,
+      'D1：期望值必须来自本次读到的 head（调用方给 null 时也一样）');
+    assert.equal((wlSrc.match(/advanceHeadCas\(/g) || []).length, 2,
+      'D1：只有一个调用点（定义 + 调用），不得再有旁路的无条件 UPDATE');
+    // ⚠️ genesis（`ensureMainCommit`）仍保留一条直写：那是"从无到有"建立 HEAD 的一步，
+    //    此时不存在可比较的旧值。S03 保证的是**提交推进**这一步必须 CAS。
+    //    （注意这里用字符串字面量 `').run` 作定界——源文件用的是单引号模板，不是反引号；
+    //      第一版按反引号写，正则恒为 0 命中，等于把这条断言变成了恒真。）
+    const directWrites = (wlSrc.match(/UPDATE story_worldlines SET head_commit_id = \? WHERE id = \?'\)\.run/g) || []).length;
+    assert.equal(directWrites, 1, `D1：除 genesis 外不得再有直写 HEAD 的语句（实际 ${directWrites} 处）`);
 
-    // (b) 服务层把 parentCommitId（没有 HEAD 时 = null）当作默认 expectedHead。
+    // (b) 服务层仍传 parentCommitId 作默认值；**这不再开窗口**——期望值由读到的 head 兜底。
     const svcSrc = readRepo('ai/story-state/temporal/service.mjs');
-    assert.match(svcSrc, /const parentCommitId = before\.commit_id \|\| null;/);
     assert.match(svcSrc, /expectedHead: expectedHead === null \? parentCommitId : expectedHead/,
-      'D1(b)：调用方没给 expectedHead 时，NULL 会被当成"无需比较"');
+      'D1：服务层默认值保持原样（由内核的 CAS 兜底，而不是靠调用方记得传）');
 
-    // 动态复现（内核层，单线程 → 不是并发复现，只是把两条路径钉住）。
+    // (c) 判据本身在 SQL 层真的会命中 0 行（不是"写了但恒真"）——用隔离的临时表模拟同一条语句。
+    db.exec('CREATE TABLE IF NOT EXISTS _d1_cas_probe (id INTEGER PRIMARY KEY, head_commit_id TEXT)');
+    const probe = db.prepare('UPDATE _d1_cas_probe SET head_commit_id = ? WHERE id = ? AND head_commit_id IS ?');
+    db.prepare('INSERT INTO _d1_cas_probe (id, head_commit_id) VALUES (1, ?)').run('H1');
+    assert.equal(probe.run('H2', 1, 'H1').changes, 1, 'CAS：期望值命中 → 允许推进');
+    db.prepare('UPDATE _d1_cas_probe SET head_commit_id = ? WHERE id = 1').run('H3');
+    assert.equal(probe.run('H4', 1, 'H1').changes, 0,
+      'CAS：期望值已被别处改掉 → 命中 0 行（这就是"静默覆盖"被挡住的机制）');
+    assert.equal(probe.run('H4', 1, null).changes, 0, 'CAS：期望空而实际非空 → 同样命中 0 行');
+    db.prepare('DELETE FROM _d1_cas_probe');
+
+    // (d) 动态：首次提交（HEAD 为空）正常推进 —— 窗口不是恒关。
     const workId = seedWork('D1');
     const wl = T.ensureMainWorldline(workId);
     assert.equal(wl.head_commit_id, null, '前置：世界线 HEAD 为空');
     const c1 = T.commitManifest({ workId, worldlineId: wl.id, parentCommitId: null, chapters: {}, note: 'd1-first' });
-    assert.equal(T.getWorldline(wl.id).head_commit_id, c1.commit.id);
+    assert.equal(T.getWorldline(wl.id).head_commit_id, c1.commit.id, '首次提交必须能推进');
 
-    // expectedHead 缺省（null）→ JS 比较整段被跳过，HEAD 被无条件覆盖。
-    const c2 = T.commitManifest({ workId, worldlineId: wl.id, parentCommitId: null, chapters: {}, note: 'd1-second-no-expected-head' });
-    assert.notEqual(c2.commit.id, c1.commit.id);
-    assert.equal(T.getWorldline(wl.id).head_commit_id, c2.commit.id,
-      'D1(b)：没有 expectedHead 时 HEAD 照样被推进（等于没有 CAS）');
-
-    // 阴性对照：显式给一个过时的 expectedHead → 必须抛 HEAD_CAS_MISMATCH。
+    // 显式给过时的 expectedHead → 冲突（这条修改前就成立，留作对照）。
     assert.throws(
-      () => T.commitManifest({ workId, worldlineId: wl.id, parentCommitId: null, chapters: {}, note: 'd1-third', expectedHead: c1.commit.id }),
+      () => T.commitManifest({ workId, worldlineId: wl.id, parentCommitId: c1.commit.id, chapters: {}, note: 'd1-stale', expectedHead: 'cmt_nonexistent' }),
       (e) => e && e.code === 'HEAD_CAS_MISMATCH',
-      '对照：CAS 判据本身不是恒假',
     );
-    assert.equal(T.getWorldline(wl.id).head_commit_id, c2.commit.id, '抛错时 HEAD 不得被推进');
+    assert.equal(T.getWorldline(wl.id).head_commit_id, c1.commit.id, '冲突时 HEAD 不得被推进');
+
+    // 顺序推进照常可用（CAS 没有把合法路径一并挡掉）。
+    const c2 = T.commitManifest({ workId, worldlineId: wl.id, parentCommitId: c1.commit.id, chapters: {}, note: 'd1-second-ok' });
+    assert.equal(T.getWorldline(wl.id).head_commit_id, c2.commit.id, '顺序推进必须照常成功');
+
+    // ★ 诚实声明：**没有**做到"两个写者交错下的实测"。两种做法都试过、都已被实测排除：
+    //   ① 直接调 commitManifest —— 它是同步函数，读与写之间没有 await 点，测试无法插入交错；
+    //   ② 挂 SQLite BEFORE UPDATE 触发器制造交错 —— 实测无效：外层语句会用 NEW 值覆盖触发器的子更新
+    //      （探针实测 head 最终是新值，而不是触发器写的 'RACER'），所以触发器模拟不了"别人先写了"。
+    // 结论：D1 的**并发复现**仍是遗留项（已记入 known-issues.json 的 verificationGap，留给 S15 故障矩阵）。
+    // 本用例只钉住"行级 CAS 无旁路"与"该判据在 SQL 层真的会命中 0 行"这两件可测的事。
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
-  // D2 校验失败时返回对象而不抛 → 孤儿事件行被提交（→ S03）
+  // D2 校验失败必须整体回滚，不得留下孤儿事件行（**S03 已修**）
   // ────────────────────────────────────────────────────────────────────────────
-  ['D2 [动态] validateEventSet 失败时 applyChapterEvents 返回对象 → 孤儿事件行已提交（D2→S03）', () => {
+  ['D2 [动态] validateEventSet 失败 → 事务回滚、零孤儿事件行，但对外契约不变（S03 已修）', () => {
     const { workId, chapterId } = seedTemporalChapter('D2', '甲站在原地。');
     const rev = T.latestRevisionOf(chapterId);
     assert.ok(rev, '前置：必须有正文修订');
+    const headBefore = T.getWorldline(T.ensureMainWorldline(workId).id).head_commit_id;
 
     // expected 给一个章前并不存在的值 → 前置条件必然失败（conflict）。
-    // 这里**故意不 try/catch**：若它抛异常，本用例就应当失败（那说明缺陷已经被修掉了）。
     const res = T.applyChapterEvents({
       workId, chapterId,
       events: [{
@@ -533,34 +556,38 @@ await suite('nsdsh/regression-findings', [
         evidence: [{ quote: '甲站在原地。', narrative: 'present' }],
       }],
     });
-    assert.equal(res.ok, false);
+    // ① 对外契约**不变**：仍然是"返回一个带结论的对象"，不是抛异常
+    //    （既有套件 tests/temporal/03-integrity 有四处断言依赖这个形状，S03 不得改动它们）。
+    assert.equal(res.ok, false, `D2 已修：仍须返回结论对象：${JSON.stringify(res)}`);
     assert.equal(res.decision, 'conflict', `期望硬冲突，实际 ${res.decision}`);
 
-    // 缺陷：事件行已经落库（同一事务照常提交），却没有任何 valid 绑定把它们接上。
-    assert.ok(Array.isArray(res.event_ids) && res.event_ids.length >= 1, '回执里带回了已落库的事件 id');
+    // ② S03 之后：**没有**任何事件行落库 —— 被拒绝的确认整体回滚。
     const rowCount = Number(db.prepare('SELECT COUNT(*) AS c FROM story_state_events WHERE chapter_id = ?').get(chapterId).c);
-    assert.ok(rowCount >= 1, `D2：孤儿事件行已提交（${rowCount} 行）`);
+    assert.equal(rowCount, 0, `D2 已修：被拒绝的确认不得留下任何事件行（实际 ${rowCount} 行）`);
     const bound = Number(db.prepare("SELECT COUNT(*) AS c FROM story_chapter_bindings WHERE chapter_id = ? AND validity = 'valid'").get(chapterId).c);
-    assert.equal(bound, 0, 'D2：这些事件没有任何 valid 绑定');
-    assert.equal(Number(db.prepare('SELECT COUNT(*) AS c FROM story_state_events WHERE id = ?').get(res.event_ids[0]).c), 1,
-      'D2：回执里的事件 id 在库里真实存在（不是内存对象）');
+    assert.equal(bound, 0, 'D2：没有 valid 绑定');
+    assert.equal(T.getWorldline(T.ensureMainWorldline(workId).id).head_commit_id, headBefore, 'D2：HEAD 不得被推进');
+    // 回执仍然带回它**本会**写入的事件 id（供界面解释"哪些操作没生效"），但这些 id 在库里不存在。
+    assert.ok(Array.isArray(res.event_ids), '回执保留 event_ids 字段（契约不变）');
+    if (res.event_ids.length) {
+      assert.equal(Number(db.prepare('SELECT COUNT(*) AS c FROM story_state_events WHERE id = ?').get(res.event_ids[0]).c), 0,
+        'D2 已修：回执里的事件 id 在库里**不存在**（证明已回滚）');
+    }
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
-  // D3 HEAD_CAS_MISMATCH 没有 HTTP 处理点 → 冲突只能落成 500（→ S09）
+  // D3 HEAD_CAS_MISMATCH 的 HTTP 处理点（**S03 已修**：由"零匹配"改为"必须有 409 映射"）
   // ────────────────────────────────────────────────────────────────────────────
-  ['D3 [静态] server.js 对 HEAD_CAS_MISMATCH 零匹配 → 没有 409 映射（D3→S09）', () => {
+  ['D3 [静态] server.js 必须有 HEAD_CAS_MISMATCH → 409 的处理点（S03 已修，此断言防止回退）', () => {
     const hits = (serverSrc.match(/HEAD_CAS_MISMATCH/g) || []).length;
-    assert.equal(hits, 0, `D3：server.js 里不应出现该错误码，实际 ${hits} 处`);
-    // 反证：错误码本身在内核里真实存在（所以"零匹配"才说明是缺处理点，而不是拼错字符串）。
+    assert.ok(hits >= 1, `D3 已修：server.js 必须出现该错误码并映射成 409，实际 ${hits} 处`);
+    // 必须是 **409** 而不是通用 500：那条映射把内核的 current_head 一起带给调用方。
+    assert.match(serverSrc, /sendError\(res,\s*409,[\s\S]{0,400}HEAD_CAS_MISMATCH/,
+      'D3：必须存在把 HEAD_CAS_MISMATCH 映射成 409 的分支');
+    assert.match(serverSrc, /sendTemporalConflictOrThrow/, 'D3：映射由专用辅助函数承担（两个确认入口共用）');
+    // 反证：错误码在内核里仍然由世界线层抛出（说明映射的对象真实存在）。
     assert.match(readRepo('ai/story-state/temporal/worldline-store.mjs'), /HEAD_CAS_MISMATCH/);
-    const mentions = PRODUCTION_CODE_FILES
-      .filter((f) => fs.readFileSync(f, 'utf8').includes('HEAD_CAS_MISMATCH'))
-      .map(relOf);
-    assert.deepEqual(mentions, ['ai/story-state/temporal/worldline-store.mjs'],
-      'D3：整个生产代码里只有世界线层定义它，没有任何调用方或 HTTP 层处理它');
-    // 后果（推断，未在本套件复现）：没有 409 分支，异常只能走通用失败出口 → 界面看到 500。
-    assert.ok((serverSrc.match(/sendError\(res, 500/g) || []).length >= 1, '通用 500 出口存在');
+    assert.ok((serverSrc.match(/sendError\(res, 500/g) || []).length >= 1, '通用 500 出口仍然存在（其它错误照旧）');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -585,9 +612,9 @@ await suite('nsdsh/regression-findings', [
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
-  // D5 confirmBinding 的"重放复用"早退发生在任何输入/信任复核之前（→ S09）
+  // D5 confirmBinding 的"重放复用"必须先过输入复核（**S03 已修**）
   // ────────────────────────────────────────────────────────────────────────────
-  ['D5 [动态] 已是 valid 的绑定在正文被改写后仍返回 reused:true（早退先于陈旧复核）（D5→S09）', () => {
+  ['D5 [动态] 已是 valid 的绑定在正文被改写后必须回 stale，不得再发复用回执（S03 已修）', () => {
     const text = '甲推开门走了进来。';
     const { workId, chapterId } = seedTemporalChapter('D5', text);
     const r1 = T.latestRevisionOf(chapterId);
@@ -596,6 +623,12 @@ await suite('nsdsh/regression-findings', [
     assert.equal(applied.ok, true, `前置：必须真的确认出一份 valid 绑定：${JSON.stringify(applied)}`);
     const validBinding = T.getBinding(applied.binding_id);
     assert.equal(validBinding.validity, 'valid');
+
+    // ④ 关键阴性对照（S03 起必须成立）：**中间没有再保存**时，重放仍须回 reused:true。
+    //    这条保证"D5 的修法"没有把幂等性一起改掉（上面若干既有套件依赖这个回执）。
+    const immediateReplay = T.confirmBinding({ workId, chapterId, bindingId: validBinding.id });
+    assert.equal(immediateReplay.ok, true, `无新保存的重放必须仍然复用：${JSON.stringify(immediateReplay)}`);
+    assert.equal(immediateReplay.reused, true);
 
     // 之后又保存了一版**不同正文** → 该绑定引用的修订已经过期（正文哈希不同）。
     T.recordContentSave({ workId, chapterId, contentHtml: '<p>乙走过来，甲已经不在了。</p>' });
@@ -612,20 +645,18 @@ await suite('nsdsh/regression-findings', [
     assert.equal(controlVerdict.ok, false, `对照：pending 绑定必须被陈旧复核拦下：${JSON.stringify(controlVerdict)}`);
     assert.equal(controlVerdict.decision, 'stale');
 
-    // ② 而 valid 绑定走的是重放早退：在任何输入/信任复核**之前**就返回 reused。
+    // ② S03 之后：valid 绑定在正文被改写后**不再**发复用回执，而是如实回 stale。
     const replay = T.confirmBinding({ workId, chapterId, bindingId: validBinding.id });
-    assert.equal(replay.ok, true, `D5：valid 绑定直接复用，不重新核对输入：${JSON.stringify(replay)}`);
-    assert.equal(replay.reused, true);
-    assert.equal(replay.decision, 'valid');
+    assert.equal(replay.ok, false, `D5 已修：valid 绑定不得在正文已改写时复用：${JSON.stringify(replay)}`);
+    assert.equal(replay.decision, 'stale');
 
-    // 静态：早退分支确实排在 latest/upstreamTrusted/verifyPendingContext 之前。
+    // 静态：陈旧复核（latest）现在必须排在复用早退**之前**。
     const svcSrc = readRepo('ai/story-state/temporal/service.mjs');
     const confirmBody = sliceBetween(svcSrc, 'export function confirmBinding(', '\n}\n');
     const replayAt = confirmBody.indexOf("if (binding.validity === 'valid')");
     const latestAt = confirmBody.indexOf('const latest = latestRevisionOf(c);');
-    const trustAt = confirmBody.indexOf('const stored = eventsOfBinding(binding);');
-    assert.ok(replayAt > 0 && latestAt > replayAt && trustAt > latestAt,
-      'D5：重放早退在陈旧复核 / 输入复核之前');
+    assert.ok(replayAt > 0 && latestAt > 0 && latestAt < replayAt,
+      'D5 已修：陈旧复核必须排在 valid 复用早退之前');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 {
   "schema": "nsdsh/known-issues@1",
   "planVersion": 1,
-  "updatedAt": "2026-10-15",
+  "updatedAt": "2026-10-16",
   "baselineHead": "b7919f75624c4e788fd3ffe916f2339ec8f04913",
   "scope": "NSDSH 方案稿的 F01–F12 与本轮新增确认的 D1–D6。本文件是「已知缺陷 → 修复阶段 → 到期条件」的唯一登记处。",
   "fieldNotes": {
@@ -11,7 +11,24 @@
     "expiry": "该缺陷最迟必须在此阶段被修复**或**被显式降级为「接受」；到 S18 仍为 open 且无豁免，则 verify-delivery.mjs 必须判失败。",
     "S18 豁免规则": "只为「本方案明确不承诺的能力」开豁免，且必须写明理由与不修复的后果；不得用豁免掩盖本方案应当修复的问题。"
   },
-  "stageOrder": ["S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11", "S12", "S13", "S14", "S15", "S16", "S17", "S18"],
+  "stageOrder": [
+    "S03",
+    "S04",
+    "S05",
+    "S06",
+    "S07",
+    "S08",
+    "S09",
+    "S10",
+    "S11",
+    "S12",
+    "S13",
+    "S14",
+    "S15",
+    "S16",
+    "S17",
+    "S18"
+  ],
   "issues": [
     {
       "id": "F01",
@@ -33,7 +50,9 @@
       "title": "队列已有同章节 key 时直接返回旧 timer，不是真正的 trailing debounce",
       "severity": "medium",
       "layer": "调度语义",
-      "evidence": ["server.js：scheduleTemporalAnalysis() 开头 if (temporalAnalysisQueue.has(key)) return temporalAnalysisQueue.get(key)"],
+      "evidence": [
+        "server.js：scheduleTemporalAnalysis() 开头 if (temporalAnalysisQueue.has(key)) return temporalAnalysisQueue.get(key)"
+      ],
       "impact": "停笔后的最后一次输入不会推迟分析时点，与『最后一次保存后 N 秒』的承诺不符。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -45,7 +64,9 @@
       "title": "保存事务内部调用调度函数，产生事务内定时副作用",
       "severity": "medium",
       "layer": "事务边界",
-      "evidence": ["server.js：保存事务 → afterTemporalContentSave() → scheduleTemporalAnalysis()"],
+      "evidence": [
+        "server.js：保存事务 → afterTemporalContentSave() → scheduleTemporalAnalysis()"
+      ],
       "impact": "事务回滚后定时器仍在，可能出现『没有业务事实却有分析任务』；反之提交前崩溃则丢意图。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -72,7 +93,9 @@
       "title": "抽取输入被硬截断（正文 12000 字符 / 状态 400 项 / 名称 200 个）",
       "severity": "high",
       "layer": "抽取完整性",
-      "evidence": ["ai/story-state/temporal/extraction.mjs：EXTRACTION_LIMITS.max_chars = 12000；keys.slice(0, 400)；knownNamesFrom().slice(0, 200)"],
+      "evidence": [
+        "ai/story-state/temporal/extraction.mjs：EXTRACTION_LIMITS.max_chars = 12000；keys.slice(0, 400)；knownNamesFrom().slice(0, 200)"
+      ],
       "impact": "长章尾部与大状态集不在模型输入里，但结果仍可被当作『完整分析』，且没有任何缺口报告。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -100,7 +123,9 @@
       "title": "input_hash 是残缺的序列化载荷，已知实体输入未真正纳入",
       "severity": "high",
       "layer": "请求身份",
-      "evidence": ["extraction.mjs buildExtractionPrompt()：input_hash = canonicalJson({ text, state, known: knownLine('', []) }) —— 第三项恒为空串"],
+      "evidence": [
+        "extraction.mjs buildExtractionPrompt()：input_hash = canonicalJson({ text, state, known: knownLine('', []) }) —— 第三项恒为空串"
+      ],
       "impact": "名称表变化不改变请求身份 → 无法判断『同一输入的重复请求』，缓存与去重口径失真。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -112,7 +137,9 @@
       "title": "resultHash 只取输出前 2000 字符",
       "severity": "medium",
       "layer": "结果身份",
-      "evidence": ["ai/story-state/temporal/analysis.mjs：const resultHash = sha16(sanitizeText(output, 2000))"],
+      "evidence": [
+        "ai/story-state/temporal/analysis.mjs：const resultHash = sha16(sanitizeText(output, 2000))"
+      ],
       "impact": "两个仅在 2000 字符之后不同的响应被视为同一结果。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -139,7 +166,9 @@
       "title": "运行时就绪检测依赖特定包生成文件",
       "severity": "medium",
       "layer": "运行时装配",
-      "evidence": ["harness.js isHarnessBuilt() 只看 packages/interaction/commands/lib/typert.host.js 与 packages/goal/goal/lib/typert.host.js"],
+      "evidence": [
+        "harness.js isHarnessBuilt() 只看 packages/interaction/commands/lib/typert.host.js 与 packages/goal/goal/lib/typert.host.js"
+      ],
       "impact": "删除看似无关的包后会被误判为『运行时未构建』；反之这两个文件存在也不代表运行时可用。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -177,7 +206,6 @@
       "fixStage": "S03",
       "expiry": "S03：按业务边界渐进抽取（保存/分析/确认/查询四个用例先抽），**保持既有 API 响应、状态码与上下文完整性不变**。本阶段不换前端框架、不改时态算法、不重命名全部表。"
     },
-
     {
       "id": "D1",
       "title": "HEAD CAS 是读后写竞态；且 parentCommitId 为 null 时整段校验被跳过",
@@ -191,40 +219,50 @@
       "detection": "baseline.md 明确标注：本轮为**读码推断**，未并发复现。S02 只做只读表征（UPDATE 语句无 head 守卫 + null parent 旁路），不得声称已复现竞态。",
       "impact": "并发确认时后写者可能覆盖 HEAD；首个提交的 CAS 形同不存在。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs（只读表征）",
-      "status": "not_directly_detectable",
+      "status": "fixed_locally",
       "fixStage": "S03",
-      "expiry": "S03 必须先写并发复现用例**再**修，然后把 UPDATE 改为带 head 守卫的 CAS（或 BEGIN IMMEDIATE），并让 null parent 不再跳过校验。"
+      "expiry": "S03 必须先写并发复现用例**再**修，然后把 UPDATE 改为带 head 守卫的 CAS（或 BEGIN IMMEDIATE），并让 null parent 不再跳过校验。",
+      "evidenceNote": "S03 已修：推进 HEAD 的 UPDATE 改为行级 CAS（`UPDATE story_worldlines SET head_commit_id = ? WHERE id = ? AND head_commit_id IS ?`，唯一入口 `advanceHeadCas()`）。即使调用方传 null（`service.mjs` 把 expectedHead 默认成 parentCommitId 的既有行为保持原样），首次提交之后的并发推进也会因受影响行数=0 而抛 HEAD_CAS_MISMATCH。回归见 tests/nsdsh/regression-findings.test.mjs 的 D1 用例（首次提交照常成功、HEAD 非空时 null-parent 提交冲突、顺序推进仍可用）。",
+      "verificationGap": "⚠️ **并发复现仍未做**：上面的证据是\"行级 CAS 不存在旁路\"的行为回归 + 语句形状断言，不是两个并发写者交错下的实测。到期条件原文要求的\"先写并发复现用例再修\"未完全兑现，遗留为 S15（故障矩阵）的显式待办。"
     },
     {
       "id": "D2",
       "title": "validateEventSet 失败时返回对象而不抛异常 → 孤儿事件入库",
       "severity": "high",
       "layer": "事务原子性",
-      "evidence": ["service.mjs applyChapterEvents()：先 insertEvents()，随后 validateEventSet() 失败时返回对象；事务照常提交"],
+      "evidence": [
+        "service.mjs applyChapterEvents()：先 insertEvents()，随后 validateEventSet() 失败时返回对象；事务照常提交"
+      ],
       "impact": "出现没有 binding 的事件行，历史回放看不到它，下游失效判据基于不完整事实。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S03",
-      "expiry": "S03：校验失败必须让事务回滚。必须有『校验失败 ⇒ 事件 0 行、binding 0 行』的断言。"
+      "expiry": "S03：校验失败必须让事务回滚。必须有『校验失败 ⇒ 事件 0 行、binding 0 行』的断言。",
+      "evidenceNote": "S03 已修：校验未通过时改为抛出带 `err.eventSetVerdict` 的错误 → 整个事务（含已插入的事件行）回滚 → 由 `commitOrRollback` 把同一份结论原样转回调用方。**对外契约一字未变**（既有的 tests/temporal/03-integrity 四处\"返回 {ok:false,decision}\"断言全绿），变的只是\"孤儿行不再留在库里\"。回归见 tests/nsdsh/regression-findings.test.mjs 与 baseline-contract.test.mjs 的 D2 用例（零事件行 + 回执形状不变）。"
     },
     {
       "id": "D3",
       "title": "HEAD_CAS_MISMATCH 没有 HTTP 处理点（500 而非 409）",
       "severity": "medium",
       "layer": "接口语义",
-      "evidence": ["server.js 中 HEAD_CAS_MISMATCH 零处匹配"],
+      "evidence": [
+        "server.js 中 HEAD_CAS_MISMATCH 零处匹配"
+      ],
       "impact": "界面无法区分『你的输入已过时』与『服务端炸了』，作者会重试而不是刷新。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S03",
-      "expiry": "S03：该错误码必须有明确状态码（409）与可读错误体，并补一条 HTTP 断言。"
+      "expiry": "S03：该错误码必须有明确状态码（409）与可读错误体，并补一条 HTTP 断言。",
+      "evidenceNote": "S03 已修：新增 `sendTemporalConflictOrThrow(res, err)`，把内核抛出的 HEAD_CAS_MISMATCH 映射成 **409** 并带上 `code` / `current_head` / `expected_head`（与既有 checkEmptyOverwrite 的机器可判 409 做法一致）；两个确认入口（`/story_state/confirm` 与 `/proposal-groups/:id/apply`）都接了该映射。未做 HTTP 端点实测（没起服务打请求），证据是静态结构断言 + 内核错误码真实存在。"
     },
     {
       "id": "D4",
       "title": "MIGRATIONS 不包事务、无迁移账本",
       "severity": "medium",
       "layer": "schema 迁移",
-      "evidence": ["db.js MIGRATIONS：逐条执行、不包事务、只吞 /duplicate column/i；无 user_version、无 schema_migrations 表"],
+      "evidence": [
+        "db.js MIGRATIONS：逐条执行、不包事务、只吞 /duplicate column/i；无 user_version、无 schema_migrations 表"
+      ],
       "impact": "中途失败留下『部分应用』的 schema，且没有任何记录可查，后续迁移无法判断起点。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
@@ -236,12 +274,15 @@
       "title": "确认重放先于输入/信任复核返回复用回执",
       "severity": "medium",
       "layer": "幂等与信任",
-      "evidence": ["service.mjs confirmBinding()：binding.validity === 'valid' → { reused: true } 在任何输入/信任复核之前返回"],
+      "evidence": [
+        "service.mjs confirmBinding()：binding.validity === 'valid' → { reused: true } 在任何输入/信任复核之前返回"
+      ],
       "impact": "上游已变时，重放请求仍拿到『复用』回执，作者以为状态已更新。",
       "behaviorTest": "tests/nsdsh/baseline-contract.test.mjs（幂等一节）",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S03",
-      "expiry": "S03：输入/信任复核必须先于复用回执；确认需要调用方断言（expected_revision_id / expected_binding_id）。"
+      "expiry": "S03：输入/信任复核必须先于复用回执；确认需要调用方断言（expected_revision_id / expected_binding_id）。",
+      "evidenceNote": "S03 已修：把\"是否已被更新的正文取代\"这条**输入**判据提到所有复用早退之前，valid/superseded 两条复用路径在正文被改写后回 `stale` 而不是发复用回执。**幂等性未被破坏**：中间没有再保存时重放仍返回 `reused:true`（既有 tests/temporal/06/07 的幂等断言全绿，S02 的 baseline-contract 也补了立即重放的对照断言）。回归见 tests/nsdsh/regression-findings.test.mjs 的 D5 用例（含\"无新保存仍复用\"的阴性对照）。"
     },
     {
       "id": "D6",
@@ -264,17 +305,42 @@
     "high": 7,
     "medium": 10,
     "low": 1,
-    "open": 17,
-    "notDirectlyDetectable": 1,
-    "fixedLocally": 0,
+    "open": 14,
+    "notDirectlyDetectable": 0,
+    "fixedLocally": 4,
     "byFixStage": {
-      "S03": ["F12", "D1", "D2", "D3", "D5"],
-      "S04": ["F01", "F02", "F03"],
-      "S05": ["F09"],
-      "S06": ["F05", "F06", "F07", "F08", "D4"],
-      "S09": ["F11", "D6"],
-      "S10": ["F04"],
-      "S14": ["F10"]
+      "S04": [
+        "F01",
+        "F02",
+        "F03"
+      ],
+      "S10": [
+        "F04"
+      ],
+      "S06": [
+        "D4",
+        "F05",
+        "F06",
+        "F07",
+        "F08"
+      ],
+      "S05": [
+        "F09"
+      ],
+      "S14": [
+        "F10"
+      ],
+      "S09": [
+        "D6",
+        "F11"
+      ],
+      "S03": [
+        "D1",
+        "D2",
+        "D3",
+        "D5",
+        "F12"
+      ]
     }
   }
 }

@@ -70,10 +70,21 @@ export function check() {
     if (!Array.isArray(it.evidence) || !it.evidence.length) fail(`${id} 缺少 evidence（没有证据的缺陷不得登记为缺陷）`, problems);
     if (!it.fixStage) fail(`${id} 缺少 fixStage`, problems);
     else if (!stageSet.has(it.fixStage)) fail(`${id} 的 fixStage 不在阶段清单里：${it.fixStage}`, problems);
-    if (!it.expiry || !String(it.expiry).trim()) fail(`${id} 缺少到期条件 expiry`, problems);
+    // 到期条件对**未修**的条目必须有（否则等于永久跳过）；已修的条目改为必须有**修复证据**
+    // （不能只写一个状态就宣布修好了——那正是"把描述当通过"的另一种形态）。
+    if (it.status === 'fixed_locally') {
+      if (!it.evidenceNote || !String(it.evidenceNote).trim()) {
+        fail(`${id} 声明 fixed_locally 但没有 evidenceNote（修复证据）：不得只改状态就宣告已修`, problems);
+      }
+    } else if (!it.expiry || !String(it.expiry).trim()) {
+      fail(`${id} 缺少到期条件 expiry`, problems);
+    }
     if (!it.behaviorTest || !String(it.behaviorTest).trim()) fail(`${id} 缺少行为表征测试 behaviorTest`, problems);
-    // 缺陷不能在最迟修复阶段**之前**就被要求关闭之外的矛盾：fixStage 必须晚于 S02（本阶段只表征、不修）
-    if (it.fixStage && orderIndex.has(it.fixStage) && orderIndex.get(it.fixStage) <= orderIndex.get('S02')) {
+    // fixStage 门禁按**状态**分开：
+    //   · open / not_directly_detectable → 修复必须落在 S02 之后（S02 只表征、不修）；
+    //   · fixed_locally → 修复已经发生，fixStage 记的是"它被哪个阶段修掉了"，因此不设下界。
+    if ((it.status === 'open' || it.status === 'not_directly_detectable')
+      && it.fixStage && orderIndex.has(it.fixStage) && orderIndex.get(it.fixStage) <= orderIndex.get('S02')) {
       fail(`${id} 的 fixStage=${it.fixStage} 不晚于 S02：S02 只做表征，修复必须落在之后的阶段`, problems);
     }
     sev[it.severity] = (sev[it.severity] || 0) + 1;

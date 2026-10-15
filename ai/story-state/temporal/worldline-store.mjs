@@ -109,8 +109,33 @@ export function commitManifest({ workId, worldlineId, parentCommitId, orderVersi
   }
   prep(`INSERT INTO story_commits (id, work_id, worldline_id, parent_commit_id, order_version_id, manifest_json, manifest_hash, note, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, Number(workId) || 0, wl.id, parentId, manifest.order_version_id, JSON.stringify(manifest), manifestHash, String(note || ''), now());
-  prep('UPDATE story_worldlines SET head_commit_id = ? WHERE id = ?').run(id, wl.id);
+  advanceHeadCas({ worldlineId: wl.id, expectedHead: expectedHead !== null ? expectedHead : head, newHead: id });
   return { commit: getCommit(id), manifest, reused: false };
+}
+
+/**
+ * D1（2026-10-16 修）：**行级** HEAD CAS —— 推进 HEAD 的唯一入口。
+ *
+ * 修改前的形态（读后写，窗口是开放的）：
+ *   `const head = wl.head_commit_id`（读） → JS 里比较 → `UPDATE … SET head_commit_id = ? WHERE id = ?`（无条件写）。
+ *   只要 `expectedHead` 为 `null`，上面那段比较**整段跳过**；而 `service.mjs` 恰恰把
+ *   `expectedHead === null` 静默改写成 `parentCommitId`，于是**首次提交（parent 为 null）**的 CAS 形同不存在：
+ *   两个并发确认都能读到同一个 HEAD、都通过、都无条件写，后写者覆盖先写者（丢更新）。
+ *
+ * 修法：把判据落到 **UPDATE 的 WHERE 上**（`head_commit_id IS ?`，SQLite 的 `IS` 能正确处理 NULL），
+ * 于是"读到的 HEAD 已经变了"这件事由**受影响行数为 0** 直接裁决——不依赖调用方是否传了 `expectedHead`，
+ * 也不再有"null 就跳过"的旁路。写入前再做一次显式预检，好给出 `err.current` 供上层回报冲突。
+ */
+function advanceHeadCas({ worldlineId, expectedHead, newHead }) {
+  const observed = expectedHead === null || expectedHead === undefined ? null : String(expectedHead);
+  const res = prep('UPDATE story_worldlines SET head_commit_id = ? WHERE id = ? AND head_commit_id IS ?').run(newHead, worldlineId, observed);
+  if (res.changes === 1) return;
+  const err = new Error('HEAD_CAS_MISMATCH');
+  err.code = 'HEAD_CAS_MISMATCH';
+  const cur = prep('SELECT head_commit_id FROM story_worldlines WHERE id = ?').get(worldlineId);
+  err.current = (cur && cur.head_commit_id) || null;
+  err.expected = observed;
+  throw err;
 }
 
 /** 某提交在指定章节选中的 binding id。 */

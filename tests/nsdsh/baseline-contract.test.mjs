@@ -207,10 +207,11 @@ await suite('nsdsh/baseline-contract', [
     assert.equal(countOf('SELECT COUNT(*) n FROM story_commits WHERE work_id = ?', workId), commits0, '被阻塞的确认不得推进 HEAD');
   }],
 
-  ['D2（登记在案，S03 修）：校验失败仍提交事务 —— 留下无人引用的孤儿事件行', () => {
-    // 现状：applyChapterEvents() 先 insertEvents()，随后 validateEventSet() 失败时**返回对象**而不是抛异常，
+  ['D2（S03 已修）：被拒绝的确认整体回滚 —— 零孤儿事件行，且对外回执形状不变', () => {
+    // 修改前：applyChapterEvents() 先 insertEvents()，随后 validateEventSet() 失败时**返回对象**而不是抛异常，
     // 事务照常提交 → 库里留下没有 binding 引用的事件行（历史回放看不到它）。
-    // 本用例钉住这个**现状**（表征），不代表它是合格行为：一次被拒绝的确认不得留下半成品。
+    // S03 之后：同一条路径改为"抛出 → 整体回滚 → 把同一份结论转回调用方"，
+    // 因此这里断言两件事同时成立：**回执形状不变** + **一行都没留下**。
     const { workId, chapterIds } = seedWork('D2 孤儿事件', 1);
     enable(workId);
     const ch = chapterIds[0];
@@ -231,13 +232,20 @@ await suite('nsdsh/baseline-contract', [
     assert.equal(rejected.ok, false);
     assert.equal(rejected.decision, 'conflict');
 
-    // D2 现状证据：事件行确实写进去了，而且没有任何 binding 引用它。
+    // S03 已修的证据：事件行**一行都没多**，HEAD 也没动。
     const eventsAfter = countOf('SELECT COUNT(*) n FROM story_state_events WHERE chapter_id = ?', ch);
-    assert.equal(eventsAfter - eventsBefore, 1, 'D2 现状：被拒绝的确认仍然留下 1 行事件');
+    assert.equal(eventsAfter, eventsBefore, 'D2 已修：被拒绝的确认不得留下任何事件行');
+    // S03 已修的后半段：既然事件行整体回滚了，就不该再有任何孤儿行 —— 一个都没有。
     const referenced = new Set(T.listBindings(workId, { chapterId: ch, limit: 50 }).flatMap((b) => b.event_ids || []));
     const orphans = db.prepare('SELECT id FROM story_state_events WHERE chapter_id = ?').all(ch)
       .map((r) => String(r.id)).filter((id) => !referenced.has(id));
-    assert.deepEqual(orphans, rejected.event_ids.map(String), 'D2 现状：这些事件是孤儿（无绑定引用）');
+    assert.deepEqual(orphans, [], 'D2 已修：不得存在任何孤儿事件行');
+    // 回执仍然带回它**本会**写入的事件 id（契约形状不变），但这些 id 在库里查不到。
+    assert.ok(Array.isArray(rejected.event_ids), 'D2：回执保留 event_ids 字段');
+    for (const id of rejected.event_ids) {
+      assert.equal(countOf('SELECT COUNT(*) n FROM story_state_events WHERE id = ?', id), 0,
+        `D2 已修：回执里的 ${id} 不得真的落库`);
+    }
 
     // 阴性对照：正式状态与 HEAD 都没有被这次失败改动（"没应用"这一半目前是对的）。
     assert.equal(T.temporalOverview(workId).head_commit_id, head0);

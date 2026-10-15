@@ -6359,6 +6359,28 @@ async function handleImportRebuildRoute({ segments, method, query, req, res }) {
 
   return false;
 }
+/**
+ * D3（2026-10-16 修）：把时态内核的 **HEAD 冲突** 映射成可判的 409，而不是通用 500。
+ *
+ * 修改前：`HEAD_CAS_MISMATCH` 在 `server.js` 里**零匹配**——`applyChapterEvents` / `confirmBinding`
+ * 在并发确认（或世界线 HEAD 已被别处推进）时会抛出该错误，一路冒到通用错误出口变成 **500**。
+ * 界面因此无法区分"你的输入已过时、刷新重试即可"与"服务端炸了"，只会盲目重试。
+ *
+ * 这里与 `checkEmptyOverwrite` 的既有做法对齐：给调用方一个**机器可判的 code**，
+ * 并把内核算出来的 `current`（现在真正的 HEAD）一起带上，让界面能直接展示差异。
+ * @returns {true} 已写响应（调用方应立即 return）；无冲突时写回并返回 false 由调用方继续。
+ */
+function sendTemporalConflictOrThrow(res, err) {
+  if (!err || err.code !== 'HEAD_CAS_MISMATCH') throw err;
+  sendError(res, 409,
+    '世界线 HEAD 已被其它确认推进：这次确认基于过时的 HEAD，未改动任何状态。请刷新后重试。',
+    {
+      code: 'HEAD_CAS_MISMATCH',
+      current_head: err.current === undefined ? null : err.current,
+      expected_head: err.expected === undefined ? null : err.expected,
+    });
+  return true;
+}
 async function handleStoryStateRoute({ segments, method, query, req, res }) {
   const sub = segments[2];
   const leaf = segments[3] || '';
@@ -6620,13 +6642,19 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!ch || Number(ch.work_id) !== workId) return sendError(res, 404, '章节不存在或不属于该作品');
     const events = Array.isArray(body.events) ? body.events : [];
     if (!events.length) return sendError(res, 400, 'events 不能为空（确认清单必须带具体操作）');
-    const result = StoryState.Temporal.applyChapterEvents({
-      workId, chapterId, events,
-      source: asString(body.source, '') || 'author_confirm',
-      author: 'author',
-      expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
-      contentHtml: body.content_html === undefined ? null : body.content_html,
-    });
+    let result;
+    try {
+      result = StoryState.Temporal.applyChapterEvents({
+        workId, chapterId, events,
+        source: asString(body.source, '') || 'author_confirm',
+        author: 'author',
+        expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
+        contentHtml: body.content_html === undefined ? null : body.content_html,
+      });
+    } catch (e) {
+      // D3：HEAD 冲突 → 409（可判、可恢复）；其它错误照旧冒到通用出口。
+      if (sendTemporalConflictOrThrow(res, e)) return undefined;
+    }
     if (result.ok) {
       touchWork(workId);
       notifyChange('events', { workId, id: chapterId });
@@ -6667,12 +6695,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (Array.isArray(body.events) || Array.isArray(body.event_ids)) {
       return sendError(res, 400, '提案组必须整体确认：不接受 events / event_ids 子集（原子组不能拆开采纳）');
     }
-    const result = StoryState.Temporal.confirmBinding({
-      workId, chapterId, bindingId,
-      author: 'author',
-      approvalId: body.approval_id ? String(body.approval_id) : null,
-      expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
-    });
+    let result;
+    try {
+      result = StoryState.Temporal.confirmBinding({
+        workId, chapterId, bindingId,
+        author: 'author',
+        approvalId: body.approval_id ? String(body.approval_id) : null,
+        expectedHead: body.expected_head === undefined || body.expected_head === null ? null : String(body.expected_head),
+      });
+    } catch (e) {
+      // D3：HEAD 冲突 → 409（可判、可恢复）；其它错误照旧冒到通用出口。
+      if (sendTemporalConflictOrThrow(res, e)) return undefined;
+    }
     if (result.ok) {
       touchWork(workId);
       notifyChange('story_state', { workId, id: chapterId });

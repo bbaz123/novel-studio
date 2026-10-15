@@ -122,6 +122,21 @@ function precheckApproval({ approvalId, op, workId, chapterId = null, baselineHa
 }
 
 /** 事务收尾：把"审批消费失败"转成明确回执（且整事务回滚），其余异常原样抛出。 */
+/**
+ * 事务边界 + "把带结论的失败转回回执"。
+ *
+ * 两种错误载体都必须**先抛出**（只有抛出才能让 `withTransaction` 整体回滚），
+ * 由本函数在事务外转回普通返回值：
+ *   · `err.approvalVerdict` —— 审批消费失败；
+ *   · `err.eventSetVerdict` —— D2（2026-10-16 修）：事件集校验未通过。
+ *
+ * D2 修改前的问题：`applyChapterEvents` 先 `insertEvents()`，校验失败时**直接 return** 结论，
+ * 事务照常提交 → 事件行已入库却不被任何 binding 引用（孤儿行），历史回放看不到它，
+ * 而下游失效判据却可能基于这份不完整事实计算。
+ * 修法：校验失败改为**抛出**带 `eventSetVerdict` 的错误 → 整个事务（含已插入的事件行）回滚 →
+ * 在这里把同一份结论**原样**转回调用方。因此对外契约（`{ok:false, decision, issues, event_ids}`）
+ * 一个字都没变，变的只是"孤儿行不再留在库里"。（对应用户可见行为见 S03 的到期条件。）
+ */
 function commitOrRollback(run) {
   if (inTransaction()) return run();
   try {
@@ -134,6 +149,7 @@ function commitOrRollback(run) {
         issues: [{ code: 'APPROVAL_CONSUME_FAILED', detail: String(e.approvalVerdict.code || '') }],
       };
     }
+    if (e && e.eventSetVerdict) return e.eventSetVerdict;
     throw e;
   }
 }
@@ -369,11 +385,16 @@ export function applyChapterEvents({ workId, chapterId, events = [], source = 'a
     }
     const report = validateEventSet({ workId: w, chapterId: c, revision, events: stored, inputState: before.state, upstreamTrusted });
     if (report.decision !== 'valid') {
-      return {
+      // D2：**不能**在这里直接 return —— 那会让上面 `insertEvents()` 插进去的事件行随事务一并提交，
+      // 形成"没有 binding 引用、历史回放也看不到"的孤儿行。改为抛出带结论的错误 → 整体回滚 →
+      // 由 commitOrRollback 把同一份结论原样转回（对外契约不变）。
+      const err = new Error(`EVENT_SET_NOT_VALID:${report.decision}`);
+      err.eventSetVerdict = {
         ok: false, enabled: true, decision: report.decision, reason: explainDecision(report),
         issues: [...report.conflicts, ...report.unresolved], revision_id: revision.id,
         event_ids: stored.map((e) => e.id), upstream_trusted: upstreamTrusted,
       };
+      throw err;
     }
     const finalized = finalizeValidGroup({ workId: w, chapterId: c, revision, stored, report, before, source, author, expectedHead });
     if (finalized && finalized.ok && approval && approval.id) {
@@ -673,20 +694,37 @@ export function confirmBinding({ workId, chapterId, bindingId, expectedHead = nu
     }
     const revision = getRevision(binding.revision_id);
     if (!revision) return { ok: false, enabled: true, decision: 'blocked', reason: '提案引用的正文修订不存在' };
+    // D5（2026-10-16 修）：**输入复核必须先于"复用回执"**。
+    // 修改前：`binding.validity === 'valid'` 的早退发生在任何输入/信任复核之前，
+    // 于是"先确认、之后又保存了新正文、再重放确认"会拿到 ok+reused——作者会以为当前状态就是这个提案的样子，
+    // 实际上该提案早已被更新的正文取代。
+    // 现在：先把"是否已被更新的正文取代"这条**输入**判据提到所有早退之前（两条早退路径共用）。
+    // ⚠️ 不变的部分：立刻重放（中间没有新保存）仍返回 `reused: true`——上面那些幂等断言靠的就是它。
+    const latest = latestRevisionOf(c);
+    const supersededByNewerText = latest
+      && String(latest.id) !== String(revision.id)
+      && String(latest.text_hash) !== String(revision.text_hash);
     if (binding.validity !== 'pending') {
       // 幂等：已经确认过的同一提案（或同内容同事件集的 valid 绑定）直接返回成功回执。
       if (binding.validity === 'valid') {
+        if (supersededByNewerText) {
+          return { ok: false, enabled: true, decision: 'stale', reason: '保存了更新的正文：该提案已被取代，其复用回执不再可信，请重新分析', binding_id: binding.id };
+        }
         return { ok: true, enabled: true, decision: 'valid', reused: true, binding_id: binding.id, commit_id: commitOf(w, binding.id), event_ids: binding.event_ids || [] };
       }
       if (binding.validity === 'superseded') {
         const same = listBindings(w, { chapterId: c, validity: 'valid', limit: 50 })
           .find((b) => String(b.revision_id) === String(binding.revision_id) && JSON.stringify(b.event_ids || []) === JSON.stringify(binding.event_ids || []));
-        if (same) return { ok: true, enabled: true, decision: 'valid', reused: true, binding_id: same.id, commit_id: commitOf(w, same.id), event_ids: same.event_ids };
+        if (same) {
+          if (supersededByNewerText) {
+            return { ok: false, enabled: true, decision: 'stale', reason: '保存了更新的正文：该提案已被取代，其复用回执不再可信，请重新分析', binding_id: same.id };
+          }
+          return { ok: true, enabled: true, decision: 'valid', reused: true, binding_id: same.id, commit_id: commitOf(w, same.id), event_ids: same.event_ids };
+        }
       }
       return { ok: false, enabled: true, decision: 'rejected', reason: `提案状态为 ${binding.validity}，不能确认` };
     }
-    const latest = latestRevisionOf(c);
-    if (latest && String(latest.id) !== String(revision.id) && String(latest.text_hash) !== String(revision.text_hash)) {
+    if (supersededByNewerText) {
       return { ok: false, enabled: true, decision: 'stale', reason: '保存了更新的正文：该提案已过期，请重新分析' };
     }
     ensureMainCommit(w);
