@@ -100,7 +100,26 @@ M  README.zh-CN.md
 | F09 | 兼容角色/关系投影按名称关联 | `compat.mjs` `refreshCompatProjection()`：角色 `UPDATE characters … WHERE work_id = ? AND name = ?`；关系用 `characters.name` 三表连接。temporal 侧 `cellKey = [domain, entityId, predicate, scope, holderId]` 里的 `entityId` 对角色就是**模型给的名字**、对关系是 `"A\|B"` 字符串 | **成立** |
 | F10 | 就绪检测涉及特定包生成文件 | `harness.js` `isHarnessBuilt()` 只看两个文件：`packages/interaction/commands/lib/typert.host.js` 与 `packages/goal/goal/lib/typert.host.js` | **成立** |
 | F11 | 小说插件仍保留部分通用文件工具 | 插件自身只注册 26 个 `novel_*`（无 shell/web/subagent）；但 **bundle 补丁** `cordis.patch.yml` 保留通用 `read/write/edit/glob/grep`（同时禁用 pwsh/web/subagent 等），**GUI preset** `agent.cordis.yml` 另加 `tool-fs` + `tool-fs-search` | **成立，但需订正归属**：通用文件工具来自 bundle/preset 组合，不是插件代码 |
-| F12 | 浏览器与服务入口承担多种职责 | `server.js` 9,770 行，路由是单条 `if` 链 `handleAPI()`；`public/app.js` 1,032,889 字节 / 18,223 行、一个扁平全局作用域、无构建步骤、约 64 个横幅注释分区 | **成立** |
+| F12 | 浏览器与服务入口承担多种职责 | `server.js` 601,554 字节 / 10,155 行（S00 记录时 9,770 行，已增长），路由**不是**单条 `if` 链：`if (resource === …)` **117** 条，其中 `handleAPI` 只占 15 条，其余落在同文件另外 3 个顶层 handler 函数里（`router.` / `const routes =` 均为 0）；`public/app.js` 1,032,889 字节 / 18,223 行、一个扁平全局作用域、无构建步骤、约 64 个横幅注释分区 | **成立**（归属已订正，见 §3.1） |
+
+---
+
+### 3.1 逐条核对后的归属订正（2026-10-15，S02 用机器读数取得）
+
+S00 的核对结论方向都成立，但有两处**措辞与实际结构不符**，S02 写行为表征时用机器读数发现并已就地改上表：
+
+| 项 | S00 的写法 | 机器读数 | 订正后的口径 |
+|---|---|---|---|
+| F12 | 「路由是单条 `if` 链 `handleAPI()`」 | `if (resource === …)` 共 **117** 条；`handleAPI` 区间 42,773 字符、内含 **15** 条；另有 3 个顶层 handler 函数；`router.` / `const routes =` 各 **0**；`if (pathname ===` **1** | 路由是**单文件多 handler**，不是单链；「入口承担多种职责」这个结论不变，但"单链"会让人以为只需抽 `handleAPI` |
+| D3 | 把 `HEAD_CAS_MISMATCH` 的语境写得像在 `service.mjs` | 该字面量只在 `ai/story-state/temporal/worldline-store.mjs`；`server.js` 零匹配 | 缺的是 **HTTP 处理点**；错误码由 worldline-store 抛出 |
+
+**为什么订正顺序是"先订正 baseline 再重新生成 S00 报告"**：`baseline.md` 在 `stages.json` 里被列为 S00 的 `frozenArtifacts`。
+本次订正让它与 S00 报告记录的摘指纹不符，`verifyPrerequisite('S00')` 会因此（正确地）报"冻结交付物被改动"。
+处置不是把 freeze 去掉，而是**如实记录这次修订并重新生成 S00 报告**：
+重新判定 S00 的三条验收项，写入新的摘指纹。这样"冻结"这条纪律仍然有效——它抓到了改动，而改动被审计留痕。
+
+> ⚠️ 纪律：`frozenArtifacts` 不是"永不可改"，而是"**任何改动都必须显式记录并重新出报告**"。
+> 直接手改文件而不重新生成报告，会让后续阶段的"前置证据"静默失真。
 
 ---
 
@@ -112,7 +131,7 @@ M  README.zh-CN.md
 |---|---|---|---|---|
 | D1 | 高 | `worldline-store.mjs` `commitManifest()` + `service.mjs` `finalizeValidGroup()` | HEAD 比较是"先读 HEAD → JS 比较 → **无条件** `UPDATE story_worldlines SET head_commit_id = ? WHERE id = ?`"；且 `parentCommitId` 为 `null` 时整段校验被跳过。**未用 `BEGIN IMMEDIATE`，属读后写竞态，本轮未并发复现** | 并发确认时后写者可能覆盖 HEAD；首个提交的 CAS 形同不存在 |
 | D2 | 高 | `service.mjs` `applyChapterEvents()` | 事件先 `insertEvents()`，随后 `validateEventSet()` 失败时**返回对象而不抛异常** | 事务照常提交 → 孤儿事件行入库且无 binding 绑定，历史回放也看不到它 |
-| D3 | 中 | `server.js`（`HEAD_CAS_MISMATCH` 零处匹配） | 该错误没有 HTTP 处理点 | 冲突以 500 而不是 409 返回，界面无法区分"输入已过时"与"服务端炸了" |
+| D3 | 中 | `server.js`（`HEAD_CAS_MISMATCH` 零处匹配）；该字面量的**唯一定义处**是 `ai/story-state/temporal/worldline-store.mjs`（`service.mjs` 里没有它） | 该错误没有 HTTP 处理点 | 冲突以 500 而不是 409 返回，界面无法区分"输入已过时"与"服务端炸了" |
 | D4 | 中 | `db.js` `MIGRATIONS` 数组 | 逐条执行、不包事务、只吞 `/duplicate column/i`；无 `user_version`、无迁移账本 | 中途失败留下"部分应用"的 schema，且没有任何记录可查 |
 | D5 | 中 | `service.mjs` `confirmBinding()` | 重放路径（`binding.validity === 'valid'` → `{ reused: true }`）在任何输入/信任复核**之前**返回 | 上游已变时，重放请求仍拿到"复用"回执 |
 | D6 | 低 | `docs/host-contract.v1.json` | 声明了 `NOVELSTUDIO_HARNESS_POOL`，但**代码从不读它**；`ai/harness-pool.mjs` 无任何生产接线（`verify-phase-map.mjs` 的注释也自陈"热备池未接线、无环境变量开关"） | 契约与实现漂移；文档承诺了一个不存在的开关 |

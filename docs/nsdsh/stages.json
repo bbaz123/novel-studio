@@ -103,7 +103,7 @@
       "id": "S02",
       "title": "先复现，再重构（F01–F12 与 D1–D6 表征）",
       "batch": "NS-A",
-      "status": "pending",
+      "status": "done",
       "dependencies": ["S01"],
       "allowedChangeAreas": ["tests/nsdsh/**", "docs/nsdsh/**", "scripts/nsdsh/**"],
       "requiredTestFiles": [
@@ -112,9 +112,17 @@
         "tests/nsdsh/historical-trust.test.mjs"
       ],
       "requiredArtifacts": [
-        "docs/nsdsh/known-issues.json"
+        "docs/nsdsh/known-issues.json",
+        "scripts/nsdsh/check-known-issues.mjs"
+      ],
+      "frozenArtifacts": [
+        "tests/nsdsh/baseline-contract.test.mjs",
+        "tests/nsdsh/regression-findings.test.mjs",
+        "tests/nsdsh/historical-trust.test.mjs",
+        "scripts/nsdsh/check-known-issues.mjs"
       ],
       "commands": [
+        { "id": "known-issues", "argv": ["scripts/nsdsh/check-known-issues.mjs"], "cwd": ".", "why": "已知缺陷台账的结构自洽（summary 必须等于明细复算；每条必须有 fixStage 与到期条件）" },
         { "id": "tests-nsdsh", "argv": ["scripts/run-nsdsh-tests.mjs"], "cwd": ".", "zeroTestGuard": true, "why": "S02 新增行为表征套件" }
       ],
       "networkPolicy": "loopback-only",

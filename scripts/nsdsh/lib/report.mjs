@@ -218,7 +218,12 @@ export function redact(text) {
  *   B. 报告声明的**冻结交付物**（stages.json 的 `frozenArtifacts`）现在仍然存在、摘要未变；
  *      —— 只冻结"冻结清单"里的文件：像 `docs/nsdsh/STATUS.md` 这种按设计会贯穿 S00–S18 追加的文档，
  *         不能冻结，否则后一阶段一追加就"证明"前一阶段无效（这是我第一版写错的地方，已改）。
- *   C. 报告里 `artifactChecks` 逐条 passed（例如"隔离夹具不出现非回环出网"）。
+ *   C. 报告里 `artifactChecks` 逐条 passed —— **但 `blocked: true` 的条目不算失败**。
+ *      —— 为什么：本项目对 BLOCKED 的口径是"环境阻断，既不是回归也不是通过"。
+ *         若把 BLOCKED 当失败，一次环境限制会把**整条阶段链**堵死（实测：S01 的回环阴性对照
+ *         因执行环境限制记 BLOCKED，S02 随即被判"前置证据无效"，连命令都不执行）。
+ *         正确处理是：BLOCKED 条目仍然如实留在报告里（"没被证明"这个事实不消失），
+ *         但它不授权也不阻断后续阶段——需要真正"未通过判定"时，用 `passed:false`（不带 blocked）。
  * 只有 A 没有 C = 报告存在但当时的验收项没过 → 不成立。
  */
 export function verifyPrerequisite(stageId, { allowStates = ['PASS', 'PARTIAL'], frozenArtifacts = null } = {}) {
@@ -243,11 +248,13 @@ export function verifyPrerequisite(stageId, { allowStates = ['PASS', 'PARTIAL'],
   if (thenDigest && nowDigest !== thenDigest) {
     return { ok: false, reason: `${stageId} 冻结交付物在报告之后被改动（摘指纹不符）` };
   }
-  const failedChecks = (report.artifactChecks || []).filter((c) => !c.passed);
+  const failedChecks = (report.artifactChecks || []).filter((c) => !c.passed && !c.blocked);
   if (failedChecks.length) {
     return { ok: false, reason: `${stageId} 验收项未通过：${failedChecks.map((c) => c.name).join(', ')}` };
   }
-  return { ok: true, reason: `${stageId} 证据有效（${report.status}，交付物 ${recorded.length} 项，冻结 ${frozen.length} 项）` };
+  const blockedChecks = (report.artifactChecks || []).filter((c) => !c.passed && c.blocked);
+  const suffix = blockedChecks.length ? `；另有 ${blockedChecks.length} 项环境阻断（不计为通过、也不阻断后续）` : '';
+  return { ok: true, reason: `${stageId} 证据有效（${report.status}，交付物 ${recorded.length} 项，冻结 ${frozen.length} 项${suffix}）` };
 }
 
 /** 组装一份标准报告骨架。字段固定，避免每个脚本各写一套。 */

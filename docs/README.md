@@ -152,6 +152,7 @@ node .p1-baseline/audit-llm-calls.mjs --since 2026-09-15T00:00Z   # 真实调用
 | **[`nsdsh/adr-001-boundaries.md`](nsdsh/adr-001-boundaries.md)** | 改造边界：允许改什么、**明确不许改什么**（正在执行任务的 DSH 安装、用户全局 `~/.dsh`、同级上游 checkout、作者 `data/`）、上游固定提交取哪条线、冲突时的处置 |
 | `nsdsh/STATUS.md` / `nsdsh/stages.json` | 阶段进度与机器可读阶段清单（由 `scripts/nsdsh/check-stage.mjs` 维护） |
 | **[`nsdsh/STATUS.md`](nsdsh/STATUS.md) S01 段** | **S01 隔离测试底座（DONE，1 项环境阻断）**：`scripts/nsdsh/*`（阶段门禁/隔离夹具/备份演练/假模型）+ `tests/nsdsh/*`（45 条断言）+ `docs/nsdsh/stages.json`；含本轮自查修掉的 5 个自身缺陷 |
+| **[`nsdsh/known-issues.json`](nsdsh/known-issues.json)** + [STATUS.md](nsdsh/STATUS.md) S02 段 | **S02 行为表征（DONE）**：F01–F12 与 D1–D6 **18 条**已知缺陷登记（每条绑定行为表征测试 + 修复阶段 + 到期条件）；`tests/nsdsh/*` 六个套件 **88 条断言**全绿；含"哪些是动态表征、哪些只是静态断言"的诚实口径 |
 
 > ⚠️ **沙箱限制（会误导验证结论）**：本仓库有若干门禁内部要起子进程（`verify-phase-map.mjs` 起 `git`、
 > 各种隔离实例检查起 `node server.js`）。在 DSH 的文件沙箱里，这类子进程会因为**管道 stdio 被禁止**

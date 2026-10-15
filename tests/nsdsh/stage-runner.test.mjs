@@ -284,6 +284,31 @@ await suite('nsdsh/stage-runner', [
     } finally { fs.rmSync(reportPath(id), { force: true }); }
   }],
 
+  /**
+   * 环境阻断（blocked: true）**不得**把整条阶段链堵死 —— 这是实测踩出来的：
+   * S01 的"回环阴性对照"因执行环境限制记 BLOCKED，随后 S02 被判"前置证据无效"、连命令都不跑。
+   * 本项目的口径是 BLOCKED ≠ 回归，所以它既不授权也不阻断；但"没被证明"这个事实必须留在报告里。
+   * ⚠️ 判别力：这一条必须与上一条形成对照（未通过但**没** blocked 标记 → 仍然拒绝）。
+   */
+  ['前置证据：blocked 的环境阻断不算失败（不阻断后续），但仍如实留在报告里', () => {
+    const id = `TXPREREQ3_${process.pid}`;
+    writeReport(makeReport({
+      stage: id, status: 'PARTIAL', artifacts: [], frozenArtifacts: [],
+      artifactChecks: [
+        { name: '通过项', passed: true, detail: 'ok' },
+        { name: '环境阻断项', passed: false, blocked: true, detail: '执行环境限制，本次无法证明' },
+      ],
+    }), { force: true });
+    try {
+      const r = verifyPrerequisite(id, { frozenArtifacts: [] });
+      assert.equal(r.ok, true, 'blocked 的项不得让前置证据失效');
+      assert.match(r.reason, /环境阻断/, '理由里必须写明存在环境阻断项，不能悄悄通过');
+      const written = readReport(id);
+      assert.equal(written.artifactChecks[1].blocked, true, 'blocked 标记必须落盘保留');
+      assert.equal(written.artifactChecks[1].passed, false, 'blocked 项不得被改写成通过');
+    } finally { fs.rmSync(reportPath(id), { force: true }); }
+  }],
+
   ['前置证据：缺少报告 → 拒绝，且理由说清缺哪份', () => {
     const r = verifyPrerequisite('TXNOSUCHREPORT', { frozenArtifacts: [] });
     assert.equal(r.ok, false);

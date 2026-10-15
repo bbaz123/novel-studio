@@ -1,0 +1,280 @@
+{
+  "schema": "nsdsh/known-issues@1",
+  "planVersion": 1,
+  "updatedAt": "2026-10-15",
+  "baselineHead": "b7919f75624c4e788fd3ffe916f2339ec8f04913",
+  "scope": "NSDSH 方案稿的 F01–F12 与本轮新增确认的 D1–D6。本文件是「已知缺陷 → 修复阶段 → 到期条件」的唯一登记处。",
+  "fieldNotes": {
+    "status.open": "本地仍可检出该行为（S02 表征测试钉住现状）",
+    "status.fixed_locally": "本地已不具备该行为（需要给出证据，不得凭空填）",
+    "status.not_directly_detectable": "无法用离线测试直接检出（例如需要并发复现），只能靠读码 + 修复阶段的行为测试",
+    "expiry": "该缺陷最迟必须在此阶段被修复**或**被显式降级为「接受」；到 S18 仍为 open 且无豁免，则 verify-delivery.mjs 必须判失败。",
+    "S18 豁免规则": "只为「本方案明确不承诺的能力」开豁免，且必须写明理由与不修复的后果；不得用豁免掩盖本方案应当修复的问题。"
+  },
+  "stageOrder": ["S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11", "S12", "S13", "S14", "S15", "S16", "S17", "S18"],
+  "issues": [
+    {
+      "id": "F01",
+      "title": "时态调度使用进程内 Map / setTimeout，不具备数据库级恢复能力",
+      "severity": "high",
+      "layer": "调度与恢复",
+      "evidence": [
+        "server.js：temporalAnalysisQueue = new Map() + scheduleTemporalAnalysis() 的 setTimeout",
+        "db.js：不存在任何分析队列表"
+      ],
+      "impact": "重启即丢定时意图；重复领取无法校验，旧 worker 可能覆盖新修订。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S04",
+      "expiry": "S04 必须落地持久化任务队列 + 启动 reconciliation；S04 之后若仍能检出『调度状态只在内存』即判失败。"
+    },
+    {
+      "id": "F02",
+      "title": "队列已有同章节 key 时直接返回旧 timer，不是真正的 trailing debounce",
+      "severity": "medium",
+      "layer": "调度语义",
+      "evidence": ["server.js：scheduleTemporalAnalysis() 开头 if (temporalAnalysisQueue.has(key)) return temporalAnalysisQueue.get(key)"],
+      "impact": "停笔后的最后一次输入不会推迟分析时点，与『最后一次保存后 N 秒』的承诺不符。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S04",
+      "expiry": "S04 必须实现 trailing debounce + max_wait 封顶；两个语义都要有断言（含『最长等待必须封顶』的负例）。"
+    },
+    {
+      "id": "F03",
+      "title": "保存事务内部调用调度函数，产生事务内定时副作用",
+      "severity": "medium",
+      "layer": "事务边界",
+      "evidence": ["server.js：保存事务 → afterTemporalContentSave() → scheduleTemporalAnalysis()"],
+      "impact": "事务回滚后定时器仍在，可能出现『没有业务事实却有分析任务』；反之提交前崩溃则丢意图。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S04",
+      "expiry": "S04：事务只写意图，提交后由 dispatcher 读取。必须有一个『事务回滚 ⇒ 无任务、无事件』的断言。"
+    },
+    {
+      "id": "F04",
+      "title": "分析选择首个有 API key 的配置，绕过任务级模型设置",
+      "severity": "high",
+      "layer": "模型路由",
+      "evidence": [
+        "server.js temporalAnalysisConfig()：SELECT * FROM api_configs WHERE api_key IS NOT NULL AND api_key <> '' ORDER BY id ASC LIMIT 1",
+        "ai/task-settings.mjs 与 ai/policy.mjs 才是任务级模型的既有来源"
+      ],
+      "impact": "分析与作者为任务指定的模型可能不一致；无需 key 的本地服务永远不被选中。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S10",
+      "expiry": "S10：按「作品 + purpose」解析路由。到期后若仍存在『取第一条带 key 的配置』路径即判失败。"
+    },
+    {
+      "id": "F05",
+      "title": "抽取输入被硬截断（正文 12000 字符 / 状态 400 项 / 名称 200 个）",
+      "severity": "high",
+      "layer": "抽取完整性",
+      "evidence": ["ai/story-state/temporal/extraction.mjs：EXTRACTION_LIMITS.max_chars = 12000；keys.slice(0, 400)；knownNamesFrom().slice(0, 200)"],
+      "impact": "长章尾部与大状态集不在模型输入里，但结果仍可被当作『完整分析』，且没有任何缺口报告。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S06",
+      "expiry": "S06：分块 + coverage manifest + 缺口报告。到期后『12k 之后的事实被丢掉却说没有变化』必须能判失败。"
+    },
+    {
+      "id": "F06",
+      "title": "提示词示例里的 scope 与实际允许集合不一致",
+      "severity": "medium",
+      "layer": "schema 单一来源",
+      "evidence": [
+        "extraction.mjs 示例写 \"canon|character|reader|world\"",
+        "schema.mjs SCOPES = canon, reader, character, author_plan → world 非法、author_plan 漏",
+        "同一段提示词又单独列出了正确清单 → 给模型两份互相矛盾的指令"
+      ],
+      "impact": "诱导模型产出非法 scope，浪费一次调用且结果不可用。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S06",
+      "expiry": "S06：提示词中的 domain/scope 必须由 schema.mjs 生成（单一来源），并断言『示例集合 === 合法集合』。"
+    },
+    {
+      "id": "F07",
+      "title": "input_hash 是残缺的序列化载荷，已知实体输入未真正纳入",
+      "severity": "high",
+      "layer": "请求身份",
+      "evidence": ["extraction.mjs buildExtractionPrompt()：input_hash = canonicalJson({ text, state, known: knownLine('', []) }) —— 第三项恒为空串"],
+      "impact": "名称表变化不改变请求身份 → 无法判断『同一输入的重复请求』，缓存与去重口径失真。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S06",
+      "expiry": "S06：新增版本化完整请求摘要 request_digest_v2，覆盖完整渲染请求 + 修订/文本摘要 + 输入快照与 lineage + 身份映射版本 + 提示词/normalizer/算法版本 + 去密钥的模型路由。旧 input_hash 只读兼容。"
+    },
+    {
+      "id": "F08",
+      "title": "resultHash 只取输出前 2000 字符",
+      "severity": "medium",
+      "layer": "结果身份",
+      "evidence": ["ai/story-state/temporal/analysis.mjs：const resultHash = sha16(sanitizeText(output, 2000))"],
+      "impact": "两个仅在 2000 字符之后不同的响应被视为同一结果。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S06",
+      "expiry": "S06：限制总响应大小后，对『完整被接受的响应字节』计算摘要（response_digest_v2）。"
+    },
+    {
+      "id": "F09",
+      "title": "兼容角色/关系投影按名称关联，temporal cell key 用的是模型给的名字",
+      "severity": "high",
+      "layer": "实体身份",
+      "evidence": [
+        "compat.mjs refreshCompatProjection()：UPDATE characters … WHERE work_id = ? AND name = ?；关系用 characters.name 三表连接",
+        "temporal cellKey 对角色是模型给的名字，对关系是 \"A|B\" 字符串"
+      ],
+      "impact": "改名、同名、别名都会让兼容投影错连或断链；正式状态可能挂到错误实体上。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs；tests/nsdsh/historical-trust.test.mjs（投影不得抬升信任）",
+      "status": "open",
+      "fixStage": "S05",
+      "expiry": "S05：稳定 entity_uid + 唯一命中/缺失/歧义三态，歧义进作者映射队列、绝不自动合并。正式切换留给 S16 且需作者批准。"
+    },
+    {
+      "id": "F10",
+      "title": "运行时就绪检测依赖特定包生成文件",
+      "severity": "medium",
+      "layer": "运行时装配",
+      "evidence": ["harness.js isHarnessBuilt() 只看 packages/interaction/commands/lib/typert.host.js 与 packages/goal/goal/lib/typert.host.js"],
+      "impact": "删除看似无关的包后会被误判为『运行时未构建』；反之这两个文件存在也不代表运行时可用。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S14",
+      "expiry": "S14：以 runtime manifest + 明确入口 + 协议握手取代产物文件猜测；旧标记只能作 legacy 兜底。"
+    },
+    {
+      "id": "F11",
+      "title": "通用文件工具仍在小说运行时可见（归属需订正：来自 bundle/preset，不是插件代码）",
+      "severity": "medium",
+      "layer": "工具能力",
+      "evidence": [
+        "harness-plugins/novel-writing/novel-tools.mjs：只注册 26 个 novel_*（无 shell/web/subagent）",
+        "harness-plugins/novel-writing/cordis.patch.yml：保留通用 read/write/edit/glob/grep（同时禁用 pwsh/web/subagent 等）",
+        "GUI preset 另加 tool-fs + tool-fs-search"
+      ],
+      "impact": "『关闭一些插件』不等于小说权限最小化；模型仍可读写任意路径。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S09",
+      "expiry": "S09：建立只读/提案/作者确认三类操作的可检查权限表，模型可拿到的工具集合必须等于审批允许集合。"
+    },
+    {
+      "id": "F12",
+      "title": "浏览器与服务入口文件承担多种职责",
+      "severity": "medium",
+      "layer": "模块边界",
+      "evidence": [
+        "server.js 约 9,770 行；路由是单条 if 链 handleAPI()",
+        "public/app.js 约 1,032,889 字节 / 18,223 行、一个扁平全局作用域、无构建步骤、约 64 个横幅注释分区"
+      ],
+      "impact": "任何改动都容易牵连保存、状态与展示；评审与回滚粒度太粗。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S03",
+      "expiry": "S03：按业务边界渐进抽取（保存/分析/确认/查询四个用例先抽），**保持既有 API 响应、状态码与上下文完整性不变**。本阶段不换前端框架、不改时态算法、不重命名全部表。"
+    },
+
+    {
+      "id": "D1",
+      "title": "HEAD CAS 是读后写竞态；且 parentCommitId 为 null 时整段校验被跳过",
+      "severity": "high",
+      "layer": "并发正确性",
+      "evidence": [
+        "worldline-store.mjs commitManifest() + service.mjs finalizeValidGroup()：先读 HEAD → JS 比较 → 无条件 UPDATE story_worldlines SET head_commit_id = ? WHERE id = ?",
+        "parentCommitId 为 null 时跳过校验",
+        "未使用 BEGIN IMMEDIATE"
+      ],
+      "detection": "baseline.md 明确标注：本轮为**读码推断**，未并发复现。S02 只做只读表征（UPDATE 语句无 head 守卫 + null parent 旁路），不得声称已复现竞态。",
+      "impact": "并发确认时后写者可能覆盖 HEAD；首个提交的 CAS 形同不存在。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs（只读表征）",
+      "status": "not_directly_detectable",
+      "fixStage": "S03",
+      "expiry": "S03 必须先写并发复现用例**再**修，然后把 UPDATE 改为带 head 守卫的 CAS（或 BEGIN IMMEDIATE），并让 null parent 不再跳过校验。"
+    },
+    {
+      "id": "D2",
+      "title": "validateEventSet 失败时返回对象而不抛异常 → 孤儿事件入库",
+      "severity": "high",
+      "layer": "事务原子性",
+      "evidence": ["service.mjs applyChapterEvents()：先 insertEvents()，随后 validateEventSet() 失败时返回对象；事务照常提交"],
+      "impact": "出现没有 binding 的事件行，历史回放看不到它，下游失效判据基于不完整事实。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S03",
+      "expiry": "S03：校验失败必须让事务回滚。必须有『校验失败 ⇒ 事件 0 行、binding 0 行』的断言。"
+    },
+    {
+      "id": "D3",
+      "title": "HEAD_CAS_MISMATCH 没有 HTTP 处理点（500 而非 409）",
+      "severity": "medium",
+      "layer": "接口语义",
+      "evidence": ["server.js 中 HEAD_CAS_MISMATCH 零处匹配"],
+      "impact": "界面无法区分『你的输入已过时』与『服务端炸了』，作者会重试而不是刷新。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S03",
+      "expiry": "S03：该错误码必须有明确状态码（409）与可读错误体，并补一条 HTTP 断言。"
+    },
+    {
+      "id": "D4",
+      "title": "MIGRATIONS 不包事务、无迁移账本",
+      "severity": "medium",
+      "layer": "schema 迁移",
+      "evidence": ["db.js MIGRATIONS：逐条执行、不包事务、只吞 /duplicate column/i；无 user_version、无 schema_migrations 表"],
+      "impact": "中途失败留下『部分应用』的 schema，且没有任何记录可查，后续迁移无法判断起点。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S06",
+      "expiry": "S06：MIGRATIONS 包事务 + 新增 schema_migrations 账本；`.p1-baseline/test-migration-idempotent.mjs` 必须保持绿。"
+    },
+    {
+      "id": "D5",
+      "title": "确认重放先于输入/信任复核返回复用回执",
+      "severity": "medium",
+      "layer": "幂等与信任",
+      "evidence": ["service.mjs confirmBinding()：binding.validity === 'valid' → { reused: true } 在任何输入/信任复核之前返回"],
+      "impact": "上游已变时，重放请求仍拿到『复用』回执，作者以为状态已更新。",
+      "behaviorTest": "tests/nsdsh/baseline-contract.test.mjs（幂等一节）",
+      "status": "open",
+      "fixStage": "S03",
+      "expiry": "S03：输入/信任复核必须先于复用回执；确认需要调用方断言（expected_revision_id / expected_binding_id）。"
+    },
+    {
+      "id": "D6",
+      "title": "契约声明了代码从不读的 NOVELSTUDIO_HARNESS_POOL",
+      "severity": "low",
+      "layer": "契约与实现一致性",
+      "evidence": [
+        "docs/host-contract.v1.json 声明该环境变量",
+        "全仓无任何代码读取它；ai/harness-pool.mjs 无生产 importer（verify-phase-map.mjs 注释亦自陈『热备池未接线、无环境变量开关』）"
+      ],
+      "impact": "文档承诺了一个不存在的开关，运维按文档设置却毫无效果。",
+      "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
+      "status": "open",
+      "fixStage": "S09",
+      "expiry": "S09：或接线（热备池经 RuntimeAdapter 接入）或从契约中移除；两者都要同步 docs/host-contract.md、docs/host-contract.v1.json 与 test-host-contract.mjs 四处互锁。"
+    }
+  ],
+  "summary": {
+    "total": 18,
+    "high": 7,
+    "medium": 10,
+    "low": 1,
+    "open": 17,
+    "notDirectlyDetectable": 1,
+    "fixedLocally": 0,
+    "byFixStage": {
+      "S03": ["F12", "D1", "D2", "D3", "D5"],
+      "S04": ["F01", "F02", "F03"],
+      "S05": ["F09"],
+      "S06": ["F05", "F06", "F07", "F08", "D4"],
+      "S09": ["F11", "D6"],
+      "S10": ["F04"],
+      "S14": ["F10"]
+    }
+  }
+}

@@ -27,6 +27,9 @@ import { looksEnvironmentBlocked, parseTestCounts, runCommand } from './lib/gate
 import { probeEgressDenied, probeLoopbackAllowed } from './lib/egress.mjs';
 import { ensureReportsDir, expandGlob, findStage, loadStages, makeReport, readReport, redact, rel, writeLog, writeReport, verifyPrerequisite, abs, REPO } from './lib/report.mjs';
 import { startFakeModel } from './lib/isolate.mjs';
+// S02 的 known-issues 结构判据只有一份实现：直接复用检查脚本导出的 check()，
+// 而不是在门禁里再抄一遍（两套判据必然漂移，本项目历史上已出现过同类问题）。
+import { check as checkKnownIssues } from './check-known-issues.mjs';
 
 export const EXIT = { PASS: 0, FAIL: 1, USAGE: 2, PARTIAL: 3 };
 
@@ -359,6 +362,64 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     const depStage = doc ? findStage(doc, dep) : null;
     const v = verifyPrerequisite(dep, { frozenArtifacts: (depStage && depStage.frozenArtifacts) || [] });
     out.push({ name: `verifyPrerequisite('${dep}') 通过（bootstrap 报告有效）`, passed: !!v.ok, detail: v.reason });
+    return out;
+  }
+
+  if (id === 'S02') {
+    // S02 的验收项全部落在 `docs/nsdsh/known-issues.json` 上，所以先做结构判据（复用同一个脚本，
+    // 避免"检查脚本说合法、阶段门禁说非法"两套判据漂移）。
+    const ledger = checkKnownIssues();
+    if (!ledger.ok) {
+      out.push({
+        name: 'known-issues.json 结构自洽（summary === 明细复算；每条有 fixStage 与到期条件）',
+        passed: false,
+        detail: ledger.problems.join(' | '),
+      });
+      return out;
+    }
+    out.push({ name: 'known-issues.json 结构自洽（summary === 明细复算；每条有 fixStage 与到期条件）', passed: true, detail: `${ledger.doc.issues.length} 条登记` });
+
+    const byId = new Map(ledger.doc.issues.map((i) => [i.id, i]));
+    // (a) F01–F12 每条都有可执行表征或明确记录替代实现。
+    const fIds = Array.from({ length: 12 }, (_, k) => `F${String(k + 1).padStart(2, '0')}`);
+    const fMissing = fIds.filter((x) => !byId.has(x));
+    const fNoTest = fIds.filter((x) => byId.get(x) && !String(byId.get(x).behaviorTest || '').trim());
+    out.push({
+      name: 'F01–F12 每条都有行为表征（behaviorTest 非空）',
+      passed: fMissing.length === 0 && fNoTest.length === 0,
+      detail: fMissing.length || fNoTest.length
+        ? `缺失=${fMissing.join(',') || '无'}；无表征=${fNoTest.join(',') || '无'}`
+        : `${fIds.length} 条齐全`,
+    });
+
+    // (b) D1–D6 每条绑定修复阶段与到期条件。
+    const dIds = Array.from({ length: 6 }, (_, k) => `D${k + 1}`);
+    const dMissing = dIds.filter((x) => !byId.has(x));
+    const stageIds = new Set(((doc && doc.stages) || []).map((s) => s.id));
+    const dBad = dIds.filter((x) => {
+      const it = byId.get(x);
+      if (!it) return true;
+      return !stageIds.has(it.fixStage) || !String(it.expiry || '').trim();
+    });
+    out.push({
+      name: 'D1–D6 每条绑定修复阶段与到期条件',
+      passed: dMissing.length === 0 && dBad.length === 0,
+      detail: dMissing.length || dBad.length
+        ? `缺失或不合格=${[...dMissing, ...dBad].join(',')}`
+        : dIds.map((x) => `${x}→${byId.get(x).fixStage}`).join(' '),
+    });
+
+    // (c) 报告必须区分"旧行为已被描述"与"目标正确性已通过"：S02 只描述现状，
+    //     因此不允许在本阶段把任何条目声明成已修复，也不允许任何条目缺少到期条件（那等于永久跳过）。
+    const prematureFixed = ledger.doc.issues.filter((i) => i.status === 'fixed_locally');
+    const noExpiry = ledger.doc.issues.filter((i) => !String(i.expiry || '').trim());
+    out.push({
+      name: '区分「旧行为已描述」与「目标正确性已通过」（S02 不得声明已修复、不得缺到期条件）',
+      passed: prematureFixed.length === 0 && noExpiry.length === 0,
+      detail: prematureFixed.length || noExpiry.length
+        ? `声称已修复=${prematureFixed.map((i) => i.id).join(',') || '无'}；缺到期条件=${noExpiry.map((i) => i.id).join(',') || '无'}`
+        : `全部 ${ledger.doc.issues.length} 条均为"描述现状"且都有到期条件`,
+    });
     return out;
   }
 

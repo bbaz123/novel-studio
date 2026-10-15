@@ -28,6 +28,12 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/stage-runner.test.mjs',
   // 备份-恢复演练（VACUUM INTO 一致快照 + 篡改必须被检出）
   'tests/nsdsh/backup-restore.test.mjs',
+  // S02：F01–F12 与 D1–D6 的**行为表征**（钉住现状，含缺陷；修的那一阶段必须显式改这些断言）
+  'tests/nsdsh/regression-findings.test.mjs',
+  // S02：保存→pending→分析→确认状态机与不变量（幂等 / 跨作品 / 保守失效 / 审批单次消费）
+  'tests/nsdsh/baseline-contract.test.mjs',
+  // S02：历史边界、lineage 与提交级信任不得混为一谈
+  'tests/nsdsh/historical-trust.test.mjs',
 ];
 
 /**

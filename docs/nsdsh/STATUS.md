@@ -13,6 +13,7 @@
 |---|---|---|---|
 | S00 冻结真实基线 | NS-A | **DONE** | `baseline.md` + `adr-001-boundaries.md` + `PLAN.md` + 阶段台账条目 `NS0` |
 | S01 隔离测试 / 阶段运行器 / 备份演练 | NS-A | **DONE（1 项环境阻断）** | `scripts/nsdsh/*`（含 `lib/`）+ `tests/nsdsh/*` + `docs/nsdsh/stages.json`；专项 45 断言全绿 |
+| S02 复现风险并固定行为契约 | NS-A | **DONE** | F01–F12 + D1–D6 全部行为表征；`known-issues.json` 18 条登记；专项 **88 断言**全绿 |
 | S02 复现风险并固定行为契约 | NS-A | PENDING | F01–F12 最小复现 + D1–D6 表征测试 + `known-issues.json` |
 | S03 渐进拆分入口（并修 D1/D2/D3/D5） | NS-C | PENDING | |
 | S04 持久任务 / 租约 / outbox / 恢复 | NS-B | PENDING | 最高价值项 |
@@ -168,4 +169,75 @@
 1. 为 F01–F12 建最小可复现用例（或记录"本地已修复"的证据），D1–D6 每条绑定修复阶段与到期条件。
 2. 固定"保存→pending→分析→确认"状态机；补 `baseline-contract` / `regression-findings` / `historical-trust` 三个套件。
 3. 产出 `docs/nsdsh/known-issues.json`，并把 S02 的 `commands` 填成可执行命令。
+
+---
+
+## S02 · 先复现，再重构（DONE，2026-10-15）
+
+**结论**：`状态 PASS —— 全部产物、前置证据与命令检查通过；通过 6 / 未通过 0`。
+2 条命令全 PASS（`known-issues`、`tests-nsdsh`），4 条验收项全部由机器判定通过。
+
+### 实际完成的变更
+
+| 文件 | 动作 |
+|---|---|
+| `tests/nsdsh/regression-findings.test.mjs` | 新增：**18 条断言 / 151 处 `assert`**，逐条钉住 F01–F12 与 D1–D6 的现状 |
+| `tests/nsdsh/baseline-contract.test.mjs` | 新增：16 条断言（保存→pending→分析→确认状态机、幂等、跨作品隔离、保守失效、哈希两向分离、审批单次消费） |
+| `tests/nsdsh/historical-trust.test.mjs` | 新增：8 条断言（历史边界、lineage vs 状态哈希、提交级信任、未来事实不可见、作者更正留旧提交） |
+| `docs/nsdsh/known-issues.json` | 新增：**18 条**已知缺陷登记（7 高 / 10 中 / 1 低），每条绑定 `behaviorTest` + `fixStage` + 到期条件 |
+| `scripts/nsdsh/check-known-issues.mjs` | 新增：台账结构自检（`summary` 必须等于明细复算；每条必须有 `fixStage` 与到期条件） |
+| `scripts/nsdsh/check-stage.mjs` | 修改：新增 S02 的四条机器判定；`blocked` 的验收项不再判为失败 |
+| `scripts/nsdsh/lib/report.mjs` | 修改：`verifyPrerequisite` 区分"未通过"与"环境阻断"（见下"设计订正"） |
+| `scripts/run-nsdsh-tests.mjs` | 修改：`NSDSH_TESTS` 登记 S02 三个新套件（漏登记会让门禁**静默跳过**整个套件） |
+| `scripts/nsdsh/lib/isolate.mjs` | 修改：修掉 `install()` 与 `assertIsolated()` 的顺序不兼容（见下"自身缺陷 #6"） |
+| `docs/nsdsh/baseline.md` | 修改：F12 归属订正 + D3 符号位置订正 + 新增 §3.1 说明为何订正后要重新生成 S00 报告 |
+| `docs/nsdsh/stages.json` / `docs/phase-map.md` | 修改：S02 置 done、补 `frozenArtifacts`、登记新文件；重新生成阶段映射 |
+
+**未改动**：任何业务代码、数据库 schema、`server.js`、`harness.js`、`ai/`、`public/`、插件、`data/`。
+S02 是**纯表征阶段**——它只描述现状（含缺陷），一个业务行为都没改。
+
+### 真实执行的命令与结果
+
+| 命令 | 结果 |
+|---|---|
+| `node scripts/nsdsh/check-stage.mjs S02 --offline --write-report --force` | **PASS**：通过 6 / 未通过 0 |
+| `node scripts/run-nsdsh-tests.mjs` | **PASS**：**6 个套件 / 88 条断言 / 0 失败**（`NSDSH-SUMMARY: suites=6 suitesFailed=0 passed=88 failed=0 total=88`） |
+| `node scripts/nsdsh/check-known-issues.mjs` | **PASS 1 / 0**：18 条登记；summary 与明细复算一致；按修复阶段 S03(5) S04(3) S05(1) S06(5) S09(2) S10(1) S14(1) |
+| `node scripts/nsdsh/check-stage.mjs S01 --offline --write-report --force` | **PARTIAL**：通过 9 / 未通过 0（唯一 BLOCKED 项仍是执行环境限制，不阻断链） |
+| `node scripts/nsdsh/check-stage.mjs S00 --offline` | **PASS**：通过 3 / 未通过 0（订正 `baseline.md` 后已重新生成 S00 报告） |
+| `node .p1-baseline/verify-phase-map.mjs`（`--write` 后复跑） | **PASS**：**627** 个改动全部有归属；文档对账一致 |
+| `node .p1-baseline/check-utf8.mjs` | **PASS**：非法 UTF-8 0 个 |
+
+### F01–F12 / D1–D6 的表征方式（诚实口径）
+
+**动态行为表征**（真跑内核 + 临时库）：F05、F06、F07、F08、F09、D1（单线程两路径，**非并发**）、D2、D5。
+**静态源码/结构表征**（`server.js`/`harness.js` 无法无副作用 import，故只能文本断言）：F01（含真库表清单）、F02、F03、F04、F10、F11、F12、D3、D4、D6。
+
+**明确没有做到的**（不得被读成"已复现"）：
+- **D1 未做并发复现**：只在单线程把"缺省 expectedHead 时覆盖 HEAD 不抛"与"给过时值则抛 `HEAD_CAS_MISMATCH`"两条路径钉住。并发竞态仍属读码推断。
+- **D3 的"500 而非 409"是推断**：只断言了"零 HTTP 处理点 + 通用 500 出口存在"，没起服务打端点。
+- **F11 未加载组合后的 bundle**：只证明 `plugin.json` / `novel-tools.mjs` / `cordis.patch.yml` / `agent.cordis.yml` 四层各自的事实。
+- **审批 `raced` 分支（UPDATE 影响 0 行）离线不可达**：单线程内无法在"读 active"与"UPDATE"之间插入写入；已退到模块级不变量 + 一处 SQL 形状表征，并在用例里写明"不是并发复现"。
+
+### 本轮自查发现并修复的自身缺陷（承接 S01 的 5 条，本轮新增 3 条）
+
+| # | 问题 | 证据 | 修复 |
+|---|---|---|---|
+| 6 | **`makeIsolatedEnv().install()` 与 `assertIsolated()` 顺序不兼容**：`install()` 会把 `TMPDIR/TEMP/TMP` 指向 `<root>/tmp`，而 `assertIsolated()` 用 `os.tmpdir()` 判定"数据目录必须在临时目录内" → `<root>/data` 必然被拒 | 两个 S02 套件各自撞到并各自绕行（`backup-restore-check.mjs` 与 `regression-findings.test.mjs` 用了两套不同绕法，说明坑已知但未固化） | `isolate.mjs` 改为保存**模块加载时**的系统临时根 `SYSTEM_TMP_ROOT` 作判据，并额外接受"落在本次隔离根之下"；实测 `install()` 之后再 `assertIsolated()` 通过 |
+| 7 | **`verifyPrerequisite` 把"环境阻断"当成"验收未通过"** → S01 的一项 BLOCKED 让 S02 被判"前置证据无效"，连命令都不执行 | `check-stage S02` 首跑报 `前置阶段 S01 证据无效：S01 验收项未通过：network-guard 允许回环（阴性对照）` | 改为 `!passed && !blocked` 才算失败；BLOCKED 仍留在报告里并在理由中列明数量。**并补了一条对照断言**（未通过但无 `blocked` 标记仍然拒绝），防止这条改动变成静默放宽 |
+| 8 | **`run-nsdsh-tests.mjs` 的 `NSDSH_TESTS` 漏登记 S02 三个套件** | 门禁命令是 `scripts/run-nsdsh-tests.mjs`，清单不含新套件 → 整套断言会被**静默跳过**且门禁仍绿 | 登记三个新套件；断言数从 45 → 88，套件数 3 → 6 |
+
+### 设计订正（本轮最重要的一条）
+
+`frozenArtifacts` 抓到了一次真实改动：订正 `baseline.md`（F12 归属、D3 符号位置）后，`verifyPrerequisite('S00')` 正确地报"冻结交付物被改动"。
+**处置不是把 freeze 去掉，而是重新生成 S00 报告**（重新判定三条验收项 + 写入新摘指纹），并在 `baseline.md` §3.1 记录订正内容与理由。
+→ 结论：**`frozenArtifacts` 的语义是"任何改动都必须显式记录并重新出报告"，不是"永不可改"。** 直接手改而不重出报告，会让后续阶段的前置证据静默失真。
+
+### 下一步（S03）
+
+S03 = 渐进拆分入口 + 修 D1/D2/D3/D5（**本批次最后一步 NS-A 已完成，S03 属 NS-C**）。
+注意 `stages.json` 里的依赖链：S03 依赖 S02（已满足）；S04 依赖 S03；S06 依赖 S05。
+S03 的 `commands` 仍是空数组，因此它会先报 **BLOCKED**——这是刻意的，需要先把 `commands` 与验收判定接上。
+⚠️ 硬约束（`known-issues.json` 的到期条件）：**D1 必须先写并发复现用例再修**，不得直接改代码。
+
 

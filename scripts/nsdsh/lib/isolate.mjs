@@ -240,6 +240,18 @@ export async function startFakeModel({ port = null, reply = '{"ok":true}', byPro
   throw new Error(`假模型端点启动失败（试过 ${[...tried].join(', ')}）：${(lastErr && lastErr.message) || lastErr}`);
 }
 
+/**
+ * **模块加载时**的系统临时根，先记下来。
+ *
+ * 为什么必须"先记"：`install()` 会把 `TMPDIR/TEMP/TMP` 一并指到 `<root>/tmp`
+ * （这是有意的：让被测代码自己的临时文件也落在隔离根里）。而 `os.tmpdir()` 是**动态**读取这些变量的，
+ * 于是"install 之后再算一次 os.tmpdir()"得到的是 `<root>/tmp`，拿它去判定 `<root>/data` 必然失败——
+ * 实测报 `测试数据目录必须位于系统临时目录内，实际为 …\<root>\data`。
+ * 也就是说 `makeIsolatedEnv().install()` 与 `assertIsolated()` 曾**无法一起使用**（2026-10-15，
+ * 由 S02 的两个套件同时撞到）。判据必须锚在"装隔离之前的那个临时根"上，而不是"当前临时根"。
+ */
+const SYSTEM_TMP_ROOT = path.resolve(os.tmpdir());
+
 /** import 前必须调用的断言：把"忘了建隔离环境"变成响亮失败，而不是静默打开真实库。 */
 export function assertIsolated() {
   const dir = process.env.NOVELSTUDIO_DATA_DIR;
@@ -248,8 +260,15 @@ export function assertIsolated() {
   if (path.resolve(dir).toLowerCase() === path.resolve(real).toLowerCase()) {
     throw new Error(`拒绝把测试数据目录指向真实库：${dir}`);
   }
-  if (!path.resolve(dir).startsWith(path.resolve(os.tmpdir()))) {
-    throw new Error(`测试数据目录必须位于系统临时目录内，实际为 ${dir}`);
+  // 与 SYSTEM_TMP_ROOT 比较，而不是与"当前 os.tmpdir()"比较（见上面的定义处注释）。
+  const resolved = path.resolve(dir);
+  const okUnderSystemTmp = resolved.startsWith(SYSTEM_TMP_ROOT);
+  // 也接受"落在本次隔离根之下"：install() 之后 os.tmpdir() 会指向 <root>/tmp，
+  // 而隔离根本身仍在系统临时根下，两种口径都必须放行。
+  const root = process.env.NSDSH_ISOLATED_ROOT;
+  const okUnderIsolatedRoot = root ? resolved.startsWith(path.resolve(root)) : false;
+  if (!okUnderSystemTmp && !okUnderIsolatedRoot) {
+    throw new Error(`测试数据目录必须位于系统临时目录内，实际为 ${dir}（系统临时根 ${SYSTEM_TMP_ROOT}）`);
   }
   return dir;
 }
