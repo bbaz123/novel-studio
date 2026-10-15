@@ -49,6 +49,9 @@ export const EXCLUDES = [
   { prefix: '.p6-cutover/.rehearsal/', reason: '彩排临时树' },
   { prefix: '.p6-cutover/.verify/', reason: '本工具的比对临时树' },
   { prefix: '.p6-cutover/.negctl/', reason: '阴性对照的临时快照' },
+  // NSDSH 阶段的原始运行报告（2026-10-15 起）：里面会有隔离实例的数据库副本与未脱敏 stdout。
+  // 与 data/ 同源的纵深防御——.gitignore 已经忽略它，这里再显式列一次，万一忽略规则被改动也不会被打包。
+  { prefix: '.nsdsh/', reason: 'NSDSH 阶段原始报告（含隔离库副本，脱敏摘要另存 docs/nsdsh/）' },
   { prefix: 'node_modules/', reason: '依赖（可由 pnpm install 重建）' },
 ];
 

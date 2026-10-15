@@ -139,6 +139,26 @@ node .p1-baseline/audit-llm-calls.mjs --since 2026-09-15T00:00Z   # 真实调用
 
 ---
 
+## 一之三补、NSDSH 架构优化轮（2026-10-15 起）· 描述当前代码
+
+这是**正在进行**的一轮：以第三方方案稿为路线图、按本地真实代码裁剪后的架构优化。
+方案稿本身按作者任务书处理（在 `.gitignore`，不上传公共仓库）；仓库里保存的是这一轮自己写的文档，
+放在 [`nsdsh/`](nsdsh/PLAN.md)。
+
+| 文档 | 内容 |
+|---|---|
+| **[`nsdsh/PLAN.md`](nsdsh/PLAN.md)** | 执行版计划：目标与成功判据、与方案稿的差异、批次划分（NS-A…NS-E 对应 S00–S18）、关键设计决定、仓库强约束、执行纪律 |
+| **[`nsdsh/baseline.md`](nsdsh/baseline.md)** | **基线冻结（S00）**：版本与来源清单（含上游 checkout 与全局 npm 是两条线）、F01–F12 逐条核对、本轮新增确认的 D1–D6、既有能力清单、S00–S18 真实状态、改动前门禁基线、执行环境事实（沙箱限制） |
+| **[`nsdsh/adr-001-boundaries.md`](nsdsh/adr-001-boundaries.md)** | 改造边界：允许改什么、**明确不许改什么**（正在执行任务的 DSH 安装、用户全局 `~/.dsh`、同级上游 checkout、作者 `data/`）、上游固定提交取哪条线、冲突时的处置 |
+| `nsdsh/STATUS.md` / `nsdsh/stages.json` | 阶段进度与机器可读阶段清单（由 `scripts/nsdsh/check-stage.mjs` 维护） |
+
+> ⚠️ **沙箱限制（会误导验证结论）**：本仓库有若干门禁内部要起子进程（`verify-phase-map.mjs` 起 `git`、
+> 各种隔离实例检查起 `node server.js`）。在 DSH 的文件沙箱里，这类子进程会因为**管道 stdio 被禁止**
+> 而以 `spawn EPERM`（errno `-4048`）失败——**那是环境，不是回归**。
+> 详见 [`nsdsh/baseline.md`](nsdsh/baseline.md) §7–§8：那里逐条记录了 17 条失败如何被归因到该边界。
+
+---
+
 ## 二、历史报告 · 描述重构前的代码
 
 保留作为"当时发生了什么"的证据，**其中的行号与函数分布已过时**。

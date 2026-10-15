@@ -1521,6 +1521,59 @@ export const PHASES = [
       + ' ⚠️ 刻意用逐条清单而不是目录通配：通配会把将来新增的文件也一并认领，'
       + '而「谁改了它、怎么回滚」必须逐项说得清。',
   },
+  {
+    id: 'NS0',
+    title: 'NSDSH S00–S02：冻结真实基线、建立阶段门禁与行为表征（2026-10-15 起）',
+    files: [
+      // 本阶段产物：仓库内的执行版计划、基线事实、边界决策，以及阶段门禁与运行器。
+      'docs/nsdsh/PLAN.md',
+      'docs/nsdsh/baseline.md',
+      'docs/nsdsh/adr-001-boundaries.md',
+      'docs/nsdsh/STATUS.md',
+      'docs/nsdsh/stages.json',
+      'scripts/nsdsh/preflight.mjs',
+      'scripts/nsdsh/check-stage.mjs',
+      'scripts/nsdsh/isolated-run.mjs',
+      'scripts/nsdsh/backup-restore-check.mjs',
+      'tests/nsdsh/isolation.test.mjs',
+      'tests/nsdsh/stage-runner.test.mjs',
+      'tests/nsdsh/backup-restore.test.mjs',
+      'tests/nsdsh/baseline-contract.test.mjs',
+      'tests/nsdsh/regression-findings.test.mjs',
+      'tests/nsdsh/historical-trust.test.mjs',
+      // 四处配套（都已被别的阶段认领，改动交织，所以本阶段只能整体回滚）：
+      //   .gitignore —— 把第三方方案稿按「任务书」忽略、忽略 .nsdsh/ 原始报告
+      //   .p6-cutover/snapshot.mjs —— 把 .nsdsh/ 加进快照排除（纵深防御）
+      //   .p1-baseline/verify-phase-map.mjs + docs/phase-map.md —— 正是本条目自身与它生成的文档
+      //   docs/README.md —— 文档索引里加一段指路
+      '.gitignore',
+      '.p6-cutover/snapshot.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+      'docs/README.md',
+      'scripts/ci-offline-checks.mjs',
+    ],
+    evidence: [
+      'docs/nsdsh/PLAN.md',
+      'docs/nsdsh/baseline.md',
+      'docs/nsdsh/adr-001-boundaries.md',
+    ],
+    // shared 是**推导结果**：`.gitignore`（Z0）、`docs/README.md`（X/Z0/Z2/Z5/Z6/G1/TT/G2）、
+    // `.p1-baseline/verify-phase-map.mjs`（X/Z3/TT/G2/SE/SE4/SE5/SE6）、`docs/phase-map.md`（X/Z1/Z3）、
+    // `scripts/ci-offline-checks.mjs`（Z2/R/L/Z6/TT/G2/SE6）、`.p6-cutover/snapshot.mjs`（P6/SE9）
+    // 都是多阶段共用同一文件；文件级回滚会把别人的改动一起卷走，撤不干净。
+    rollback: 'shared',
+    note: '**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。'
+      + ' 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。'
+      + ' 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、'
+      + ' 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、'
+      + '`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、'
+      + ' 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。'
+      + ' ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 '
+      + '`spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。'
+      + ' ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` '
+      + '重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

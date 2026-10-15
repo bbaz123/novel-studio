@@ -55,6 +55,7 @@
 | **SE7** | 2026-10-10 第七批：叙事审稿—局部修稿闭环的授权边界修复（《修复.md》E00—E07：选中问题 → 获准跨度 → 实际补丁不可越权） | ✅ 可独立回滚 |
 | **SE8** | 2026-03-17 第八批：《Novel Studio v1.1.8｜3月17日觉醒日》审稿与修稿新样本专项（V118-01～V118-15：未批准制度/时间机制候选、报告引文归属、修后结论闸） | ✅ 可独立回滚 |
 | **SE9** | 历史遗留物追认（C3）：为 SE1–SE8 之前/之外、从未被任何阶段认领的文件补归属 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **NS0** | NSDSH S00–S02：冻结真实基线、建立阶段门禁与行为表征（2026-10-15 起） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：U、V、Z4、V1、SE7、SE8。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -220,7 +221,8 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X/Z3/TT/G2/SE/SE4/SE5/SE6）import——撤掉会让该工具失效
+  - 文件 .p6-cutover/snapshot.mjs 同时属于 P6/NS0——改动改在同一批代码里，撤不干净
+  - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/exp-concurrent-models.mjs（验收工具，D8/Z1）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/test-agent-memory-guard.mjs（验收工具，D8）import——撤掉会让该工具失效
   - ai/harness-env.mjs 被 .p1-baseline/test-harness-env.mjs（验收工具，X）import——撤掉会让该工具失效
@@ -450,8 +452,9 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
+  - 文件 .gitignore 同时属于 Z0/NS0——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
-  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2/NS0——改动改在同一批代码里，撤不干净
   - 文件 vendor/README.md 同时属于 W2/Z0/Z2——改动改在同一批代码里，撤不干净
 - **说明**：回滚口径（诚实版，分两层）：① **资产层可独立撤**——这几个文件不被任何生产代码 import（只有文档引用路径），删掉 vendor/ 与拉取脚本后产品照常启动，代价只是「服务端不需要联网下模型」这条能力消失（OpenViking 会退回它自己的默认行为：首次启动去 HuggingFace 下载，本机必然失败）。② **文件层不可单独回滚**——README.md / docs/README.md 与 X/Z2 改在同一批文件里，而且撤掉资产后那两行指路会变成死链，必须同批处理。 校验口径以 vendor/README.md 里那张表为准（SHA256）；镜像返回的 ETag 与真实内容**不一致**，别拿 ETag 当校验。**已定案（2026-09-25）：该二进制随仓库提交**（代价：每次 clone +47.9MB；本轮提交时一并 `git add`；不想要就删掉 `vendor/models/`，产品照常启动，只是「离线可用」这条能力随之消失）。
 - **验收证据**：`vendor/README.md`、`docs/openviking-embedding-setup.md`、`scripts/fetch-embedding-model.mjs`
@@ -546,7 +549,7 @@
   - 文件 .p1-baseline/test-context-manifest.mjs 同时属于 Z2/Z3——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-host-contract.mjs 同时属于 Z2/Z3/TT——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/verify-all.mjs 同时属于 X/Z2/Z3/TT——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - 文件 ai/context/assembler.mjs 同时属于 P2/Z2/Z3——改动改在同一批代码里，撤不干净
   - ai/context/assembler.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
 - **说明**：**不能单独回滚**：内核被 server.js、层规格与插件工具面同时引用，而那三处又是 P1–P6 / Z2 改过的同一批函数。 本轮的**设计前提**是「机制生效 ≠ 强制接入」：作品开关 story_state_config.enabled 默认 0，未开启时该层不进 manifest、不进 excluded、不计入可执行下限（floor(settings) 仍 = 18173）。 质量红线：本轮**没有**改模型、prompt 语义、reasoning effort、token 预算、层顺序与默认 AI route；逐字节上下文基线 **50/50 相同**；活实例断言「开启后只多一层且其余各层 emitted 逐层相同」。 详见 docs/story-state-kernel-2026-09-26.md。 第五步 Golden Novel 联合回归（19 类难 case）另抓到并修掉两处真实缺陷：① character_knowledge 的 upsert 少了部分唯一索引的 WHERE 谓词 → 角色知识边界整条路不可用（S14 回归 + 变异对照）；② knowledgeOf 的 unknown/suspected/false_belief 可见窗口方向反了 → 最需要提醒的章节反而看不见（S15 回归 + 变异对照）。 另补 GET /api/novel/state/facts（契约 1.1.0 → 1.2.0，附加式）。详见 docs/golden-novel-regression-2026-09-26.md。
@@ -631,7 +634,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2/NS0——改动改在同一批代码里，撤不干净
   - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
   - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
 - **说明**：**不能单独回滚**：public/app.js 是 P2–P5 / Z2 / Z3 反复改过的同一个文件。 本轮两件事，都是附加式：① 成文耗时测量层——新增 newWriteTiming() 分轮耗时账本；streamAIDirectWrite 多返回 ms/ttftMs； runHarnessJob 多返回客户端观测 ms；三处 showAIWritingResult 传入真实 channel/model/ms/timing （此前从未传过，导致 ai_eval_events 的 ms 恒为 0、channel/model 恒为空串）， 并附加一条 app_logs kind=ai_write_timing（含分轮明细与 draft_key）；② 超长 prompt 走 argv 触发 spawn ENAMETOOLONG 的修复（仅 Windows、仅超长时改走 dsh --profile novel - + stdin）——短/中文本与非 Windows 路径逐字不变，回滚只需把 useStdinPrompt 置 false。 质量红线：**没有**改模型、prompt 语义、上下文、reasoning effort、token 预算，也没有改任何生成分支的判断条件—— 测量值不参与决策，全部是附加字段。之所以走 app_logs 而不给 ai_eval_events 加列：避免 schema 迁移 与已冻结的 Host Contract 表清单变更（零迁移、零契约变更、零回滚风险）。 证据：frontend-test.mjs 新增 108h / 112a / 112b / 112c 四条断言（**既有期望值一字未改**）钉住 "埋点落库请求里就是真值"；任务设置离线 49/49、离线清单 32/32、API 186/190（0 失败）、插件冒烟 39/39 全绿。 详见 docs/ai-write-latency-plan.md 与 docs/HARNESS_ARGV_LIMIT_FIX.md。
@@ -810,7 +813,7 @@
   - 文件 CONTRIBUTING.md 同时属于 W/Z2/G1/G2——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
-  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2/NS0——改动改在同一批代码里，撤不干净
 - **说明**：**展示面 / 增长轮，不触碰任何生产路径**（0 处 import 变化、0 处运行时行为变化）—— 但 README.md / docs/README.md / CONTRIBUTING.md 与 X / W / W2 / Z2 / L / Z6 共享， 按文件粒度判定只能整体回滚，故声明为 shared。 内容要点：① 英文 README 成为仓库首页，中文正文迁到 README.zh-CN.md（脚本搬运，不手抄）； 随后把中文版重排为与英文版逐节对齐的章节顺序（新增「⭐ 功能特性」「💻 使用」「🙏 致谢」三节， 标题与英文版一一对应，原有正文内容照搬未改写）； ② 修正一处**既有的事实错误**——旧 README 把 assets/preview.png（图标多尺寸预览，供 novel-studio-icon.ps1 生成 .ico） 配文成「深色护眼主题下的作品总览与设定管理」，它其实**不是**界面截图； ③ 社区健康度补齐 SECURITY.md 与 CODE_OF_CONDUCT.md； ④ .github/ISSUE_TEMPLATE/config.yml 的链接由写死分支名 blob/refactor/p0-p6 改为 blob/HEAD （分支改名不再失效），并补英文入口； ⑤ CONTRIBUTING.md 增英文段，原中文段整段保留、仅降一级标题。 仓库级 Description 与 Topics 经 GitHub API 写入，属**仓库设置而非文件**，不进 git（与 W / W2 同例）。
 - **验收证据**：`README.md`、`README.zh-CN.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、`assets/screenshot-settings-characters.png`
 - **本阶段认领的文件**（11 个）：
@@ -832,7 +835,7 @@
 - **阻断原因（推导得出）**：
   - 文件 .p1-baseline/test-host-contract.mjs 同时属于 Z2/Z3/TT——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/verify-all.mjs 同时属于 X/Z2/Z3/TT——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - ai/repair/analyzer.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/SE5/SE6）import——撤掉会打断线上路径
   - ai/repair/runner.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/SE5/SE6）import——撤掉会打断线上路径
   - 文件 ai/story-state/approval.mjs 同时属于 Z3/TT——改动改在同一批代码里，撤不干净
@@ -926,11 +929,11 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - 文件 CONTRIBUTING.md 同时属于 W/Z2/G1/G2——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
-  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2——改动改在同一批代码里，撤不干净
+  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2/NS0——改动改在同一批代码里，撤不干净
 - **说明**：**展示面 / 增长轮，不触碰任何生产路径**（0 处 import 变化、0 处运行时行为变化）—— 但 README.md / README.zh-CN.md / CONTRIBUTING.md / docs/README.md 与 G1 / X / W / W2 / Z2 / L / Z6 / TT 共享同一文件，按文件粒度判定只能整体回滚，故声明为 shared。 内容要点：① 英文与中文 README 首屏重写为「问题 → 价值主张 → 受众」结构，并新增「Who it's for / Who it's not for」 与「Where it fits」对比表（覆盖 Sudowrite / Novelcrafter / Obsidian+Longform / novelWriter / Manuskript / SillyTavern / Open WebUI 等替代品检索词），英文版新增可折叠目录（Contents）； ② **修掉三处既有的事实错误**——英文 README 写「49 checks」、中文 README 两处写「49 条」， 而 `scripts/ci-offline-checks.mjs` 实际是 **50 条**（离线套件实跑 50/50 佐证）； ③ `docs/README.md` 的 Host Contract 版本由 1.19.0 更正为 **1.20.0**、条目数 20 更正为 **21**（唯一真源 `server.js` 的 `HOST_CONTRACT_VERSION`），并新增「一之再补、v1.0.0 轮」小节， 把此前**未被索引**的 21 份文档（含时态重构四件、DSH rc1→rc2 六件、`post-implementation-audit.md`） 与仓库根的 `.audit-2026/` 与三份中文报告一并登记； ④ `CONTRIBUTING.md` 中英两半各新增「怎么找到该看的地方」（架构入口表）与「该跑哪一套？」（区分 50 条离线套件与 `verify-all`，并写明成本纪律与成本总闸）。 仓库级 Description 与 Topics 经 GitHub REST API 写入，属**仓库设置而非文件**，不进 git（与 G1 / W / W2 同例）。 ⚠️ 写 Topics 走的是专用端点 `PUT /repos/{owner}/{repo}/topics`：实测仓库 PATCH 即使返回 200 也**不会**改 topics， 必须写后回读校验。
 - **验收证据**：`README.md`、`README.zh-CN.md`、`CONTRIBUTING.md`、`docs/README.md`
 - **本阶段认领的文件**（5 个）：
@@ -944,7 +947,7 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - 文件 frontend-test.mjs 同时属于 S/Z5/PI/Z6/TT/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
   - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
   - 文件 public/index.html 同时属于 S/SE/SE6——改动改在同一批代码里，撤不干净
@@ -964,7 +967,7 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - 文件 .p1-baseline/test-editing-rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 ai/editing/rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
@@ -993,7 +996,7 @@
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
   - 文件 .p1-baseline/test-editing-rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - 文件 README.md 同时属于 X/W2/Z0/Z2/L/Z6/G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 README.zh-CN.md 同时属于 G1/G2/SE4/SE5——改动改在同一批代码里，撤不干净
   - 文件 ai/editing/rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
@@ -1027,7 +1030,7 @@
 - **阻断原因（推导得出）**：
   - 文件 .p1-baseline/test-editing-rules.mjs 同时属于 R/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
   - 文件 .p1-baseline/test-migration-idempotent.mjs 同时属于 R/Z6/SE6——改动改在同一批代码里，撤不干净
-  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
   - ai/editing/narrative-review.mjs 被**生产代码** .narrative-repair-116/paid-eval-consistency.mjs（SE7）import——撤掉会打断线上路径
   - ai/editing/narrative-review.mjs 被**生产代码** .narrative-repair-116/probe-review-records.mjs（SE7）import——撤掉会打断线上路径
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5）import——撤掉会打断线上路径
@@ -1297,9 +1300,33 @@
   - `缺陷修复.md`
   - `缺陷问题及对应解决办法.md`
 
+### NS0 · NSDSH S00–S02：冻结真实基线、建立阶段门禁与行为表征（2026-10-15 起）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - 文件 .gitignore 同时属于 Z0/NS0——改动改在同一批代码里，撤不干净
+  - 文件 .p1-baseline/verify-phase-map.mjs 同时属于 X/Z3/TT/G2/SE/SE4/SE5/SE6/NS0——改动改在同一批代码里，撤不干净
+  - 文件 .p6-cutover/snapshot.mjs 同时属于 P6/NS0——改动改在同一批代码里，撤不干净
+  - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X/Z3/TT/G2/SE/SE4/SE5/SE6）import——撤掉会让该工具失效
+  - .p6-cutover/snapshot.mjs 被 .p6-cutover/test-snapshot.mjs（验收工具，P6）import——撤掉会让该工具失效
+  - 文件 docs/README.md 同时属于 X/Z0/Z2/Z5/Z6/G1/TT/G2/NS0——改动改在同一批代码里，撤不干净
+- **说明**：**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。 ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 `spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。 ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` 重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。
+- **验收证据**：`docs/nsdsh/PLAN.md`、`docs/nsdsh/baseline.md`、`docs/nsdsh/adr-001-boundaries.md`
+- **本阶段认领的文件**（10 个）：
+  - `.gitignore`
+  - `.p1-baseline/verify-phase-map.mjs`
+  - `.p6-cutover/snapshot.mjs`
+  - `docs/README.md`
+  - `docs/nsdsh/PLAN.md`
+  - `docs/nsdsh/STATUS.md`
+  - `docs/nsdsh/adr-001-boundaries.md`
+  - `docs/nsdsh/baseline.md`
+  - `docs/phase-map.md`
+  - `scripts/ci-offline-checks.mjs`
+
 ## 三、归属核对
 
-- 真实改动集：**603** 个文件
+- 真实改动集：**607** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

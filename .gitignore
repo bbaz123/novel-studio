@@ -66,3 +66,13 @@ pnpm-lock.yaml
 # 文件仍留在工作目录供作者阅读；忽略是为了让下一次 `git add -A` 不会把它又带上去。
 修复.md
 修改方案.md
+
+# 第三方方案稿（novel-studio-dsh-optimization-plan.md）：同样是**交给执行者看的输入文档**，
+# 不是产品的一部分。2026-10-15 执行 NSDSH 计划时作者选定按任务书处理——文件保留在磁盘供阅读，
+# 但不上传公开仓库；仓库里保留的是本项目自己写的 docs/nsdsh/*。
+novel-studio-dsh-optimization-plan.md
+
+# NSDSH 阶段的**原始**运行报告与日志（.nsdsh/reports/）：里面会有隔离实例的数据库副本与
+# 未脱敏 stdout，属于本地过程证据。脱敏摘要进 docs/nsdsh/STATUS.md（那份才随源码走）。
+# 与 data/ 同源理由：新工具引入新产物时忽略清单必须跟上，否则一次 `git add -A` 就把证据带走。
+.nsdsh/
