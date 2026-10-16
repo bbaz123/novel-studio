@@ -30,7 +30,35 @@ export const TICK = Object.freeze({
   FENCED: 'fenced',             // 执行完了但租约已被别人接管 → 回写被拒（丢弃结果，不覆盖）
   NO_HANDLER: 'no_handler',     // 领到了但没有对应 kind 的执行器 → 记 failed（不静默丢）
   REARMED: 'rearmed',           // 执行器说"等新修订"（stale 等）→ 回到 queued 推迟重试，**不当作完成**
+  NOT_RUN: 'not_run',           // 未运行（无模型配置 / 关闭自动分析）→ 如实记录，不宣称 AI 成功
 });
+
+/**
+ * R2（2026-10-16 修）：**唯一的执行结果分类函数**。
+ *
+ * 修改前 tick() 只对 stale/no_content/running 做特殊处理，**其余返回一律 `finishOk`** ——
+ * 于是 `{ ok:false, status:'failed', reason:'provider unavailable' }` 会被记成 **done**。
+ * 尤其危险的是 `finishAnalysis()` 用 `{ ok:true, status:'failed' }` 表示"失败状态**记录成功写入**"，
+ * 那个 `ok` 是"写入成功"，**不是"分析成功"**。
+ *
+ * 这里把"业务结果"与"传输状态"分开：
+ *   · done        → 真的分析成功（才允许 finishOk）
+ *   · wait        → 等新修订（stale / running / no_content）→ rearm，**不算完成**
+ *   · not_run     → 未运行（无模型配置 / 作者关闭自动分析）→ 如实记录，不宣称 AI 成功
+ *   · failed      → 业务失败（ok:false 或 status:failed）→ finishFailed
+ *   · unknown     → 结果不可判定 → 保守失败，保留可诊断摘要（禁止静默当成功）
+ */
+export function classifyResult(result) {
+  if (!result || typeof result !== 'object') return { kind: 'unknown', reason: '执行器没有返回结构化结果' };
+  const status = String(result.status || '');
+  if (status === 'done' && result.ok === true) return { kind: 'done' };
+  if (status === 'stale' || status === 'running' || status === 'no_content') return { kind: 'wait', reason: status };
+  if (status === 'not_run') return { kind: 'not_run', reason: String(result.reason || '未运行') };
+  if (status === 'failed' || result.ok === false) return { kind: 'failed', reason: String(result.reason || status || '执行器报告失败') };
+  if (status === 'unknown') return { kind: 'unknown', reason: String(result.reason || '结果不可判定') };
+  // 未知 status / 空结果：**保守失败**，不允许静默当成功。
+  return { kind: 'unknown', reason: `无法识别的执行结果 status=${JSON.stringify(status)} ok=${JSON.stringify(result.ok)}` };
+}
 
 /**
  * @param {object} deps
@@ -64,35 +92,43 @@ export function createDispatcher({ db, runAnalysis, runImpact = null, owner = `d
     }
 
     // 先登记"可能已发出"：此后若崩溃，reconciliation 判 unknown 而不是重发。
-    Q.markSent(db, { taskId: task.id, owner, generation: task.lease_generation, nowMs: Number(now()) });
+    // R4/§6.2-4：markSent 失败（租约已易主）时**必须停止**，不能再打真实模型调用。
+    const sentOk = Q.markSent(db, { taskId: task.id, owner, generation: task.lease_generation, nowMs: Number(now()) });
+    if (!sentOk) {
+      return { outcome: TICK.FENCED, taskId: task.id, detail: 'markSent 被拒（租约已易主）：未发起模型调用' };
+    }
 
     try {
       const result = await handler(task, ctx);
+      const verdict = classifyResult(result);
 
-      // ── 「等新修订」不是完成，而是**要重新武装** ─────────────────────────────
-      // 实测缺陷（2026-10-16，tests/temporal/06 的 G10c/G10d）：分析期间作者又存了新版时，
-      // `analyzeChapter` 回 `status:'stale'`（提案绑旧修订，最新修订已变）。第一版 tick 把它
-      // 当普通成功、把任务标 done —— **意图被吃掉**，提案永远停在 pending，作者看到
-      // "保存了但语义分析再也没跑"。改造前那条 setTimeout 路径有
-      // `analysisTarget(...)==='pending'` 就重排一次的兜底，迁到持久化队列时我漏了它。
-      // 现在显式补回：**重新武装同一个任务**（保住 revision 语义），并计入尝试上限。
-      const WAIT_NEW_REVISION = new Set(['stale', 'no_content', 'running']);
-      if (result && WAIT_NEW_REVISION.has(String(result.status || ''))) {
+      // ── 「等新修订」不是完成，而是**重新武装**（R2/R3）────────────────────────
+      if (verdict.kind === 'wait') {
         const attempts = Number(task.attempts) || 0;
         if (attempts >= maxAttempts) {
-          const exhausted = Q.finishFailed(db, { taskId: task.id, owner, generation: task.lease_generation, error: `REARM_EXHAUSTED:${result.status}`, nowMs: Number(now()) });
-          return { outcome: exhausted.ok ? TICK.FAILED : TICK.FENCED, taskId: task.id, detail: `等待新修订超过 ${maxAttempts} 次（${result.status}）` };
+          const exhausted = Q.finishFailed(db, { taskId: task.id, owner, generation: task.lease_generation, error: `REARM_EXHAUSTED:${verdict.reason}`, nowMs: Number(now()) });
+          return { outcome: exhausted.ok ? TICK.FAILED : TICK.FENCED, taskId: task.id, detail: `等待新修订超过 ${maxAttempts} 次（${verdict.reason}）` };
         }
-        db.prepare(
-          `UPDATE story_analysis_tasks
-              SET status = 'queued', not_before_ms = ?, lease_owner = '', lease_expires_at_ms = 0, updated_at_ms = ?
-            WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_generation = ?`,
-        ).run(Number(now()) + Math.max(0, Number(rearmDelayMs) || 0), Number(now()), task.id, owner, task.lease_generation);
-        db.prepare(`UPDATE story_analysis_attempts SET status = 'abandoned', finished_at_ms = ? WHERE task_id = ? AND lease_generation = ? AND status = 'running'`)
-          .run(Number(now()), task.id, task.lease_generation);
-        return { outcome: TICK.REARMED, taskId: task.id, detail: String(result.status) };
+        // R3：not_before 只往后不提前；R4：复位本轮传输态。判定失败即 FENCED，不虚报 REARMED。
+        const r = Q.rearm(db, { taskId: task.id, owner, generation: task.lease_generation, nowMs: Number(now()), rearmDelayMs });
+        if (!r.ok) return { outcome: TICK.FENCED, taskId: task.id, detail: r.reason };
+        return { outcome: TICK.REARMED, taskId: task.id, detail: verdict.reason };
       }
 
+      // ── 「未运行」：如实记录，**不宣称 AI 分析成功**（R2）──────────────────────
+      if (verdict.kind === 'not_run') {
+        const res = Q.finishFailed(db, { taskId: task.id, owner, generation: task.lease_generation, error: `NOT_RUN:${verdict.reason}`, nowMs: Number(now()) });
+        return { outcome: res.ok ? TICK.NOT_RUN : TICK.FENCED, taskId: task.id, detail: verdict.reason };
+      }
+
+      // ── 失败 / 不可判定：保守失败，保留可诊断摘要（R2）────────────────────────
+      if (verdict.kind === 'failed' || verdict.kind === 'unknown') {
+        const res = Q.finishFailed(db, { taskId: task.id, owner, generation: task.lease_generation, error: `${verdict.kind.toUpperCase()}:${verdict.reason}`, nowMs: Number(now()) });
+        log({ level: 'warn', kind: 'job_failed', message: `分析任务未成功（${verdict.kind}）：${verdict.reason}`, context: { task_id: task.id } });
+        return { outcome: res.ok ? TICK.FAILED : TICK.FENCED, taskId: task.id, detail: verdict.reason };
+      }
+
+      // verdict.kind === 'done'：只有明确成功才写 done。
       const res = Q.finishOk(db, { taskId: task.id, owner, generation: task.lease_generation, nowMs: Number(now()) });
       if (!res.ok) {
         // 执行成功了，但租约已被接管（例如执行期间超时被 reconciliation 收走）→ 丢弃结果。
@@ -100,7 +136,7 @@ export function createDispatcher({ db, runAnalysis, runImpact = null, owner = `d
         log({ level: 'warn', kind: 'job_fenced', message: `任务 ${task.id} 回写被拒（租约已过期或易主）`, context: { task_id: task.id, generation: task.lease_generation } });
         return { outcome: TICK.FENCED, taskId: task.id, detail: res.reason };
       }
-      return { outcome: TICK.DONE, taskId: task.id, detail: result && result.status ? String(result.status) : '' };
+      return { outcome: TICK.DONE, taskId: task.id, detail: String(result.status || 'done') };
     } catch (e) {
       const msg = (e && e.message) || String(e);
       const res = Q.finishFailed(db, { taskId: task.id, owner, generation: task.lease_generation, error: msg, nowMs: Number(now()) });

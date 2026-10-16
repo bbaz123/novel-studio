@@ -799,9 +799,14 @@ CREATE TABLE IF NOT EXISTS story_analysis_tasks (
 );
 -- 领取扫描走这条索引：按"最早可执行"取，且只取还活着的状态。
 CREATE INDEX IF NOT EXISTS idx_story_analysis_tasks_ready ON story_analysis_tasks(status, not_before_ms, id);
--- 同一章同一 kind 只保留**一个未完成任务**（合并最新修订），避免重复分析同章。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_story_analysis_tasks_open
-  ON story_analysis_tasks(chapter_id, kind) WHERE status IN ('queued','running');
+-- 同一章同一 kind：**最多一个 queued**（trailing 合并的对象）与**最多一个 running**
+--（正在分析的那一版，不可变）。分开成两条索引是 R1 的修复要点：
+-- 旧写法把两者压成"只能有一行"，于是新保存只能改写正在跑的那一行 —— 旧 worker 会把它标成 done，
+-- 新修订就被吞掉了。两条索引让"运行中不可变 + 新修订另建 queued"在数据库层就成立。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_analysis_tasks_one_queued
+  ON story_analysis_tasks(chapter_id, kind) WHERE status = 'queued';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_analysis_tasks_one_running
+  ON story_analysis_tasks(chapter_id, kind) WHERE status = 'running';
 
 -- 每次执行尝试的记账：谁领的、第几代租约、结果如何。
 -- 为什么单独一张表而不是往任务表加列：一次任务可能被领取多次（重试/接管），
@@ -1340,6 +1345,13 @@ const MIGRATIONS = [
   `ALTER TABLE story_state_config ADD COLUMN temporal_enabled INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE story_state_config ADD COLUMN auto_analysis_enabled INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE story_state_config ADD COLUMN repair_enabled INTEGER NOT NULL DEFAULT 0`,
+  // ── S04 / R1（2026-10-16）：同章同类允许「1 个 running + 1 个 queued」 ──────────
+  // 原设计用一条 `WHERE status IN ('queued','running')` 的唯一索引把同章同类压成**一行**，
+  // 于是"正在分析 A 时保存 B"只能去改那一行 —— 而那一行正被 A 的 worker 持有，
+  // A 完成后按租约校验通过、把已代表 B 的行标成 done，**B 从未执行却被视为完成**（R1）。
+  // 正确模型：running 的任务**不可变**（它的 revision 就是它要分析的那一版），
+  // 新修订落成**另一条 queued**；因此约束改为"最多一个 queued + 最多一个 running"。
+  `DROP INDEX IF EXISTS idx_story_analysis_tasks_open`,
 ];
 for (const sql of MIGRATIONS) {
   try { db.exec(sql); } catch (e) {

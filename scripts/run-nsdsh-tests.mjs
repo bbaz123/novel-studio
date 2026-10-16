@@ -40,6 +40,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/module-boundaries.test.mjs',
   // S04：持久化分析队列（F01 重启可恢复 / F02 trailing+cap / 租约代际 fencing / 已发送不自动重发）
   'tests/nsdsh/task-queue.test.mjs',
+  // S04：R1–R4 实现缺陷（运行中任务被改写 / 失败伪装成完成 / 重排提前防抖 / 传输态跨轮次）
+  'tests/nsdsh/task-fencing.test.mjs',
 ];
 
 /**

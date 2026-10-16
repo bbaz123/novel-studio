@@ -46,22 +46,31 @@ export function recordIntent(db, { workId, chapterId, kind = 'analysis', revisio
   const c = Number(chapterId) || 0;
   if (!w || !c) throw new Error('recordIntent: 缺少 workId / chapterId');
   const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
-  const existing = db.prepare(
-    `SELECT * FROM story_analysis_tasks WHERE work_id = ? AND chapter_id = ? AND kind = ? AND status IN ${openStates} ORDER BY id DESC LIMIT 1`,
+  const ideal = now + Math.max(0, Number(debounceMs) || 0);
+
+  // R1（2026-10-16 修）：**只合并 queued，绝不改写 running**。
+  //
+  // 修改前的写法是 `SELECT … WHERE status IN ('queued','running')` 再原地 UPDATE。
+  // 当某章正在分析 A（running）时保存 B，它会把**那条 running 行的 revision_id 改成 B**；
+  // A 的 worker 完成后走 `finishWithFence`（只校验 id+owner+generation，**不校验内容修订**），
+  // 于是把"已经代表 B 的行"标成 done —— **B 从未执行却被视为完成**（R1 的核心危害）。
+  //
+  // 正确模型：**running 的任务不可变**（它的 revision_id 就是它要分析的那一版，执行期间不许被改）；
+  // 新修订落成**另一条 queued**，由 db.js 的两条部分唯一索引保证"最多 1 queued + 1 running"。
+  const queued = db.prepare(
+    `SELECT * FROM story_analysis_tasks WHERE work_id = ? AND chapter_id = ? AND kind = ? AND status = 'queued' ORDER BY id DESC LIMIT 1`,
   ).get(w, c, kind);
 
-  const ideal = now + Math.max(0, Number(debounceMs) || 0);
-  if (existing) {
-    // trailing：每次保存都把"最早可执行时刻"往后推；但不得超过首次排队时定下的硬上限。
-    const deadline = Number(existing.max_wait_ms) || (now + Math.max(0, Number(maxWaitMs) || 0));
+  if (queued) {
+    const deadline = Number(queued.max_wait_ms) || (now + Math.max(0, Number(maxWaitMs) || 0));
     const notBefore = Math.min(Math.max(ideal, now), deadline);
     db.prepare(
       `UPDATE story_analysis_tasks
          SET not_before_ms = ?, revision_id = ?, payload_json = ?, updated_at_ms = ?
-       WHERE id = ?`,
-    ).run(notBefore, String(revisionId || ''), JSON.stringify(payload || {}), now, existing.id);
+       WHERE id = ? AND status = 'queued'`,
+    ).run(notBefore, String(revisionId || ''), JSON.stringify(payload || {}), now, queued.id);
     return {
-      task: db.prepare('SELECT * FROM story_analysis_tasks WHERE id = ?').get(existing.id),
+      task: db.prepare('SELECT * FROM story_analysis_tasks WHERE id = ?').get(queued.id),
       created: false,
       notBeforeMs: notBefore,
       deadlineMs: deadline,
@@ -166,6 +175,39 @@ export function finishFailed(db, { taskId, owner, generation, error = '', nowMs 
 /** 记录"模型请求可能已经发出"：进 unknown，**不自动重发**（可能已经计费，交作者决定）。 */
 export function markUnknown(db, { taskId, owner, generation, error = '', nowMs }) {
   return finishWithFence(db, { taskId, owner, generation, status: 'unknown', error, nowMs, transportState: 'unknown' });
+}
+
+/**
+ * 把一次尝试重新排回 `queued`（用于"等新修订"这类瞬时状态）。
+ *
+ * R3（2026-10-16 修）：`not_before_ms` 只能**往后**，不能提前。
+ *   修改前是 `SET not_before_ms = now + rearmDelayMs` —— 如果这条任务本来已经约定在
+ *   16,200ms 之后执行（trailing 合并窗口），重排会把它**提前到 2,800ms**，等于破坏了防抖承诺。
+ *   现在取 `MAX(既有 not_before_ms, now + rearmDelayMs)`，并用 `changes === 1` 判定成功，
+ *   否则返回 FENCED —— 不允许虚报 REARMED。
+ *
+ * R4（2026-10-16 修）：重排时**原子地把 transport_state 复位为 not_sent**。
+ *   修改前不重置，于是"上一轮 markSent 过、这一轮还没发送就崩溃"会被 reconciliation
+ *   误判成"可能已发送" → 进 unknown。传输态必须属于**当前尝试轮次**；
+ *   旧轮次是否可能已计费由 `story_analysis_attempts` 保管（重置当前态并不抹掉那份记录）。
+ */
+export function rearm(db, { taskId, owner, generation, nowMs, rearmDelayMs = 0 }) {
+  const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
+  const cur = db.prepare('SELECT not_before_ms FROM story_analysis_tasks WHERE id = ?').get(Number(taskId) || 0);
+  const existing = Number(cur && cur.not_before_ms) || 0;
+  const next = Math.max(existing, now + Math.max(0, Number(rearmDelayMs) || 0));
+  const info = db.prepare(
+    `UPDATE story_analysis_tasks
+        SET status = 'queued', not_before_ms = ?, transport_state = 'not_sent',
+            lease_owner = '', lease_expires_at_ms = 0, updated_at_ms = ?
+      WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_generation = ?`,
+  ).run(next, now, Number(taskId) || 0, String(owner || ''), Number(generation) || 0);
+  if (info.changes !== 1) return { ok: false, reason: 'FENCED' };
+  db.prepare(
+    `UPDATE story_analysis_attempts SET status = 'abandoned', finished_at_ms = ?
+      WHERE task_id = ? AND lease_generation = ? AND status = 'running'`,
+  ).run(now, Number(taskId) || 0, Number(generation) || 0);
+  return { ok: true, notBeforeMs: next };
 }
 
 /** 标记"请求已发出"（在真正调用模型之前登记，供崩溃后判断能不能安全重发）。 */
