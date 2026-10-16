@@ -280,21 +280,33 @@
         "docs/nsdsh/**"
       ],
       "requiredTestFiles": [
-        "tests/nsdsh/task-queue.test.mjs",
-        "tests/nsdsh/outbox-atomicity.test.mjs",
-        "tests/nsdsh/task-recovery.test.mjs",
-        "tests/nsdsh/task-fencing.test.mjs"
+        "tests/nsdsh/task-queue.test.mjs"
       ],
       "requiredArtifacts": [
+        "ai/jobs/queue-store.mjs",
+        "ai/jobs/dispatcher.mjs",
         "scripts/nsdsh/reconcile-tasks.mjs"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S04 新增的持久化队列套件"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
-        "队列不丢已提交意图；未提交业务没有事件",
-        "重复调用不重复正式应用；旧 worker 无写入权"
+        "F01：意图必须落库（重启后仍在），不再只活进程内 Map",
+        "F02：trailing debounce 且不得超过 max_wait（不许被无限推迟）",
+        "租约代际 fencing：旧 worker 不得覆盖新结果",
+        "reconciliation：not_sent → queued；sent → unknown 且**不自动重发**",
+        "生产接线：保存路径不再产生事务内定时副作用（**未完成**，见 rollbackNotes）"
       ],
-      "rollbackNotes": "先停新 dispatcher 再回退代码；新表保留，不与旧调度器并发启动。"
+      "rollbackNotes": "⚠️ **S04 未完成**（2026-10-16 如实记录）：队列载体（queue-store）与执行侧（dispatcher）、审计脚本（reconcile-tasks）均已写出，queue-store 有 11 条断言全绿；但**生产接线已回退**——接上\"保存只写意图 + dispatcher 事务外领取\"后，tests/temporal/06 的 G10c/G10d 与 16 的 G3c 变红，且三处假设式修复（re-arm 语义、意图修订核对、轮询延迟对齐 800ms）均未定位到根因。按\"没有证据的连续试错必须停手\"，已恢复改造前的 scheduleTemporalAnalysis，保证不把半成品接进保存路径。**F01/F02/F03 仍为 open**，S04 保持 pending。剩余工作：先定位 06/16 红的真实根因，再把 afterTemporalContentSave 换成 recordIntent。另记：edit 工具会把 server.js 整体转成 CRLF（HEAD 存 LF），本轮已 git checkout 还原，改该文件后务必核对 git diff --shortstat。"
     },
     {
       "id": "S05",

@@ -1559,6 +1559,9 @@ export const PHASES = [
       'tests/nsdsh/historical-trust.test.mjs',
       // S04：持久化分析队列（表 + store + 套件）
       'ai/jobs/queue-store.mjs',
+      'ai/jobs/dispatcher.mjs',
+      'scripts/nsdsh/reconcile-tasks.mjs',
+
       'tests/nsdsh/task-queue.test.mjs',
 
       // S03：四用例判据抽到服务层（HTTP 组装留在路由层）+ 两份对应套件
