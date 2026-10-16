@@ -298,14 +298,30 @@
       "status": "open",
       "fixStage": "S09",
       "expiry": "S09：或接线（热备池经 RuntimeAdapter 接入）或从契约中移除；两者都要同步 docs/host-contract.md、docs/host-contract.v1.json 与 test-host-contract.mjs 四处互锁。"
+    },
+    {
+      "id": "E1",
+      "title": "阶段门禁 commands 在门禁执行环境里**偶发** exit=1（同一工作区重跑即绿）",
+      "severity": "medium",
+      "layer": "门禁/环境稳定性",
+      "evidence": [
+        "2026-10-16 复核 S01 时 `check-stage S01 --offline` 报 `FAIL tests-nsdsh（exit=1 17313ms）`；随后**连跑两次**同一命令均为 `PASS（exit=0 17307/17321ms）` 且证明跑了 111 条测试",
+        "runner 直接跑（含 `NSDSH_OFFLINE=1`）exit=0 / 9 套件 / 111 断言；用 Node `spawnSync` 复刻 check-stage 的调用形态同样 exit=0 —— 说明失败与\"命令怎么被起\"有关，不是断言本身",
+        "同源症状：验证门 cycle 2 曾在门禁环境里得到 38 通过 / 17 未通过，17 条统一 `spawn EPERM`（errno -4048），而 Agent shell 里同一命令 55/55 —— 与 `baseline.md` §7 记录的 37/17 同形状"
+      ],
+      "impact": "门禁结果**不可复现**：同一工作区同一命令可能红一次、绿两次。后果是(a)假红让作者怀疑代码，(b)若有人为了让它变绿而加重试，就会掩盖真实回归。",
+      "behaviorTest": "tests/nsdsh/stage-runner.test.mjs（覆盖 runCommand 的管道↔文件重定向退路与 environmentBlocked 判定）；缺陷本身由 `check-stage <stage> --offline` 的偶发退出码观测",
+      "status": "open",
+      "fixStage": "S15",
+      "expiry": "S15 必须给出可复现的归因（哪一种执行环境会导致子进程被拒/退出码漂移），并**在不加重试、不弱化断言**的前提下消除它；若最终证明是门禁侧（dsh-plugin-verification）的沙箱行为，则在 known-issues 中改为\"本项目不可修\"，并写明该结论的证据与它对本项目门禁可信度的影响。严禁用\"自动重试直到绿\"作为修复。"
     }
   ],
   "summary": {
-    "total": 18,
+    "total": 19,
     "high": 7,
-    "medium": 10,
+    "medium": 11,
     "low": 1,
-    "open": 14,
+    "open": 15,
     "notDirectlyDetectable": 0,
     "fixedLocally": 4,
     "byFixStage": {
@@ -340,6 +356,9 @@
         "D3",
         "D5",
         "F12"
+      ],
+      "S15": [
+        "E1"
       ]
     }
   }

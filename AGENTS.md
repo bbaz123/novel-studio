@@ -20,6 +20,7 @@ Novel Studio 是一个**本地优先**的 AI 小说写作工作台：作者自�
 | v1.1.6 | 叙事结构机械感（生成端 P0 场景要求自相矛盾） |
 | v1.1.7 | 审稿—局部修稿闭环硬化（授权 fail-closed + 报告自洽不再滥报） |
 | v1.1.8 | 补丁协议 v2 加 `reason`/`allowed_ops` 与 op 授权校验 + 零宽 `insert` + 修后核验 `issue_coverage` |
+| v1.2.0 | NSDSH 重构 S00–S03（隔离底座/行为表征/四用例抽取）+ 修时态 D1/D2/D3/D5 |
 | v1.1.9 | 未批准制度/时间机制候选（`new_workflow_rule`、`temporal_causal_bridge`）+ 审稿引文归属（`quote_not_found`）+ 修后结论闸（`coverageVerdict`）+ 界面接线 |
 
 ## 二、技术栈
