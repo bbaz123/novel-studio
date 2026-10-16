@@ -1179,6 +1179,30 @@ function headerValue(req, name) {
 }
 
 /**
+ * 取"当前请求的追踪上下文"（无录制或不在上下文里 → undefined）。
+ *
+ * S04 用它的场景：保存后自动分析过去是**在保存请求里**排的 `setTimeout`，
+ * 因此异步链继承了那次请求的 ALS 上下文、`traceAI('callAI')` 能落进追踪。
+ * 改成持久化队列后，执行发生在**启动时创建的 `setInterval`** 里，
+ * 没有 ALS 上下文 → `traceAI` 开头就 `return`，追踪里再也没有 `callAI` 节点
+ *（tests/temporal/16 的 G3c 就是这么红的）。
+ * 因此需要"在登记意图那一刻把上下文记下来、执行时再进去"——
+ * 与旧 `setTimeout` 的继承语义等价，而不是新造一个追踪来源。
+ */
+export function currentTraceStore() {
+  return state.recording ? als.getStore() : undefined;
+}
+
+/**
+ * 在给定的追踪上下文里执行 `fn`（无上下文 → 直接执行，绝不伪造上下文）。
+ * ⚠️ 只用于把**同一批工作**接回它原本所属的追踪，不是用来给无关操作套一层追踪。
+ */
+export function runWithTraceStore(store, fn) {
+  if (!store || !state.recording) return fn();
+  return als.run(store, fn);
+}
+
+/**
  * 为一次 HTTP 请求建立追踪上下文。
  *
  * 实测约束：AsyncLocalStorage 的上下文只在 als.run() 的回调**及其派生的异步链**里有效，

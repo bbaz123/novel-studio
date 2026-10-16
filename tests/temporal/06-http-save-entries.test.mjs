@@ -93,7 +93,21 @@ function startFakeModel() {
       try { body = JSON.parse(raw); } catch { /* 空体 */ }
       const user = String(((body.messages || []).find((m) => m.role === 'user') || {}).content || '');
       state.seen.push({ path: String(req.url || ''), chars: user.length, text: user });
-      const payload = state.scripts.length ? state.scripts.shift() : state.last;
+      // ── E2（2026-10-16 修）：脚本按「针脚(needle)」匹配，而非纯 FIFO ────────────
+      // 根因：持久化 dispatcher 的领取顺序（按 not_before/id）与旧路径的"每章 800ms 防抖"
+      // 不同，而 `state.scripts` 是单一 FIFO —— 顺序一变，"哪个请求拿哪份脚本"就错位，
+      // 脚本化响应被算到别的修订上（G10d 的 EVIDENCE_QUOTE_NOT_FOUND 就是这么来的）。
+      // 修法：每条脚本声明一个 `needle`（该脚本**服务的正文**里的一段独特文本）；
+      // 请求到达时，取**第一个未被消费且 needle 命中请求正文**的脚本。
+      // 没有命中才回退到 FIFO（保持"顺序敏感场景"仍有旧行为可依赖），不改任何断言。
+      let payload = null;
+      if (state.scripts.length) {
+        let idx = state.scripts.findIndex((s) => s && typeof s === 'object' && s.needle && user.includes(String(s.needle)));
+        if (idx >= 0) payload = state.scripts.splice(idx, 1)[0];
+        else payload = state.scripts.shift(); // 回退 FIFO：noneedle 或未命中时保持原语义
+      } else {
+        payload = state.last;
+      }
       state.last = payload;
       const content = typeof payload === 'string' ? payload : JSON.stringify(payload);
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -187,6 +201,7 @@ async function main() {
     let rev1 = '';
     {
       fake.state.scripts.push({
+        needle: '王师傅在青云镇登场',
         events: [{
           ops: [op(cell('character', '王师傅', 'alive'), true), op(cell('character', '王师傅', 'status'), '存活'), op(cell('character', '王师傅', 'location'), '青云镇')],
           evidence: [{ quote: '王师傅在青云镇登场', narrative: 'present' }],
@@ -233,12 +248,14 @@ async function main() {
     // ── G2 二次保存取代旧提案；旧提案拒绝；新提案确认 ───────────────────────────
     console.log('【G2 新保存取代旧提案（AC-43/45）】');
     {
-      fake.state.scripts.push({ events: [{ ops: [op(cell('plotline', '黑风谷任务', 'state'), '进行中')], evidence: [{ quote: '黑风谷任务开始', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '黑风谷任务开始', events: [{ ops: [op(cell('plotline', '黑风谷任务', 'state'), '进行中')], evidence: [{ quote: '黑风谷任务开始', narrative: 'present' }] }] });
       await api('PUT', `/api/chapters/${c2}`, { content: '<p>第二章 黑风谷任务开始</p>' });
       const w2 = await waitProposal(workA, c2, (p) => p.status === 'done');
       ok('G2a 第 2 章保存 → 分析完成（剧情线提案，尚未确认）', !!w2.proposal && (w2.proposal.proposal?.by_domain?.plotline || 0) >= 1, `last=${w2.last}`);
       const head2 = (await overview(workA)).json.head_commit_id;
-      fake.state.scripts.push({ events: [{ ops: [op(cell('plotline', '黑风谷任务', 'state'), '僵持')], evidence: [{ quote: '陷入僵局', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '陷入僵局', events: [{ ops: [op(cell('plotline', '黑风谷任务', 'state'), '僵持')], evidence: [{ quote: '陷入僵局', narrative: 'present' }] }] });
       await api('PUT', `/api/chapters/${c2}`, { content: '<p>第二章 黑风谷任务陷入僵局</p>' });
       const w2b = await waitProposal(workA, c2, (p) => p.status === 'done' && p.revision_id !== w2.proposal.revision_id);
       ok('G2b 新保存建立新修订 + 新提案（分析的是新正文，不是旧缓存）', !!w2b.proposal && w2b.proposal.revision_id !== w2.proposal.revision_id, `last=${w2b.last}`);
@@ -274,7 +291,8 @@ async function main() {
     console.log('【G4 W3 chapter_save（AI 写回通道）】');
     let revAfterG4 = '';
     {
-      fake.state.scripts.push({ events: [{ ops: [op(cell('character', '王师傅', 'status'), '受伤', { kind: 'value', value: '存活' })], evidence: [{ quote: '王师傅受伤休养', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '王师傅受伤休养', events: [{ ops: [op(cell('character', '王师傅', 'status'), '受伤', { kind: 'value', value: '存活' })], evidence: [{ quote: '王师傅受伤休养', narrative: 'present' }] }] });
       const hitsB4 = fake.state.hits;
       const cs = await api('POST', '/api/novel/chapter_save', { work_id: workA, chapter_id: c3, content: '<p>第三章 王师傅受伤休养</p>' });
       ok('G4a chapter_save 写入成功且保留历史版本（旧语义不变）', cs.status === 200 && cs.json.ok === true && cs.json.version_id > 0, `status=${cs.status} ${cs.text.slice(0, 160)}`);
@@ -291,7 +309,8 @@ async function main() {
     {
       const mk = await api('POST', '/api/chapter_versions', { chapter_id: c3, title: '第三章', summary: '', content: '<p>第三章 王师傅养伤的旧稿</p>' });
       ok('G5a 建立历史版本', mk.status === 201 && mk.json.id > 0, `status=${mk.status}`);
-      fake.state.scripts.push({ events: [{ ops: [op(cell('character', '王师傅', 'status'), '静养', { kind: 'value', value: '受伤' })], evidence: [{ quote: '养伤的旧稿', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '养伤的旧稿', events: [{ ops: [op(cell('character', '王师傅', 'status'), '静养', { kind: 'value', value: '受伤' })], evidence: [{ quote: '养伤的旧稿', narrative: 'present' }] }] });
       const rs = await api('POST', `/api/chapter_versions/${mk.json.id}/restore`, { backup_current: true });
       ok('G5b 恢复历史版本成功（W5）', rs.status === 200 && rs.json.ok === true, `status=${rs.status} ${rs.text.slice(0, 140)}`);
       const ch3 = await api('GET', `/api/chapters/${c3}`);
@@ -303,7 +322,8 @@ async function main() {
     // ── G6 W9：带正文新建章节；仅改标题不产生修订 ──────────────────────────────
     console.log('【G6 W9 新建章节带正文 / W1 只改标题】');
     {
-      fake.state.scripts.push({ events: [{ ops: [op(cell('location', '断魂谷', 'known'), true)], evidence: [{ quote: '工作台生成成果', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '工作台生成成果', events: [{ ops: [op(cell('location', '断魂谷', 'known'), true)], evidence: [{ quote: '工作台生成成果', narrative: 'present' }] }] });
       const mkCh = await api('POST', '/api/chapters', { work_id: workA, title: '第六章 工作台成果', content: '<p>第六章 工作台生成成果</p>' });
       ok('G6a POST /api/chapters 带正文成功（创作工作台成果流程）', mkCh.status === 201 && mkCh.json.content === '<p>第六章 工作台生成成果</p>', `status=${mkCh.status}`);
       const c6 = mkCh.json.id;
@@ -313,7 +333,8 @@ async function main() {
       const mkEmpty = await api('POST', '/api/chapters', { work_id: workA, title: '第七章 空章' });
       const g6c = await proposalGroups(workA, mkEmpty.json.id);
       ok('G6c 无正文新建章节不产生修订/提案', mkEmpty.status === 201 && (g6c.json.proposals || []).length === 0);
-      fake.state.scripts.push({ events: [{ ops: [op(cell('location', '青云镇', 'visited'), true)], evidence: [{ quote: '平静的一天', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '平静的一天', events: [{ ops: [op(cell('location', '青云镇', 'visited'), true)], evidence: [{ quote: '平静的一天', narrative: 'present' }] }] });
       await api('PUT', `/api/chapters/${c4}`, { content: '<p>第四章 平静的一天</p>' });
       const w6 = await waitProposal(workA, c4, (p) => p.status === 'done');
       ok('G6d 第 4 章保存并分析完成', !!w6.proposal, `last=${w6.last}`);
@@ -407,7 +428,8 @@ async function main() {
       const atC = await stateAt(workC, cc1);
       ok('G10b 未分析/未确认前历史查询停在 pending（不冒充已确认状态）', atC.json.validity === 'pending' || (atC.json.stop && atC.json.stop.reason === 'pending'), `validity=${atC.json.validity}`);
       await api('PUT', '/api/novel/state/temporal', { work_id: workC, auto_analysis_enabled: true });
-      fake.state.scripts.push({ events: [{ ops: [op(cell('location', '断魂谷', 'known'), true)], evidence: [{ quote: '断魂谷的雾散了', narrative: 'present' }] }] });
+      fake.state.scripts.push({
+        needle: '断魂谷的雾散了', events: [{ ops: [op(cell('location', '断魂谷', 'known'), true)], evidence: [{ quote: '断魂谷的雾散了', narrative: 'present' }] }] });
       await api('PUT', `/api/chapters/${cc1}`, { content: '<p>第一章 断魂谷的雾散了</p>' });
       const wC2 = await waitProposal(workC, cc1, (p) => p.status === 'done');
       ok('G10c 开启自动分析后：保存即自动分析（生产调度走通）', !!wC2.proposal, `last=${wC2.last}`);

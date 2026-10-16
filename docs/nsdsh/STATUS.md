@@ -240,3 +240,28 @@ S03 的 `commands` 仍是空数组，因此它会先报 **BLOCKED**——这是�
 ⚠️ 硬约束（`known-issues.json` 的到期条件）：**D1 必须先写并发复现用例再修**，不得直接改代码。
 
 
+
+## S04 完成（2026-10-16）
+
+**阶段门：PASS（9 通过 / 0 未通过）** —— `node scripts/nsdsh/check-stage.mjs S04 --offline`
+
+接线：保存事务内只写**持久化意图**（`recordAnalysisIntent`，显式 `debounceMs=800ms`、`maxWaitMs=30s`）
+→ 启动先 `reconcileOnStart` → `startTemporalDispatcher` 在**事务外**领取执行（租约 + 代际 fencing）。
+旧 `temporalAnalysisQueue` + `scheduleTemporalAnalysis` 已**移除**（不留第二个调度器）。
+
+同期修复（独立发现的实现缺陷，各有"修复前失败、修复后通过"断言）：
+R1 运行中任务被改写吞掉新修订 → running 不可变 + 新修订另建 queued（db.js 改为两条部分唯一索引）；
+R2 失败对象被记作 done → 唯一 `classifyResult()` 分类；
+R3 重排提前防抖截止 → `rearm()` 只往后取 `MAX(既有, now+delay)`；
+R4 传输态跨轮次 → `rearm()` 原子复位 `not_sent`。
+
+**G10d 根因（E2）**：脚本化模型响应被**跨修订错配** —— `fake.state.scripts` 是单一 FIFO，
+而持久化 dispatcher 的领取顺序与旧"每章 800ms 防抖"不同。修法：假模型按 **needle** 匹配脚本
+（每条脚本声明它服务正文里的一段独特文本），**不改任何断言、不放宽引文校验**。
+
+**G3c 根因**：`traceAI` 依赖 AsyncLocalStorage 上下文；旧路径的 `setTimeout` 建在保存请求的
+ALS 里所以能记录 `callAI`，而 `setInterval` 没有上下文。修法：登记意图时记下上下文，
+执行时用 `runWithTraceStore` 接回（语义等价于旧继承），用完即删。
+
+实测：temporal **15/15**、nsdsh **10 套件 / 121 断言**、离线清单 **55/55**、迁移 **13/0**、
+Host Contract **28/0**、UTF-8 违规 **0**、阶段台账 637 项全有归属。零真实模型计费。

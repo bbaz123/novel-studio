@@ -62,6 +62,8 @@ import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities,
 // S03：时态四用例（保存确认/提案确认/分析/状态查询）的**用例判据**已抽到 server/services/。
 // 这一层不碰 HTTP、不 import db.js，也不启动任何东西；路由层只负责把结论写成响应。
 import { confirmEvents, confirmProposalGroup, analyzeChapterUseCase, queryStoryState, makeTemporalDeps } from './server/services/temporal-services.mjs';
+import { recordIntent as recordAnalysisIntent } from './ai/jobs/queue-store.mjs';
+import { createDispatcher, reconcileOnStart } from './ai/jobs/dispatcher.mjs';
 import { buildCompressionPrompt } from './ai/memory-compress-prompt.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 // 2026-09-22 报告 · 第 1 步：审稿前的**零 token 确定性连续性预检**。
@@ -77,7 +79,9 @@ import {
   beginOperation, finishOperation, attachClientNodes, sweepIdleOperations,
   listOperations, getOperation, listToolCalls, sessionSummary,
   subscribeStream, listSessions, readSession, purgeSessions,
-  flushTraceFile, traceConfigInfo, DEBUG_DIR
+  flushTraceFile, traceConfigInfo, DEBUG_DIR,
+  // S04：后台分析要接回"登记意图那一刻"的追踪上下文（等价于旧 setTimeout 的 ALS 继承）。
+  currentTraceStore, runWithTraceStore,
 } from './debug-trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -5277,7 +5281,22 @@ function memoryAutoCompressEnabled() {
 //   · 未开启 temporal_enabled 的作品立即返回 enabled:false，零写入；
 //   · 模型调用不在保存请求里发生：这里只把分析排进后台（防抖 + 同章去重），保存不等待模型。
 const TEMPORAL_ANALYSIS_DEBOUNCE_MS = 800;
-const temporalAnalysisQueue = new Map();
+// S04：持久化意图的**最长等待上限** —— trailing 防抖允许被后续保存一直往后推，
+// 但不得超过这个上限（否则作者持续敲字就能无限推迟分析，F02 的另一半）。
+// 取 30s：既容纳"一口气连打一段"的合并窗口，又保证最长 30 秒内一定会分析到当前修订。
+const TEMPORAL_ANALYSIS_MAX_WAIT_MS = 30_000;
+/**
+ * S04：task.id → 该意图**登记时**的追踪上下文。
+ *
+ * 为什么需要它：改造前"保存后自动分析"是在保存请求里排的 `setTimeout`，
+ * 异步链因此继承了那次请求的 ALS 上下文，`traceAI('callAI')` 能落进追踪；
+ * 改成持久化队列后执行发生在启动时的 `setInterval` 里，没有上下文 → 追踪里不再有 callAI
+ *（tests/temporal/16 的 G3c）。这里把上下文按"意图"记住、执行时进去，
+ * 与旧行为**语义等价**：同一批工作仍归属它原本那次请求，而不是伪造一个新来源。
+ * 纯调试用途的进程内映射：进程重启后丢失是可接受的（旧 setTimeout 同样随进程消失）。
+ */
+const temporalTraceStores = new Map();
+const TEMPORAL_TRACE_STORES_MAX = 200;
 
 /** 后台分析用的默认 API 配置：第一条带 api_key 的 api_configs（没有 → null，如实记 not_run）。 */
 function temporalAnalysisConfig() {
@@ -5315,35 +5334,42 @@ function afterTemporalContentSave(workId, chapterId, contentHtml, originKind, ge
     // generation：当初实际给模型的生成来源（有则记录，没有就是 unknown——不伪造）。
     origin: { kind: String(originKind || 'save'), ...(generation ? { extra: { generation } } : {}) },
   });
-  if (result && result.enabled && result.recorded) scheduleTemporalAnalysis(w, c);
+  // [S04-WIRING] 保存事务内只写**意图**；执行由 dispatcher 在事务外领取（F01/F03）。
+  // 无条件登记（含开关关闭时）：那次分析由 analyzeChapter 如实记 not_run。
+  // ⚠️ 防抖必须显式传**生产值**（《修复文件》§7.1 点名的"800ms 旧值 vs 15s 队列默认值"）：
+  // 队列默认 debounce 是 15s，而改造前的生产值 `TEMPORAL_ANALYSIS_DEBOUNCE_MS` 是 800ms。
+  // 不显式传就会让"保存后自动分析"慢近 20 倍 —— 表现为追踪/log 还没来得及记录分析就已经断言，
+  //（tests/temporal/16 的 G3c：追踪里找不到 callAI 节点）。
+  if (result && result.enabled && result.recorded) {
+    try {
+      const intent = recordAnalysisIntent(db, {
+        workId: w, chapterId: c, kind: 'analysis',
+        revisionId: result.revision && result.revision.id ? String(result.revision.id) : '',
+        nowMs: Date.now(),
+        debounceMs: TEMPORAL_ANALYSIS_DEBOUNCE_MS,
+        maxWaitMs: TEMPORAL_ANALYSIS_MAX_WAIT_MS,
+      });
+      // 记下"登记意图这一刻"的追踪上下文，供 dispatcher 执行时接回（见 temporalTraceStores 注释）。
+      const store = currentTraceStore();
+      if (store && intent && intent.task && intent.task.id) {
+        temporalTraceStores.set(intent.task.id, store);
+        if (temporalTraceStores.size > TEMPORAL_TRACE_STORES_MAX) {
+          // 只保留最近的若干条（纯调试用途，淘汰最旧的即可，不影响功能）。
+          const oldest = temporalTraceStores.keys().next();
+          if (!oldest.done) temporalTraceStores.delete(oldest.value);
+        }
+      }
+    } catch (e) {
+      log({ level: 'warn', layer: 'ai', kind: 'analysis_intent_failed', message: `登记分析意图失败：${(e && e.message) || e}`, context: { work_id: w, chapter_id: c } });
+    }
+  }
   return result;
 }
 
-/** 保存后自动分析：防抖 + 同章去重；不阻塞保存请求。 */
-function scheduleTemporalAnalysis(workId, chapterId, { delayMs = TEMPORAL_ANALYSIS_DEBOUNCE_MS } = {}) {
-  const w = Number(workId) || 0;
-  const c = Number(chapterId) || 0;
-  if (!w || !c) return null;
-  const key = `${w}:${c}`;
-  if (temporalAnalysisQueue.has(key)) return temporalAnalysisQueue.get(key);
-  const timer = setTimeout(() => {
-    temporalAnalysisQueue.delete(key);
-    runTemporalAnalysis(w, c).then((result) => {
-      // 分析期间又保存了新稿 → 新提案还停在 pending：再排一次（内容已变，必须分析新修订）。
-      try {
-        const target = StoryState.Temporal.analysisTarget({ workId: w, chapterId: c });
-        if (target && target.enabled && target.status === 'pending' && !(result && result.status === 'done')) {
-          scheduleTemporalAnalysis(w, c, { delayMs: 1500 });
-        }
-      } catch { /* 调度重试失败不影响已落库结果 */ }
-    }).catch((e) => {
-      log({ level: 'warn', layer: 'ai', kind: 'temporal_analysis_failed', message: `保存后自动分析失败：${(e && e.message) || e}`, context: { work_id: w, chapter_id: c } });
-    });
-  }, Math.max(0, Number(delayMs) || 0));
-  if (typeof timer.unref === 'function') timer.unref();
-  temporalAnalysisQueue.set(key, timer);
-  return timer;
-}
+
+// S04：进程内调度器（temporalAnalysisQueue + scheduleTemporalAnalysis）已**移除**。
+// 它正是 F01/F02/F03 的病灶：重启即丢意图、只按第一次保存计时、定时副作用落在保存链路里。
+// 现在由 `afterTemporalContentSave` 在事务内写意图，`startTemporalDispatcher` 在事务外领取执行。
 
 /** 立即执行一次本章分析（后台调度与 POST /api/novel/state/analyze 共用）。 */
 async function runTemporalAnalysis(workId, chapterId, { force = false } = {}) {
@@ -5357,6 +5383,42 @@ async function runTemporalAnalysis(workId, chapterId, { force = false } = {}) {
   });
   notifyChange('story_state', { workId: Number(workId), id: Number(chapterId) });
   return result;
+}
+
+/** S04：启动分析任务调度（持久化队列执行侧）。先 reconciliation，再事务外领取。 */
+let temporalDispatchTimer = null;
+function startTemporalDispatcher() {
+  if (temporalDispatchTimer) return temporalDispatchTimer;
+  try { reconcileOnStart(db, { now: Date.now }); } catch (e) {
+    log({ level: 'warn', layer: 'ai', kind: 'analysis_reconcile_failed', message: `reconciliation 失败：${(e && e.message) || e}` });
+  }
+  const dispatcher = createDispatcher({
+    db,
+    owner: `server-${process.pid}`,
+    log: (entry) => log({ level: entry.level || 'info', layer: 'ai', kind: entry.kind || 'job', message: entry.message, context: entry.context }),
+    // S04：执行时接回"登记意图那一刻"的追踪上下文（等价于旧 setTimeout 的 ALS 继承），
+    // 否则后台分析里的 traceAI('callAI') 会因为拿不到上下文而直接返回（G3c）。
+    // 用完即删：上下文只属于这一轮执行，避免映射无限增长或串到其它任务上。
+    runAnalysis: (task) => runWithTraceStore(temporalTraceStores.get(task.id), () => {
+      try {
+        return runTemporalAnalysis(task.work_id, task.chapter_id, { force: false });
+      } finally {
+        temporalTraceStores.delete(task.id);
+      }
+    }),
+    runImpact: (task) => runWithTraceStore(temporalTraceStores.get(task.id), () => {
+      try {
+        return runTemporalImpact(task.work_id, task.chapter_id, { refresh: false });
+      } finally {
+        temporalTraceStores.delete(task.id);
+      }
+    }),
+  });
+  temporalDispatchTimer = setInterval(() => {
+    dispatcher.drain({ max: 5, rearmDelayMs: 800 }).catch((e) => log({ level: 'warn', layer: 'ai', kind: 'analysis_dispatch_failed', message: `派发失败：${(e && e.message) || e}` }));
+  }, 500);
+  if (typeof temporalDispatchTimer.unref === 'function') temporalDispatchTimer.unref();
+  return temporalDispatchTimer;
 }
 
 // ── T3：全下游失效复核（只分析与标记；不得生成后文修订稿）────────────────────
@@ -10176,6 +10238,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Novel Studio is running at http://localhost:${PORT}`);
   // 启动后异步把尚未索引的作品导入 OpenViking 共享记忆库（语义召回开启时）。
   autoIndexExistingWorks();
+  startTemporalDispatcher(); // [S04-WIRING] 先 reconciliation，再事务外领取
   // R03：重启恢复——上次进程在"采纳已提交、投影还没执行"之间退出时，记录仍在 outbox 里
   // （pending/failed），这里只凭持久化状态续跑，不依赖任何内存队列。
   if (projectionSummary().pending > 0) {

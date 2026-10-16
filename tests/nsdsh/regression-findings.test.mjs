@@ -48,6 +48,21 @@ console.log(`  · 隔离数据目录：${ISOLATED_DATA_DIR}`);
 // 顺序纪律：这里才开始接触会在 import 时解析数据目录的模块。
 const T = await import('../../ai/story-state/temporal/index.mjs');
 const { db } = await import('../../db.js');
+// S04：F02 的"真 trailing 防抖"要在真库上动态验证（静态读源码读不出"推了多远"）。
+const queueStore = await import('../../ai/jobs/queue-store.mjs');
+
+/** F02 用的隔离作品/章节（只在本套件的临时库里）。 */
+const f02Work = (() => {
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO works (title, created_at, updated_at) VALUES (?, ?, ?)').run('f02-debounce', now, now);
+  return Number(db.prepare('SELECT id FROM works ORDER BY id DESC LIMIT 1').get().id);
+})();
+const f02Chapter = (() => {
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO chapters (work_id, title, content, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(f02Work, 'F02 章', '<p>x</p>', 0, now, now);
+  return Number(db.prepare('SELECT id FROM chapters ORDER BY id DESC LIMIT 1').get().id);
+})();
 
 /** 读仓库内文本文件（只读，不写）。 */
 function readRepo(rel) {
@@ -143,7 +158,7 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F01 调度状态只在进程内 Map / setTimeout；数据库里没有对应的队列表（→ S04）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F01 [静态+schema] 分析调度必须有持久化载体（S04 已建表；server.js 尚未接线）', () => {
+  ['F01 [静态+schema] 分析调度有持久化载体，且保存链路已接上它（S04 已修）', () => {
     // S04 起：队列的**持久化载体**已经建出来了 —— 这是 F01 修复的第一半。
     const tables = tableNames();
     assert.ok(tables.length > 40, `临时库应当建出全部表，实际 ${tables.length} 张`);
@@ -163,46 +178,89 @@ await suite('nsdsh/regression-findings', [
     assert.ok(tables.includes('story_repair_runs'), '对照：story_repair_runs 是持久化运行表');
     assert.ok(tables.includes('projection_outbox'), '对照：projection_outbox 是可恢复 outbox');
 
-    // ⚠️ 第二半（**生产接线**）尚未完成：server.js 里仍是进程内 Map + setTimeout。
-    // 这里刻意把"仍未接线"也钉住，避免"只建了表"就被当成 F01 已经修好。
-    assert.match(serverSrc, /const temporalAnalysisQueue = new Map\(\);/,
-      'F01 第二半待办：server.js 仍在用进程内 Map（S04 的 dispatcher 接线尚未落地）');
+    // 第二半（**生产接线**）S04 已完成：保存链路登记持久化意图，且**进程内 Map/timer 已移除**
+    //（《修复文件》§7.3-6：不得留下第二个调度器）。
+    assert.match(serverSrc, /recordAnalysisIntent\(db, \{/,
+      'F01 已修（第二半）：保存链路必须登记持久化意图');
+    assert.ok(!/const temporalAnalysisQueue = new Map\(\)/.test(serverSrc),
+      'F01 已修：进程内 Map 必须移除（否则它仍是第二个事实源）');
+    assert.ok(!/function scheduleTemporalAnalysis\(/.test(serverSrc),
+      'F01 已修：旧 setTimeout 调度器必须移除');
+    assert.match(serverSrc, /function startTemporalDispatcher\(\)/,
+      'F01 已修：必须存在事务外领取的执行侧');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
   // F02 同章已排队时直接返回旧 timer → 不是 trailing debounce（→ S04）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F02 [静态] 同章已排队即返回旧 timer、且不 clearTimeout → 不是 trailing debounce（F02→S04）', () => {
-    // 为什么只能静态：server.js 不能在不产生副作用的情况下 import（import 时会解析
-    // 数据目录、打开库、注册路由并可能监听端口）。这里断的是函数文本本身，不是运行中的调度。
-    const body = sliceBetween(serverSrc, 'function scheduleTemporalAnalysis(', '\n}\n');
-    assert.match(body, /if \(temporalAnalysisQueue\.has\(key\)\) return temporalAnalysisQueue\.get\(key\);/,
-      'F02：key 已存在时直接返回旧 timer');
-    assert.ok(!body.includes('clearTimeout'),
-      'F02：没有 clearTimeout —— 连续保存不会把计时器往后推，旧 timer 按原时刻触发');
-    assert.ok(body.indexOf('temporalAnalysisQueue.has(key)) return') < body.indexOf('const timer = setTimeout('),
-      'F02：早退发生在建新 timer 之前（这是它不等价于 debounce 的原因）');
-    assert.match(body, /temporalAnalysisQueue\.set\(key, timer\);/);
+  ['F02 [动态] 真 trailing 防抖 + 同章合并 + max_wait 封顶（S04 已修）', () => {
+    // S04 已修：旧实现"同章已排队就返回旧 timer、且不 clearTimeout"（**不是** trailing）已被
+    // 持久化意图取代。旧函数已从 server.js 移除，因此这里改为**动态**验证真正的语义：
+    //   · 连续登记 ⇒ 截止时间往后推（trailing），但不超过首次排队定的 max_wait（封顶）；
+    //   · 同章同类只保留**一个** queued（合并），不是排队串。
+    // 为什么是动态而不是静态：静态只能读源码文本，读不出"时间被推了多远"这类事实。
+    assert.ok(!/function scheduleTemporalAnalysis\(/.test(serverSrc),
+      'F02 已修：旧的进程内 timer 调度器必须已移除');
+    assert.match(serverSrc, /debounceMs: TEMPORAL_ANALYSIS_DEBOUNCE_MS/,
+      'F02：生产防抖必须显式传值（不是队列默认的 15s）');
+    assert.match(serverSrc, /maxWaitMs: TEMPORAL_ANALYSIS_MAX_WAIT_MS/,
+      'F02：必须有 max_wait 上限，否则连续保存可无限推迟');
+
+    const { recordIntent, JOB_DEFAULTS } = queueStore;
+    const t0 = 1_000_000;
+    const DEBOUNCE = 800;
+    const MAX_WAIT = 30_000;
+    // 第一次登记：截止 = t0 + 800
+    const a = recordIntent(db, { workId: f02Work, chapterId: f02Chapter, kind: 'analysis', revisionId: 'rev1', nowMs: t0, debounceMs: DEBOUNCE, maxWaitMs: MAX_WAIT });
+    assert.equal(a.notBeforeMs, t0 + DEBOUNCE, 'F02：首次登记 = now + 防抖');
+    // 第二次（+500ms）：应往后推到 t0+500+800=1300（trailing），而不是保持 t0+800
+    const b = recordIntent(db, { workId: f02Work, chapterId: f02Chapter, kind: 'analysis', revisionId: 'rev2', nowMs: t0 + 500, debounceMs: DEBOUNCE, maxWaitMs: MAX_WAIT });
+    assert.equal(b.created, false, 'F02：同章同类必须**合并**到同一条 queued');
+    assert.equal(b.task.id, a.task.id, 'F02：合并而不是新排队');
+    assert.equal(b.notBeforeMs, t0 + 500 + DEBOUNCE, 'F02：trailing —— 截止时间被往后推');
+    assert.ok(b.notBeforeMs > a.notBeforeMs, 'F02：第二次的截止时间必须晚于第一次');
+    // 逼近上限：持续保存不得突破 t0 + MAX_WAIT
+    let last = b;
+    for (let i = 1; i <= 80; i += 1) {
+      last = recordIntent(db, { workId: f02Work, chapterId: f02Chapter, kind: 'analysis', revisionId: `rev_${i}`, nowMs: t0 + i * 1_000, debounceMs: DEBOUNCE, maxWaitMs: MAX_WAIT });
+    }
+    assert.equal(last.deadlineMs, t0 + MAX_WAIT, 'F02：硬上限 = 首次排队 + max_wait');
+    assert.ok(last.notBeforeMs <= last.deadlineMs, 'F02：截止时间永远不得超过硬上限');
+    assert.equal(last.notBeforeMs, t0 + MAX_WAIT, 'F02：持续保存被 max_wait 封顶（不会无限推迟）');
+    // 阴性对照：默认参数确实更容易被推迟 —— 说明上面显式传值不是装饰。
+    assert.ok(JOB_DEFAULTS.debounceMs >= 1_000, '对照：队列默认防抖确实远大于生产 800ms');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
   // F03 保存事务内调用调度器 → 事务内的定时副作用（→ S04）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F03 [静态] afterTemporalContentSave → scheduleTemporalAnalysis，且调用点在写事务内部（F03→S04）', () => {
+  ['F03 [静态] 保存链路只写**持久化意图**，不再在事务里排 setTimeout（S04 已修）', () => {
     const body = sliceBetween(serverSrc, 'function afterTemporalContentSave(', '\n}\n');
     assert.match(body, /StoryState\.Temporal\.recordContentSave\(/);
-    assert.match(body, /if \(result && result\.enabled && result\.recorded\) scheduleTemporalAnalysis\(w, c\);/,
-      'F03：写完之后直接排分析 —— 定时副作用就发生在保存链路里');
-    assert.ok(body.indexOf('recordContentSave') < body.indexOf('scheduleTemporalAnalysis(w, c)'));
+    // S04 已修：写完之后登记**意图行**，而不是排一个进程内定时器。
+    assert.match(body, /recordAnalysisIntent\(db, \{/, 'F03 已修：保存链路应登记持久化意图');
+    assert.ok(!/scheduleTemporalAnalysis\(w, c\)/.test(body),
+      'F03 已修：保存链路里不得再出现进程内调度调用');
+    // 意图必须与正文/修订**同一个事务**（本函数由各写入口在事务内调用）：
+    // 这样"事务回滚 ⇒ 没有任务"，而不是"回滚了但 timer 还活着"。
+    assert.match(body, /if \(result && result\.enabled && result\.recorded\) \{/,
+      'F03：意图登记必须与本次修订同事务');
+    // 显式传生产防抖与最长等待（《修复文件》§7.1：800ms 旧值 vs 15s 队列默认值）。
+    assert.match(body, /debounceMs: TEMPORAL_ANALYSIS_DEBOUNCE_MS/, 'F03：必须显式传生产防抖值');
+    assert.match(body, /maxWaitMs: TEMPORAL_ANALYSIS_MAX_WAIT_MS/, 'F03：必须显式传最长等待上限');
 
-    // 证明"事务内"：编辑器保存分支把调用点放在 withTx(() => { … }) 的提交之前。
+    // 调用点仍在写事务内部 —— 这才是 F03 的关键性质：意图与正文同生共死。
     const txStart = serverSrc.indexOf('const putResult = withTx(() => {');
     const callAt = serverSrc.indexOf("afterTemporalContentSave(old.work_id, Number(id), body.content, 'editor_save');");
     assert.ok(txStart > 0 && callAt > txStart, '编辑器保存路径里确实有调用点');
     assert.ok(!/\n\s*\}\);\n/.test(serverSrc.slice(txStart, callAt)),
-      'F03：调用点在 withTx 提交之前 —— 事务内起了定时器');
+      'F03：调用点在 withTx 提交之前（意图与正文同事务）');
     const sites = (serverSrc.match(/afterTemporalContentSave\(/g) || []).length;
     assert.ok(sites >= 6, `保存写入口的调用点数量 ${sites}（应覆盖多条正文写路径）`);
+    // 执行侧：必须在**事务外**由 dispatcher 领取，且启动先做 reconciliation。
+    assert.match(serverSrc, /function startTemporalDispatcher\(\)/, 'F03：必须有启动接线');
+    assert.match(serverSrc, /reconcileOnStart\(db, \{ now: Date\.now \}\)/, 'F03：启动必须先 reconciliation');
+    assert.match(serverSrc, /dispatcher\.drain\(\{ max: 5, rearmDelayMs: 800 \}\)/, 'F03：执行在事务外由 dispatcher 领取');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────

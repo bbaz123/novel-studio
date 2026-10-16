@@ -426,6 +426,61 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S04') {
+    // S04 = 持久任务 / 租约 / outbox / 恢复。判定要点：**保存链路只写意图**、
+    // **旧进程内调度器已移除**（不留第二个调度器）、**执行在事务外**、且 R1–R4 有行为断言。
+    const srvPath = abs('server.js');
+    if (!fs.existsSync(srvPath)) {
+      out.push({ name: 'server.js 存在', passed: false, detail: '缺少 server.js' });
+      return out;
+    }
+    const src = fs.readFileSync(srvPath, 'utf8');
+    const saveIdx = src.indexOf('function afterTemporalContentSave(');
+    const saveTail = saveIdx >= 0 ? src.slice(saveIdx) : '';
+    const saveBody = saveTail.slice(0, saveTail.indexOf('\n}\n'));
+
+    out.push({
+      name: '保存链路登记持久化意图（不再在事务里排进程内 timer）',
+      passed: saveIdx >= 0 && /recordAnalysisIntent\(db, \{/.test(saveBody) && !/scheduleTemporalAnalysis\(/.test(saveBody),
+      detail: saveBody ? `意图登记=${/recordAnalysisIntent\(db, \{/.test(saveBody)}、旧调度调用=${/scheduleTemporalAnalysis\(/.test(saveBody)}` : '定位不到 afterTemporalContentSave',
+    });
+    out.push({
+      name: '旧进程内调度器已移除（不得留第二个调度器）',
+      passed: !/function scheduleTemporalAnalysis\(/.test(src) && !/const temporalAnalysisQueue = new Map\(\)/.test(src),
+      detail: `scheduleTemporalAnalysis=${/function scheduleTemporalAnalysis\(/.test(src)}、temporalAnalysisQueue=${/const temporalAnalysisQueue = new Map\(\)/.test(src)}`,
+    });
+    out.push({
+      name: '生产防抖与最长等待显式传值（800ms，而不是队列默认 15s）',
+      passed: /debounceMs: TEMPORAL_ANALYSIS_DEBOUNCE_MS/.test(saveBody) && /maxWaitMs: TEMPORAL_ANALYSIS_MAX_WAIT_MS/.test(saveBody),
+      detail: `debounce=${/debounceMs: TEMPORAL_ANALYSIS_DEBOUNCE_MS/.test(saveBody)}、max_wait=${/maxWaitMs: TEMPORAL_ANALYSIS_MAX_WAIT_MS/.test(saveBody)}`,
+    });
+    out.push({
+      name: '启动顺序：先 reconciliation，再事务外领取',
+      passed: /function startTemporalDispatcher\(\)/.test(src)
+        && /reconcileOnStart\(db, \{ now: Date\.now \}\)/.test(src)
+        && /dispatcher\.drain\(\{ max: 5, rearmDelayMs: 800 \}\)/.test(src),
+      detail: 'claimNext 只取 queued，不先解放过期 running 就永远碰不到它们',
+    });
+    out.push({
+      name: '后台分析接回追踪上下文（G3c：traceAI 依赖 ALS 上下文）',
+      passed: /runWithTraceStore\(/.test(src) && /currentTraceStore\(\)/.test(src),
+      detail: '旧 setTimeout 靠请求的 ALS 继承；持久化队列必须显式接回，否则追踪缺 callAI 节点',
+    });
+
+    // R1–R4 的"修复前失败、修复后通过"断言必须已落地，并真的被套件执行。
+    const fenceRel = 'tests/nsdsh/task-fencing.test.mjs';
+    let runnerOk = false;
+    try {
+      runnerOk = /tests\/nsdsh\/task-fencing\.test\.mjs/.test(fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'));
+    } catch (_) { runnerOk = false; }
+    out.push({
+      name: 'R1–R4 行为断言已落地并纳入套件执行',
+      passed: fs.existsSync(abs(fenceRel)) && runnerOk,
+      detail: `文件=${fs.existsSync(abs(fenceRel))}、已在套件列表=${runnerOk}`,
+    });
+    return out;
+  }
+
   if (id === 'S03') {
     const svcRel = 'server/services/temporal-services.mjs';
     const svcPath = abs(svcRel);

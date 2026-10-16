@@ -41,9 +41,11 @@
       ],
       "impact": "重启即丢定时意图；重复领取无法校验，旧 worker 可能覆盖新修订。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S04",
-      "expiry": "S04 必须落地持久化任务队列 + 启动 reconciliation；S04 之后若仍能检出『调度状态只在内存』即判失败。"
+      "expiry": "S04 必须落地持久化任务队列 + 启动 reconciliation；S04 之后若仍能检出『调度状态只在内存』即判失败。",
+      "fixedStage": "S04",
+      "evidenceNote": "2026-10-16 S04 接线完成：server.js 保存事务内 recordAnalysisIntent（显式 debounce 800ms / max_wait 30s），启动先 reconcileOnStart 再 startTemporalDispatcher 事务外领取；旧 temporalAnalysisQueue + scheduleTemporalAnalysis 已移除。证据：check-stage S04 --offline → PASS（9/0，命令 tests-nsdsh 121 断言、temporal-06 G10c/G10d/G10f、temporal-16 G3c 全绿）；tests/nsdsh/regression-findings.test.mjs 的 F01/F02/F03 表征已翻转为要求已修（F02 另加真 trailing+封顶动态断言）；tests/nsdsh/task-fencing.test.mjs 锁住 R1–R4。"
     },
     {
       "id": "F02",
@@ -55,9 +57,11 @@
       ],
       "impact": "停笔后的最后一次输入不会推迟分析时点，与『最后一次保存后 N 秒』的承诺不符。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S04",
-      "expiry": "S04 必须实现 trailing debounce + max_wait 封顶；两个语义都要有断言（含『最长等待必须封顶』的负例）。"
+      "expiry": "S04 必须实现 trailing debounce + max_wait 封顶；两个语义都要有断言（含『最长等待必须封顶』的负例）。",
+      "fixedStage": "S04",
+      "evidenceNote": "2026-10-16 S04 接线完成：server.js 保存事务内 recordAnalysisIntent（显式 debounce 800ms / max_wait 30s），启动先 reconcileOnStart 再 startTemporalDispatcher 事务外领取；旧 temporalAnalysisQueue + scheduleTemporalAnalysis 已移除。证据：check-stage S04 --offline → PASS（9/0，命令 tests-nsdsh 121 断言、temporal-06 G10c/G10d/G10f、temporal-16 G3c 全绿）；tests/nsdsh/regression-findings.test.mjs 的 F01/F02/F03 表征已翻转为要求已修（F02 另加真 trailing+封顶动态断言）；tests/nsdsh/task-fencing.test.mjs 锁住 R1–R4。"
     },
     {
       "id": "F03",
@@ -69,9 +73,11 @@
       ],
       "impact": "事务回滚后定时器仍在，可能出现『没有业务事实却有分析任务』；反之提交前崩溃则丢意图。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S04",
-      "expiry": "S04：事务只写意图，提交后由 dispatcher 读取。必须有一个『事务回滚 ⇒ 无任务、无事件』的断言。"
+      "expiry": "S04：事务只写意图，提交后由 dispatcher 读取。必须有一个『事务回滚 ⇒ 无任务、无事件』的断言。",
+      "fixedStage": "S04",
+      "evidenceNote": "2026-10-16 S04 接线完成：server.js 保存事务内 recordAnalysisIntent（显式 debounce 800ms / max_wait 30s），启动先 reconcileOnStart 再 startTemporalDispatcher 事务外领取；旧 temporalAnalysisQueue + scheduleTemporalAnalysis 已移除。证据：check-stage S04 --offline → PASS（9/0，命令 tests-nsdsh 121 断言、temporal-06 G10c/G10d/G10f、temporal-16 G3c 全绿）；tests/nsdsh/regression-findings.test.mjs 的 F01/F02/F03 表征已翻转为要求已修（F02 另加真 trailing+封顶动态断言）；tests/nsdsh/task-fencing.test.mjs 锁住 R1–R4。"
     },
     {
       "id": "F04",
@@ -327,9 +333,11 @@
       ],
       "impact": "S04 接线后 G10c/G10d/G10f 红，但**根因在测试装置对执行顺序敏感**，不在生产语义：真实 provider 对任何修订都返回它实际收到正文对应的内容，不存在跨修订错配。若不记清楚，后来人会误以为生产侧有\"引文校验错误或版本错配\"而去放宽校验。",
       "behaviorTest": "tests/temporal/06-http-save-entries.test.mjs（G10c/G10d/G10f）；诊断入口：在 extraction.mjs 的引文未命中分支按 NSDSH_DIAG_LOG 追加 JSONL",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S04",
-      "expiry": "S04 接线完成前必须给出结论，二选一：(a) 让测试装置不再依赖执行顺序（例如让脚本按 chapter/revision 键匹配，或让每次分析的脚本可确定性对应）；(b) 让持久化 dispatcher 的领取顺序与旧路径等价到足以复现同样的脚本对应关系，并证明不是靠\"重跑直到变绿\"。**严禁**通过放宽引文校验或删改 G10 断言来让它变绿。若最终判定为测试装置问题，仍需在本条写明\"生产语义未变\"的证据。"
+      "expiry": "S04 接线完成前必须给出结论，二选一：(a) 让测试装置不再依赖执行顺序（例如让脚本按 chapter/revision 键匹配，或让每次分析的脚本可确定性对应）；(b) 让持久化 dispatcher 的领取顺序与旧路径等价到足以复现同样的脚本对应关系，并证明不是靠\"重跑直到变绿\"。**严禁**通过放宽引文校验或删改 G10 断言来让它变绿。若最终判定为测试装置问题，仍需在本条写明\"生产语义未变\"的证据。",
+      "fixedStage": "S04",
+      "evidenceNote": "2026-10-16 修复：tests/temporal/06 的假模型改为按 needle 匹配脚本（每条脚本声明它服务正文里的一段独特文本），不再依赖 FIFO 顺序；不改任何断言、不放宽引文校验。实测 06 → 66/0（G10c/G10d/G10f 全绿）。"
     }
   ],
   "summary": {
@@ -337,9 +345,9 @@
     "high": 7,
     "medium": 12,
     "low": 1,
-    "open": 16,
+    "open": 12,
     "notDirectlyDetectable": 0,
-    "fixedLocally": 4,
+    "fixedLocally": 8,
     "byFixStage": {
       "S04": [
         "E2",
