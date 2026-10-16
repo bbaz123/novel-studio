@@ -314,18 +314,35 @@
       "status": "open",
       "fixStage": "S15",
       "expiry": "S15 必须给出可复现的归因（哪一种执行环境会导致子进程被拒/退出码漂移），并**在不加重试、不弱化断言**的前提下消除它；若最终证明是门禁侧（dsh-plugin-verification）的沙箱行为，则在 known-issues 中改为\"本项目不可修\"，并写明该结论的证据与它对本项目门禁可信度的影响。严禁用\"自动重试直到绿\"作为修复。"
+    },
+    {
+      "id": "E2",
+      "title": "G10d/G10f：脚本化模型响应被跨修订错配，根因是持久化 dispatcher 的领取顺序与旧路径不同（测试装置顺序敏感）",
+      "severity": "medium",
+      "layer": "门禁/测试装置",
+      "evidence": [
+        "2026-10-16 诊断（写文件，绕开 tests/temporal/06 吞 stderr 的问题）：在 extraction.mjs 唯一产出 EVIDENCE_QUOTE_NOT_FOUND 的分支插桩，得到两条记录 —— {\"revisionId\":\"rev_f16e…\",\"textHead\":\"第一章 断魂谷的雾散了\",\"quote\":\"平静的一天\"} 与 {\"revisionId\":\"rev_4399…\",\"textHead\":\"第四章 平静的一天\",\"quote\":\"工作台生成成果\"}。两条都是\"本章修订的文本里没有该引文\"。",
+        "对照 tests/temporal/06：`平静的一天` 是 G6 给 c4 的脚本引文（行 316），`工作台生成成果` 是 G6 给\"第六章\"的脚本引文（行 306），而 G10b 给 workC 的脚本引文是 `断魂谷的雾散了`（行 410）。即：**脚本被消费到了别的修订上**。",
+        "fake provider 的 `state.scripts` 是**单一有序队列**（push/shift），因此\"哪个请求先到\"决定它拿到哪份脚本 —— 执行顺序一变，脚本与修订的对应关系就错位。旧路径按每章 800ms 防抖、顺序可复现；持久化 dispatcher 按 not_before/id 领取，顺序不同。"
+      ],
+      "impact": "S04 接线后 G10c/G10d/G10f 红，但**根因在测试装置对执行顺序敏感**，不在生产语义：真实 provider 对任何修订都返回它实际收到正文对应的内容，不存在跨修订错配。若不记清楚，后来人会误以为生产侧有\"引文校验错误或版本错配\"而去放宽校验。",
+      "behaviorTest": "tests/temporal/06-http-save-entries.test.mjs（G10c/G10d/G10f）；诊断入口：在 extraction.mjs 的引文未命中分支按 NSDSH_DIAG_LOG 追加 JSONL",
+      "status": "open",
+      "fixStage": "S04",
+      "expiry": "S04 接线完成前必须给出结论，二选一：(a) 让测试装置不再依赖执行顺序（例如让脚本按 chapter/revision 键匹配，或让每次分析的脚本可确定性对应）；(b) 让持久化 dispatcher 的领取顺序与旧路径等价到足以复现同样的脚本对应关系，并证明不是靠\"重跑直到变绿\"。**严禁**通过放宽引文校验或删改 G10 断言来让它变绿。若最终判定为测试装置问题，仍需在本条写明\"生产语义未变\"的证据。"
     }
   ],
   "summary": {
-    "total": 19,
+    "total": 20,
     "high": 7,
-    "medium": 11,
+    "medium": 12,
     "low": 1,
-    "open": 15,
+    "open": 16,
     "notDirectlyDetectable": 0,
     "fixedLocally": 4,
     "byFixStage": {
       "S04": [
+        "E2",
         "F01",
         "F02",
         "F03"
