@@ -87,6 +87,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/fault-matrix.test.mjs',
   // S16: migration drill -- copy-only, schema advance, data preserved, idempotent, rollback + grayscale
   'tests/nsdsh/migration-drill.test.mjs',
+  // S17: bridge retirement -- single scheduler owner / no import-time global writes / upstream provenance
+  'tests/nsdsh/bridge-retirement.test.mjs',
 ];
 
 /**

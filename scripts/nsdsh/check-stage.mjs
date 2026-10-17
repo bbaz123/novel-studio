@@ -426,6 +426,50 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S17') {
+    // S17 = 清理旧桥接 + 上游维护纪律。验收三条：单一调度所有者 / 导入不改全局设置 / 补丁来源可追踪。
+    const harnessSrc = fs.readFileSync(abs('harness.js'), 'utf8');
+    const serverSrc = fs.readFileSync(abs('server.js'), 'utf8');
+
+    out.push({
+      name: '只有一个调度所有者（旧 timer + schedule 已退役）',
+      passed: !/function\s+scheduleTemporalAnalysis\s*\(/.test(serverSrc)
+        && !/temporalAnalysisQueue\s*=\s*\[/.test(serverSrc)
+        && /recordAnalysisIntent\(/.test(serverSrc)
+        && /function startTemporalDispatcher\(/.test(serverSrc),
+      detail: '意图由 queue-store 写、事务外由 dispatcher 领取',
+    });
+    out.push({
+      name: '导入模块不得修改用户全局设置（顶层副作用已移除）',
+      passed: !/^restoreHarnessSettingsIfNeeded\(\);/m.test(harnessSrc)
+        && /export function bootstrapHarnessSettings\(/.test(harnessSrc)
+        && /bootstrapHarnessSettings\(\)/.test(serverSrc),
+      detail: '改为真实启动路径显式引导',
+    });
+    out.push({
+      name: '上游维护纪律有文档，且补丁来源可追踪',
+      passed: fs.existsSync(abs('docs/nsdsh/upstream-maintenance.md'))
+        && /vendor\/dsh\/patches/.test(fs.readFileSync(abs('docs/nsdsh/upstream-maintenance.md'), 'utf8'))
+        && /verify-vendor/.test(fs.readFileSync(abs('docs/nsdsh/upstream-maintenance.md'), 'utf8')),
+      detail: '拉取候选→重放补丁→构建→回归→发布',
+    });
+    out.push({
+      name: '不删已有承诺：external adapter 与契约测试仍在',
+      passed: fs.existsSync(abs('ai/model-broker/adapters.mjs'))
+        && fs.existsSync(abs('tests/nsdsh/runtime-adapter-contract.test.mjs'))
+        && /createLegacyAdapter/.test(fs.readFileSync(abs('ai/model-broker/adapters.mjs'), 'utf8')),
+      detail: '不为"代码更少"牺牲已承诺功能',
+    });
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    out.push({
+      name: 'S17 套件已落地并纳入执行',
+      passed: fs.existsSync(abs('tests/nsdsh/bridge-retirement.test.mjs')) && runner.includes('tests/nsdsh/bridge-retirement.test.mjs'),
+      detail: '含"import 不改设置"的动态证明',
+    });
+    return out;
+  }
+
   if (id === 'S16') {
     // S16 = 迁移演练与灰度。判据：只操作副本、schema 前进、数据仍在、幂等、回滚可执行、灰度诚实。
     const rel = 'scripts/nsdsh/migration-drill.mjs';

@@ -1096,7 +1096,7 @@
       "id": "S17",
       "title": "清理旧桥接与上游维护纪律",
       "batch": "NS-E",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S16"
       ],
@@ -1106,16 +1106,39 @@
         "docs/nsdsh/**",
         "docs/**"
       ],
-      "requiredTestFiles": [],
+      "requiredTestFiles": [
+        "tests/nsdsh/bridge-retirement.test.mjs"
+      ],
       "requiredArtifacts": [
         "docs/nsdsh/upstream-maintenance.md"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S17 套件 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "none",
       "requiredAcceptanceChecks": [
         "没有两个调度所有者；import 时不修改用户全局设置"
       ],
-      "rollbackNotes": "逐个兼容模块撤回，不整体回滚 schema。"
+      "rollbackNotes": "逐个兼容模块撤回，不整体回滚 schema。",
+      "notes": "S17 完成（2026-10-16）。① **单一调度所有者**：旧的 temporalAnalysisQueue + scheduleTemporalAnalysis 已彻底移除，现在只有 queue-store 写意图 + startTemporalDispatcher 事务外领取（套件断言旧符号不存在）。② **修掉一处真实缺陷**：restoreHarnessSettingsIfNeeded() 原本在 harness.js **模块顶层**调用，导致 `import(\"./harness.js\")` 这个只读动作会写用户的 DSH settings.yaml；现改为导出 bootstrapHarnessSettings() 并由 server.js 在 listen 回调里显式调用，套件用**隔离子进程真实 import** 证明了\"导入不写任何设置文件\"。③ **上游维护纪律**：新增 docs/nsdsh/upstream-maintenance.md（拉取候选→重放补丁→完整构建→回归→发布，含补丁目录/sha256/verify-vendor 追踪与\"不删 .p1-baseline 掩盖回归\"）。④ 保留已承诺的 direct/legacy adapter 与契约测试，不为\"代码更少\"牺牲功能。**仍开放**：F12（server.js 渐进拆分，10261 行）—— 属持续重构，本阶段不强行大改。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 6,
+          "fail": 0,
+          "commands": [
+            "tests-nsdsh"
+          ]
+        }
+      }
     },
     {
       "id": "S18",

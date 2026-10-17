@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { db, withTransaction, inTransaction } from './db.js';
-import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo } from './harness.js';
+import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo, bootstrapHarnessSettings } from './harness.js';
 import { readZip } from './zip-reader.mjs';
 import * as ImportGuard from './ai/import/guard.mjs';
 import { htmlToPlain, plainText, plainTextHead, plainTextTail } from './text-utils.js';
@@ -10248,6 +10248,9 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Novel Studio is running at http://localhost:${PORT}`);
+  // [S17] 崩溃残留的 settings.yaml 还原：只在**真实启动路径**执行。
+  // 以前它在 harness.js 的模块顶层——任何 import 都会写用户全局设置，现已改为显式引导。
+  bootstrapHarnessSettings();
   // 启动后异步把尚未索引的作品导入 OpenViking 共享记忆库（语义召回开启时）。
   autoIndexExistingWorks();
   startTemporalDispatcher(); // [S04-WIRING] 先 reconciliation，再事务外领取

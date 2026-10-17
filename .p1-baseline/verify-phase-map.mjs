@@ -1618,6 +1618,9 @@ export const PHASES = [
       'tests/nsdsh/fault-matrix.test.mjs',
       'scripts/nsdsh/migration-drill.mjs',
       'tests/nsdsh/migration-drill.test.mjs',
+      'docs/nsdsh/upstream-maintenance.md',
+      'tests/nsdsh/bridge-retirement.test.mjs',
+
 
 
 

@@ -248,7 +248,17 @@ function restoreHarnessSettingsIfNeeded() {
     }
   } catch (_) { /* 还原失败不影响启动 */ }
 }
-restoreHarnessSettingsIfNeeded();
+/**
+ * 启动引导：只有在**真实启动路径**上才执行的清理动作（S17）。
+ *
+ * 为什么从模块顶层拿掉：`restoreHarnessSettingsIfNeeded()` 会**写用户的 DSH 全局设置文件**。
+ * 放在顶层意味着 `import('./harness.js')` 这个只读动作会顺手改用户设置 ——
+ * 任何一次"只是想读点东西"的导入（测试、诊断脚本、未来某个模块）都会产生副作用。
+ * 现在改为显式调用，由 server.js 在启动时执行一次。
+ */
+export function bootstrapHarnessSettings() {
+  try { restoreHarnessSettingsIfNeeded(); } catch (_) { /* 引导失败不影响启动 */ }
+}
 
 export function isHarnessAvailable() {
   return fs.existsSync(harnessPackagePath());
