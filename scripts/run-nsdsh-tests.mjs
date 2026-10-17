@@ -85,6 +85,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/runtime-equivalence.test.mjs',
   // S15: fault matrix -- benchmark report completeness + E1 attribution discipline
   'tests/nsdsh/fault-matrix.test.mjs',
+  // S16: migration drill -- copy-only, schema advance, data preserved, idempotent, rollback + grayscale
+  'tests/nsdsh/migration-drill.test.mjs',
 ];
 
 /**

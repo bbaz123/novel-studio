@@ -426,6 +426,51 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S16') {
+    // S16 = 迁移演练与灰度。判据：只操作副本、schema 前进、数据仍在、幂等、回滚可执行、灰度诚实。
+    const rel = 'scripts/nsdsh/migration-drill.mjs';
+    if (!fs.existsSync(abs(rel))) {
+      out.push({ name: '迁移演练脚本存在', passed: false, detail: `缺少 ${rel}` });
+      return out;
+    }
+    const src = fs.readFileSync(abs(rel), 'utf8');
+    out.push({
+      name: '只操作副本：读 .p1-baseline 副本并在临时目录演练',
+      passed: /\.p1-baseline/.test(src) && /mkdtempSync/.test(src) && /NOVELSTUDIO_DATA_DIR/.test(src)
+        && !/path\.join\(REPO,\s*'data'/.test(src),
+      detail: '绝不碰作者真实 data/ 库',
+    });
+    out.push({
+      name: '核对 schema 前进 + 账本写入 + 旧数据仍在',
+      passed: /schema_migrations/.test(src) && /works/.test(src) && /chapters/.test(src)
+        && /新增了表/.test(src) && /旧数据仍在/.test(src),
+      detail: '"表建出来了"不等于"迁移成功"',
+    });
+    out.push({
+      name: '幂等：第二次迁移不改账本、表集合不变',
+      passed: /第二次迁移成功（幂等）/.test(src) && /不重复记账/.test(src) && /表集合不变/.test(src),
+      detail: '重复启动不得重复记账或重建',
+    });
+    out.push({
+      name: '回滚路径可执行（备份 + sha256 + 具体步骤）',
+      passed: /backup_sha256/.test(src) && /rollback/.test(src) && /sha256|校验/.test(src),
+      detail: '不是"记得备份"，而是可执行步骤',
+    });
+    out.push({
+      name: '灰度计划诚实：保留未执行阶段（不假装已切换）',
+      passed: /grayscale/.test(src) && /阶段4 切换后观察|需真实服务/.test(src) && /未执行/.test(src),
+      detail: '脚本不代做真实环境验证',
+    });
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    out.push({
+      name: 'S16 套件已落地并纳入执行',
+      passed: fs.existsSync(abs('tests/nsdsh/migration-drill.test.mjs')) && runner.includes('tests/nsdsh/migration-drill.test.mjs'),
+      detail: '六条演练断言',
+    });
+    return out;
+  }
+
   if (id === 'S15') {
     // S15 = 故障矩阵 / 跨平台 / 性能。判据：性能报告带硬件与计时边界；E1 有归因且不加重试。
     const need = ['scripts/nsdsh/benchmark.mjs', 'scripts/nsdsh/attribute-gate-flakiness.mjs'];

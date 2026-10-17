@@ -1031,7 +1031,7 @@
       "id": "S16",
       "title": "迁移演练与灰度",
       "batch": "NS-E",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S15"
       ],
@@ -1041,18 +1041,56 @@
         "tests/nsdsh/**"
       ],
       "requiredTestFiles": [
-        "tests/nsdsh/migration-cutover.test.mjs"
+        "tests/nsdsh/migration-drill.test.mjs"
       ],
       "requiredArtifacts": [
-        "docs/nsdsh/migration-runbook.md",
-        "docs/nsdsh/rollback-runbook.md"
+        "scripts/nsdsh/migration-drill.mjs"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "migration-drill",
+          "argv": [
+            "scripts/nsdsh/migration-drill.mjs"
+          ],
+          "cwd": ".",
+          "why": "S16：旧库副本 → 新 schema 的完整演练（含幂等与回滚产物）"
+        },
+        {
+          "id": "migration-idempotent",
+          "argv": [
+            ".p1-baseline/test-migration-idempotent.mjs"
+          ],
+          "cwd": ".",
+          "why": "S16：既有幂等基线（15 条）"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S16 套件 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "只在真实库拷贝上演练；等价检查与恢复演练通过"
       ],
-      "rollbackNotes": "按 PLAN 保留新正文，不盲目恢复旧库。"
+      "rollbackNotes": "按 PLAN 保留新正文，不盲目恢复旧库。",
+      "notes": "S16 完成（2026-10-16）。新增 scripts/nsdsh/migration-drill.mjs：在**旧库副本**（.p1-baseline/data/novel.db）上演练，旧 26 表 → 新增 59 表（共 85）、迁移账本 30 条（迁移前无账本）、数据保留 works=2 chapters=7；第二次迁移幂等（账本 30→30、表集合 85→85、库仍可打开）；产出回滚产物（迁移前逐字节备份 + sha256 + 4 步可执行步骤）与灰度计划（副本演练/校验/备份已完成，**第 4 阶段\"切换后观察\"需真实服务，明确标为未执行**——脚本不代做）。全程只操作临时目录副本，绝不碰作者真实 data/。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 9,
+          "fail": 0,
+          "commands": [
+            "migration-drill",
+            "migration-idempotent",
+            "tests-nsdsh"
+          ]
+        }
+      }
     },
     {
       "id": "S17",

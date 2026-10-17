@@ -1616,6 +1616,9 @@ export const PHASES = [
       'scripts/nsdsh/benchmark.mjs',
       'scripts/nsdsh/attribute-gate-flakiness.mjs',
       'tests/nsdsh/fault-matrix.test.mjs',
+      'scripts/nsdsh/migration-drill.mjs',
+      'tests/nsdsh/migration-drill.test.mjs',
+
 
 
 
