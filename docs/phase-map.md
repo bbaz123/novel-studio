@@ -554,7 +554,7 @@
   - ai/context/assembler.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
 - **说明**：**不能单独回滚**：内核被 server.js、层规格与插件工具面同时引用，而那三处又是 P1–P6 / Z2 改过的同一批函数。 本轮的**设计前提**是「机制生效 ≠ 强制接入」：作品开关 story_state_config.enabled 默认 0，未开启时该层不进 manifest、不进 excluded、不计入可执行下限（floor(settings) 仍 = 18173）。 质量红线：本轮**没有**改模型、prompt 语义、reasoning effort、token 预算、层顺序与默认 AI route；逐字节上下文基线 **50/50 相同**；活实例断言「开启后只多一层且其余各层 emitted 逐层相同」。 详见 docs/story-state-kernel-2026-09-26.md。 第五步 Golden Novel 联合回归（19 类难 case）另抓到并修掉两处真实缺陷：① character_knowledge 的 upsert 少了部分唯一索引的 WHERE 谓词 → 角色知识边界整条路不可用（S14 回归 + 变异对照）；② knowledgeOf 的 unknown/suspected/false_belief 可见窗口方向反了 → 最需要提醒的章节反而看不见（S15 回归 + 变异对照）。 另补 GET /api/novel/state/facts（契约 1.1.0 → 1.2.0，附加式）。详见 docs/golden-novel-regression-2026-09-26.md。
 - **验收证据**：`docs/story-state-kernel-2026-09-26.md`、`docs/host-contract-1.1-2026-09-26.md`、`.p1-baseline/test-story-state-api.mjs`、`.p1-baseline/golden-novel.mjs`、`.p1-baseline/golden-out.json`、`docs/golden-novel-regression-2026-09-26.md`、`docs/host-contract.v1.json`
-- **本阶段认领的文件**（61 个）：
+- **本阶段认领的文件**（62 个）：
   - `.p1-baseline/golden-novel.mjs`
   - `.p1-baseline/golden-out.json`
   - `.p1-baseline/test-context-manifest.mjs`
@@ -568,6 +568,7 @@
   - `ai/story-state/canon.mjs`
   - `ai/story-state/contract.mjs`
   - `ai/story-state/disclosure.mjs`
+  - `ai/story-state/domain-stream.mjs`
   - `ai/story-state/entities.mjs`
   - `ai/story-state/foreshadow.mjs`
   - `ai/story-state/hash.mjs`
@@ -1316,7 +1317,7 @@
   - ai/extraction/coverage.mjs 被**生产代码** ai/story-state/temporal/extraction.mjs（Z3/TT）import——撤掉会打断线上路径
 - **说明**：**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。 ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 `spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。 ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` 重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。
 - **验收证据**：`docs/nsdsh/PLAN.md`、`docs/nsdsh/baseline.md`、`docs/nsdsh/adr-001-boundaries.md`
-- **本阶段认领的文件**（57 个）：
+- **本阶段认领的文件**（62 个）：
   - `.gitignore`
   - `.p1-baseline/verify-phase-map.mjs`
   - `.p6-cutover/snapshot.mjs`
@@ -1326,6 +1327,7 @@
   - `ai/extraction/prompt-schema.mjs`
   - `ai/jobs/dispatcher.mjs`
   - `ai/jobs/queue-store.mjs`
+  - `ai/story-state/domain-stream.mjs`
   - `ai/story-state/temporal/identity.mjs`
   - `ai/story-state/temporal/state-query.mjs`
   - `docs/README.md`
@@ -1336,6 +1338,7 @@
   - `docs/nsdsh/known-issues.json`
   - `docs/nsdsh/stages.json`
   - `docs/phase-map.md`
+  - `public/temporal-stream.js`
   - `scripts/ci-offline-checks.mjs`
   - `scripts/nsdsh/backup-restore-check.mjs`
   - `scripts/nsdsh/check-known-issues.mjs`
@@ -1354,11 +1357,14 @@
   - `server/services/temporal-services.mjs`
   - `tests/nsdsh/backup-restore.test.mjs`
   - `tests/nsdsh/baseline-contract.test.mjs`
+  - `tests/nsdsh/domain-stream.test.mjs`
   - `tests/nsdsh/downstream-invalidation.test.mjs`
+  - `tests/nsdsh/editor-save-ime.test.mjs`
   - `tests/nsdsh/entity-identity.test.mjs`
   - `tests/nsdsh/evidence-anchors.test.mjs`
   - `tests/nsdsh/extraction-coverage.test.mjs`
   - `tests/nsdsh/extraction-schema.test.mjs`
+  - `tests/nsdsh/frontend-revision-guard.test.mjs`
   - `tests/nsdsh/historical-trust.test.mjs`
   - `tests/nsdsh/identity-migration.test.mjs`
   - `tests/nsdsh/isolation.test.mjs`
@@ -1377,7 +1383,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**654** 个文件
+- 真实改动集：**659** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

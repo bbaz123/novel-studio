@@ -533,7 +533,7 @@
       "id": "S08",
       "title": "领域事件流与前端闭环",
       "batch": "NS-C",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S07"
       ],
@@ -545,15 +545,49 @@
       ],
       "requiredTestFiles": [
         "tests/nsdsh/domain-stream.test.mjs",
-        "tests/nsdsh/frontend-revision-guard.test.mjs"
+        "tests/nsdsh/frontend-revision-guard.test.mjs",
+        "tests/nsdsh/editor-save-ime.test.mjs"
       ],
-      "requiredArtifacts": [],
-      "commands": [],
+      "requiredArtifacts": [
+        "ai/story-state/domain-stream.mjs",
+        "public/temporal-stream.js"
+      ],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S08 三件套 + 既有全部断言"
+        },
+        {
+          "id": "frontend-test",
+          "argv": [
+            "frontend-test.mjs"
+          ],
+          "cwd": ".",
+          "why": "方案要求 S08 同时跑前端执行验证"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "断线不漏确认；重复事件不重复渲染业务动作"
       ],
-      "rollbackNotes": "新 stream 可关闭，保留显式刷新。"
+      "rollbackNotes": "新 stream 可关闭，保留显式刷新。",
+      "notes": "S08 完成（2026-10-16）：domain-stream.mjs 以既有 projection_outbox 为事件源（不新建第二事实源），按作品 cursor 补读 + 快照 watermark + resync 策略（落后太多/游标超前一律重取）；id+dedup_key 双去重保证重放幂等；isUpdateApplicable 修订守卫使\"切章后旧结果不更新新章卡片\"。前端 temporal-stream.js 无 DOM 依赖、与后端判据同构；六种状态可区分。编辑器 IME/光标/撤销/自动保存由保护性表征钉住，未重写 app.js。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 10,
+          "fail": 0,
+          "commands": [
+            "tests-nsdsh(194 断言)",
+            "frontend-test"
+          ]
+        }
+      }
     },
     {
       "id": "S09",

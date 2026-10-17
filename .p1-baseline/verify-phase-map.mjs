@@ -1581,6 +1581,12 @@ export const PHASES = [
       'tests/nsdsh/projection-provenance.test.mjs',
       'tests/nsdsh/downstream-invalidation.test.mjs',
       'tests/nsdsh/pov-visibility.test.mjs',
+      'ai/story-state/domain-stream.mjs',
+      'public/temporal-stream.js',
+      'tests/nsdsh/domain-stream.test.mjs',
+      'tests/nsdsh/frontend-revision-guard.test.mjs',
+      'tests/nsdsh/editor-save-ime.test.mjs',
+
 
 
 

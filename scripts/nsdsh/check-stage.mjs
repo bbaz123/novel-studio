@@ -426,6 +426,72 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S08') {
+    // S08 = 领域事件流与前端闭环。核心不是"有没有推送"，而是三条验收：
+    // 断线不漏确认 / 重复事件不重复渲染 / 切章后旧结果不更新新章卡片。
+    const beRel = 'ai/story-state/domain-stream.mjs';
+    const feRel = 'public/temporal-stream.js';
+    const miss = [beRel, feRel].filter((rel) => !fs.existsSync(abs(rel)));
+    if (miss.length) {
+      out.push({ name: '流与前端模块存在', passed: false, detail: `缺：${miss.join('、')}` });
+      return out;
+    }
+    const be = fs.readFileSync(abs(beRel), 'utf8');
+    const fe = fs.readFileSync(abs(feRel), 'utf8');
+
+    out.push({
+      name: '断线不漏确认：事件来自持久 outbox + cursor 补读',
+      passed: /projection_outbox/.test(be) && /export function readDomainEvents/.test(be) && /id > \?/.test(be),
+      detail: 'S08 明令禁止"因关闭推送而丢业务事件"，所以事件源必须是持久表而不是内存广播',
+    });
+    out.push({
+      name: 'watermark 消除初始化窗口',
+      passed: /export function snapshotWatermark/.test(be) && /BELOW_WATERMARK/.test(fe),
+      detail: '快照之前的旧事件必须无条件跳过，否则重复渲染',
+    });
+    out.push({
+      name: '重连策略：落后太多/游标超前一律 resync（宁可重取，不可漏）',
+      passed: /export function resyncPlan/.test(be) && /TOO_FAR_BEHIND/.test(be) && /CURSOR_AHEAD/.test(be),
+      detail: '补读被保留窗口截断时会漏确认，因此必须能判定 resync',
+    });
+    out.push({
+      name: '重复事件不重复渲染：id + dedup_key 双去重',
+      passed: /export function dedupeEvents/.test(be) && /DUPLICATE_KEY/.test(be) && /seenKeys/.test(be),
+      detail: '必须把历史 key 一起带进来，否则"换了 id 的同一变更"会被当成新事件',
+    });
+    out.push({
+      name: '修订守卫：切章后旧结果不更新新章卡片',
+      passed: /export function isUpdateApplicable/.test(be) && /CHAPTER_MISMATCH/.test(be) && /CHAPTER_MISMATCH/.test(fe),
+      detail: '事件章必须等于卡片章；已确认不得倒退',
+    });
+    out.push({
+      name: '前端消费者无 DOM 依赖（可单测、不干扰编辑器时序）',
+      passed: /export function createStreamConsumer/.test(fe) && !/document\.|window\.|addEventListener/.test(fe),
+      detail: 'S08 要求逐步迁移、不一次重写 app.js',
+    });
+    out.push({
+      name: '六种状态可区分（saved/analyzing/pending/confirmed/stale/failed）',
+      passed: /TEMPORAL_STATES/.test(be) && /TEMPORAL_STATES/.test(fe) && /'stale'/.test(be),
+      detail: '未识别的 kind 必须保守判失败，不冒充成功',
+    });
+
+    const needTests = [
+      'tests/nsdsh/domain-stream.test.mjs',
+      'tests/nsdsh/frontend-revision-guard.test.mjs',
+      'tests/nsdsh/editor-save-ime.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测三件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '3/3 就位',
+    });
+    return out;
+  }
+
   if (id === 'S07') {
     // S07 = 统一时点读取（强制 worldline/边界/POV/版本 + 溯源），只补溯源、不改 stateAt 语义。
     const rel = 'ai/story-state/temporal/state-query.mjs';

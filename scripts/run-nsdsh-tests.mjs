@@ -56,6 +56,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/projection-provenance.test.mjs',
   'tests/nsdsh/downstream-invalidation.test.mjs',
   'tests/nsdsh/pov-visibility.test.mjs',
+  // S08: domain event stream (cursor/watermark/resync) + frontend revision guard + editor IME preservation
+  'tests/nsdsh/domain-stream.test.mjs',
+  'tests/nsdsh/frontend-revision-guard.test.mjs',
+  'tests/nsdsh/editor-save-ime.test.mjs',
 ];
 
 /**
