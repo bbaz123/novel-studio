@@ -68,6 +68,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/model-routing.test.mjs',
   'tests/nsdsh/runtime-adapter-contract.test.mjs',
   'tests/nsdsh/task-budget.test.mjs',
+  // S11: pinned DSH vendor baseline provenance (origin/tag/commit/license/lockfile)
+  'tests/nsdsh/dsh-vendor-provenance.test.mjs',
 ];
 
 /**

@@ -1594,6 +1594,10 @@ export const PHASES = [
       'tests/nsdsh/model-routing.test.mjs',
       'tests/nsdsh/runtime-adapter-contract.test.mjs',
       'tests/nsdsh/task-budget.test.mjs',
+      'vendor/dsh/verify-vendor.mjs',
+      'vendor/dsh/PROVENANCE.md',
+      'tests/nsdsh/dsh-vendor-provenance.test.mjs',
+
 
       'tests/nsdsh/tool-capabilities.test.mjs',
       'tests/nsdsh/author-approval-boundary.test.mjs',

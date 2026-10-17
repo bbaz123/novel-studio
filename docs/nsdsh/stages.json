@@ -707,7 +707,7 @@
       "id": "S11",
       "title": "固定并内置完整 DSH 基线",
       "batch": "NS-D",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S10"
       ],
@@ -717,17 +717,53 @@
         "docs/nsdsh/**",
         ".gitignore"
       ],
-      "requiredTestFiles": [],
-      "requiredArtifacts": [
-        "scripts/nsdsh/vendor-dsh.mjs",
-        "docs/nsdsh/runtime-compatibility.md"
+      "requiredTestFiles": [
+        "tests/nsdsh/dsh-vendor-provenance.test.mjs"
       ],
-      "commands": [],
+      "requiredArtifacts": [
+        "vendor/dsh/verify-vendor.mjs",
+        "vendor/dsh/PROVENANCE.md"
+      ],
+      "commands": [
+        {
+          "id": "verify-dsh-vendor",
+          "argv": [
+            "vendor/dsh/verify-vendor.mjs"
+          ],
+          "cwd": ".",
+          "why": "S11：只读校验固定基线的来源/许可/lockfile/工作树"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S11 来源一致性 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "build-prereq-explicit",
       "requiredAcceptanceChecks": [
         "固定提交可构建；来源与许可齐全；不动用户全局 DSH"
       ],
-      "rollbackNotes": "只撤回新 vendor 与启动选项；external adapter 仍可用。"
+      "rollbackNotes": "只撤回新 vendor 与启动选项；external adapter 仍可用。",
+      "notes": "S11 完成（2026-10-16）。基线：上游 deepseek-harness tag dsh-v0.1.7-rc.1（上游 commit 46a7f68b，本地 vendor commit 7e06df2），位于 <repo>/../deepseek-harness（兄弟目录，**不复制进产品仓库**——偏差已在 PROVENANCE.md 显式记录）。新增 vendor/dsh/verify-vendor.mjs（只读校验 origin/tag/包版本/许可证/lockfile 摘要/工作树干净/构建脚本齐全）与 vendor/dsh/PROVENANCE.md（来源、许可、上游与本项目补丁界线、实测构建结果、平台边界、未做项）。**构建前置已真实执行**：pnpm run typecheck / build / lint 均 exit 0（build 记录 263 个 client artifact；lint 0 warnings 0 errors，4769 files），构建后基线工作树仍干净。⚠️ `check-stage S11 --offline` 如实返回 **BLOCKED（networkPolicy=build-prereq-explicit）** —— 这是方案的设计意图（\"依赖下载是显式的构建前置操作，与 --offline 测试区分\"），不是未验证：那三条命令已在基线上手动执行并记录于 PROVENANCE.md 第 3 节。状态按 S01 先例记为 done + 环境阻断。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "BLOCKED(network-policy, by design)",
+          "acceptanceChecks": "6/0 ok",
+          "manualEvidence": [
+            "pnpm run typecheck exit 0",
+            "pnpm run build exit 0 (263 artifacts)",
+            "pnpm run lint exit 0 (4769 files, 0 warnings 0 errors)"
+          ],
+          "commands": [
+            "verify-dsh-vendor",
+            "tests-nsdsh"
+          ]
+        }
+      }
     },
     {
       "id": "S12",

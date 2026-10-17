@@ -426,6 +426,59 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S11') {
+    // S11 = 固定并内置完整 DSH 基线。判定要点：来源可复核、许可齐全、只读校验、不碰用户全局。
+    const vRel = 'vendor/dsh/verify-vendor.mjs';
+    const pRel = 'vendor/dsh/PROVENANCE.md';
+    const miss = [vRel, pRel].filter((rel) => !fs.existsSync(abs(rel)));
+    if (miss.length) {
+      out.push({ name: '来源记录与校验脚本存在', passed: false, detail: `缺：${miss.join('、')}` });
+      return out;
+    }
+    const vSrc = fs.readFileSync(abs(vRel), 'utf8');
+    const pSrc = fs.readFileSync(abs(pRel), 'utf8');
+
+    out.push({
+      name: '记录了上游来源：origin / tag / 上游 commit / vendor commit',
+      passed: /origin:\s*'https:\/\/github\.com\/deepseek-ai\/deepseek-harness'/.test(vSrc)
+        && /upstream_tag:/.test(vSrc) && /upstream_commit:/.test(vSrc) && /vendor_commit:/.test(vSrc)
+        && /deepseek-harness/.test(pSrc),
+      detail: '来源必须能被机器对账，而不是只写在报告里',
+    });
+    out.push({
+      name: '许可与 lockfile 齐全（分发前提）',
+      passed: /license_file:\s*'LICENSE'/.test(vSrc) && /lockfile:\s*'pnpm-lock\.yaml'/.test(vSrc)
+        && /LICENSE/.test(pSrc) && /pnpm-lock\.yaml/.test(pSrc),
+      detail: '上游是 MIT 族许可，分发必须随附；lockfile 必须保留',
+    });
+    out.push({
+      name: '校验脚本只读：不 clone / install / build，也不碰 ~/.dsh',
+      passed: !/git\s+clone/.test(vSrc) && !/pnpm\s+install/.test(vSrc) && !/pnpm\s+run\s+build/.test(vSrc)
+        && !/homedir\(\)/.test(vSrc) && !/\.dsh[\/\\]/.test(vSrc),
+      detail: 'host 不要求修改用户全局 DSH —— 本阶段验收项之一',
+    });
+    out.push({
+      name: '构建验证已记录（typecheck / build / lint）且写了平台边界',
+      passed: /typecheck/.test(pSrc) && /pnpm run build/.test(pSrc) && /lint/.test(pSrc) && /平台/.test(pSrc),
+      detail: '不能只在开发机"能跑"却不写清平台；也不能不记录实测命令',
+    });
+    out.push({
+      name: '诚实边界：与方案路径的偏差与"未做什么"都已写明',
+      passed: /偏差/.test(pSrc) && /未覆盖|未做|明确不做/.test(pSrc),
+      detail: '基线在本仓库外是刻意决定，必须显式记录而不是悄悄建空壳目录',
+    });
+
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    out.push({
+      name: '来源一致性断言已落地并纳入套件执行',
+      passed: fs.existsSync(abs('tests/nsdsh/dsh-vendor-provenance.test.mjs'))
+        && runner.includes('tests/nsdsh/dsh-vendor-provenance.test.mjs'),
+      detail: 'EXPECTED 与 PROVENANCE.md 任何一边改动都会红',
+    });
+    return out;
+  }
+
   if (id === 'S10') {
     // S10 = 统一模型 broker（修 F04）：按作品+用途路由、同一结果契约、总预算。
     const need = ['ai/model-broker/routing.mjs', 'ai/model-broker/envelope.mjs', 'ai/model-broker/adapters.mjs'];
