@@ -426,6 +426,85 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S10') {
+    // S10 = 统一模型 broker（修 F04）：按作品+用途路由、同一结果契约、总预算。
+    const need = ['ai/model-broker/routing.mjs', 'ai/model-broker/envelope.mjs', 'ai/model-broker/adapters.mjs'];
+    const missing = need.filter((rel) => !fs.existsSync(abs(rel)));
+    if (missing.length) {
+      out.push({ name: '模型 broker 模块存在', passed: false, detail: `缺：${missing.join('、')}` });
+      return out;
+    }
+    const routing = fs.readFileSync(abs('ai/model-broker/routing.mjs'), 'utf8');
+    const envelope = fs.readFileSync(abs('ai/model-broker/envelope.mjs'), 'utf8');
+    const adapters = fs.readFileSync(abs('ai/model-broker/adapters.mjs'), 'utf8');
+    const serverSrc2 = fs.readFileSync(abs('server.js'), 'utf8');
+
+    // 只看**那个函数体内**是否还有"按 id 取第一条"的旧选择。
+    // （server.js 别处确实还有合法的 `ORDER BY id ASC LIMIT 1`，例如 projection_outbox 取待处理行，
+    //   因此不能对全文做这个否定断言 —— 那会误伤无关代码。）
+    const tacIdx = serverSrc2.indexOf('function temporalAnalysisConfig(');
+    const tacTail = tacIdx >= 0 ? serverSrc2.slice(tacIdx) : '';
+    const tacBody = tacTail.slice(0, tacTail.indexOf('\n}\n'));
+    out.push({
+      name: 'F04 已修：按作品 + 用途路由，无路由即失败（不再"第一个有 key 的配置"）',
+      passed: /export function resolveRoute/.test(routing) && /NO_ROUTE/.test(routing)
+        && /ModelBroker\.resolveRoute\(db, \{ workId/.test(serverSrc2)
+        && tacIdx >= 0 && !/ORDER BY id ASC LIMIT 1/.test(tacBody) && !/api_configs WHERE api_key/.test(tacBody),
+      detail: `作品级 → 全局级 → NO_ROUTE；temporalAnalysisConfig 体内旧选择残留=${/(ORDER BY id ASC LIMIT 1|api_configs WHERE api_key)/.test(tacBody)}`,
+    });
+    out.push({
+      name: '本地回环 provider 免 key；外网无 key 必须失败',
+      // 源码里写的是转义过的 127\.0\.0\.1 / localhost / [::1]；这里断言"判定函数 + 三种回环形态"，
+      // 而不是去匹配那串带反斜杠的字面量。
+      passed: /export function isLocalProvider/.test(routing) && /CONFIG_NO_KEY/.test(routing)
+        && /localhost/.test(routing) && /127/.test(routing),
+      detail: '不能"试一下"外网无 key 的配置；本地白名单必须只认回环',
+    });
+    out.push({
+      name: '不可变 TaskEnvelope（冻结 + 不携带 api_key）',
+      passed: /export function createTaskEnvelope/.test(envelope) && /Object\.freeze\(envelope\)/.test(envelope)
+        && !/api_key:/.test(envelope.replace(/api_key 不进信封[\s\S]*?needs_api_key/, '')),
+      detail: '信封会被日志/事件携带，密钥不能进去',
+    });
+    out.push({
+      name: '预算同时管总请求数 / 总 token / 期限，且越界抛异常',
+      passed: /maxRequests/.test(envelope) && /maxTotalTokens/.test(envelope) && /deadlineMs/.test(envelope)
+        && /class BudgetExceeded/.test(envelope) && /MAX_REQUESTS_EXCEEDED/.test(envelope)
+        && /DEADLINE_EXCEEDED/.test(envelope),
+      detail: 'S10 动作 7：只限单次输出 token 会允许无限次 agent 请求',
+    });
+    out.push({
+      name: 'direct / legacy 同一结果契约（ok 只配 done；not_run ≠ failed）',
+      passed: /export function makeResult/.test(adapters) && /export function assertResultContract/.test(adapters)
+        && /createDirectAdapter/.test(adapters) && /createLegacyAdapter/.test(adapters)
+        && /'not_run'/.test(adapters),
+      detail: '两个适配器必须产出同一形状，且失败不抛异常',
+    });
+
+    // 捕获脚本必须存在且真的跑过（门禁命令里会跑它）
+    out.push({
+      name: '模型请求契约可被捕获（capture-model-contract）',
+      passed: fs.existsSync(abs('scripts/nsdsh/capture-model-contract.mjs')),
+      detail: 'S10 动作 6：要捕获 fake provider 收到的**实际请求**，而不只是提示词生成器返回值',
+    });
+
+    const needTests = [
+      'tests/nsdsh/model-routing.test.mjs',
+      'tests/nsdsh/runtime-adapter-contract.test.mjs',
+      'tests/nsdsh/task-budget.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测三件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '3/3 就位',
+    });
+    return out;
+  }
+
   if (id === 'S09') {
     // S09 = 收紧工具能力与作者权限（修 F11 + D6）。
     const capRel = 'harness-plugins/novel-writing/capabilities.mjs';

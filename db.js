@@ -808,6 +808,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_story_analysis_tasks_one_queued
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_analysis_tasks_one_running
   ON story_analysis_tasks(chapter_id, kind) WHERE status = 'running';
 
+-- S10（修 F04）：模型路由 —— 按「作品 + 用途」显式指定用哪个 api_configs。
+-- 为什么需要一张表：旧实现是「WHERE api_key <> '' ORDER BY id ASC LIMIT 1」，
+-- 也就是"第一个有 key 的配置就是答案"，与作品/任务无关、无法解释、也无法按书指定。
+-- work_id = 0 表示**全局默认**；查询顺序是 作品级 → 全局级 → 无路由（不隐式挑选）。
+CREATE TABLE IF NOT EXISTS model_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL DEFAULT 0,
+  purpose TEXT NOT NULL,
+  api_config_id INTEGER NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(work_id, purpose)
+);
+CREATE INDEX IF NOT EXISTS idx_model_routes_lookup ON model_routes(work_id, purpose);
+
 -- 每次执行尝试的记账：谁领的、第几代租约、结果如何。
 -- 为什么单独一张表而不是往任务表加列：一次任务可能被领取多次（重试/接管），
 -- 只留"最后一次"会丢掉"曾经有旧 worker 回写过"这条审计线索。

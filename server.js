@@ -62,6 +62,8 @@ import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities,
 // S03：时态四用例（保存确认/提案确认/分析/状态查询）的**用例判据**已抽到 server/services/。
 // 这一层不碰 HTTP、不 import db.js，也不启动任何东西；路由层只负责把结论写成响应。
 import { confirmEvents, confirmProposalGroup, analyzeChapterUseCase, queryStoryState, makeTemporalDeps } from './server/services/temporal-services.mjs';
+// S10：模型路由（按作品 + 用途）—— 取代"第一个有 key 的配置"的隐式选择。
+import * as ModelBroker from './ai/model-broker/routing.mjs';
 import { recordIntent as recordAnalysisIntent } from './ai/jobs/queue-store.mjs';
 import { createDispatcher, reconcileOnStart } from './ai/jobs/dispatcher.mjs';
 import { buildCompressionPrompt } from './ai/memory-compress-prompt.mjs';
@@ -5298,18 +5300,28 @@ const TEMPORAL_ANALYSIS_MAX_WAIT_MS = 30_000;
 const temporalTraceStores = new Map();
 const TEMPORAL_TRACE_STORES_MAX = 200;
 
-/** 后台分析用的默认 API 配置：第一条带 api_key 的 api_configs（没有 → null，如实记 not_run）。 */
-function temporalAnalysisConfig() {
+/**
+ * 后台分析用的 API 配置 —— **按「作品 + 用途」路由**（S10，修 F04）。
+ *
+ * 旧实现是 `WHERE api_key <> '' ORDER BY id ASC LIMIT 1`：**第一个有 key 的配置就是答案**。
+ * 后果是这个选择与作品/任务无关、无法解释、也无法按书指定。
+ * 现在走 `resolveRoute(db, {workId, purpose:'analysis'})`：
+ *   作品级路由 → 全局路由 → **NO_ROUTE**（不再隐式挑一条）。
+ * 返回 null 时上层会如实记 `not_run`（保存路径完全不依赖模型 —— "无模型仍可保存"）。
+ */
+function temporalAnalysisConfig(workId = 0) {
   try {
-    return prepare("SELECT * FROM api_configs WHERE api_key IS NOT NULL AND api_key <> '' ORDER BY id ASC LIMIT 1").get() || null;
+    const r = ModelBroker.resolveRoute(db, { workId: Number(workId) || 0, purpose: 'analysis' });
+    if (!r.ok) return null;
+    return r.config || null;
   } catch {
     return null;
   }
 }
 
 /** 组装注入给 analyzeChapter 的模型适配器（真实生产通道 = 既有 callAI；测试可注入本地 stub）。 */
-function temporalAnalysisGenerate() {
-  const config = temporalAnalysisConfig();
+function temporalAnalysisGenerate(workId = 0) {
+  const config = temporalAnalysisConfig(workId);
   if (!config) return null;
   const generate = async ({ system, user, model }) => {
     const data = await callAI(
@@ -5373,7 +5385,7 @@ function afterTemporalContentSave(workId, chapterId, contentHtml, originKind, ge
 
 /** 立即执行一次本章分析（后台调度与 POST /api/novel/state/analyze 共用）。 */
 async function runTemporalAnalysis(workId, chapterId, { force = false } = {}) {
-  const generate = temporalAnalysisGenerate();
+  const generate = temporalAnalysisGenerate(workId);
   const result = await StoryState.Temporal.analyzeChapter({
     workId, chapterId,
     generate,

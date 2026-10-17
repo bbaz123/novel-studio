@@ -643,7 +643,7 @@
       "id": "S10",
       "title": "统一模型 broker 与运行时接口（修 F04）",
       "batch": "NS-B",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S09"
       ],
@@ -660,14 +660,48 @@
         "tests/nsdsh/task-budget.test.mjs"
       ],
       "requiredArtifacts": [
+        "ai/model-broker/routing.mjs",
+        "ai/model-broker/envelope.mjs",
+        "ai/model-broker/adapters.mjs",
         "scripts/nsdsh/capture-model-contract.mjs"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "capture-model-contract",
+          "argv": [
+            "scripts/nsdsh/capture-model-contract.mjs",
+            "--fixture"
+          ],
+          "cwd": ".",
+          "why": "S10：捕获 fake provider 收到的实际请求与契约"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S10 三件套 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "模型路由符合任务设置；无模型仍可保存；未授权自动分析不计费"
       ],
-      "rollbackNotes": "保留旧实现但经适配器入口控制。"
+      "rollbackNotes": "保留旧实现但经适配器入口控制。",
+      "notes": "S10 完成（2026-10-16）：model-broker 三件套 —— routing.mjs（按作品+用途路由，作品级→全局级→NO_ROUTE，取消\"第一个有 key 的配置\"；本地回环免 key，外网无 key 即 CONFIG_NO_KEY）、envelope.mjs（不可变 TaskEnvelope + 总请求/总 token/期限三类预算，越界抛 BudgetExceeded）、adapters.mjs（direct/legacy 同一结果契约：ok 只配 done、not_run≠failed、失败不抛异常）。新增 model_routes 表；server.js 的 temporalAnalysisConfig(workId) 改走 resolveRoute。新增 capture-model-contract.mjs 捕获实际请求。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 9,
+          "fail": 0,
+          "commands": [
+            "capture-model-contract --fixture",
+            "tests-nsdsh(235 断言)"
+          ]
+        }
+      }
     },
     {
       "id": "S11",

@@ -268,17 +268,27 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F04 分析配置取"首个带 key 的配置"而不是任务指定路由（→ S10）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F04 [静态] temporalAnalysisConfig() 取首个带 api_key 的配置，不接受任务指定路由（F04→S10）', () => {
-    const body = sliceBetween(serverSrc, 'function temporalAnalysisConfig()', '\n}\n');
-    assert.match(body, /function temporalAnalysisConfig\(\)/, 'F04：函数不接收任何路由/任务参数');
-    assert.match(body,
-      /SELECT \* FROM api_configs WHERE api_key IS NOT NULL AND api_key <> '' ORDER BY id ASC LIMIT 1/,
-      'F04：选的是 id 最小的第一条可用配置');
-    assert.ok(!/WHERE[\s\S]{0,120}(route|task|requested|model_id)/i.test(body),
-      'F04：查询里没有任何"任务指定的路由"条件');
-    // 同一函数的调用方：生产通道把这条配置直接喂给 callAI。
-    assert.match(sliceBetween(serverSrc, 'function temporalAnalysisGenerate()', '\n}\n'),
-      /const config = temporalAnalysisConfig\(\);/);
+  ['F04 [静态] 模型选择走「作品 + 用途」路由，不再取首个带 api_key 的配置（S10 已修）', () => {
+    const body = sliceBetween(serverSrc, 'function temporalAnalysisConfig(workId = 0)', '\n}\n');
+    // S10 已修：必须按 work + purpose 路由，并且**接收作品参数**
+    assert.match(body, /ModelBroker\.resolveRoute\(db, \{ workId/, 'F04 已修：必须按作品 + 用途路由');
+    assert.match(body, /purpose: 'analysis'/, 'F04 已修：用途必须显式');
+    // 旧的"第一个有 key 的配置"必须已消失
+    assert.ok(!/ORDER BY id ASC LIMIT 1/.test(body), 'F04 已修：不得再"按 id 取第一条"');
+    assert.ok(!/api_configs WHERE api_key IS NOT NULL/.test(body), 'F04 已修：不得再直接查 api_configs 挑第一个');
+    // 解析不到就是 null（上层记 not_run），不隐式换一个
+    assert.match(body, /if \(!r\.ok\) return null/, 'F04 已修：没有路由就返回 null（不隐式兜底）');
+
+    // 调用方必须把 workId 传进去（否则路由退化成"只按 purpose"）
+    assert.match(sliceBetween(serverSrc, 'function temporalAnalysisGenerate(workId = 0)', '\n}\n'),
+      /temporalAnalysisConfig\(workId\)/);
+    // 且真正建立分析器的地方把 workId 传下来
+    assert.match(serverSrc, /temporalAnalysisGenerate\(workId\)/, '必须把作品 id 传到模型选择处');
+
+    // 路由模块本身必须"没有路由就是失败"，且本地 provider 免 key
+    const routeSrc = readRepo('ai/model-broker/routing.mjs');
+    assert.match(routeSrc, /NO_ROUTE/, 'F04 已修：无路由必须是显式失败');
+    assert.match(routeSrc, /isLocalProvider/, 'F04 已修：本地 provider 免 key 必须显式判定');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────

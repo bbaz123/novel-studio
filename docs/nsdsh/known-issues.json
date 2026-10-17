@@ -90,9 +90,11 @@
       ],
       "impact": "分析与作者为任务指定的模型可能不一致；无需 key 的本地服务永远不被选中。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S10",
-      "expiry": "S10：按「作品 + purpose」解析路由。到期后若仍存在『取第一条带 key 的配置』路径即判失败。"
+      "expiry": "S10：按「作品 + purpose」解析路由。到期后若仍存在『取第一条带 key 的配置』路径即判失败。",
+      "fixedStage": "S10",
+      "evidenceNote": "2026-10-16 S10：新增 ai/model-broker/routing.mjs —— 按「作品 + 用途」解析模型（作品级 → 全局级 → NO_ROUTE），**取消\"第一个有 key 的配置\"的隐式选择**；本地回环 provider 免 key（显式白名单，防 `127.0.0.1.evil.com` 误判），外网无 key 即 CONFIG_NO_KEY。新增 model_routes 表（work_id=0 表示全局）+ 唯一索引；server.js 的 temporalAnalysisConfig(workId) 改走 resolveRoute，解析不到返回 null（上层如实记 not_run，保存路径不依赖模型）。同批新增 envelope.mjs（不可变 TaskEnvelope + 总请求/总 token/期限三类预算，越界抛 BudgetExceeded）与 adapters.mjs（direct/legacy 同一结果契约：ok 只配 done、not_run ≠ failed、失败不抛异常），以及 scripts/nsdsh/capture-model-contract.mjs（捕获 fake provider 收到的实际请求）。断言：model-routing 7/7、runtime-adapter-contract 7/7、task-budget 7/7；regression-findings F04 已翻转。"
     },
     {
       "id": "F05",
@@ -361,9 +363,9 @@
     "high": 7,
     "medium": 12,
     "low": 1,
-    "open": 4,
+    "open": 3,
     "notDirectlyDetectable": 0,
-    "fixedLocally": 16,
+    "fixedLocally": 17,
     "byFixStage": {
       "S04": [
         "E2",

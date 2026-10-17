@@ -64,6 +64,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/tool-capabilities.test.mjs',
   'tests/nsdsh/author-approval-boundary.test.mjs',
   'tests/nsdsh/cross-work-isolation.test.mjs',
+  // S10: model routing by work+purpose (F04) + runtime adapter contract + task budget
+  'tests/nsdsh/model-routing.test.mjs',
+  'tests/nsdsh/runtime-adapter-contract.test.mjs',
+  'tests/nsdsh/task-budget.test.mjs',
 ];
 
 /**
