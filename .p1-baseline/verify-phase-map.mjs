@@ -1597,6 +1597,12 @@ export const PHASES = [
       'vendor/dsh/verify-vendor.mjs',
       'vendor/dsh/PROVENANCE.md',
       'tests/nsdsh/dsh-vendor-provenance.test.mjs',
+      'harness-plugins/novel-writing/profile.mjs',
+      'scripts/nsdsh/runtime-smoke.mjs',
+      'tests/nsdsh/novel-profile.test.mjs',
+      'tests/nsdsh/effective-tools.test.mjs',
+      'tests/nsdsh/runtime-config-isolation.test.mjs',
+
 
 
       'tests/nsdsh/tool-capabilities.test.mjs',

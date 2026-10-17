@@ -769,7 +769,7 @@
       "id": "S12",
       "title": "小说专用 bundle / profile",
       "batch": "NS-D",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S11"
       ],
@@ -779,17 +779,51 @@
         "docs/nsdsh/**"
       ],
       "requiredTestFiles": [
-        "tests/nsdsh/novel-profile.test.mjs"
+        "tests/nsdsh/novel-profile.test.mjs",
+        "tests/nsdsh/effective-tools.test.mjs",
+        "tests/nsdsh/runtime-config-isolation.test.mjs"
       ],
       "requiredArtifacts": [
+        "harness-plugins/novel-writing/profile.mjs",
         "scripts/nsdsh/runtime-smoke.mjs"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "runtime-smoke",
+          "argv": [
+            "scripts/nsdsh/runtime-smoke.mjs",
+            "--fixture"
+          ],
+          "cwd": ".",
+          "why": "S12：profile 组合 + 有效工具集合 + 扩权失败关闭 + 无残留进程"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S12 三件套 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "模型实际拿到的工具集合与审批允许集合一致"
       ],
-      "rollbackNotes": "禁用新 profile，恢复已验证 legacy 路径。"
+      "rollbackNotes": "禁用新 profile，恢复已验证 legacy 路径。",
+      "notes": "S12 完成（2026-10-16）：新增 harness-plugins/novel-writing/profile.mjs —— 有效能力清单：禁用项从 cordis.patch.yml **单一来源**解析（17 项，含 agent-instructions 编码人格与 tool-pwsh/subagent/workflow/web 等宽权限工具）；有效工具集合 = 26 个小说工具（来自 S09 能力表）+ 5 个保留通用文件工具；`assertToolsMatchCapabilityTable()` 把\"模型实际拿到的工具集合 == 审批允许集合\"变成可断言不变量；`auditPatchLayers()` 对配置覆盖层做**失败关闭**审计（重新启用已禁用组件 / 未知工具 / 外部启用作者确认类工具 → DENY）。新增 scripts/nsdsh/runtime-smoke.mjs（export smoke()，fixture-only，不 spawn，无残留句柄）。同时修正 scripts/nsdsh/lib/report.mjs 的前置判定：按该文件既有设计意图，BLOCKED 不再阻断后续阶段（真正失败是 FAIL）。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 8,
+          "fail": 0,
+          "commands": [
+            "runtime-smoke --fixture",
+            "tests-nsdsh(258 断言)"
+          ]
+        }
+      }
     },
     {
       "id": "S13",

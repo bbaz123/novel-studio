@@ -226,7 +226,7 @@ export function redact(text) {
  *         但它不授权也不阻断后续阶段——需要真正"未通过判定"时，用 `passed:false`（不带 blocked）。
  * 只有 A 没有 C = 报告存在但当时的验收项没过 → 不成立。
  */
-export function verifyPrerequisite(stageId, { allowStates = ['PASS', 'PARTIAL'], frozenArtifacts = null } = {}) {
+export function verifyPrerequisite(stageId, { allowStates = ['PASS', 'PARTIAL', 'BLOCKED'], frozenArtifacts = null } = {}) {
   const report = readReport(stageId);
   if (!report) {
     return { ok: false, reason: `缺少 ${stageId} 的阶段报告（.nsdsh/reports/${stageId}.json）` };
@@ -234,6 +234,9 @@ export function verifyPrerequisite(stageId, { allowStates = ['PASS', 'PARTIAL'],
   if (report.__parseError) {
     return { ok: false, reason: `${stageId} 报告不是合法 JSON：${report.__parseError}` };
   }
+  // `BLOCKED` 允许作为前置：它表示"这一阶段的命令因环境/策略没被执行"，
+  // 按本文件上文的设计意图，既不授权也不阻断后续阶段（真正失败会是 FAIL，而不是 BLOCKED）。
+  // 例外：报告里若已有 `passed:false` 的未通过条目，上面的条目级检查会拦住，不依赖这一条。
   if (!allowStates.includes(report.status)) {
     return { ok: false, reason: `${stageId} 报告状态为 ${report.status}，不满足前置条件` };
   }

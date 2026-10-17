@@ -70,6 +70,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/task-budget.test.mjs',
   // S11: pinned DSH vendor baseline provenance (origin/tag/commit/license/lockfile)
   'tests/nsdsh/dsh-vendor-provenance.test.mjs',
+  // S12: novel-only profile composition + effective tool set == approval-allowed set
+  'tests/nsdsh/novel-profile.test.mjs',
+  'tests/nsdsh/effective-tools.test.mjs',
+  'tests/nsdsh/runtime-config-isolation.test.mjs',
 ];
 
 /**

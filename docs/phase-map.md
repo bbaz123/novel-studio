@@ -73,7 +73,7 @@
   - 文件 harness-plugins/novel-writing/capabilities.mjs 同时属于 P0/L/Z6/NS0——改动改在同一批代码里，撤不干净
 - **说明**：harness.js 同时被 P4/P6 改过；profile 本身的回滚是卸掉 novel profile 与 bundle 接线（install-profile.mjs 反向操作）。
 - **验收证据**：`.p0-recon/README.md`、`.p0-recon/verify-harness-profile.mjs`、`.p0-recon/compare-composed.mjs`、`.p0-recon/novel.p3.txt`、`.p0-recon/capture-dsh-request.mjs`
-- **本阶段认领的文件**（38 个）：
+- **本阶段认领的文件**（39 个）：
   - `.p0-recon/.gitignore`
   - `.p0-recon/README.md`
   - `.p0-recon/capture-dsh-request.mjs`
@@ -110,6 +110,7 @@
   - `harness-plugins/novel-writing/novel-tools.mjs`
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
+  - `harness-plugins/novel-writing/profile.mjs`
   - `harness-plugins/novel-writing/test/smoke.mjs`
   - `harness.js`
 
@@ -729,7 +730,7 @@
   - ai/context/layers.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
 - **说明**：**不能单独回滚**：`ai/library/` 被 server.js（P2–P5/Z2/Z3/PI）与 openviking-sync.js 直接 import， 且层规格 / 来源校验 / 登记表分别改在 ai/context/layers.mjs（P1/Z2/Z3）、ai/openviking/recall-meta.mjs（R）、db.js（P5/Z3）里。 本轮全部为附加式：新增门控层 `library`（默认关闭；`library_enabled=0` 的作品 assembled/manifest 与接入前**逐字节一致**， 见 `.p1-baseline/verify-library-identity.mjs` 的 4/4）、新增登记表 `library_docs`（纯 CREATE TABLE IF NOT EXISTS，旧 46 张表零改动）、 新增 7 条端点与工具 `novel_library`（写操作模型侧 403）。 关闭开关即恢复旧行为，不需要动数据。 证据链：离线 `.p1-baseline/test-library-import.mjs`（34/34，隔离实例 + OV stub）与 `test-ov-recall-boundary.mjs`（54/54，含资料根用例）； 真机 `.p1-baseline/verify-library-realmachine.mjs`（18/18，真实 OV v0.4.21 + 隔离实例，写共享资料根 3 篇后清理，根零残留）； 契约见 docs/host-contract.md §20；调用链见 docs/openviking-call-map.md 链 C。
 - **验收证据**：`docs/host-contract.md`、`.p1-baseline/test-library-import.mjs`、`.p1-baseline/verify-library-identity.mjs`、`.p1-baseline/verify-library-realmachine.result.json`、`.p1-baseline/probe-library-p0.result.json`、`.p1-baseline/test-ov-recall-boundary.mjs`、`docs/openviking-call-map.md`
-- **本阶段认领的文件**（37 个）：
+- **本阶段认领的文件**（38 个）：
   - `.p1-baseline/library-identity-before.json`
   - `.p1-baseline/probe-library-p0.mjs`
   - `.p1-baseline/probe-library-p0.result.json`
@@ -763,6 +764,7 @@
   - `harness-plugins/novel-writing/novel-tools.mjs`
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
+  - `harness-plugins/novel-writing/profile.mjs`
   - `harness-plugins/novel-writing/test/smoke.mjs`
   - `openviking-sync.js`
   - `scripts/ci-offline-checks.mjs`
@@ -780,7 +782,7 @@
   - ai/novel-index/store.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/TT/SE5/SE6）import——撤掉会打断线上路径
 - **说明**：**不能单独回滚**：新模块 `ai/direction.mjs` / `ai/retrieval-stats.mjs` / `ai/novel-index/` 被 server.js / openviking-sync.js / db.js 直接 import， 且行为改动落在与 L / R / PI / Z5 共享的文件里（含 `ai/library/library-index.mjs`，归 L 的 `ai/library/` 前缀）。 本轮全部为**附加式**：direction 只是**检索数据**（不解析其中的指令、不写作品、不新增任何规划 / 裁决模型调用）； 资料索引（`library_index` + 可选 FTS5）与小说资产索引（12 张 `novel_index_*`）默认关闭（`library_index_enabled=0` / `novel_index_enabled=0`）， 关闭时 `retrieval_stats.index_queries.total=0`，assembled / manifest / context_id 与 1.11.0 逐字节一致 （`.p1-baseline/verify-library-identity.mjs` 4/4、`test-direction-retrieval.mjs` 的 E5 用例）。 检索计划并发查多个索引，但**先汇总后装配**——只给 buildNovelContext 准备输入，不新增编排层、不绕过唯一装配器； `retrieval_stats` 把「资料召回次数」与「索引查询次数」分开统计（任何消费方不得合并）。 ⚠️ E5 为**保守落地**：计划开启不改变既有层内容（assembled 与关闭时逐字节一致），只增加审计字段； 「用索引替代全量读取」按梯队后续推进，未声称已达成。 自审（同日）：召回微缓存命中时把本次 searches/index_queries/timings 归零（缓存命中不是一次检索）、空查询不写微缓存（恢复旧行为）、 FTS 候选改为先按 bm25 排序再截断并修正 lexical_score 方向、finalize 输出补 request_id——都有对应断言。 终审补修：计划缓存命中不把上一次的 by_index 重复计入本次（只记 cached，「索引查询次数」= 本次实际发生的次数；E6b/6.1/7.4）、 request_id 截断改按码点（不撕裂代理对；C0.6）——同样各有断言。 证据链：`.p1-baseline/test-retrieval-plan.mjs`（65/65）、`.p1-baseline/test-direction-retrieval.mjs`（47/47）、 `.p1-baseline/test-library-index.mjs`（19/19）、docs/host-contract.md 的 1.12.0 行。
 - **验收证据**：`.p1-baseline/test-direction-retrieval.mjs`、`.p1-baseline/test-retrieval-plan.mjs`、`docs/host-contract.md`
-- **本阶段认领的文件**（33 个）：
+- **本阶段认领的文件**（34 个）：
   - `.p1-baseline/bench-library-index.mjs`
   - `.p1-baseline/test-direction-retrieval.mjs`
   - `.p1-baseline/test-library-index.mjs`
@@ -809,6 +811,7 @@
   - `harness-plugins/novel-writing/novel-tools.mjs`
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
+  - `harness-plugins/novel-writing/profile.mjs`
   - `harness-plugins/novel-writing/test/smoke.mjs`
   - `openviking-sync.js`
   - `public/app.js`
@@ -1324,7 +1327,7 @@
   - ai/extraction/coverage.mjs 被**生产代码** ai/story-state/temporal/extraction.mjs（Z3/TT）import——撤掉会打断线上路径
 - **说明**：**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。 ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 `spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。 ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` 重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。
 - **验收证据**：`docs/nsdsh/PLAN.md`、`docs/nsdsh/baseline.md`、`docs/nsdsh/adr-001-boundaries.md`
-- **本阶段认领的文件**（76 个）：
+- **本阶段认领的文件**（81 个）：
   - `.gitignore`
   - `.p1-baseline/verify-phase-map.mjs`
   - `.p6-cutover/snapshot.mjs`
@@ -1349,6 +1352,7 @@
   - `docs/nsdsh/stages.json`
   - `docs/phase-map.md`
   - `harness-plugins/novel-writing/capabilities.mjs`
+  - `harness-plugins/novel-writing/profile.mjs`
   - `public/temporal-stream.js`
   - `scripts/ci-offline-checks.mjs`
   - `scripts/nsdsh/backup-restore-check.mjs`
@@ -1365,6 +1369,7 @@
   - `scripts/nsdsh/lib/report.mjs`
   - `scripts/nsdsh/preflight.mjs`
   - `scripts/nsdsh/reconcile-tasks.mjs`
+  - `scripts/nsdsh/runtime-smoke.mjs`
   - `scripts/run-nsdsh-tests.mjs`
   - `server/services/temporal-services.mjs`
   - `tests/nsdsh/author-approval-boundary.test.mjs`
@@ -1375,6 +1380,7 @@
   - `tests/nsdsh/downstream-invalidation.test.mjs`
   - `tests/nsdsh/dsh-vendor-provenance.test.mjs`
   - `tests/nsdsh/editor-save-ime.test.mjs`
+  - `tests/nsdsh/effective-tools.test.mjs`
   - `tests/nsdsh/entity-identity.test.mjs`
   - `tests/nsdsh/evidence-anchors.test.mjs`
   - `tests/nsdsh/extraction-coverage.test.mjs`
@@ -1385,12 +1391,14 @@
   - `tests/nsdsh/isolation.test.mjs`
   - `tests/nsdsh/model-routing.test.mjs`
   - `tests/nsdsh/module-boundaries.test.mjs`
+  - `tests/nsdsh/novel-profile.test.mjs`
   - `tests/nsdsh/pov-visibility.test.mjs`
   - `tests/nsdsh/projection-provenance.test.mjs`
   - `tests/nsdsh/regression-findings.test.mjs`
   - `tests/nsdsh/relation-direction.test.mjs`
   - `tests/nsdsh/request-digest.test.mjs`
   - `tests/nsdsh/runtime-adapter-contract.test.mjs`
+  - `tests/nsdsh/runtime-config-isolation.test.mjs`
   - `tests/nsdsh/save-service-parity.test.mjs`
   - `tests/nsdsh/stage-runner.test.mjs`
   - `tests/nsdsh/state-query-boundary.test.mjs`
@@ -1404,7 +1412,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**673** 个文件
+- 真实改动集：**678** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

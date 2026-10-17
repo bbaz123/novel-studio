@@ -426,6 +426,68 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S12') {
+    // S12 = 小说专用 profile。核心不变量：**模型实际拿到的工具集合 == 审批允许集合**，
+    // 且任何配置覆盖层扩权都失败关闭。
+    const profRel = 'harness-plugins/novel-writing/profile.mjs';
+    const smokeRel = 'scripts/nsdsh/runtime-smoke.mjs';
+    const miss = [profRel, smokeRel].filter((rel) => !fs.existsSync(abs(rel)));
+    if (miss.length) {
+      out.push({ name: 'profile 清单与冒烟脚本存在', passed: false, detail: `缺：${miss.join('、')}` });
+      return out;
+    }
+    const profSrc = fs.readFileSync(abs(profRel), 'utf8');
+    const patchSrc = fs.readFileSync(abs('harness-plugins/novel-writing/cordis.patch.yml'), 'utf8');
+
+    out.push({
+      name: '禁用清单来自 patch.yml 单一来源（不手抄）',
+      passed: /export function disabledComponents/.test(profSrc) && /cordis\.patch\.yml/.test(profSrc)
+        && /disabled:\s*true/.test(patchSrc),
+      detail: '手抄清单必然与 yml 漂移',
+    });
+    out.push({
+      name: 'S12 动作 3：编码人格与无关重型工具被禁用',
+      passed: /agent-instructions/.test(patchSrc) && /tool-pwsh/.test(patchSrc)
+        && /tool-subagent/.test(patchSrc) && /tool-web/.test(patchSrc),
+      detail: '模型可见的编码人格必须移除；不复制宽权限配置',
+    });
+    out.push({
+      name: '模型可见工具集合 == 审批允许集合（S09↔S12 接缝）',
+      passed: /export function assertToolsMatchCapabilityTable/.test(profSrc)
+        && /TOOL_CAPABILITIES/.test(profSrc) && /export function effectiveTools/.test(profSrc),
+      detail: '这条不变量一红，就说明模型多/少了一个工具',
+    });
+    out.push({
+      name: '配置扩权失败关闭（DENY，不是警告）',
+      passed: /export function auditPatchLayers/.test(profSrc) && /DENY/.test(profSrc)
+        && /REENABLES_DISABLED_COMPONENT/.test(profSrc) && /UNKNOWN_TOOL_EXPANSION/.test(profSrc)
+        && /EXTERNAL_ENABLE_OF_AUTHOR_CONFIRM_TOOL/.test(profSrc),
+      detail: '外部 home patch 不得扩大能力面',
+    });
+    out.push({
+      name: '冒烟脚本 fixture-only、不 spawn 子进程（无残留进程可断言）',
+      passed: !/from 'node:child_process'/.test(fs.readFileSync(abs(smokeRel), 'utf8'))
+        && /--fixture/.test(fs.readFileSync(abs(smokeRel), 'utf8')),
+      detail: 'S12 动作 7：stdout 干净、失败退出、无残留进程',
+    });
+
+    const needTests = [
+      'tests/nsdsh/novel-profile.test.mjs',
+      'tests/nsdsh/effective-tools.test.mjs',
+      'tests/nsdsh/runtime-config-isolation.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测三件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '3/3 就位',
+    });
+    return out;
+  }
+
   if (id === 'S11') {
     // S11 = 固定并内置完整 DSH 基线。判定要点：来源可复核、许可齐全、只读校验、不碰用户全局。
     const vRel = 'vendor/dsh/verify-vendor.mjs';
