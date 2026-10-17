@@ -226,7 +226,8 @@
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
       "status": "open",
       "fixStage": "S03",
-      "expiry": "S03：按业务边界渐进抽取（保存/分析/确认/查询四个用例先抽），**保持既有 API 响应、状态码与上下文完整性不变**。本阶段不换前端框架、不改时态算法、不重命名全部表。"
+      "expiry": "S03：按业务边界渐进抽取（保存/分析/确认/查询四个用例先抽），**保持既有 API 响应、状态码与上下文完整性不变**。本阶段不换前端框架、不改时态算法、不重命名全部表。",
+      "evidenceNote": "2026-10-16 S18 复核：仍为 open，属**持续性重构**（不是一次性缺陷）。已完成的部分：S03 把四个时态用例抽到 server/services/temporal-services.mjs；S04 把任务持久化抽到 ai/jobs/{queue-store,dispatcher}.mjs（server.js 只剩接线）；S10 把模型路由/信封/适配器抽到 ai/model-broker/*；S13 把 SDK 运行时抽到 ai/runtime/dsh-sdk.mjs；S17 移除了旧的进程内调度器与 import 副作用。仍剩：server.js 仍有 10261 行，HTTP 端点与创作内核接口尚未按域拆分。本阶段**不做一次性大改**（项目规则：不做用户没要求的大范围重构）；后续每轮可继续按\"一个域一个模块\"推进，每步都必须保持 API 响应与状态码契约不变。"
     },
     {
       "id": "D1",

@@ -426,6 +426,43 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S18') {
+    // S18 = 最终交付。判据：交付验收脚本存在且能跑通其检查项；STATUS 已更新；台账无隐藏项。
+    const rel = 'scripts/nsdsh/verify-delivery.mjs';
+    if (!fs.existsSync(abs(rel))) {
+      out.push({ name: '交付验收脚本存在', passed: false, detail: `缺少 ${rel}` });
+      return out;
+    }
+    const src = fs.readFileSync(abs(rel), 'utf8');
+    out.push({
+      name: '交付验收覆盖五组：阶段证据/必要文件/未解决缺陷/产品不变量/生成物',
+      passed: /阶段清单覆盖/.test(src) && /交付必要文件齐全/.test(src) && /未解决缺陷已如实登记/.test(src)
+        && /默认不计费/.test(src) && /无 AI 仍可保存/.test(src) && /工具不能自己确认状态/.test(src)
+        && /phase map 已生成/.test(src),
+      detail: '只认证据，不认声明',
+    });
+    out.push({
+      name: '交付报告含支持矩阵 / 已测平台 / 未验证平台 / 性能数据 / 剩余限制',
+      passed: /support_matrix/.test(src) && /platforms_tested/.test(src) && /platforms_unverified/.test(src)
+        && /performance_raw/.test(src) && /remaining_limits/.test(src),
+      detail: '未测项必须显式标记，不得声称跨平台',
+    });
+    const statusSrc = fs.existsSync(abs('docs/nsdsh/STATUS.md')) ? fs.readFileSync(abs('docs/nsdsh/STATUS.md'), 'utf8') : '';
+    out.push({
+      name: 'STATUS.md 已更新到 S18 交付态（含未验证限制）',
+      passed: /S18/.test(statusSrc) && /未验证/.test(statusSrc) && /verify-delivery/.test(statusSrc),
+      detail: '阶段总览 + 剩余限制成文',
+    });
+    const stages = JSON.parse(fs.readFileSync(abs('docs/nsdsh/stages.json'), 'utf8')).stages || [];
+    const notDone = stages.filter((s) => s.id && s.status !== 'done').map((s) => s.id);
+    out.push({
+      name: '全部阶段状态为 done 且都有证据条目',
+      passed: notDone.length === 0 && stages.every((s) => !s.status || s.status !== 'done' || (s.evidence && Object.keys(s.evidence).length)),
+      detail: notDone.length ? `未完成：${notDone.join(',')}` : `${stages.length} 个阶段`,
+    });
+    return out;
+  }
+
   if (id === 'S17') {
     // S17 = 清理旧桥接 + 上游维护纪律。验收三条：单一调度所有者 / 导入不改全局设置 / 补丁来源可追踪。
     const harnessSrc = fs.readFileSync(abs('harness.js'), 'utf8');

@@ -89,6 +89,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/migration-drill.test.mjs',
   // S17: bridge retirement -- single scheduler owner / no import-time global writes / upstream provenance
   'tests/nsdsh/bridge-retirement.test.mjs',
+  // S18: delivery report -- support matrix / unverified platforms / remaining limits honesty
+  'tests/nsdsh/delivery-report.test.mjs',
 ];
 
 /**

@@ -1620,6 +1620,9 @@ export const PHASES = [
       'tests/nsdsh/migration-drill.test.mjs',
       'docs/nsdsh/upstream-maintenance.md',
       'tests/nsdsh/bridge-retirement.test.mjs',
+      'scripts/nsdsh/verify-delivery.mjs',
+      'tests/nsdsh/delivery-report.test.mjs',
+
 
 
 

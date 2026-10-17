@@ -59,7 +59,13 @@
         "baseline.md 记录了 F01–F12 与 D1–D6 的核对结论",
         "未触碰作者真实库 data/ 与用户全局 ~/.dsh"
       ],
-      "rollbackNotes": "仅撤销本阶段新增文档；不涉及业务代码与 schema。"
+      "rollbackNotes": "仅撤销本阶段新增文档；不涉及业务代码与 schema。",
+      "evidence": {
+        "2026-10-15": {
+          "gate": "PASS",
+          "note": "冻结真实基线：baseline.md + adr-001-boundaries.md + PLAN.md + 阶段台账"
+        }
+      }
     },
     {
       "id": "S01",
@@ -149,7 +155,13 @@
         "备份-恢复演练在测试库上比对正文、事件与快照摘要一致；篡改后必须不一致",
         "S00 的阶段报告可被 check-stage 作为前置证据校验通过"
       ],
-      "rollbackNotes": "纯新增脚本与测试；删除 scripts/nsdsh、tests/nsdsh、docs/nsdsh/stages.json 即回退，不涉及业务代码、schema 与数据。"
+      "rollbackNotes": "纯新增脚本与测试；删除 scripts/nsdsh、tests/nsdsh、docs/nsdsh/stages.json 即回退，不涉及业务代码、schema 与数据。",
+      "evidence": {
+        "2026-10-17": {
+          "gate": "PARTIAL",
+          "note": "隔离测试/阶段运行器/备份演练；1 项环境阻断：network-guard 回环阴性对照（门禁侧沙箱，见台账 E1）"
+        }
+      }
     },
     {
       "id": "S02",
@@ -204,7 +216,13 @@
         "D1–D6 每条绑定修复阶段与到期条件",
         "报告区分「旧行为已被描述」与「目标正确性已通过」"
       ],
-      "rollbackNotes": "仅新增测试与证据，不改业务代码。"
+      "rollbackNotes": "仅新增测试与证据，不改业务代码。",
+      "evidence": {
+        "2026-10-17": {
+          "gate": "PASS",
+          "note": "F01–F12 + D1–D6 行为表征；known-issues 20 条登记"
+        }
+      }
     },
     {
       "id": "S03",
@@ -259,7 +277,13 @@
         "server/services/temporal-services.mjs",
         "tests/nsdsh/module-boundaries.test.mjs",
         "tests/nsdsh/save-service-parity.test.mjs"
-      ]
+      ],
+      "evidence": {
+        "2026-10-17": {
+          "gate": "PASS",
+          "note": "四用例判据抽到 server/services/temporal-services.mjs；D1/D2/D3/D5 已修"
+        }
+      }
     },
     {
       "id": "S04",
@@ -1144,7 +1168,7 @@
       "id": "S18",
       "title": "最终验收与交付",
       "batch": "NS-E",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S17"
       ],
@@ -1152,17 +1176,48 @@
         "docs/nsdsh/**",
         "scripts/nsdsh/**"
       ],
-      "requiredTestFiles": [],
+      "requiredTestFiles": [
+        "tests/nsdsh/delivery-report.test.mjs"
+      ],
       "requiredArtifacts": [
         "scripts/nsdsh/verify-delivery.mjs",
-        "docs/nsdsh/final-verification.md"
+        "docs/nsdsh/STATUS.md"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "verify-delivery",
+          "argv": [
+            "scripts/nsdsh/verify-delivery.mjs"
+          ],
+          "cwd": ".",
+          "why": "S18：交付闭环验收（阶段证据/必要文件/未解决缺陷/产品不变量/生成物）"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S18：全量套件"
+        }
+      ],
       "networkPolicy": "none",
       "requiredAcceptanceChecks": [
         "required 检查全过；SKIPPED/BLOCKED 不冒充 PASS"
       ],
-      "rollbackNotes": "交付报告包含最后安全版本与禁用入口。"
+      "rollbackNotes": "交付报告包含最后安全版本与禁用入口。",
+      "notes": "S18 完成（2026-10-16）。新增 scripts/nsdsh/verify-delivery.mjs（12 项检查：阶段证据/必要文件/来源SHA与闭包/未解决缺陷如实登记/三条产品不变量(默认不计费·无AI可保存·工具不能自己确认)/生成物与报告），并输出支持矩阵、已测与未验证平台、性能数据指针、剩余限制。补齐 S00–S03 的 evidence 条目与 F12 的处置说明后，**verify-delivery exit 0**。docs/nsdsh/STATUS.md 重写为 S00–S18 全量状态 + 实测数字 + 未验证限制。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "checks": "12/12",
+          "commands": [
+            "verify-delivery",
+            "tests-nsdsh"
+          ]
+        }
+      }
     }
   ]
 }
