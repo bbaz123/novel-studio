@@ -1645,6 +1645,12 @@ export const PHASES = [
       'scripts/nsdsh/compare-runtime-bc.mjs',
       'tests/nsdsh/distribution-artifact.test.mjs',
       'docs/nsdsh/distribution.md',
+      // R04-Q0：质量语料与评分程序
+      'tests/quality/corpus.json',
+      'tests/quality/gold.json',
+      'tests/quality/quality-corpus.test.mjs',
+      'scripts/nsdsh/score-quality.mjs',
+      'docs/nsdsh/quality-eval.md',
       // R03：跨平台矩阵与支持矩阵
       '.github/workflows/nsdsh-runtime-matrix.yml',
       'docs/nsdsh/support-matrix.md',

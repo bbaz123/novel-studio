@@ -1,0 +1,594 @@
+{
+  "version": "quality-gold-v1",
+  "frozen_at": "2026-10-17",
+  "corpus_version": "quality-corpus-v1",
+  "note": "人工标注。按实体 ID / 状态字段 / 前后值 / 证据位置 / 叙事边界标注，不做文本相似度。",
+  "annotation_rules": {
+    "entity_id": "同名不同人必须是不同 ID；改名不换 ID；别名指向同一 ID",
+    "temporality": "current = 章节叙事现在时；recalled = 回忆/转述；dream = 梦境；future = 尚未发生",
+    "evidence": "quote 必须在被引章节正文里逐字出现（评分时机器校验）",
+    "severity": "severe = 实体错配 / 跨作品越界 / 未经确认写入正式状态 / 未来信息当现状"
+  },
+  "cases": [
+    {
+      "id": "Q01",
+      "work": "W1",
+      "category": "chapter_tail_fact",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "plan",
+          "prev": null,
+          "next": "明日去北关",
+          "evidence": {
+            "chapterId": "C1",
+            "quote": "我明日要去北关"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": []
+    },
+    {
+      "id": "Q02",
+      "work": "W2",
+      "category": "chapter_tail_fact",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F1",
+          "field": "decision",
+          "prev": null,
+          "next": "明年春天去南边",
+          "evidence": {
+            "chapterId": "D5",
+            "quote": "陆迟决定明年春天去南边"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "该决定谁也没告诉，不能写成公开事实",
+          "pattern": "公开宣布"
+        }
+      ]
+    },
+    {
+      "id": "Q03",
+      "work": "W1",
+      "category": "relation_direction",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E3",
+          "field": "owes_life_to",
+          "prev": null,
+          "next": "E1",
+          "evidence": {
+            "chapterId": "C5",
+            "quote": "我欠你一条命"
+          },
+          "severityIfWrong": "severe"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "方向反了就是完全不同的关系",
+          "pattern": "E1 欠 E3"
+        }
+      ]
+    },
+    {
+      "id": "Q04",
+      "work": "W1",
+      "category": "identity_alias",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E3",
+          "field": "alias_of",
+          "prev": null,
+          "next": "沈九",
+          "evidence": {
+            "chapterId": "C2",
+            "quote": "沈九在城楼下等他"
+          },
+          "severityIfWrong": "severe"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "别名不是新实体",
+          "pattern": "新建实体 九爷"
+        }
+      ]
+    },
+    {
+      "id": "Q05",
+      "work": "W2",
+      "category": "identity_alias",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F2",
+          "field": "address",
+          "prev": null,
+          "next": "老陈",
+          "evidence": {
+            "chapterId": "D1",
+            "quote": "陈默端来一碗面"
+          },
+          "severityIfWrong": "medium"
+        }
+      ],
+      "mustNot": []
+    },
+    {
+      "id": "Q06",
+      "work": "W1",
+      "category": "misbelief",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "believes",
+          "prev": null,
+          "next": "苏晚会走",
+          "evidence": {
+            "chapterId": "C3",
+            "quote": "那时他还不知道苏晚会走"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "信念不是事实：不能写成 canon 状态",
+          "pattern": "E2 已经离开(当前事实)"
+        }
+      ]
+    },
+    {
+      "id": "Q07",
+      "work": "W2",
+      "category": "misbelief",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F1",
+          "field": "believes",
+          "prev": null,
+          "next": "陈默是告密者",
+          "evidence": {
+            "chapterId": "D2",
+            "quote": "陆迟判断陈默是告密的人"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "第三章已推翻这个判断",
+          "pattern": "F2 是告密者(当前事实)"
+        }
+      ]
+    },
+    {
+      "id": "Q08",
+      "work": "W2",
+      "category": "misbelief",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F2",
+          "field": "accused_by",
+          "prev": "F1",
+          "next": null,
+          "evidence": {
+            "chapterId": "D3",
+            "quote": "告密的是账房的学徒，与陈默无关"
+          },
+          "severityIfWrong": "severe"
+        }
+      ],
+      "mustNot": []
+    },
+    {
+      "id": "Q09",
+      "work": "W1",
+      "category": "narrative_boundary",
+      "temporality": "dream",
+      "expected": [
+        {
+          "entityId": "E2",
+          "field": "said",
+          "prev": null,
+          "next": "别回来",
+          "evidence": {
+            "chapterId": "C3",
+            "quote": "别回来"
+          },
+          "severityIfWrong": "high",
+          "boundary": "dream"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "梦里的话不是人物真实说过的话",
+          "pattern": "E2 说过 别回来(当前时间线)"
+        }
+      ]
+    },
+    {
+      "id": "Q10",
+      "work": "W1",
+      "category": "narrative_boundary",
+      "temporality": "recalled",
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "awareness",
+          "prev": null,
+          "next": "很早以前就知道苏晚不是妹妹",
+          "evidence": {
+            "chapterId": "C4",
+            "quote": "这一点林砚在很早以前就清楚"
+          },
+          "severityIfWrong": "medium",
+          "boundary": "recalled"
+        }
+      ],
+      "mustNot": []
+    },
+    {
+      "id": "Q11",
+      "work": "W1",
+      "category": "future_isolation",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "injury_left_arm",
+          "prev": "旧伤",
+          "next": "不会再好了",
+          "evidence": {
+            "chapterId": "C6",
+            "quote": "林砚的左臂不会再好了"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "第 6 章才确定不可痊愈，第 2 章只能说旧伤在疼",
+          "pattern": "C2 时 左臂已不能动"
+        }
+      ]
+    },
+    {
+      "id": "Q12",
+      "work": "W2",
+      "category": "future_isolation",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F1",
+          "field": "plan",
+          "prev": null,
+          "next": "明年春天去南边",
+          "evidence": {
+            "chapterId": "D5",
+            "quote": "明年春天去南边"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "只是决定，未发生；不能写成已抵达",
+          "pattern": "F1 已在南边"
+        }
+      ]
+    },
+    {
+      "id": "Q13",
+      "work": "W1",
+      "category": "negation",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E3",
+          "field": "owes_life_to",
+          "prev": "E1",
+          "next": null,
+          "evidence": {
+            "chapterId": "C5",
+            "quote": "你不欠"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "否定句不能抽成肯定事实",
+          "pattern": "E3 欠 E1 一条命(已确认)"
+        }
+      ]
+    },
+    {
+      "id": "Q14",
+      "work": "W1",
+      "category": "negation",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E2",
+          "field": "relation_to_E1",
+          "prev": null,
+          "next": "非妹妹，也非仇人",
+          "evidence": {
+            "chapterId": "C4",
+            "quote": "苏晚并不是他的妹妹"
+          },
+          "severityIfWrong": "severe"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "两次否定都被抽反",
+          "pattern": "E2 是 E1 的妹妹"
+        }
+      ]
+    },
+    {
+      "id": "Q15",
+      "work": "W1",
+      "category": "intra_chapter_contradiction",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E3",
+          "field": "presence",
+          "prev": "说会留下",
+          "next": "离开",
+          "evidence": {
+            "chapterId": "C8",
+            "quote": "他终究还是走了"
+          },
+          "severityIfWrong": "high",
+          "contradiction": true
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "同一章前后矛盾，必须以结尾事实为准并标记矛盾",
+          "pattern": "E3 留下了(无矛盾标记)"
+        }
+      ]
+    },
+    {
+      "id": "Q16",
+      "work": "W2",
+      "category": "intra_chapter_contradiction",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F2",
+          "field": "accused_by",
+          "prev": "F1",
+          "next": null,
+          "evidence": {
+            "chapterId": "D3",
+            "quote": "与陈默无关"
+          },
+          "severityIfWrong": "high",
+          "contradiction": true
+        }
+      ],
+      "mustNot": []
+    },
+    {
+      "id": "Q17",
+      "work": "W1",
+      "category": "state_overflow",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "location",
+          "prev": "北关",
+          "next": "回程路上",
+          "evidence": {
+            "chapterId": "C3",
+            "quote": "回程路上"
+          },
+          "severityIfWrong": "medium"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "同一字段不能同时保留多个互斥现状",
+          "pattern": "E1 location = 北关 且 = 城中"
+        }
+      ]
+    },
+    {
+      "id": "Q18",
+      "work": "W1",
+      "category": "state_overflow",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E2",
+          "field": "presence",
+          "prev": "离开",
+          "next": "回来了",
+          "evidence": {
+            "chapterId": "C7",
+            "quote": "苏晚回来了"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "旧状态必须被覆盖而不是并列保留",
+          "pattern": "E2 既已离开又已回来"
+        }
+      ]
+    },
+    {
+      "id": "Q19",
+      "work": "W1",
+      "category": "revision_change",
+      "temporality": "current",
+      "revision": 2,
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "plan",
+          "prev": "明日去北关",
+          "next": "明日去南关",
+          "evidence": {
+            "chapterId": "C1",
+            "quote": "我明日要去南关"
+          },
+          "severityIfWrong": "high",
+          "revisedFrom": 1
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "旧修订的取值必须被标记为已过时",
+          "pattern": "北关(当前值)"
+        }
+      ]
+    },
+    {
+      "id": "Q20",
+      "work": "W2",
+      "category": "revision_change",
+      "temporality": "current",
+      "revision": 2,
+      "expected": [
+        {
+          "entityId": "F1",
+          "field": "decision",
+          "prev": "明年春天去南边",
+          "next": "不再离开",
+          "evidence": {
+            "chapterId": "D5",
+            "quote": "陆迟决定不再离开"
+          },
+          "severityIfWrong": "medium",
+          "revisedFrom": 1
+        }
+      ],
+      "mustNot": []
+    },
+    {
+      "id": "Q21",
+      "work": "W1",
+      "category": "partial_failure",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "E1",
+          "field": "plan",
+          "prev": null,
+          "next": "明日去北关",
+          "evidence": {
+            "chapterId": "C1",
+            "quote": "我明日要去北关"
+          },
+          "severityIfWrong": "high"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "只抽到一部分候选时必须标 partial，不得冒充 complete",
+          "pattern": "complete"
+        }
+      ],
+      "expectStatus": "partial"
+    },
+    {
+      "id": "Q22",
+      "work": "W2",
+      "category": "partial_failure",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F2",
+          "field": "presence",
+          "prev": null,
+          "next": "离开",
+          "evidence": {
+            "chapterId": "D4",
+            "quote": "陈默离开时没有告别"
+          },
+          "severityIfWrong": "medium"
+        }
+      ],
+      "mustNot": [],
+      "expectStatus": "partial"
+    },
+    {
+      "id": "Q23",
+      "work": "W1",
+      "category": "stale_proposal",
+      "temporality": "current",
+      "revision": 2,
+      "expected": [],
+      "mustNot": [
+        {
+          "reason": "基于修订 1 的旧提案在修订 2 下必须被拒，不能静默应用",
+          "pattern": "apply 旧提案"
+        }
+      ],
+      "expectStatus": "rejected"
+    },
+    {
+      "id": "Q24",
+      "work": "W1",
+      "category": "stale_proposal",
+      "temporality": "current",
+      "revision": 2,
+      "expected": [],
+      "mustNot": [
+        {
+          "reason": "证据引文在修订后已不存在，提案必须失效",
+          "pattern": "apply 引文缺失的提案"
+        }
+      ],
+      "expectStatus": "rejected"
+    },
+    {
+      "id": "Q25",
+      "work": "W2",
+      "category": "relation_direction",
+      "temporality": "current",
+      "expected": [
+        {
+          "entityId": "F2",
+          "field": "protected",
+          "prev": null,
+          "next": "F1",
+          "evidence": {
+            "chapterId": "D6",
+            "quote": "陈默替陆迟挡了一刀"
+          },
+          "severityIfWrong": "severe"
+        }
+      ],
+      "mustNot": [
+        {
+          "reason": "方向反了就是完全不同的关系：被保护者不能写成保护者",
+          "pattern": "F1 替 F2 挡刀"
+        }
+      ]
+    }
+  ]
+}
