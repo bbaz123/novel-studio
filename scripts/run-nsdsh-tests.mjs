@@ -46,6 +46,11 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/entity-identity.test.mjs',
   'tests/nsdsh/identity-migration.test.mjs',
   'tests/nsdsh/relation-direction.test.mjs',
+  // S06: full extraction coverage / request+response digests / evidence anchors / schema-derived prompt
+  'tests/nsdsh/extraction-coverage.test.mjs',
+  'tests/nsdsh/request-digest.test.mjs',
+  'tests/nsdsh/evidence-anchors.test.mjs',
+  'tests/nsdsh/extraction-schema.test.mjs',
 ];
 
 /**

@@ -569,6 +569,7 @@
       "plotlines",
       "projection_outbox",
       "revision_selections",
+      "schema_migrations",
       "story_analysis_attempts",
       "story_analysis_tasks",
       "story_binding_trust",

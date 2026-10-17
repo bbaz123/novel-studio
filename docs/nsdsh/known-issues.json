@@ -104,9 +104,11 @@
       ],
       "impact": "长章尾部与大状态集不在模型输入里，但结果仍可被当作『完整分析』，且没有任何缺口报告。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S06",
-      "expiry": "S06：分块 + coverage manifest + 缺口报告。到期后『12k 之后的事实被丢掉却说没有变化』必须能判失败。"
+      "expiry": "S06：分块 + coverage manifest + 缺口报告。到期后『12k 之后的事实被丢掉却说没有变化』必须能判失败。",
+      "fixedStage": "S06",
+      "evidenceNote": "2026-10-16 S06：新增 ai/extraction/coverage.mjs：normalizeFullText 不截断，planChunks 连续/无重叠/无缝隙覆盖 [0,len)，coverageManifest 给出 gaps/complete/checksum，locateQuote 返回**全部**命中区间，anchorQuote 带分块溯源。extraction.buildExtractionPrompt 现在返回 coverage（含 truncated 标记），于是\"12,000 字符之后被丢掉\"从静默变成可见事实。断言：extraction-coverage 5/5、evidence-anchors 5/5。"
     },
     {
       "id": "F06",
@@ -120,9 +122,11 @@
       ],
       "impact": "诱导模型产出非法 scope，浪费一次调用且结果不可用。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S06",
-      "expiry": "S06：提示词中的 domain/scope 必须由 schema.mjs 生成（单一来源），并断言『示例集合 === 合法集合』。"
+      "expiry": "S06：提示词中的 domain/scope 必须由 schema.mjs 生成（单一来源），并断言『示例集合 === 合法集合』。",
+      "fixedStage": "S06",
+      "evidenceNote": "2026-10-16 S06：新增 ai/extraction/prompt-schema.mjs：promptContract() 的 domains/scopes/上限直接取自 schema.mjs 真值；exampleCells() 生成的示例经 parseCellKey 复核；非法示例断言被拒绝（证明校验器非恒通过）。断言：extraction-schema 4/4。"
     },
     {
       "id": "F07",
@@ -134,9 +138,11 @@
       ],
       "impact": "名称表变化不改变请求身份 → 无法判断『同一输入的重复请求』，缓存与去重口径失真。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S06",
-      "expiry": "S06：新增版本化完整请求摘要 request_digest_v2，覆盖完整渲染请求 + 修订/文本摘要 + 输入快照与 lineage + 身份映射版本 + 提示词/normalizer/算法版本 + 去密钥的模型路由。旧 input_hash 只读兼容。"
+      "expiry": "S06：新增版本化完整请求摘要 request_digest_v2，覆盖完整渲染请求 + 修订/文本摘要 + 输入快照与 lineage + 身份映射版本 + 提示词/normalizer/算法版本 + 去密钥的模型路由。旧 input_hash 只读兼容。",
+      "fixedStage": "S06",
+      "evidenceNote": "2026-10-16 S06：buildExtractionPrompt 的 input_hash 改由 requestDigestV2 生成（版本 v2）：已知实体、选入状态、lineage、身份版本、模型路由、抽取版本全部进入摘要；canonicalize 显式区分\"未提供(null)\"与\"空表({})\"，未提供的状态绝不被当成 missing；顺序不敏感（排序后入摘要）。断言：request-digest 6/6，regression-findings F07 已翻转。"
     },
     {
       "id": "F08",
@@ -148,9 +154,11 @@
       ],
       "impact": "两个仅在 2000 字符之后不同的响应被视为同一结果。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S06",
-      "expiry": "S06：限制总响应大小后，对『完整被接受的响应字节』计算摘要（response_digest_v2）。"
+      "expiry": "S06：限制总响应大小后，对『完整被接受的响应字节』计算摘要（response_digest_v2）。",
+      "fixedStage": "S06",
+      "evidenceNote": "2026-10-16 S06：新增 responseDigestV2：基于**完整**输出（按明确上限 truncate 并标 overLimit），替代只取前 2,000 字符的旧口径。断言：request-digest D4/D5（只改第 2000 字符之后摘要必须变）。"
     },
     {
       "id": "F09",
@@ -273,9 +281,11 @@
       ],
       "impact": "中途失败留下『部分应用』的 schema，且没有任何记录可查，后续迁移无法判断起点。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S06",
-      "expiry": "S06：MIGRATIONS 包事务 + 新增 schema_migrations 账本；`.p1-baseline/test-migration-idempotent.mjs` 必须保持绿。"
+      "expiry": "S06：MIGRATIONS 包事务 + 新增 schema_migrations 账本；`.p1-baseline/test-migration-idempotent.mjs` 必须保持绿。",
+      "fixedStage": "S06",
+      "evidenceNote": "2026-10-16 S06：db.js 迁移循环改为：schema_migrations 账本（id/sql/applied_at）+ 每条迁移 BEGIN IMMEDIATE…COMMIT，失败 ROLLBACK 且不记账，失败累计到 MIGRATION_FAILURES。幂等判据只认账本，不再靠 duplicate column 错误文本。断言：test-migration-idempotent A4（账本已记录）+ B5（重复启动不重复记账），15/0；Host Contract 覆盖 schema_migrations（77 表）。"
     },
     {
       "id": "D5",
@@ -347,9 +357,9 @@
     "high": 7,
     "medium": 12,
     "low": 1,
-    "open": 11,
+    "open": 6,
     "notDirectlyDetectable": 0,
-    "fixedLocally": 9,
+    "fixedLocally": 14,
     "byFixStage": {
       "S04": [
         "E2",

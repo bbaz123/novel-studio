@@ -1569,6 +1569,14 @@ export const PHASES = [
       'tests/nsdsh/entity-identity.test.mjs',
       'tests/nsdsh/identity-migration.test.mjs',
       'tests/nsdsh/relation-direction.test.mjs',
+      'ai/extraction/coverage.mjs',
+      'ai/extraction/digest.mjs',
+      'ai/extraction/prompt-schema.mjs',
+      'tests/nsdsh/extraction-coverage.test.mjs',
+      'tests/nsdsh/extraction-schema.test.mjs',
+      'tests/nsdsh/request-digest.test.mjs',
+      'tests/nsdsh/evidence-anchors.test.mjs',
+
 
 
       // S03：四用例判据抽到服务层（HTTP 组装留在路由层）+ 两份对应套件

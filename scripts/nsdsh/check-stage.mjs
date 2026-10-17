@@ -426,6 +426,86 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S06') {
+    // S06 = 完整抽取覆盖 / schema 派生提示词 / 版本化摘要（修 F05–F08 + D4）。
+    const need = {
+      coverage: 'ai/extraction/coverage.mjs',
+      digest: 'ai/extraction/digest.mjs',
+      promptSchema: 'ai/extraction/prompt-schema.mjs',
+    };
+    const missingMod = Object.values(need).filter((rel) => !fs.existsSync(abs(rel)));
+    out.push({
+      name: 'F05/F07/F08 的支撑模块已落地',
+      passed: missingMod.length === 0,
+      detail: missingMod.length ? `缺：${missingMod.join('、')}` : 'coverage/digest/prompt-schema 三件就位',
+    });
+
+    if (missingMod.length === 0) {
+      const cov = fs.readFileSync(abs(need.coverage), 'utf8');
+      out.push({
+        name: 'F05 覆盖：分块 + 覆盖清单 + 引文锚点（不允许静默截断）',
+        passed: /export function planChunks/.test(cov) && /export function coverageManifest/.test(cov)
+          && /export function anchorQuote/.test(cov) && /export function locateQuote/.test(cov),
+        detail: 'planChunks/coverageManifest/locateQuote/anchorQuote 齐全',
+      });
+      const dig = fs.readFileSync(abs(need.digest), 'utf8');
+      out.push({
+        name: 'F07/F08 摘要：版本化请求身份 + 完整输出摘要',
+        passed: /export function requestDigestV2/.test(dig) && /export function responseDigestV2/.test(dig)
+          && /REQUEST_DIGEST_VERSION = 'v2'/.test(dig),
+        detail: 'requestDigestV2 / responseDigestV2 且版本 v2',
+      });
+      const ps = fs.readFileSync(abs(need.promptSchema), 'utf8');
+      out.push({
+        name: 'F06 提示词契约由 schema 派生（不再是手写字符串）',
+        passed: /from '..\/story-state\/temporal\/schema.mjs'/.test(ps) && /DOMAINS/.test(ps) && /SCOPES/.test(ps),
+        detail: 'domain/scope 直接取自 schema 真值',
+      });
+    }
+
+    // 生产接线：extraction 必须真的用上它们（不能只"存在模块"）
+    const exSrc = fs.readFileSync(abs('ai/story-state/temporal/extraction.mjs'), 'utf8');
+    out.push({
+      name: 'F05 已接线：抽取结果带全文覆盖清单（含 truncated 可见）',
+      passed: /coverageManifest\(/.test(exSrc) && /planChunks\(/.test(exSrc) && /truncated:/.test(exSrc),
+      detail: '截断不再静默：coverage.truncated 如实暴露',
+    });
+    out.push({
+      name: 'F07 已接线：input_hash 由 requestDigestV2 生成（已知实体参与身份）',
+      passed: /requestDigestV2\(/.test(exSrc) && /input_hash: req\.digest/.test(exSrc)
+        && !/known: knownLine\('', \[\]\)/.test(exSrc),
+      detail: '旧的"空串占位"必须已消失',
+    });
+
+    // D4：迁移账本 + 事务化
+    const dbSrc = fs.readFileSync(abs('db.js'), 'utf8');
+    out.push({
+      name: 'D4 已修：schema_migrations 账本 + 事务化迁移',
+      passed: /CREATE TABLE IF NOT EXISTS schema_migrations/.test(dbSrc)
+        && /BEGIN IMMEDIATE/.test(dbSrc) && /ROLLBACK/.test(dbSrc)
+        && /MIGRATION_FAILURES/.test(dbSrc),
+      detail: '幂等判据只认账本；失败整条回滚且不记账',
+    });
+
+    // 必测四件套
+    const needTests = [
+      'tests/nsdsh/extraction-coverage.test.mjs',
+      'tests/nsdsh/extraction-schema.test.mjs',
+      'tests/nsdsh/request-digest.test.mjs',
+      'tests/nsdsh/evidence-anchors.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测四件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '4/4 就位',
+    });
+    return out;
+  }
+
   if (id === 'S05') {
     // S05 = 稳定实体 ID 与迁移解析器（修 F09）。判定要点：
     //   · 身份解析必须是**三态**（unique / missing / ambiguous），ambiguous 绝不自动择一；

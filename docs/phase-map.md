@@ -1311,14 +1311,17 @@
   - 文件 .p6-cutover/snapshot.mjs 同时属于 P6/NS0——改动改在同一批代码里，撤不干净
   - .p6-cutover/snapshot.mjs 被 .p1-baseline/verify-phase-map.mjs（验收工具，X/Z3/TT/G2/SE/SE4/SE5/SE6）import——撤掉会让该工具失效
   - .p6-cutover/snapshot.mjs 被 .p6-cutover/test-snapshot.mjs（验收工具，P6）import——撤掉会让该工具失效
-  - ai/jobs/dispatcher.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6）import——撤掉会打断线上路径
+  - ai/extraction/coverage.mjs 被**生产代码** ai/story-state/temporal/extraction.mjs（Z3/TT）import——撤掉会打断线上路径
 - **说明**：**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。 ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 `spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。 ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` 重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。
 - **验收证据**：`docs/nsdsh/PLAN.md`、`docs/nsdsh/baseline.md`、`docs/nsdsh/adr-001-boundaries.md`
-- **本阶段认领的文件**（45 个）：
+- **本阶段认领的文件**（52 个）：
   - `.gitignore`
   - `.p1-baseline/verify-phase-map.mjs`
   - `.p6-cutover/snapshot.mjs`
   - `DSH_Auto_Plan_Executor_完整开发与双插件联调方案.md`
+  - `ai/extraction/coverage.mjs`
+  - `ai/extraction/digest.mjs`
+  - `ai/extraction/prompt-schema.mjs`
   - `ai/jobs/dispatcher.mjs`
   - `ai/jobs/queue-store.mjs`
   - `ai/story-state/temporal/identity.mjs`
@@ -1349,12 +1352,16 @@
   - `tests/nsdsh/backup-restore.test.mjs`
   - `tests/nsdsh/baseline-contract.test.mjs`
   - `tests/nsdsh/entity-identity.test.mjs`
+  - `tests/nsdsh/evidence-anchors.test.mjs`
+  - `tests/nsdsh/extraction-coverage.test.mjs`
+  - `tests/nsdsh/extraction-schema.test.mjs`
   - `tests/nsdsh/historical-trust.test.mjs`
   - `tests/nsdsh/identity-migration.test.mjs`
   - `tests/nsdsh/isolation.test.mjs`
   - `tests/nsdsh/module-boundaries.test.mjs`
   - `tests/nsdsh/regression-findings.test.mjs`
   - `tests/nsdsh/relation-direction.test.mjs`
+  - `tests/nsdsh/request-digest.test.mjs`
   - `tests/nsdsh/save-service-parity.test.mjs`
   - `tests/nsdsh/stage-runner.test.mjs`
   - `tests/nsdsh/task-fencing.test.mjs`
@@ -1363,7 +1370,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**642** 个文件
+- 真实改动集：**649** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

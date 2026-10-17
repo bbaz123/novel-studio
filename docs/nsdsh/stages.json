@@ -409,7 +409,7 @@
       "id": "S06",
       "title": "完整抽取 / 覆盖 / schema / 摘要（修 D4）",
       "batch": "NS-B",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S05"
       ],
@@ -425,15 +425,49 @@
         "tests/nsdsh/request-digest.test.mjs",
         "tests/nsdsh/evidence-anchors.test.mjs"
       ],
-      "requiredArtifacts": [],
-      "commands": [],
+      "requiredArtifacts": [
+        "ai/extraction/coverage.mjs",
+        "ai/extraction/digest.mjs",
+        "ai/extraction/prompt-schema.mjs"
+      ],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S06 四件套 + 既有全部断言"
+        },
+        {
+          "id": "migration-idempotent",
+          "argv": [
+            ".p1-baseline/test-migration-idempotent.mjs"
+          ],
+          "cwd": ".",
+          "why": "D4：账本幂等 + 事务化迁移"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "部分抽取不得伪装成「完整、没有变化」",
         "request_digest_v2 覆盖完整渲染请求与输入快照",
         "迁移包事务并有 schema_migrations 账本"
       ],
-      "rollbackNotes": "可暂停 v2 分析；已保存正文不受影响。"
+      "rollbackNotes": "可暂停 v2 分析；已保存正文不受影响。",
+      "notes": "S06 完成（2026-10-16）：F05 全文覆盖（分块/覆盖清单/引文锚点，truncated 可见）、F06 提示词契约由 schema 派生、F07 输入身份 v2（已知实体/路由/lineage 入摘要，缺失≠空）、F08 完整输出摘要、D4 迁移账本+事务化。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 10,
+          "fail": 0,
+          "commands": [
+            "tests-nsdsh(156 断言)",
+            "migration-idempotent(15/0)"
+          ]
+        }
+      }
     },
     {
       "id": "S07",

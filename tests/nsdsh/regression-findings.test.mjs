@@ -331,23 +331,31 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F07 input_hash 的第三项恒为空串 → 已知实体没有进入输入身份（→ S06）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F07 [动态] 已知实体变化不改变 input_hash（第三项恒空串）—— 缺陷被钉住（F07→S06）', () => {
+  ['F07 [动态] 输入身份 v2：已知实体/路由/lineage 都进入 input_hash（S06 已修）', () => {
     const stateKey = T.cellKey({ domain: 'character', entityId: '甲', predicate: 'alive', scope: 'canon' });
     const base = { plainText: '甲推开门走了进来。', stateBeforeJson: { [stateKey]: true } };
     const p1 = T.buildExtractionPrompt({ ...base, known: { characters: ['甲'] } });
     const p2 = T.buildExtractionPrompt({ ...base, known: { characters: ['完全不同的角色名'] } });
 
     assert.notEqual(p1.user, p2.user, '前提：已知实体确实进了 user 文本');
-    assert.equal(p1.input_hash, p2.input_hash,
-      'F07 缺陷：known 没有参与 input_hash（第三项 knownLine(\'\', []) 恒为空串）');
+    // S06 已修：known 必须进入输入身份（旧实现第三项是 knownLine('', []) 恒为空串）
+    assert.notEqual(p1.input_hash, p2.input_hash,
+      'F07 已修：已知实体变化必须改变 input_hash（否则同 hash 对应不同请求）');
+    assert.equal(p1.input_digest_version, 'v2', '输入身份必须是版本化契约');
+    assert.deepEqual(p1.known_entities_in_digest, ['甲'], '摘要里必须能看到参与身份的已知实体');
 
-    // 对照：正文变了 input_hash 必须变 —— 说明它不是一个常量，只是漏了 known。
+    // 对照：正文变化也要变（本来就对，保留）
     const p3 = T.buildExtractionPrompt({ ...base, plainText: '另一段正文', known: { characters: ['甲'] } });
     assert.notEqual(p1.input_hash, p3.input_hash, '对照：正文进入身份');
 
-    // 源码事实：第三项就是把空列表喂给 knownLine（永远返回空串）。
+    // 模型路由也决定"这次请求长什么样"，必须进入身份
+    const p4 = T.buildExtractionPrompt({ ...base, known: { characters: ['甲'] }, modelRoute: 'some-model' });
+    assert.notEqual(p1.input_hash, p4.input_hash, 'F07 已修：模型路由必须进入 input_hash');
+
+    // 源码事实：旧的空串占位必须已消失，且必须走版本化摘要
     const body = sliceBetween(readRepo('ai/story-state/temporal/extraction.mjs'), 'export function buildExtractionPrompt(', '\n}\n');
-    assert.match(body, /known: knownLine\('', \[\]\)/);
+    assert.ok(!/known: knownLine\('', \[\]\)/.test(body), 'F07 已修：不得再用恒空串充当 known 身份');
+    assert.match(body, /requestDigestV2\(/, 'F07 已修：必须走版本化摘要');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -677,22 +685,28 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // D4 迁移逐条执行、不包事务、无 user_version / 迁移账本（→ S03）
   // ────────────────────────────────────────────────────────────────────────────
-  ['D4 [静态+schema] MIGRATIONS 逐条 exec 且不包事务；user_version=0、无迁移账本表（D4→S03）', () => {
+  ['D4 [静态+schema] 迁移有账本且事务化：幂等只认账本，失败整条回滚（S06 已修）', () => {
     const dbSrc = readRepo('db.js');
     assert.match(dbSrc, /const MIGRATIONS = \[/);
-    const loop = sliceBetween(dbSrc, 'for (const sql of MIGRATIONS) {', '\n}\n');
-    assert.match(loop, /db\.exec\(sql\);/);
-    assert.ok(!/withTransaction|SAVEPOINT|'BEGIN'|COMMIT/.test(loop),
-      'D4：逐条执行且没有事务包裹（中途失败会留下部分应用的 schema）');
-    assert.match(loop, /\/duplicate column\/i/, 'D4：只吞"列已存在"，其余仅告警');
-    assert.ok(!/user_version/.test(dbSrc), 'D4：没有 user_version');
-    assert.ok(!/CREATE TABLE IF NOT EXISTS [a-z_]*(migrat|ledger)/i.test(dbSrc), 'D4：没有迁移账本表');
 
-    // schema：查真实临时库。
-    const uv = db.prepare('PRAGMA user_version').get();
-    assert.equal(Number(uv.user_version), 0, 'D4：新库的 user_version 是 0（从未写入版本）');
+    // S06 已修：账本表 + 逐条事务 + 失败累计（不再靠 duplicate column 错误文本当幂等判据）。
+    assert.match(dbSrc, /CREATE TABLE IF NOT EXISTS schema_migrations/, 'D4 已修：必须有迁移账本表');
+    assert.match(dbSrc, /SELECT id FROM schema_migrations/, 'D4 已修：幂等判据必须查账本');
+    assert.match(dbSrc, /INSERT OR IGNORE INTO schema_migrations/, 'D4 已修：成功迁移必须记账');
+    const loop = sliceBetween(dbSrc, "MIGRATIONS.forEach((sql, i) => {", '\n  });\n');
+    assert.match(loop, /db\.exec\('BEGIN IMMEDIATE'\)/, 'D4 已修：每条迁移必须在事务里');
+    assert.match(loop, /db\.exec\('COMMIT'\)/, 'D4 已修：成功必须提交');
+    assert.match(loop, /db\.exec\('ROLLBACK'\)/, 'D4 已修：失败必须回滚（不留半迁移状态）');
+    assert.match(dbSrc, /MIGRATION_FAILURES/, 'D4 已修：失败必须被累计上报，不能只有一句 warn');
+
+    // 旧形态必须已消失：裸 for 循环逐条 exec。
+    assert.ok(!/for \(const sql of MIGRATIONS\) \{/.test(dbSrc), 'D4 已修：旧的裸循环必须已移除');
+
+    // schema：查真实临时库 —— 账本存在且真的被写入。
     const tables = tableNames();
-    assert.ok(!tables.some((t) => /migrat/i.test(t)), `D4：不应有迁移账本表，实际 ${tables.filter((t) => /migrat/i.test(t)).join(', ')}`);
+    assert.ok(tables.includes('schema_migrations'), 'D4：隔离库里必须建出 schema_migrations');
+    const n = Number(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n);
+    assert.ok(n > 0, `D4：账本必须已记录迁移，实际 ${n} 条`);
   }],
 
   // ────────────────────────────────────────────────────────────────────────────

@@ -38,7 +38,9 @@ const PROBE = [
   "  const tables = schema.filter((r) => r.type === 'table').map((r) => r.name);",
   "  if (process.env.NOVELSTUDIO_PROBE_INSERT === '1') { db.prepare('INSERT INTO author_samples (work_id, title, text, chars) VALUES (1, ?, ?, ?)').run('迁移幂等探针', '样文正文', 4); }",
   "  const samples = db.prepare('SELECT COUNT(*) AS n FROM author_samples').get().n;",
-  '  console.log(JSON.stringify({ fingerprint: sha, tables, samples }));',
+  "  let migrations = -1;",
+  "  try { migrations = db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n; } catch (e) { migrations = -1; }",
+  '  console.log(JSON.stringify({ fingerprint: sha, tables, samples, migrations }));',
   '  process.exit(0);',
   "}).catch((e) => { console.error('PROBE_FAIL ' + e.message); process.exit(3); });",
 ].join(NL);
@@ -76,6 +78,8 @@ try {
   const missingNew = NEW_TABLES.filter((t) => !first.tables.includes(t));
   ok('A2 各批次新增的 ' + NEW_TABLES.length + ' 张表全部建成', missingNew.length === 0, '缺：' + missingNew.join('、'));
   ok('A3 有 schema 指纹可对账（非空）', /^[0-9a-f]{16}$/.test(first.fingerprint), first.fingerprint);
+  // D4（S06）：迁移必须有账本 —— 空库首启后账本应已记录每条迁移，而不是靠错误文本猜。
+  ok('A4 D4 迁移账本已建立并记录了每条迁移', first.migrations > 0, 'schema_migrations 行数=' + first.migrations);
 
   console.log('【B. 重复启动（同一数据目录再初始化）】');
   const withRow = runProbe(dirA, true);
@@ -84,6 +88,8 @@ try {
   ok('B2 第二次初始化的 schema 指纹与首次一致（不重建、不漂移）', second.fingerprint === first.fingerprint, first.fingerprint + ' → ' + second.fingerprint);
   ok('B3 第二次初始化后数据仍在（行数不变）', second.samples === 1, 'samples=' + second.samples);
   ok('B4 表数量不变（没有把新库当成空库重来）', second.tables.length === first.tables.length, first.tables.length + ' → ' + second.tables.length);
+  // D4（S06）：账本是幂等判据 —— 重复启动不得重复记账（否则等于每次重跑迁移）。
+  ok('B5 D4 账本幂等：重复启动不重复记账', second.migrations === first.migrations, first.migrations + ' → ' + second.migrations);
 
   console.log('【C. 旧库副本（只读）】');
   const oldDb = path.join(ROOT, '.p1-baseline', 'data', 'novel.db');

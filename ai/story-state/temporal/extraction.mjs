@@ -9,6 +9,13 @@
  */
 import { DOMAINS, SCOPES, TEMPORAL_LIMITS, normalizeEvent, canonicalJson } from './schema.mjs';
 import { cellKey } from './schema.mjs';
+// S06：F05 的完整覆盖（分块/覆盖清单/引文锚点）与 F07/F08 的版本化摘要。
+// 只依赖纯计算模块，不引入副作用（本文件被 S02 表征静态读取，不能在顶层读库）。
+import { normalizeFullText, planChunks, coverageManifest } from '../../extraction/coverage.mjs';
+import { requestDigestV2 } from '../../extraction/digest.mjs';
+
+/** 身份契约版本：进入请求摘要，便于回答"当时按哪一版身份规则抽取的"。 */
+const IDENTITY_VERSION = 'identity-v2';
 
 export const TEMPORAL_EXTRACTION_VERSION = '1.0.0';
 /** 行动前提（actual assumptions）允许的类型：目标 / 行动原因 / 资源 / 承诺 / 知识 / 因果。 */
@@ -47,6 +54,9 @@ export function knownNamesFrom(rows = []) {
 export function buildExtractionPrompt({
   chapterId = 0, chapterTitle = '', revision = null, plainText = '',
   stateBeforeJson = {}, known = {}, targetWords = 2000,
+  // S06/F07：模型路由也决定"这次请求长什么样"，因此必须能进入输入摘要。
+  // 默认空串 —— 既有调用方不传时行为只是"摘要里记空路由"，不改变请求内容。
+  modelRoute = '',
 } = {}) {
   const text = sanitizeText(plainText);
   const stateLines = [];
@@ -87,7 +97,47 @@ export function buildExtractionPrompt({
     '请输出 JSON。',
   ].filter(Boolean);
   const user = parts.join('\n');
-  return { system, user, input_hash: canonicalJson({ text, state: keys.map((k) => [k, stateBeforeJson[k]]), known: knownLine('', []) }) };
+  // ── F07（S06 已修）：输入身份必须覆盖"真正决定这次请求长什么样"的全部输入 ──────
+  // 旧实现把**空列表**喂给 knownLine 当作第三项 —— 恒为空串，于是**已知实体变化不改变 input_hash**，
+  // 而 user 文本却变了：同一个 hash 对应不同请求，审计与幂等都失去意义（F07）。
+  // 现在交给版本化摘要 requestDigestV2：已知实体、选入状态、lineage、身份与抽取版本全部纳入，
+  // 并显式区分"未提供状态"与"提供了空状态"（未提供绝不被当成 missing）。
+  const knownAll = [
+    ...(known.characters || []),
+    ...(known.plotlines || []),
+    ...(known.terms || []),
+  ];
+  const req = requestDigestV2({
+    system,
+    user,
+    knownEntities: knownAll,
+    selectedState: stateBeforeJson,
+    lineage: revision ? { revision_id: String(revision.id || ''), text_hash: String(revision.text_hash || '') } : null,
+    identityVersion: IDENTITY_VERSION,
+    modelRoute: String(modelRoute || ''),
+    extractionVersion: TEMPORAL_EXTRACTION_VERSION,
+  });
+  // ── F05（S06 已修）：把"全文覆盖清单"一并给出 ────────────────────────────────
+  // 旧实现只把 text（已被 sanitizeText 截到 12,000 字符）拼进提示词，调用方**看不出被截过**，
+  // 于是第 12,001 字符之后的证据永远检索不到。现在返回基于**完整**正文的 coverage，
+  // 让调用方/校验层能断言"是否真的覆盖了全章"。
+  const fullText = normalizeFullText(plainText);
+  const chunks = planChunks(fullText, { maxChars: EXTRACTION_LIMITS.max_chars });
+  const coverage = coverageManifest(fullText, chunks);
+  return {
+    system,
+    user,
+    input_hash: req.digest,
+    input_digest_version: req.version,
+    known_entities_in_digest: [...new Set(knownAll)].sort(),
+    coverage: {
+      ...coverage,
+      // 提示词里实际喂给模型的那一段是否被截断（旧行为保留但**必须可见**）
+      prompt_text_length: text.length,
+      truncated: text.length < fullText.length,
+      chunk_count: chunks.length,
+    },
+  };
 }
 
 /** 从模型回复里取出 JSON 对象（容忍代码块与前后噪声，但仍要求整体可解析）。 */
