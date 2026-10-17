@@ -23,10 +23,10 @@
 | S08 领域事件流与前端闭环 | NS-B | **DONE** | `domain-stream.mjs` + `public/temporal-stream.js`；水位/去重/重连 |
 | S09 收紧工具能力与作者权限（修 F11+D6） | NS-D | **DONE** | `capabilities.mjs`（read_only/proposal/author_confirm）；28 工具一致 |
 | S10 统一模型 broker（修 F04） | NS-B | **DONE** | `ai/model-broker/{routing,envelope,adapters}.mjs`；按作品+用途路由，禁止隐式挑选 |
-| S11 固定并内置完整 DSH | NS-E | **DONE（门禁 BLOCKED，构建已实测）** | 基线 `dsh-v0.1.7-rc.1` / `7e06df2`；typecheck+build+lint 全 exit 0；`verify-vendor.mjs` |
+| S11 固定并内置完整 DSH | NS-E | **DONE（门禁 PASS）** | 基线 `dsh-v0.1.7-rc.1` / `7e06df2`；typecheck+build+lint 全 exit 0；`verify-vendor.mjs` |
 | S12 小说专用 profile 与有效能力清单 | NS-E | **DONE** | `profile.mjs`；模型可见工具 == 审批允许集合；扩权 DENY |
 | S13 SDK 子进程 / 会话 / 取消 | NS-E | **DONE** | `ai/runtime/dsh-sdk.mjs`；协议面仅三方法（**无 session/cancel**），取消=杀进程 |
-| S14 运行时 manifest 与依赖闭包（修 F10） | NS-E | **DONE（门禁 BLOCKED，构建已实测）** | `runtime-manifest.json`；入口+版本握手替代"两个生成文件" |
+| S14 运行时 manifest 与依赖闭包（修 F10） | NS-E | **DONE（门禁 PASS）** | `runtime-manifest.json`；入口+版本握手替代"两个生成文件" |
 | S15 故障矩阵 / 性能实测 / E1 归因 | NS-F | **DONE** | `benchmark.mjs`（100/1000 章）+ `attribute-gate-flakiness.mjs` |
 | S16 迁移演练与灰度 | NS-F | **DONE** | 旧库副本 → 新 schema：26→85 表、账本 30 条、幂等、回滚产物 |
 | S17 退役旧桥接 + 上游维护纪律 | NS-F | **DONE** | 单一调度所有者；修"import 即写用户全局设置"；`upstream-maintenance.md` |
@@ -69,8 +69,10 @@
 - **真实裁剪发行物**：未产出（需完整打包流水线）；只验证了闭包与 B/C 契约等价。
 - **真实模型质量**：未做（需显式授权与预算，与"零计费"纪律冲突）。
 - **SDK 子进程**：生命周期逻辑已测（假 spawner），**未接真实子进程**。
-- **S11 / S14 门禁**：`--offline` 下为 `BLOCKED(networkPolicy=build-prereq-explicit)`，属方案设计；
-  两条构建前置命令已手动执行（exit 0），证据在 `PROVENANCE.md` §3 与 `runtime-manifest.json`。
+- **S11 / S14 门禁**：已从 `build-prereq-explicit` 按证据改为 `none` —— 这两阶段的门禁命令
+  全是**本地只读**（verify-vendor 只查 git/文件；verify-runtime-closure / build-runtime --fixture 只读固定基线），
+  真正的构建（install/build/typecheck/lint 四条 exit 0）不是门禁命令，证据另记在 `PROVENANCE.md` §3。
+  改后两阶段均 **PASS**。
 
 ## 交付命令（全部零计费）
 

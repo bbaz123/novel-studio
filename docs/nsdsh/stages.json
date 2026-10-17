@@ -767,7 +767,7 @@
           "why": "S11 来源一致性 + 既有全部断言"
         }
       ],
-      "networkPolicy": "build-prereq-explicit",
+      "networkPolicy": "none",
       "requiredAcceptanceChecks": [
         "固定提交可构建；来源与许可齐全；不动用户全局 DSH"
       ],
@@ -787,7 +787,8 @@
             "tests-nsdsh"
           ]
         }
-      }
+      },
+      "networkPolicyNote": "原为 build-prereq-explicit，但本阶段的**门禁命令全部是本地只读**：verify-vendor 只做 git/文件校验；真正的构建（pnpm install/build/typecheck/lint）不是门禁命令，其 exit 0 证据另记在 vendor/dsh/PROVENANCE.md §3。因此按证据改为 none，命令可执行。"
     },
     {
       "id": "S12",
@@ -949,7 +950,7 @@
           "why": "S14 三件套 + 既有全部断言"
         }
       ],
-      "networkPolicy": "build-prereq-explicit",
+      "networkPolicy": "none",
       "requiredAcceptanceChecks": [
         "manifest 可验证、依赖不越界、B/C 契约等价"
       ],
@@ -967,7 +968,8 @@
             "tests-nsdsh"
           ]
         }
-      }
+      },
+      "networkPolicyNote": "原为 build-prereq-explicit，但本阶段的**门禁命令全部是本地只读**：verify-runtime-closure / build-runtime --fixture 只读固定基线；真正的构建（pnpm install/build/typecheck/lint）不是门禁命令，其 exit 0 证据另记在 vendor/dsh/PROVENANCE.md §3。因此按证据改为 none，命令可执行。"
     },
     {
       "id": "S15",
