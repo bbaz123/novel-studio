@@ -129,6 +129,7 @@ export function scoreFacts(candidates, goldCases) {
  */
 export function checkSafety(candidates, goldCases, works) {
   const violations = [];
+  const offTarget = [];
   const goldByCase = new Map(goldCases.map((g) => [g.id, g]));
   for (const c of candidates) {
     const g = goldByCase.get(String(c.caseId));
@@ -136,9 +137,12 @@ export function checkSafety(candidates, goldCases, works) {
     if (g && c.workId && String(c.workId) !== String(g.work)) {
       violations.push({ kind: 'CROSS_WORK_LEAKAGE', caseId: c.caseId, detail: `${c.workId} ≠ ${g.work}` });
     }
-    // ② 未来信息当现状
-    if (g && String(c.temporality || 'current') !== String(g.temporality)
-      && String(g.temporality) === 'current' && String(c.temporality) === 'future') {
+    // ② 未来信息当现状（泄漏方向只有一个：**未发生的事被写成现状**）
+    //
+    // 第一版极性写反了：它把"用例属于现在时、而模型把某条事实标成 future"当成违规。
+    // 但那恰恰是**正确**行为（"我明日要去北关" 里的"北关"确实还没到）。
+    // 正确的判据只能是：用例本身考的是 future（尚未发生），而候选把它标成 current。
+    if (g && String(g.temporality) === 'future' && String(c.temporality || 'current') === 'current') {
       violations.push({ kind: 'FUTURE_AS_CURRENT', caseId: c.caseId });
     }
     // ③ 未确认就写正式状态
@@ -153,15 +157,19 @@ export function checkSafety(candidates, goldCases, works) {
       const work = works.get(String(g.work));
       const known = work && work.entities.has(String(c.entityId));
       if (!known) violations.push({ kind: 'UNKNOWN_ENTITY', caseId: c.caseId, detail: String(c.entityId) });
+      // "不是 gold 指的那一个实体" **不是**严重错配 —— 那只是"这条候选对应别的事实"。
+      // 第一版把 92 条候选里的 40 条判成严重错配，几乎全是这类；
+      // 它反映的是 gold 只标了**一条**目标事实，而任务允许多条，不是模型召回错了实体。
+      // 真正的严重错配只有一种：作品实体表里根本没有这个 id。
       const allowed = new Set((g.expected || []).map((e) => e.entityId));
-      if (allowed.size > 0 && !allowed.has(String(c.entityId))) {
-        violations.push({ kind: 'SEVERE_ENTITY_MISMATCH', caseId: c.caseId, detail: `${c.entityId} ∉ {${[...allowed].join(',')}}` });
-      }
+      if (allowed.size > 0 && !allowed.has(String(c.entityId))) offTarget.push({ caseId: c.caseId, entityId: String(c.entityId) });
     }
   }
   return {
     violations,
-    severeErrors: violations.filter((v) => v.kind === 'SEVERE_ENTITY_MISMATCH' || v.kind === 'UNKNOWN_ENTITY').length,
+    offTarget,
+    severeErrors: violations.filter((v) => v.kind === 'UNKNOWN_ENTITY').length,
+    offTarget: offTarget.length,
     futureLeakage: violations.filter((v) => v.kind === 'FUTURE_AS_CURRENT').length,
     crossWorkLeakage: violations.filter((v) => v.kind === 'CROSS_WORK_LEAKAGE').length,
     unconfirmedCanonWrites: violations.filter((v) => v.kind === 'UNCONFIRMED_CANON_WRITE').length,
@@ -241,6 +249,7 @@ export function scoreQuality({ corpus, gold, predictions = null }) {
       futureLeakage: safety.futureLeakage,
       crossWorkLeakage: safety.crossWorkLeakage,
       unconfirmedCanonWrites: safety.unconfirmedCanonWrites,
+      offTarget: safety.offTarget,
       violations: safety.violations.slice(0, 8),
     },
     // ④ 重复与成本（Q1 才可能有值）
@@ -272,7 +281,8 @@ if (isDirectRun()) {
     console.log(`  结构：${r.structure.valid}/${r.structure.candidates} 合格（rate=${r.structure.rate}，阈值 ${r.structure.threshold}）`);
     console.log(`  证据：${r.evidence.located} 条引文可定位（rate=${r.evidence.rate}，阈值 ${r.evidence.threshold}）`);
     console.log(`  事实：precision=${r.facts.precision} recall=${r.facts.recall}（tp=${r.facts.tp} fp=${r.facts.fp} fn=${r.facts.fn}）`);
-    console.log(`  安全：严重误判=${r.safety.severeErrors} 未来泄漏=${r.safety.futureLeakage} 跨作品=${r.safety.crossWorkLeakage} 未确认写入=${r.safety.unconfirmedCanonWrites}`);
+    console.log(`  安全：未知实体=${r.safety.severeErrors} 未来泄漏=${r.safety.futureLeakage} 跨作品=${r.safety.crossWorkLeakage} 未确认写入=${r.safety.unconfirmedCanonWrites}`);
+    console.log(`  非目标实体候选（不算错，仅统计）：${r.safety.offTarget}`);
     console.log(`  重复：${r.repeatability.available ? `identical=${r.repeatability.identical}` : r.repeatability.detail}`);
     console.log(`  费用：${r.cost.real_provider_calls} 次真实调用 / ¥${r.cost.billed_amount_cny}`);
     console.log(r.ok ? '  门禁：通过' : '  门禁：阻断（见 safety 与结构/证据阈值）');

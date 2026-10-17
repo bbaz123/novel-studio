@@ -123,10 +123,21 @@ await suiteAsync('quality/quality-corpus', [
     assert.ok(r2.safety.unconfirmedCanonWrites >= 1, '未确认写入必须被抓到');
     assert.equal(r2.ok, false);
 
-    const futur = base.map((p, i) => (i === 0 ? { ...p, temporality: 'future' } : p));
-    const r3 = Q.scoreQuality({ corpus, gold, predictions: futur });
+    // 未来信息泄漏的**正确极性**：用例本身考 future，而候选把它写成 current。
+    // （第一版反了：把"用例是现在时、候选标 future"当泄漏 —— 那恰恰是正确行为，
+    //   "我明日要去北关"里的"北关"确实还没到。）
+    const goldFuture = {
+      ...gold,
+      cases: gold.cases.map((g) => (g.id === 'Q12' ? { ...g, temporality: 'future' } : g)),
+    };
+    const claimNow = base.map((p) => (p.caseId === 'Q12' ? { ...p, temporality: 'current' } : p));
+    const r3 = Q.scoreQuality({ corpus, gold: goldFuture, predictions: claimNow });
     assert.ok(r3.safety.futureLeakage >= 1, '未来信息当现状必须被抓到');
     assert.equal(r3.ok, false);
+    // 反向对照（防极性再次写反）：用例是现在时、候选把某条事实标成 future，**不得**算泄漏
+    const markedFuture = base.map((p) => (p.caseId === 'Q01' ? { ...p, temporality: 'future' } : p));
+    const r4 = Q.scoreQuality({ corpus, gold, predictions: markedFuture });
+    assert.equal(r4.safety.futureLeakage, 0, '把尚未发生的事实标成 future 是正确行为，不得判成泄漏');
   }],
 
   ['R04Q0-9 负向对照⑤：抽错事实 → precision/recall 必须下降（不能靠"差不多"给分）', async () => {

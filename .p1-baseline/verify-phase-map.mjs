@@ -1650,6 +1650,7 @@ export const PHASES = [
       'tests/quality/gold.json',
       'tests/quality/quality-corpus.test.mjs',
       'scripts/nsdsh/score-quality.mjs',
+      'scripts/nsdsh/run-quality-eval.mjs',
       'docs/nsdsh/quality-eval.md',
       // R05（F12-A）：HTTP 响应与请求体读取抽到单一所有者
       'ai/http/respond.mjs',
