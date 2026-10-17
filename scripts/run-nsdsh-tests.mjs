@@ -51,6 +51,11 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/request-digest.test.mjs',
   'tests/nsdsh/evidence-anchors.test.mjs',
   'tests/nsdsh/extraction-schema.test.mjs',
+  // S07: unified boundary-aware state query / projection provenance / downstream invalidation / POV visibility
+  'tests/nsdsh/state-query-boundary.test.mjs',
+  'tests/nsdsh/projection-provenance.test.mjs',
+  'tests/nsdsh/downstream-invalidation.test.mjs',
+  'tests/nsdsh/pov-visibility.test.mjs',
 ];
 
 /**

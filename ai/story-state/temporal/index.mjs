@@ -16,6 +16,9 @@ export * from './extraction.mjs';
 export * from './analysis.mjs';
 export * from './worldline-store.mjs';
 export * from './history.mjs';
+// S07：统一时点读取（强制 worldline / 边界 / POV / 版本，并带溯源）。
+// 放在 history 之后 —— 它依赖 stateAt，但**不改变** stateAt 的语义。
+export * from './state-query.mjs';
 export * from './validation.mjs';
 export * from './projection.mjs';
 export * from './dependencies.mjs';

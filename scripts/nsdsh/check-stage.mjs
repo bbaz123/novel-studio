@@ -426,6 +426,74 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S07') {
+    // S07 = 统一时点读取（强制 worldline/边界/POV/版本 + 溯源），只补溯源、不改 stateAt 语义。
+    const rel = 'ai/story-state/temporal/state-query.mjs';
+    if (!fs.existsSync(abs(rel))) {
+      out.push({ name: '统一查询模块存在', passed: false, detail: `缺少 ${rel}` });
+      return out;
+    }
+    const src = fs.readFileSync(abs(rel), 'utf8');
+    out.push({
+      name: '三种视图可区分（historical/current/draft），历史视图必须钉提交',
+      passed: /VIEWS/.test(src) && /'historical'/.test(src) && /'current'/.test(src) && /'draft'/.test(src)
+        && /HISTORICAL_REQUIRES_COMMIT_ID/.test(src),
+      detail: '历史视图缺 commitId 必须响亮失败，而不是"历史=当前"',
+    });
+    out.push({
+      name: '溯源四件套：提交 / 世界线 / 边界 / 投影版本',
+      passed: /PROJECTION_VERSION/.test(src) && /provenance/.test(src)
+        && /commit_id:/.test(src) && /worldline_id:/.test(src) && /boundary:/.test(src),
+      detail: '没有溯源就分不清"第 20 章看到的"和"第 80 章看到的"',
+    });
+    out.push({
+      name: '失败不回退最新值：ok:false 时 state 必须是 null',
+      passed: /state: null/.test(src) && /STATE_NOT_QUERYABLE/.test(src),
+      detail: '返回 {} 会被读成"这章什么都没有"，同样危险',
+    });
+    out.push({
+      name: '硬验收：边界可见性（第 20 章看不到第 80 章事实）',
+      passed: /export function factVisibleAt/.test(src) && /BEYOND_BOUNDARY/.test(src) && /BOUNDARY_MISMATCH/.test(src),
+      detail: '纯算术 + 确定性：事实章序必须 < 排他上界；不自洽一律不可见',
+    });
+    out.push({
+      name: 'POV 可见性只做确定性过滤（无"名称没出现就不失效"这类启发式）',
+      passed: /export function povVisible/.test(src) && /POV_UNKNOWN/.test(src) && /NOT_DISCLOSED/.test(src)
+        && !/名称未出现|name.*not.*found.*skip/.test(src),
+      detail: 'reader 需显式 disclosed；character 需 holder===POV；canon/world 公开',
+    });
+    // 内核入口必须导出它（否则调用方拿不到统一入口）
+    const idx = fs.readFileSync(abs('ai/story-state/temporal/index.mjs'), 'utf8');
+    out.push({
+      name: '已从内核入口导出（调用方有唯一入口）',
+      passed: /export \* from '.\/state-query\.mjs'/.test(idx),
+      detail: 'index.mjs 必须导出 state-query',
+    });
+    // stateAt 语义不得被改动（S07 只补溯源）
+    out.push({
+      name: '不改 stateAt 语义（只在其外层加契约）',
+      passed: /from '.\/history\.mjs'/.test(src) || !/function stateAt\(/.test(src),
+      detail: 'state-query 不得重新实现 stateAt',
+    });
+
+    const needTests = [
+      'tests/nsdsh/state-query-boundary.test.mjs',
+      'tests/nsdsh/projection-provenance.test.mjs',
+      'tests/nsdsh/downstream-invalidation.test.mjs',
+      'tests/nsdsh/pov-visibility.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测四件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '4/4 就位',
+    });
+    return out;
+  }
+
   if (id === 'S06') {
     // S06 = 完整抽取覆盖 / schema 派生提示词 / 版本化摘要（修 F05–F08 + D4）。
     const need = {

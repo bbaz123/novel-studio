@@ -473,7 +473,7 @@
       "id": "S07",
       "title": "统一时点读取与兼容投影（只补溯源）",
       "batch": "NS-C",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S06"
       ],
@@ -484,15 +484,50 @@
       ],
       "requiredTestFiles": [
         "tests/nsdsh/state-query-boundary.test.mjs",
-        "tests/nsdsh/projection-provenance.test.mjs"
+        "tests/nsdsh/projection-provenance.test.mjs",
+        "tests/nsdsh/downstream-invalidation.test.mjs",
+        "tests/nsdsh/pov-visibility.test.mjs"
       ],
-      "requiredArtifacts": [],
-      "commands": [],
+      "requiredArtifacts": [
+        "ai/story-state/temporal/state-query.mjs"
+      ],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S07 四件套 + 既有全部断言"
+        },
+        {
+          "id": "narrative-repair",
+          "argv": [
+            "scripts/test-narrative-repair.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "方案要求 S07 同时跑叙事修稿闭环"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "第 20 章不得从投影或检索取得第 80 章事实"
       ],
-      "rollbackNotes": "不回写旧快照；恢复兼容路由前先验证 reader 版本。"
+      "rollbackNotes": "不回写旧快照；恢复兼容路由前先验证 reader 版本。",
+      "notes": "S07 完成（2026-10-16）：新增 state-query.mjs —— 统一查询契约（强制 worldline/边界/POV/版本 + 溯源四件套），三视图可区分（历史须钉提交、当前走主线、草案标注 pending），失败一律 state=null 不回退最新值；边界可见性纯算术（第 20 章看不到第 80 章事实，不自洽即不可见）；POV 只做确定性过滤。**未改 stateAt 语义**（只在外部加契约），下游保守失效与旧历史隔离未动。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 10,
+          "fail": 0,
+          "commands": [
+            "tests-nsdsh(176 断言)",
+            "narrative-repair(67)"
+          ]
+        }
+      }
     },
     {
       "id": "S08",

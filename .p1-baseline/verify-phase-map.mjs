@@ -1576,6 +1576,12 @@ export const PHASES = [
       'tests/nsdsh/extraction-schema.test.mjs',
       'tests/nsdsh/request-digest.test.mjs',
       'tests/nsdsh/evidence-anchors.test.mjs',
+      'ai/story-state/temporal/state-query.mjs',
+      'tests/nsdsh/state-query-boundary.test.mjs',
+      'tests/nsdsh/projection-provenance.test.mjs',
+      'tests/nsdsh/downstream-invalidation.test.mjs',
+      'tests/nsdsh/pov-visibility.test.mjs',
+
 
 
 
