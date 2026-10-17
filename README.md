@@ -4,7 +4,7 @@
 
 **A local-first AI writing studio that keeps a long novel consistent.**
 
-Writing software + an AI writing assistant for **long-form fiction and Chinese web novels (网文)** — with a **foreshadowing tracker, character-state checks and a story bible** wired into every draft.
+Writing software + an AI writing assistant for **long-form fiction and Chinese web novels (网文写作)** — with a **foreshadowing tracker, character-state checks and a story bible** wired into every draft.
 
 [![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -42,6 +42,8 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 - [📝 Changelog](#-changelog)
 
 </details>
+
+Comparing tools first? Jump to [Where it fits](#-where-it-fits) — it names Sudowrite, Novelcrafter, Obsidian, novelWriter, SillyTavern and states where each one wins.
 
 **Long fiction does not break at chapter 3 — it breaks at chapter 40.** A character is 「李队」 in ch. 12 and 「李队长」 in ch. 40; someone who died in ch. 3 walks back on stage; a thread you planted is never paid off. Chat tools write good paragraphs and lose the plot, and a longer prompt does not fix it.
 
