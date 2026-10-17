@@ -27,6 +27,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 - [⭐ Features](#-features)
 - [🎯 Why](#-why)
 - [🧭 Where it fits](#-where-it-fits)
+- [🧪 Status & verification](#-status--verification)
 - [🚀 Quick Start](#-quick-start)
 - [📦 Installation](#-installation)
 - [💻 Usage](#-usage)
@@ -122,6 +123,41 @@ Choosing writing software is not a binary. These are the alternatives people act
 
 **The honest trade-off:** Novel Studio will not write a better *sentence* than a hosted AI writing service, and it will not give you a polished outline the way a human editor will. What it does that those tools do not is refuse to let setting drift, dead characters and unpaid foreshadowing pass silently — and it does that on your machine, for free.
 
+## 🧪 Status & verification
+
+Everything below is reproducible from a clean checkout with **Node.js only** — no account, no API key,
+no network. Numbers are measured, not aspirational; the commands are copy-paste.
+
+```bash
+node scripts/run-nsdsh-tests.mjs        # 51 suites / 385 assertions / 0 failures
+node scripts/test-temporal-refactor.mjs # 15/15 sub-suites (story-state invariants)
+node scripts/ci-offline-checks.mjs      # 55/55 checks — what CI runs
+node .p1-baseline/verify-phase-map.mjs  # every changed file owned by a rollbackable stage
+node .p1-baseline/check-utf8.mjs        # 0 invalid UTF-8 across ~6.8k text files
+node scripts/nsdsh/verify-delivery.mjs  # delivery gate — exit 0
+```
+
+Most writing tools describe behaviour in prose. This one keeps the claims executable: thresholds,
+budgets and judgement rules live in offline tests, and `docs/nsdsh/known-issues.json` records every
+known defect with its status instead of hiding it.
+
+**Verified on this machine** (`win32 10.0.26200 x64`, Node `v24.19.0`): the offline suite, the
+story-state invariants, the front-end execution test, a real sub-process run of the AI runtime
+(12 scenarios: handshake, terminal state, cancellation, cross-work isolation), a trimmed
+distribution built and re-run from its own archive, and a 25-case model-quality evaluation.
+
+**Not verified — stated so you can plan around it:**
+
+| Limit | What it means |
+| --- | --- |
+| **macOS / Linux** | No run evidence beyond what CI reports. Windows is the only platform with measured results |
+| **Prebuilt AI runtime** | The trimmed runtime is validated for `win32-x64` only; other platforms rebuild it |
+| **Model quality** | Measured, with findings: structure and verbatim-citation are reliable, *value extraction is not* — recall ~0.26 on a 25-case set. Treat AI output as a proposal, not a record |
+| **Office import** | `docx/pptx/xlsx` skills need the full AI build; the trimmed distribution excludes them |
+
+The long-form reasoning behind each number lives in [`docs/nsdsh/STATUS.md`](docs/nsdsh/STATUS.md)
+and [`docs/nsdsh/support-matrix.md`](docs/nsdsh/support-matrix.md).
+
 ## 🚀 Quick Start
 
 > **Just want to write?** You need **Node.js only**. No `npm install`, no database, no network, no API key, no cost.
@@ -215,7 +251,7 @@ curl 'http://localhost:3737/api/novel/context?work_id=1'
 **Verification.** Everything below is zero-cost and never calls a real model:
 
 ```bash
-# Offline suite (50 checks, no live instance, does not touch your data) — this is what CI runs
+# Offline suite (55 checks, no live instance, does not touch your data) — this is what CI runs
 node scripts/ci-offline-checks.mjs
 
 # Live-instance regression against a throwaway instance (temp data dir, OpenViking disabled)
@@ -276,6 +312,9 @@ novel-studio/
 │   ├── context/              # layers.mjs (layer specs) + assembler.mjs + integrity.mjs
 │   ├── story-state/          # Story state kernel: entities, timeline, foreshadowing, approval...
 │   ├── library/              # Cross-work reference library (scan -> confirm -> ingest)
+│   ├── http/                 # HTTP response + request-body helpers (single owner)
+│   ├── runtime/              # Optional DeepSeek Harness SDK runtime (real sub-process, off by default)
+│   ├── model-broker/         # Explicit work+purpose model routing (no implicit first-match)
 │   └── continuity-guard.mjs  # Post-draft consistency checks
 ├── db.js                     # SQLite schema and migrations
 ├── server.js                 # HTTP server, API routes, creation-kernel endpoints
@@ -285,6 +324,8 @@ novel-studio/
 ├── debug-trace.js            # Runtime tracing engine (operation grouping, shape summaries)
 ├── harness-plugins/novel-writing/   # Bundled creation plugin (single source; mirror repo exists)
 ├── scripts/                  # CI entry points (offline checks, isolated runs)
+├── scripts/nsdsh/            # Stage gates: delivery check, real-runtime + distribution verification
+├── docs/nsdsh/               # Stage ledger, STATUS, known issues, support matrix
 ├── .p1-baseline/             # Contract baselines and verification tooling
 ├── demo-data.json            # The bundled demo novel
 └── data/                     # Your library and API keys (git-ignored)
@@ -368,4 +409,18 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 ## 📝 Changelog
 
-Release history lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Current release: **v1.2.0** (experimental channel, branch `Experimental-Version-v1.0`) — the review-fact attribution and "a vanished quote does not mean a solved problem" batch. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the per-version details; the paragraph below records the v1.1.7 review-to-revision closure hardening batch. The previous round fixed *why the generation side produced mechanically-structured prose*; this round fixes **whether the judgement and the authorisation along the review → localised-revision chain actually hold**. Two task rounds reproduced nine risk points (S01–S09); most were `already_satisfied` in 1.1.6, so only the real gaps got minimal fixes. The red-line scan is now a **candidate signal** (`buildAIReviewPrompt`) instead of "a hit must enter issues": every hit is judged individually, has a `not_applicable` exit and a counter-evidence channel, and a suppressed hit **stays in the report** with `auto_eligible=false`. Report self-consistency (`checkReportConsistency` in `ai/editing/narrative-review.mjs`) was firing on **6 of 12 real reports** under the old "absolute wording + same topic" rule; it now raises `needs_calibration` **only when a counter-example can be confirmed in the prose** (and quotes it), while mere topical overlap between strengths and problems is downgraded to `advisories` ("worth checking, not a conclusion") that changes no status — **no extra model round is added**. Authorisation is now fail-closed (`runRevisionPipeline` in `public/revision-patch.js`): expecting revision-patch protocol v2 without an authorisation table yields `authorization_required` and **not one character of the prose changes**, and a missing plan no longer downgrades to a whole-chapter span catalogue. Two candidate diagnostics (`reaction_causality`, `focalization_limit`) ship with their own counter-evidence channel — leads only, never a verdict, never a delete. The diff preview shows net gain (`before → after / net_delta / remaining_to_target`), and the saved review report carries `consistency` back through `report_json` **with no migration needed**. Verification (zero-billing): `tests/narrative-repair/` **11 suites / 240 assertions / 0 failures** (including 9 negative controls) plus `frontend-test.mjs` ALL PASS. Honest capability boundary: **literary-quality improvement is marked `not_run`** — no paid-evaluation authorisation was granted, so offline assertions prove engineering behaviour, not that the prose reads better. The author's structural review of chapter 1 concluded with one sentence — *the AI is too conscientious about explaining everything* — i.e. not lexical AI-flavour (no "the corner of his mouth curved" clichés) but structural: the same procedure fully re-demonstrated, an over-dense timeline, functionally duplicated crowd reactions, and a protagonist written as a camera. The root cause was a **self-contradicting prompt**: `buildAIWritingProsePrompt` demanded that *every* scene be written complete (place, characters, physical action, conflict), while the writing-policy source simultaneously said *don't fully re-demonstrate a mechanism a second time* — the model can only satisfy the first. That requirement is now function-driven (key scenes expand; transitions may be summarised; a repeated procedure gets only its result, differences and reactions — **but the first showing stays complete**). `ai/editing/scan.mjs` gains `scanStoryShape` plus a switch-independent `scanned.style_shape` measurement block (timeline anchors, same-shape procedure clusters, anonymous crowd-reaction paragraphs, camera-operator wording outside broadcast context, POV perceive/act ratio), `ai/editing/rules.mjs` v1.4.0 adds the default-off, report-only `story-shape` ability and a tenth protection rule, `ai/writing/policy.mjs` gains three genuinely-missing preferences plus `diag_timeline_density`, and `/api/novel/consistency` **appends** `checklist.style_diagnosis` (append-only; forces the ability on server-side so it does not depend on the author's toggle). Honest capability boundary: what is *recomputable* in chapter 1 is **two** same-shape procedure clusters (not the four full re-demonstrations the reviewer counted by eye), 4–5 timeline anchors, one anonymous crowd-reaction paragraph and zero camera violations — so the criteria deliberately stay **silent** (zero-false-positive discipline) and the remaining issues are dispositions, not defects. Verified by `probe-story-shape-20261008.mjs` 41/41 over the author's real two drafts, with positive, **negative** and silence-posture assertions; six detector defects were found and fixed against that real corpus.
+Full per-version history — including the verification numbers and the capability boundaries of each
+round — lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent releases on this branch:
+
+- **v1.2.0** — review-fact attribution; a vanished quote no longer counts as a solved problem;
+  fail-closed authorisation on the review → localised-revision chain.
+- **v1.1.9** — unapproved *institution* and *temporal-causality* candidates, plus a post-revision
+  verdict gate (`coverageVerdict`).
+- **v1.1.8** — patch protocol v2 with `reason`/`allowed_ops`, zero-width `insert`, and
+  post-revision `issue_coverage` verification.
+- **v1.1.7** — review → revision closure hardening: authorisation is fail-closed, and a report is no
+  longer allowed to contradict itself.
+- **v1.1.6** — narrative-structure mechanicalness: the generation prompt no longer asks for a
+  self-contradicting shape.
+
+Every entry above ships with offline assertions; a version without them is not released.
