@@ -1651,6 +1651,9 @@ export const PHASES = [
       'tests/quality/quality-corpus.test.mjs',
       'scripts/nsdsh/score-quality.mjs',
       'docs/nsdsh/quality-eval.md',
+      // R05（F12-A）：HTTP 响应与请求体读取抽到单一所有者
+      'ai/http/respond.mjs',
+      'tests/nsdsh/http-respond.test.mjs',
       // R03：跨平台矩阵与支持矩阵
       '.github/workflows/nsdsh-runtime-matrix.yml',
       'docs/nsdsh/support-matrix.md',

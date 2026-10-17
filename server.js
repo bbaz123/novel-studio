@@ -64,6 +64,8 @@ import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities,
 import { confirmEvents, confirmProposalGroup, analyzeChapterUseCase, queryStoryState, makeTemporalDeps } from './server/services/temporal-services.mjs';
 // S10：模型路由（按作品 + 用途）—— 取代"第一个有 key 的配置"的隐式选择。
 import * as ModelBroker from './ai/model-broker/routing.mjs';
+// R05（F12-A）：HTTP 响应与请求体读取抽到单一所有者；调用签名保持不变。
+import { sendJSON, sendError, readBody, readBodyOrError, MAX_BODY_BYTES } from './ai/http/respond.mjs';
 // R01：真实 SDK 子进程通道（默认关闭；未设 NOVELSTUDIO_SDK_ROUTE 时行为与改造前逐字一致）。
 import { runSdkAnalysis, routeShapeFor } from './ai/runtime/sdk-route.mjs';
 import { recordIntent as recordAnalysisIntent } from './ai/jobs/queue-store.mjs';
@@ -111,22 +113,6 @@ const MIME = {
   '.map': 'application/json'
 };
 
-function sendJSON(res, status, data) {
-  const body = JSON.stringify(data);
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-    // 不再返回 Access-Control-Allow-Origin: *：本地工坊存有 API Key 与作品数据，
-    // 任何浏览器页面跨源读取都会被浏览器 CORS 拦截；同源 UI 与 dsh 工具（服务端 fetch）不受影响。
-  });
-  res.end(body);
-}
-
-function sendError(res, status, message, extra = null) {
-  // 出错时除了人话，还要给调用方一个**机器可判的 code**（如 EMPTY_OVERWRITE_BLOCKED）：
-  // 客户端据此显示"怎么补救"，而不是把一句中文再拿去正则匹配。纯附加字段，老调用方不受影响。
-  sendJSON(res, status, { error: message || 'Internal error', ...(extra && typeof extra === 'object' ? extra : {}) });
-}
 
 // ── 整库备份 / 还原（P1-01）───────────────────────────────────────────────
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
@@ -373,112 +359,6 @@ function isLocalRequest(req) {
   return true;
 }
 
-// 请求体上限：必须**大于**导入文件上限（24MiB）base64 后的体积（≈32MiB）+ JSON 包装，
-// 否则「按文档允许的最大文件」永远发不进来——在读请求体阶段就被拒，根本走不到导入校验。
-const MAX_BODY_BYTES = 36_000_000; // 36MB：容纳 24MiB 归档 base64 后的请求体；写请求有本机 Origin 校验兜底。
-const MAX_DRAIN_BYTES = 96_000_000; // 超限请求最多再丢弃 96MB，避免被超大请求拖住连接
-const DRAIN_DEADLINE_MS = 5000; // 丢弃请求体的时间上限：对端只声明不发时，最多等这么久
-
-/**
- * 丢弃（不缓存）剩余请求体，直到读完 / 超过丢弃上限 / 超时。
- * 为什么要有它：请求体超限时若直接调用 req.destroy()，客户端只会看到 socket 被重置
- * （fetch failed / ECONNRESET），「请求体过大」这个**真实原因**根本回不去，排查方向会跑偏。
- * 先把请求体读完（有上限、有时限），再回 413，客户端才能拿到明确错误。
- */
-function drainRequestBody(req, budget = MAX_DRAIN_BYTES) {
-  return new Promise((resolve) => {
-    let drained = 0;
-    let done = false;
-    let timer = null;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      req.removeListener('data', onData);
-      req.removeListener('end', onEnd);
-      resolve();
-    };
-    const onData = (chunk) => {
-      if (done) return;
-      drained += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
-      if (drained > budget) finish();
-    };
-    const onEnd = () => finish();
-    req.on('data', onData);
-    req.on('end', onEnd);
-    req.on('error', finish);
-    req.resume();
-    timer = setTimeout(finish, DRAIN_DEADLINE_MS);
-  });
-}
-
-async function readBody(req) {
-  const declared = Number(req.headers['content-length'] || 0);
-  if (declared > MAX_BODY_BYTES) {
-    await drainRequestBody(req);
-    const err = new Error(`请求体过大（声明 ${declared} 字节 > 上限 ${MAX_BODY_BYTES} 字节）`);
-    err.code = 'PAYLOAD_TOO_LARGE';
-    throw err;
-  }
-  return new Promise((resolve, reject) => {
-    // 按字节累计而非逐块拼接字符串：既让上限严格按字节生效，
-    // 也避免跨 TCP 分块边界拆分的多字节 UTF-8 字符被逐块解码成乱码。
-    const chunks = [];
-    let received = 0;
-    let settled = false;
-    req.on('data', (chunk) => {
-      if (settled) return;
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      received += buf.length;
-      if (received > MAX_BODY_BYTES) {
-        settled = true;
-        // 同 declared 分支：先把剩余请求体丢弃干净（有上限/时限）再拒，保证 413 能回到客户端。
-        drainRequestBody(req).then(() => {
-          const err = new Error(`请求体过大（已接收 ${received} 字节 > 上限 ${MAX_BODY_BYTES} 字节）`);
-          err.code = 'PAYLOAD_TOO_LARGE';
-          reject(err);
-        });
-        return;
-      }
-      chunks.push(buf);
-    });
-    req.on('end', () => {
-      if (settled) return;
-      settled = true;
-      try {
-        const data = chunks.length ? Buffer.concat(chunks).toString('utf8') : '';
-        resolve(data ? JSON.parse(data) : {});
-      } catch (err) {
-        const e = new Error('Invalid JSON');
-        e.code = 'INVALID_JSON';
-        reject(e);
-      }
-    });
-    req.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    });
-  });
-}
-
-// 读请求体失败时，把**真实原因**回给调用方。
-// 为什么要有它：新加的环境类路由此前写的是 `readBody(req).catch(() => ({}))`，
-// 于是"JSON 畸形"（INVALID_JSON）被报成"缺少 dir 字段"、"体积超限"（413）被降级成 400 ——
-// 报错与真实原因无关，排查方向整个跑偏（本项目已经吃过一次这种亏）。
-// 返回 { ok:false } 表示已回响应，调用方直接 return 即可。
-async function readBodyOrError(req, res) {
-  try {
-    return { ok: true, body: await readBody(req) };
-  } catch (e) {
-    const tooLarge = e && e.code === 'PAYLOAD_TOO_LARGE';
-    if (tooLarge) res.setHeader('Connection', 'close'); // 请求体没读完：明确关闭，不复用这条连接
-    sendError(res, tooLarge ? 413 : 400, e && e.code === 'INVALID_JSON'
-      ? '请求体不是合法 JSON'
-      : ((e && e.message) || '请求体读取失败'));
-    return { ok: false };
-  }
-}
 
 function getPath(req) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);

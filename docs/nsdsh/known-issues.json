@@ -227,7 +227,13 @@
       "status": "open",
       "fixStage": "S03",
       "expiry": "S03：按业务边界渐进抽取（保存/分析/确认/查询四个用例先抽），**保持既有 API 响应、状态码与上下文完整性不变**。本阶段不换前端框架、不改时态算法、不重命名全部表。",
-      "evidenceNote": "2026-10-16 S18 复核：仍为 open，属**持续性重构**（不是一次性缺陷）。已完成的部分：S03 把四个时态用例抽到 server/services/temporal-services.mjs；S04 把任务持久化抽到 ai/jobs/{queue-store,dispatcher}.mjs（server.js 只剩接线）；S10 把模型路由/信封/适配器抽到 ai/model-broker/*；S13 把 SDK 运行时抽到 ai/runtime/dsh-sdk.mjs；S17 移除了旧的进程内调度器与 import 副作用。仍剩：server.js 仍有 10261 行，HTTP 端点与创作内核接口尚未按域拆分。本阶段**不做一次性大改**（项目规则：不做用户没要求的大范围重构）；后续每轮可继续按\"一个域一个模块\"推进，每步都必须保持 API 响应与状态码契约不变。"
+      "evidenceNote": "2026-10-16 S18 复核：仍为 open，属**持续性重构**（不是一次性缺陷）。已完成的部分：S03 把四个时态用例抽到 server/services/temporal-services.mjs；S04 把任务持久化抽到 ai/jobs/{queue-store,dispatcher}.mjs（server.js 只剩接线）；S10 把模型路由/信封/适配器抽到 ai/model-broker/*；S13 把 SDK 运行时抽到 ai/runtime/dsh-sdk.mjs；S17 移除了旧的进程内调度器与 import 副作用。仍剩：server.js 仍有 10261 行，HTTP 端点与创作内核接口尚未按域拆分。本阶段**不做一次性大改**（项目规则：不做用户没要求的大范围重构）；后续每轮可继续按\"一个域一个模块\"推进，每步都必须保持 API 响应与状态码契约不变。 R05 后：server.js 仍为 10183 行（本次抽取减少约 78 行；入口职责已减少，但远未零行）；本条标记 open_deferred + resolved_for_scoped_goal，不假装已 closed。",
+      "disposition": "resolved_for_scoped_goal",
+      "scopedGoal": "按域渐进抽取，一域一改并保留兼容门面；不把「行数归零」当成本阶段目标",
+      "progress": "S03 抽 temporal-services（服务层）+ save-service-parity 平权证明；S04 抽持久化任务队列与 fencing；S10 抽 model-broker（routing/envelope/adapters）；S13 抽 ai/runtime/dsh-sdk 生命周期框架；S17 退役旧桥接、单一调度所有者；R05（F12-A）抽 ai/http/respond.mjs：sendJSON/sendError/readBody/readBodyOrError 单一所有者；server.js 删除本地定义并真实 import；http-respond 套件 9 条（含「全仓只有一个定义」与「调用面仍在」）",
+      "remainingRoadmap": "F12-B：章节/作品元数据读路由与查询服务（保留同步 SQLite 事务边界）；F12-C：前端「任务状态与 SSE 订阅」边界（保持富文本编辑器主体不动）；F12-D：按依赖图决定下一域；不以「少几千行」为唯一目标",
+      "roadmapNote": "每步单独提交：保留原调用签名或兼容门面、证明生产调用方已迁移、无重复所有者、原有行为不变。F12 是否归零与 R01/R02 的用户可用能力无关。",
+      "deferredKind": "open_deferred"
     },
     {
       "id": "D1",

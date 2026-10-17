@@ -75,6 +75,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/effective-tools.test.mjs',
   'tests/nsdsh/runtime-config-isolation.test.mjs',
   // S13: SDK subprocess lifecycle / cancel (no invented API) / session scoping / pooling decision
+  // R05（F12-A）：HTTP 响应/请求体读取抽取等价性
+  'tests/nsdsh/http-respond.test.mjs',
   // R04-Q0：质量语料与评分器（含负向对照；零计费）
   'tests/quality/quality-corpus.test.mjs',
   // R02：发行物打包器与归档格式（不产出 231MB 产物，只测判据）
