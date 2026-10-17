@@ -19,7 +19,18 @@
  *
  * 依赖注入：`spawn` 由调用方提供（测试用假 spawner，生产用真实子进程），
  * 于是生命周期逻辑可以**零进程泄漏**地被断言。
+ *
+ * ── R01 修正（2026-10-17）──────────────────────────────────────────────────────
+ * S13 这里写的是 `cmd: 'dsh-sdk', args: ['--stdio']`。**那个命令不存在**——
+ * 它是照"应该长这样"编的，从未被真实运行验证过。锁定基线的真实入口是
+ *   `node <baseline>/apps/cli/lib/bin.js --profile sdk [--patch <yml>]`
+ * （出处 `packages/sdk/client/src/launch.ts` 的 `resolveDshLaunch()`）。
+ * 现在入口**只从 `vendor/dsh/runtime-manifest.json` 解析**，解析不通过就 fail-closed
+ * 返回 `launch_refused`，**不再降级**成源码树/全局包/编出来的命令。
+ * 完整传输闭环见 `sdk-adapter.mjs`（本文件的 `startTask` 仍是"发出去即返回"的薄壳）。
  */
+
+import { buildChildEnv, resolveDshLaunch } from './sdk-process.mjs';
 
 export const SDK_RUNTIME_VERSION = 'dsh-sdk-v1';
 export const SDK_BASELINE_VERSION = '0.1.7-rc.1';
@@ -94,16 +105,35 @@ export function poolingDecision({ trustedSessionContext = false, wantsPool = fal
 /**
  * 创建 SDK 运行时。
  *
- * @param spawn   ({ cmd, args, env, cwd }) => { pid, onExit(cb), send(msg), kill(signal), exited }
- *                测试注入假实现；生产注入真实子进程包装。
+ * @param spawn   ({ command, args, env, cwd }) => { pid, onExit(cb), send(msg), kill(signal), exited }
+ *                测试注入假实现；生产注入 `sdk-process.mjs` 的 `spawnReal`。
+ * @param launch  已解析的启动描述（`resolveDshLaunch()` 的返回值）。
+ *                省略时按 `manifestPath`（默认 `<repo>/vendor/dsh/runtime-manifest.json`）现场解析。
  * @param now     时钟（测试可注入）
  */
-export function createSdkRuntime({ spawn, now = Date.now } = {}) {
+export function createSdkRuntime({ spawn, launch = null, manifestPath = null, repoRoot = null, profile = 'sdk', now = Date.now } = {}) {
   if (typeof spawn !== 'function') throw new TypeError('MISSING_SPAWN');
 
   /** taskId → 记录 */
   const tasks = new Map();
   const history = [];
+
+  let resolvedLaunch = launch;
+  /**
+   * 解析真实入口（只解析一次）。
+   * **解析失败不抛异常、也不降级**：返回 `ok:false`，由 startTask 如实记成 `launch_refused`。
+   */
+  function launchOrResolve() {
+    if (resolvedLaunch) return resolvedLaunch;
+    const here = repoRoot || process.cwd();
+    const mp = manifestPath || `${here}/vendor/dsh/runtime-manifest.json`;
+    try {
+      resolvedLaunch = resolveDshLaunch({ manifestPath: mp, repoRoot: here, profile });
+    } catch (e) {
+      resolvedLaunch = { ok: false, reason: 'LAUNCH_RESOLVE_THREW', detail: String((e && e.message) || e) };
+    }
+    return resolvedLaunch;
+  }
 
   function record(entry) {
     history.push(Object.freeze({ at: Number(now()), ...entry }));
@@ -131,7 +161,7 @@ export function createSdkRuntime({ spawn, now = Date.now } = {}) {
    *
    * 动作 3/4：**默认单进程单活跃任务**；上一个进程必须**确认已退出**才能新建。
    */
-  async function startTask({ taskId, workId = 0, chapterId = 0, prompt = '', provider = '', model = '', cwd = process.cwd(), budget = {} } = {}) {
+  async function startTask({ taskId, workId = 0, chapterId = 0, prompt = '', provider = '', model = '', cwd = process.cwd(), budget = {}, envAllow = [], envExtra = {} } = {}) {
     const id = String(taskId || '');
     if (!id) throw new TypeError('MISSING_TASK_ID');
 
@@ -141,16 +171,33 @@ export function createSdkRuntime({ spawn, now = Date.now } = {}) {
       return record({ type: 'refused', taskId: id, reason: 'ANOTHER_TASK_ACTIVE', active: live.map((t) => t.task_id) });
     }
 
+    // 入口必须来自 manifest 解析结果；解析不通过就**不起进程**（不是降级启动）
+    const launch = launchOrResolve();
+    if (!launch || launch.ok !== true) {
+      return record({
+        type: 'launch_refused', taskId: id,
+        reason: (launch && launch.reason) || 'LAUNCH_UNRESOLVED',
+        detail: (launch && launch.detail) || '',
+      });
+    }
+
     const sessionId = sessionIdFor({ workId, chapterId, taskId: id });
+    // 环境**显式枚举**：不整体展开 process.env（敏感键必须写进 envAllow）
+    const built = buildChildEnv({
+      allow: ['NOVELSTUDIO_SESSION', ...envAllow],
+      extra: { ...envExtra, NOVELSTUDIO_SESSION: sessionId },
+    });
     const child = spawn({
-      cmd: 'dsh-sdk', args: ['--stdio'],
-      env: { ...process.env, NOVELSTUDIO_SESSION: sessionId },
+      command: launch.command, args: launch.args,
+      env: built.env,
       cwd,
     });
     const t = {
       task_id: id, session_id: sessionId, work_id: Number(workId) || 0, chapter_id: Number(chapterId) || 0,
       state: SDK_TASK_STATE.STARTING, pid: child && child.pid, child,
       started_at_ms: Number(now()), exited: false, exit_code: null, sent: [], max_tokens: Number(budget.maxTokens) || undefined,
+      launch: Object.freeze({ entry: launch.entryPath, profile: launch.profile }),
+      env_passed: built.passed, env_withheld: built.withheld,
     };
     tasks.set(id, t);
     if (child && typeof child.onExit === 'function') {

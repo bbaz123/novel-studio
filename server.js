@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { db, withTransaction, inTransaction } from './db.js';
-import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo, bootstrapHarnessSettings } from './harness.js';
+import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo, bootstrapHarnessSettings, dshSettingsPath } from './harness.js';
 import { readZip } from './zip-reader.mjs';
 import * as ImportGuard from './ai/import/guard.mjs';
 import { htmlToPlain, plainText, plainTextHead, plainTextTail } from './text-utils.js';
@@ -64,6 +64,8 @@ import { checkCompression, checkNoInvention, inventionVerdict, mustKeepEntities,
 import { confirmEvents, confirmProposalGroup, analyzeChapterUseCase, queryStoryState, makeTemporalDeps } from './server/services/temporal-services.mjs';
 // S10：模型路由（按作品 + 用途）—— 取代"第一个有 key 的配置"的隐式选择。
 import * as ModelBroker from './ai/model-broker/routing.mjs';
+// R01：真实 SDK 子进程通道（默认关闭；未设 NOVELSTUDIO_SDK_ROUTE 时行为与改造前逐字一致）。
+import { runSdkAnalysis, routeShapeFor } from './ai/runtime/sdk-route.mjs';
 import { recordIntent as recordAnalysisIntent } from './ai/jobs/queue-store.mjs';
 import { createDispatcher, reconcileOnStart } from './ai/jobs/dispatcher.mjs';
 import { buildCompressionPrompt } from './ai/memory-compress-prompt.mjs';
@@ -5323,7 +5325,43 @@ function temporalAnalysisConfig(workId = 0) {
 function temporalAnalysisGenerate(workId = 0) {
   const config = temporalAnalysisConfig(workId);
   if (!config) return null;
+
+  /**
+   * R01：SDK 路由准入（默认关闭）。
+   *
+   * 判据集中在 `ModelBroker.sdkRouteDecision()`（可单测），这里只负责取参数：
+   * 开关环境变量、用途、路由形状、预算（本阶段没有预算表 → 不传，即"未配置"）、能力等级。
+   * 未满足时返回 `ok:false`，下面直接走原 callAI —— **一次模型调用都还没发生**，所以回退是安全的。
+   */
+  const sdkDecision = (() => {
+    try {
+      return ModelBroker.sdkRouteDecision({
+        requested: ModelBroker.sdkRouteFlag(process.env[ModelBroker.SDK_ROUTE_FLAG_ENV]),
+        purpose: 'analysis',
+        route: routeShapeFor(config),
+        capability: 'proposal',
+      });
+    } catch {
+      return { ok: false, reason: 'SDK_ROUTE_DECISION_THREW' };
+    }
+  })();
+
   const generate = async ({ system, user, model }) => {
+    if (sdkDecision.ok) {
+      // 真实子进程通道。返回 used:false 表示"一次调用都没发出"（可安全回退）；
+      // used:true 但没拿到文本，则**不回退**——已经发过的请求重发就是二次计费。
+      const sdk = await runSdkAnalysis({
+        decision: sdkDecision,
+        config,
+        workId,
+        taskId: `analysis:${Number(workId) || 0}`,
+        system, user,
+        model: model || config.model,
+        dshHome: path.dirname(dshSettingsPath()),
+        repoRoot: path.dirname(fileURLToPath(import.meta.url)),
+      });
+      if (sdk.used) return sdk.text;
+    }
     const data = await callAI(
       { ...config, model: model || config.model },
       [{ role: 'system', content: system }, { role: 'user', content: user }],

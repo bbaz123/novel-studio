@@ -131,10 +131,89 @@ export function createLegacyAdapter({ runLegacy } = {}) {
 }
 
 /** 选择适配器：按信封里的路由来源决定（direct 优先，legacy 兜底）。 */
-export function pickAdapter({ direct, legacy } = {}, envelope) {
+export function pickAdapter({ direct, legacy, sdk } = {}, envelope) {
   const source = String((envelope && envelope.route && envelope.route.source) || '');
+  if (source === 'sdk') {
+    // 显式请求了 SDK 路由：**只有在接入点上真实可用时才用它**，
+    // 否则如实降级并把降级原因带回去（不能让人以为走的是 SDK）。
+    if (sdk && sdk.available) return sdk;
+    const fallback = direct || legacy || null;
+    if (fallback) {
+      return Object.freeze({
+        ...fallback,
+        degradedFrom: 'sdk',
+        degradedReason: (sdk && sdk.unavailableReason) || 'SDK_ROUTE_UNAVAILABLE',
+      });
+    }
+    return null;
+  }
   if (source === 'legacy' && legacy) return legacy;
   if (direct) return direct;
   if (legacy) return legacy;
   return null;
+}
+
+/**
+ * SDK 适配器（R01）：把真实 DSH 子进程运行时包成**同一结果契约**。
+ *
+ * 三个刻意的设计：
+ *   ① **默认关闭**。`enabled` 必须由显式配置打开（`NOVELSTUDIO_SDK_ROUTE`），
+ *      不允许"因为代码存在就自动走 SDK"。
+ *   ② 关闭时返回 `not_run`（不是 `failed`）：**"没启用"与"坏了"是两件事**。
+ *   ③ 真实运行时的 `unknown` 原样透传：外部请求已发、结果不明时，
+ *      上层必须看到 `unknown` 而不是被抹成 `failed` 或 `done`。
+ *
+ * @param runtime   `createSdkRuntimeAdapter()` 的返回值
+ * @param enabled   显式开关（默认 false）
+ * @param env       `{ envAllow, envExtra, cwd }`，转发给子进程的环境白名单
+ */
+export function createSdkAdapter({ runtime = null, enabled = false, env = {} } = {}) {
+  return {
+    kind: 'sdk',
+    get available() { return enabled === true && !!runtime; },
+    get unavailableReason() {
+      if (enabled !== true) return 'SDK_ROUTE_DISABLED';
+      if (!runtime) return 'SDK_RUNTIME_NOT_WIRED';
+      return '';
+    },
+    async run(envelope, { prompt = '', signal = null } = {}) {
+      const model = String((envelope && envelope.model && envelope.model.model) || '');
+      if (enabled !== true) {
+        return makeResult({ ok: false, status: 'not_run', error: 'SDK_ROUTE_DISABLED', provider: 'sdk', model });
+      }
+      if (!runtime) {
+        return makeResult({ ok: false, status: 'not_run', error: 'SDK_RUNTIME_NOT_WIRED', provider: 'sdk', model });
+      }
+      const taskId = String((envelope && envelope.route && envelope.route.task_id) || `sdk-${Date.now().toString(36)}`);
+      const sessionId = String((envelope && envelope.route && envelope.route.session_id) || '');
+      const provider = String((envelope && envelope.model && envelope.model.provider) || '');
+      if (!sessionId || !provider) {
+        return makeResult({ ok: false, status: 'not_run', error: 'MISSING_PROVIDER_OR_SESSION', provider: 'sdk', model });
+      }
+      try {
+        const r = await runtime.runTask({
+          taskId, sessionId, prompt,
+          provider, model,
+          cwd: env.cwd,
+          envAllow: env.envAllow || [],
+          envExtra: env.envExtra || {},
+          ...(signal ? {} : {}),
+        });
+        const status = r.terminal === 'done' ? 'done' : (r.terminal === 'unknown' ? 'unknown' : 'failed');
+        return makeResult({
+          ok: status === 'done',
+          status,
+          text: r.text || '',
+          usage: r.usage || null,
+          provider: 'sdk',
+          model,
+          error: r.error || '',
+          attempts: 1,
+        });
+      } catch (e) {
+        // 契约 ②：不抛异常
+        return makeResult({ ok: false, status: 'failed', error: String((e && e.message) || e), provider: 'sdk', model });
+      }
+    },
+  };
 }

@@ -176,3 +176,65 @@ export function setRoute(db, { workId = 0, purpose, apiConfigId, note = '' } = {
 export function listRoutes(db) {
   return db.prepare('SELECT work_id, purpose, api_config_id, note, updated_at FROM model_routes ORDER BY work_id ASC, purpose ASC').all();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R01：SDK 路由准入（显式开关 + 逐项 fail-closed）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 打开 SDK 路由的**唯一**开关名。默认关：不写这个环境变量就永远走 direct/legacy。 */
+export const SDK_ROUTE_FLAG_ENV = 'NOVELSTUDIO_SDK_ROUTE';
+
+/** 开关解析：只认显式的真值，其余一律视为关闭（含拼错、空串、`0`、`false`）。 */
+export function sdkRouteFlag(raw) {
+  const v = String(raw == null ? '' : raw).trim().toLowerCase();
+  return v === '1' || v === 'on' || v === 'true' || v === 'yes';
+}
+
+/**
+ * 判定一个请求能否走 SDK 路由。
+ *
+ * 为什么要在 broker 这一层再判一次：SDK 路由会让真正的子进程去跑模型，
+ * 它同时踩到**用途、作品范围、预算、租约代际、审批能力**五件事。
+ * 只要一件不满足就拒绝——**不是警告、不是降级猜测**，而是明确的 `ok:false`。
+ *
+ * @param requested       是否显式要求走 SDK（由 `sdkRouteFlag()` 解析后的值）
+ * @param purpose         用途（必须属于 PURPOSES）
+ * @param route           `resolveRoute()` 的返回值
+ * @param budget          `{ remainingCny?:number, maxCny?:number }`；缺省表示未配置预算
+ * @param leaseGeneration 当前任务的租约代际；`expectedLeaseGeneration` 给出时两者必须相等
+ * @param capability      本次调用的能力等级（read_only / proposal / author_confirm）
+ */
+export function sdkRouteDecision({
+  requested = false, purpose, route = null, budget = null,
+  leaseGeneration = null, expectedLeaseGeneration = null, capability = 'proposal',
+} = {}) {
+  const deny = (reason, detail) => ({ ok: false, reason, detail, source: 'sdk' });
+
+  if (requested !== true) {
+    return deny('SDK_ROUTE_DISABLED', `未设置 ${SDK_ROUTE_FLAG_ENV}：SDK 路由默认关闭，保持 direct/legacy`);
+  }
+  let p;
+  try {
+    p = normalizePurpose(purpose);
+  } catch (e) {
+    return deny('UNKNOWN_PURPOSE', String((e && e.message) || e));
+  }
+  if (!route || route.ok !== true || !route.config) {
+    return deny('NO_ROUTE', `用途 ${p} 没有可用模型路由（${String((route && route.reason) || 'UNRESOLVED')}）`);
+  }
+  if (String(capability) === 'author_confirm') {
+    // 模型侧永远不能自己确认正式状态：SDK 路由不改变这条不变量
+    return deny('AUTHOR_CONFIRM_NOT_DELEGABLE', 'author_confirm 能力不得下放给模型运行时');
+  }
+  if (budget && typeof budget === 'object') {
+    const remaining = budget.remainingCny;
+    if (typeof remaining === 'number' && remaining <= 0) {
+      return deny('BUDGET_EXHAUSTED', `剩余预算 ${remaining} ≤ 0，不发起新的 SDK 调用`);
+    }
+  }
+  if (expectedLeaseGeneration != null && leaseGeneration != null
+    && Number(leaseGeneration) !== Number(expectedLeaseGeneration)) {
+    return deny('LEASE_GENERATION_STALE', `租约代际 ${leaseGeneration} ≠ 期望 ${expectedLeaseGeneration}`);
+  }
+  return { ok: true, reason: '', detail: `purpose=${p} route=${route.route ? route.route.source : 'unknown'}`, source: 'sdk', purpose: p };
+}

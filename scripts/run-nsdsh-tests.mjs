@@ -75,6 +75,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/effective-tools.test.mjs',
   'tests/nsdsh/runtime-config-isolation.test.mjs',
   // S13: SDK subprocess lifecycle / cancel (no invented API) / session scoping / pooling decision
+  // R01：真实 SDK 子进程/传输层（纯函数与线上假对端；真实 PID 证据在 verify-sdk-real.mjs）
+  'tests/nsdsh/sdk-launch.test.mjs',
+  'tests/nsdsh/sdk-transport.test.mjs',
+  'tests/nsdsh/sdk-adapter.test.mjs',
   'tests/nsdsh/sdk-lifecycle.test.mjs',
   'tests/nsdsh/sdk-cancel.test.mjs',
   'tests/nsdsh/session-scope.test.mjs',

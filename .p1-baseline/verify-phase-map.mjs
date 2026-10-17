@@ -1625,6 +1625,20 @@ export const PHASES = [
       // ── S18 后收尾（R00 起）：真实运行证据补齐，不改写 S00–S18 的历史 PASS ──
       // 这些文件只属于收尾轨（R00/R01/…），撤掉它们不影响 S00–S18 的任何产物。
       'docs/nsdsh/post-s18-evidence-baseline.md',
+      // R01：真实 SDK 子进程（只登记**已经存在**的文件；后续阶段各自登记自己的产物）
+      'ai/runtime/sdk-process.mjs',
+      'ai/runtime/sdk-stdio-transport.mjs',
+      'ai/runtime/sdk-adapter.mjs',
+      'ai/runtime/sdk-route.mjs',
+      'ai/runtime/dsh-sdk.mjs',
+      'ai/model-broker/adapters.mjs',
+      'ai/model-broker/routing.mjs',
+      'scripts/nsdsh/verify-sdk-real.mjs',
+      'tests/nsdsh/sdk-launch.test.mjs',
+      'tests/nsdsh/sdk-transport.test.mjs',
+      'tests/nsdsh/sdk-adapter.test.mjs',
+      'docs/nsdsh/sdk-real-runtime.md',
+
 
 
 

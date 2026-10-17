@@ -118,7 +118,7 @@ export function verifyDelivery() {
         story_state_temporal: '实测（S07/S08 套件）',
         model_routing: '实测（S10 套件，fake provider）',
         plugin_capabilities: '实测（S09/S12 套件）',
-        sdk_subprocess: '实测（S13 套件，假 spawner；未接真实子进程）',
+        sdk_subprocess: '实测（R01：真实 DSH 子进程 12 场景 · verify-sdk-real.mjs；真 PID / 真终态 / 真取消 / 双会话隔离）',
         runtime_distribution: '闭包与契约等价已验证；未产出裁剪发行物',
         migration: '实测（S16 演练：旧库副本 → 新 schema）',
       },
