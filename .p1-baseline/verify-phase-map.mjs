@@ -1638,6 +1638,13 @@ export const PHASES = [
       'tests/nsdsh/sdk-transport.test.mjs',
       'tests/nsdsh/sdk-adapter.test.mjs',
       'docs/nsdsh/sdk-real-runtime.md',
+      // R02：真实发行物
+      'scripts/nsdsh/lib/zip-archive.mjs',
+      'scripts/nsdsh/package-runtime.mjs',
+      'scripts/nsdsh/verify-distribution.mjs',
+      'scripts/nsdsh/compare-runtime-bc.mjs',
+      'tests/nsdsh/distribution-artifact.test.mjs',
+      'docs/nsdsh/distribution.md',
 
 
 
