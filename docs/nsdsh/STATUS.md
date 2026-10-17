@@ -17,14 +17,16 @@
 | **R02** 真实裁剪发行物（P0） | **PASS** | 503 包 / 22,530 条目 / 69.5MB / sha256 `7bfc4f19…`；冷环境 **8/8**（含中文+空格路径）；B/C 两个独立进程 **7/7**，消息摘要一致 |
 | **R03** 跨平台矩阵 | **PARTIAL（按设计）** | workflow 已入库但**从未在 CI 执行**；`support-matrix.md` 逐格标注：Windows 全 `VERIFIED`，Ubuntu/macOS/Node 22.x 全 `UNVERIFIED` |
 | **R04-Q0** 质量语料与评分器 | **PASS** | 25 条合成用例 / 12 类；评分器四类零容忍；12 条套件含 6 条负向对照 |
-| **R04-Q1** 真实模型质量 | **NOT_RUN_REQUIRES_AUTHORIZATION** | `auto_plan_gate G3` → `REAL_AUTHORIZATION_REQUIRED`；未发起任何付费调用 |
+| **R04-Q1** 真实模型质量 | **已执行（有结论，非"达标"）** | 作者授权六项后实跑 25 条：**结构 100% / 引文可定位 100% / 未知实体·未来泄漏·跨作品·未确认写入 全 0**；定向模式精确命中 6/19、值召回 0.261、4 条空候选 → **不声称质量达标**；费用 **¥0.487** |
 | **R05 / F12-A** HTTP 响应层抽取 | **PASS** | `ai/http/respond.mjs` 单一所有者；server.js 删 122 行并真实 import；离线清单 55/55、51 套件 385 断言、temporal 15/15 |
 | **R06 / E1** 门禁沙箱归因 | **BLOCKED_EXTERNAL** | `e1-gate-sandbox-evidence.md`：取证包 + spawn 探针四形态可分；本机 EPERM **复现不出来**，故不改判 |
 
-**对外状态用语**：`CORE_PLAN_COMPLETED_VERIFIED`（R00/R01/R02/R05/R06 与 R04-Q0 已验收；
-R03 未跑过的平台、R04-Q1、F12 剩余域、E1 仍如实列出）。
+**对外状态用语**：`CORE_PLAN_COMPLETED_VERIFIED` + `MODEL_QUALITY_EVALUATED_WITH_FINDINGS`
+（8/8 任务通过独立验收；R03 未跑过的平台、F12 剩余域、E1 外部依赖仍如实列出；
+模型质量是"有测量结论"，**不是**"质量达标"）。
 
-**费用**：全程 **¥0.00**（全部本机假 provider / 临时 SQLite / 临时 DSH_HOME；无真实模型调用）。
+**费用**：R00–R03、R04-Q0、R05、R06 **¥0.00**（本机假 provider / 临时 SQLite / 临时 DSH_HOME）；
+R04-Q1 **¥0.487**（作者授权 ¥10 上限；其中 ¥0.465 花在我自己的两轮 max_tokens 估算错误上，见 `quality-eval.md` §Q1.5）。
 
 ## 阶段总览
 
