@@ -163,9 +163,11 @@
       ],
       "impact": "改名、同名、别名都会让兼容投影错连或断链；正式状态可能挂到错误实体上。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs；tests/nsdsh/historical-trust.test.mjs（投影不得抬升信任）",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S05",
-      "expiry": "S05：稳定 entity_uid + 唯一命中/缺失/歧义三态，歧义进作者映射队列、绝不自动合并。正式切换留给 S16 且需作者批准。"
+      "expiry": "S05：稳定 entity_uid + 唯一命中/缺失/歧义三态，歧义进作者映射队列、绝不自动合并。正式切换留给 S16 且需作者批准。",
+      "fixedStage": "S05",
+      "evidenceNote": "2026-10-16 S05：新增 ai/story-state/temporal/identity.mjs —— 以 story_entities.id 为稳定身份（ent:<id>），名称/别名只作解析入口；resolveEntity 只有 unique / missing / ambiguous 三态，ambiguous 一律返回 entityId=null 交作者，**绝不自动择一**（这就是\"同名不误合并\"）。改名不改变身份由别名表 + valid_from/valid_to 章节区间保证（不能用未来的改名解释过去的事件）。v2 关系方向用 canonicalRelation：(A,B) 与 (B,A) 同 key、方向另存 forward/inverse，自反单列。迁移演练 scripts/nsdsh/identity-migration.mjs 强制 --dry-run，输出新事件预览/等价校验和/阻断项，有歧义时退出码 3。按方案要求，**v1 reader 保留**（compat.mjs 仍按名投影），旧作品的正式切换留到 S16，旧事件哈希未就地改写。证据：entity-identity 7/7、identity-migration 4/4、relation-direction 4/4；check-stage S05 通过；--fixture-clean 退出 0、--fixture 退出 3（阻断语义真实）。"
     },
     {
       "id": "F10",
@@ -345,9 +347,9 @@
     "high": 7,
     "medium": 12,
     "low": 1,
-    "open": 12,
+    "open": 11,
     "notDirectlyDetectable": 0,
-    "fixedLocally": 8,
+    "fixedLocally": 9,
     "byFixStage": {
       "S04": [
         "E2",

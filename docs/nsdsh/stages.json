@@ -347,7 +347,7 @@
       "id": "S05",
       "title": "稳定实体 ID 与迁移解析器",
       "batch": "NS-C",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S04"
       ],
@@ -358,17 +358,52 @@
         "tests/nsdsh/**"
       ],
       "requiredTestFiles": [
-        "tests/nsdsh/identity-resolution.test.mjs"
+        "tests/nsdsh/entity-identity.test.mjs",
+        "tests/nsdsh/identity-migration.test.mjs",
+        "tests/nsdsh/relation-direction.test.mjs"
       ],
       "requiredArtifacts": [
+        "ai/story-state/temporal/identity.mjs",
         "scripts/nsdsh/identity-migration.mjs"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "identity-migration-dry-run",
+          "argv": [
+            "scripts/nsdsh/identity-migration.mjs",
+            "--fixture-clean",
+            "--dry-run"
+          ],
+          "cwd": ".",
+          "why": "迁移演练：干净 fixture 必须 0 阻断并退出 0"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S05 三件套 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "歧义不自动合并；v2 dry-run 与旧数据等价"
       ],
-      "rollbackNotes": "旧算法保留 reader；正式切换留给 S16 且需作者批准。"
+      "rollbackNotes": "旧算法保留 reader；正式切换留给 S16 且需作者批准。",
+      "notes": "S05 完成（2026-10-16）：新增稳定身份层 identity.mjs（ent:<id> canonical + 别名表 + 三态解析 unique/missing/ambiguous + v2 关系方向）。改名不改变身份、同名不误合并（ambiguous 返回 entityId=null 交作者）。迁移演练 identity-migration.mjs 强制 --dry-run，输出新事件预览/等价校验和/阻断项，歧义时退出 3。按方案要求 v1 reader 保留，旧作品正式切换留 S16。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 9,
+          "fail": 0,
+          "commands": [
+            "identity-migration-dry-run(--fixture-clean)",
+            "tests-nsdsh(136 断言)"
+          ]
+        }
+      }
     },
     {
       "id": "S06",

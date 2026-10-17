@@ -1564,6 +1564,12 @@ export const PHASES = [
 
       'tests/nsdsh/task-queue.test.mjs',
       'tests/nsdsh/task-fencing.test.mjs',
+      'ai/story-state/temporal/identity.mjs',
+      'scripts/nsdsh/identity-migration.mjs',
+      'tests/nsdsh/entity-identity.test.mjs',
+      'tests/nsdsh/identity-migration.test.mjs',
+      'tests/nsdsh/relation-direction.test.mjs',
+
 
       // S03：四用例判据抽到服务层（HTTP 组装留在路由层）+ 两份对应套件
       'server/services/temporal-services.mjs',

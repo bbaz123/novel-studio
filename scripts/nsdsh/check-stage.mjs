@@ -426,6 +426,74 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S05') {
+    // S05 = 稳定实体 ID 与迁移解析器（修 F09）。判定要点：
+    //   · 身份解析必须是**三态**（unique / missing / ambiguous），ambiguous 绝不自动择一；
+    //   · v1 reader **保留**（正式切换留 S16），旧事件哈希不得被就地改写；
+    //   · 迁移是 dry-run，且必须有阻断语义（有歧义 → 非零退出）。
+    const idRel = 'ai/story-state/temporal/identity.mjs';
+    if (!fs.existsSync(abs(idRel))) {
+      out.push({ name: '稳定身份模块存在', passed: false, detail: `缺少 ${idRel}` });
+      return out;
+    }
+    const idSrc = fs.readFileSync(abs(idRel), 'utf8');
+    out.push({
+      name: '身份解析是三态（unique / missing / ambiguous），歧义不返回 entityId',
+      passed: /status: 'unique'/.test(idSrc) && /status: 'missing'/.test(idSrc) && /status: 'ambiguous'/.test(idSrc),
+      detail: 'F09 的关键：歧义必须交作者，禁止自动择一',
+    });
+    out.push({
+      name: '稳定身份与名称解耦（ent:<id> 编码 + 别名表解析）',
+      passed: /export function entityUidOf/.test(idSrc) && /export function parseEntityUid/.test(idSrc)
+        && /story_entity_aliases/.test(idSrc),
+      detail: '改名不改变身份靠的是 canonical id + 别名表',
+    });
+    out.push({
+      name: 'v2 关系方向显式（(A,B) 与 (B,A) 同 key、方向另存）',
+      passed: /RELATION_KIND/.test(idSrc) && /export function canonicalRelation/.test(idSrc),
+      detail: '旧数据只有 from/to 名字，没有方向语义',
+    });
+
+    // v1 reader 必须保留：compat 的按名投影在 S16 才切换。
+    const compatSrc = fs.readFileSync(abs('ai/story-state/temporal/compat.mjs'), 'utf8');
+    out.push({
+      name: 'v1 reader 保留（旧作品正式切换留到 S16）',
+      passed: /WHERE work_id = \? AND name = \?/.test(compatSrc),
+      detail: 'S05 明确不在本阶段切换旧作品正式世界线',
+    });
+
+    // 迁移脚本：必须强制 dry-run，且有阻断语义。
+    const migRel = 'scripts/nsdsh/identity-migration.mjs';
+    if (!fs.existsSync(abs(migRel))) {
+      out.push({ name: '迁移 dry-run 脚本存在', passed: false, detail: `缺少 ${migRel}` });
+      return out;
+    }
+    const migSrc = fs.readFileSync(abs(migRel), 'utf8');
+    out.push({
+      name: '迁移脚本强制 dry-run（拒绝非 dry-run 执行）',
+      passed: /if \(\!dryRun\)/.test(migSrc) && /process\.exit\(1\)/.test(migSrc),
+      detail: 'S05 不写库、不切换世界线',
+    });
+    out.push({
+      name: '迁移脚本有阻断语义（存在歧义/缺失时非零退出）',
+      passed: /AMBIGUOUS/.test(migSrc) && /process\.exit\(out\.blockers/.test(migSrc),
+      detail: '阻断项必须能被流水线识别，不能静默跳过',
+    });
+
+    // 必测三件套必须落地并真的被套件执行。
+    const need = ['tests/nsdsh/entity-identity.test.mjs', 'tests/nsdsh/identity-migration.test.mjs', 'tests/nsdsh/relation-direction.test.mjs'];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missing = need.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = need.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测三件套已落地并纳入套件执行',
+      passed: missing.length === 0 && notInRunner.length === 0,
+      detail: missing.length || notInRunner.length ? `缺文件=${missing.join(',')} 未纳入=${notInRunner.join(',')}` : '3/3 就位',
+    });
+    return out;
+  }
+
   if (id === 'S04') {
     // S04 = 持久任务 / 租约 / outbox / 恢复。判定要点：**保存链路只写意图**、
     // **旧进程内调度器已移除**（不留第二个调度器）、**执行在事务外**、且 R1–R4 有行为断言。

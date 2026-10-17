@@ -42,6 +42,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/task-queue.test.mjs',
   // S04：R1–R4 实现缺陷（运行中任务被改写 / 失败伪装成完成 / 重排提前防抖 / 传输态跨轮次）
   'tests/nsdsh/task-fencing.test.mjs',
+  // S05: stable entity identity (F09) -- rename keeps identity, duplicate names are ambiguous
+  'tests/nsdsh/entity-identity.test.mjs',
+  'tests/nsdsh/identity-migration.test.mjs',
+  'tests/nsdsh/relation-direction.test.mjs',
 ];
 
 /**

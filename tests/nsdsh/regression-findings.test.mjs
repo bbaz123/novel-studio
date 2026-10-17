@@ -50,6 +50,8 @@ const T = await import('../../ai/story-state/temporal/index.mjs');
 const { db } = await import('../../db.js');
 // S04：F02 的"真 trailing 防抖"要在真库上动态验证（静态读源码读不出"推了多远"）。
 const queueStore = await import('../../ai/jobs/queue-store.mjs');
+// S05：稳定身份层（F09 的修复物：改名不改身份 / 同名不合并）
+const IDM = await import('../../ai/story-state/temporal/identity.mjs');
 
 /** F02 用的隔离作品/章节（只在本套件的临时库里）。 */
 const f02Work = (() => {
@@ -390,7 +392,7 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F09 兼容投影按"名字"关联，relation 用 "A|B" 字符串（→ S05）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F09 [动态+静态] refreshCompatProjection 按 name 关联角色/关系；改名即失联（F09→S05）', () => {
+  ['F09 [动态+静态] 稳定身份层已就位（改名不改身份/同名不合并）；v1 投影按名保留到 S16', () => {
     const workId = seedWork('F09');
     db.prepare('INSERT INTO characters (work_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
       .run(workId, '甲', '旧状态', now(), now());
@@ -406,7 +408,7 @@ await suite('nsdsh/regression-findings', [
     const stableKey = T.cellKey({ domain: 'character', entityId: '甲的稳定ID', predicate: 'status', scope: 'canon' });
     const relKey = T.cellKey({ domain: 'relation', entityId: '甲|乙', predicate: '师徒', scope: 'canon' });
     assert.equal(T.parseCellKey(charKey).entityId, '甲');
-    assert.equal(T.parseCellKey(relKey).entityId, '甲|乙', 'F09：关系实体 id 是 "A|B" 拼接串');
+    assert.equal(T.parseCellKey(relKey).entityId, '甲|乙', 'v1：关系实体 id 仍是 "A|B" 拼接串');
 
     const state = T.stateFromJson(JSON.stringify({
       [charKey]: '新状态',
@@ -416,21 +418,41 @@ await suite('nsdsh/regression-findings', [
 
     const first = T.refreshCompatProjection({ workId, state, commitId: 'cmt_f09_a' });
     assert.equal(first.ok, true);
-    assert.equal(first.characters_updated, 1, 'F09：只有 name 命中的那一行被更新');
+    assert.equal(first.characters_updated, 1, 'v1：只有 name 命中的那一行被更新');
     assert.equal(first.relations_updated, 1);
     assert.equal(db.prepare('SELECT status FROM characters WHERE id = ?').get(jiaId).status, '新状态');
     assert.equal(db.prepare('SELECT status FROM characters WHERE id = ?').get(yiId).status, '旧状态');
-    assert.equal(db.prepare('SELECT relation FROM character_relations WHERE id = (SELECT id FROM character_relations WHERE work_id = ?)').get(workId).relation, '师徒');
 
-    // 改名即失联：同一份状态再投影一次，更新数变 0（这就是"按名关联"的脆弱面）。
+    // ⚠️ 这条**保留**：S05 明确「保留 v1 reader、不在本阶段切换旧作品正式世界线」，
+    // 正式切换留到 S16。所以"改名后 v1 按名投影失联"是**已知且被记录**的行为，不是新缺陷。
     db.prepare('UPDATE characters SET name = ? WHERE id = ?').run('甲改名', jiaId);
     const second = T.refreshCompatProjection({ workId, state, commitId: 'cmt_f09_b' });
-    assert.equal(second.characters_updated, 0, 'F09：角色改名后按名关联直接失效');
-    assert.equal(db.prepare('SELECT status FROM characters WHERE id = ?').get(jiaId).status, '新状态', '没命中就不会被改写');
+    assert.equal(second.characters_updated, 0, 'v1 reader 原样：改名后按名关联失效（S16 才切换）');
 
     const compatSrc = readRepo('ai/story-state/temporal/compat.mjs');
-    assert.match(compatSrc, /UPDATE characters SET status = \?, updated_at = \? WHERE work_id = \? AND name = \? AND status <> \?/);
-    assert.match(compatSrc, /JOIN characters a ON a\.id = r\.from_character_id[\s\S]{0,120}WHERE r\.work_id = \? AND a\.name = \? AND b\.name = \?/);
+    assert.match(compatSrc, /WHERE work_id = \? AND name = \? AND status <> \?/, 'v1 reader 保留（S16 才换）');
+
+    // ── S05 已修的根因：稳定身份层提供"改名不改身份 / 同名不合并" ──────────────
+    assert.ok(IDM, 'identity.mjs 必须可加载');
+    const nowIso = now();
+    db.prepare('INSERT INTO story_entities (work_id, kind, canonical_name, status) VALUES (?, ?, ?, ?)').run(workId, 'character', '老王', 'active');
+    const laowang = Number(db.prepare('SELECT id FROM story_entities ORDER BY id DESC LIMIT 1').get().id);
+    db.prepare('INSERT INTO story_entity_aliases (work_id, entity_id, alias, normalized, kind) VALUES (?, ?, ?, ?, ?)')
+      .run(workId, laowang, '王师傅', IDM.normalizeEntityName('王师傅'), 'alias');
+    const byNew = IDM.resolveEntity(db, { workId, name: '老王' });
+    const byOld = IDM.resolveEntity(db, { workId, name: '王师傅' });
+    assert.equal(byNew.status, 'unique');
+    assert.equal(byOld.status, 'unique');
+    assert.equal(byOld.entityId, byNew.entityId, 'F09 已修：改名不改变身份');
+    assert.equal(byOld.uid, IDM.entityUidOf(laowang));
+
+    // 同名不同人 → ambiguous，且**绝不**自动择一
+    db.prepare('INSERT INTO story_entities (work_id, kind, canonical_name, status) VALUES (?, ?, ?, ?)').run(workId, 'character', '小李', 'active');
+    db.prepare('INSERT INTO story_entities (work_id, kind, canonical_name, status) VALUES (?, ?, ?, ?)').run(workId, 'character', '小李', 'active');
+    const dup = IDM.resolveEntity(db, { workId, name: '小李' });
+    assert.equal(dup.status, 'ambiguous', 'F09 已修：同名必须交作者，不得自动合并');
+    assert.equal(dup.entityId, null);
+    assert.ok(nowIso);
   }],
 
   // ────────────────────────────────────────────────────────────────────────────
