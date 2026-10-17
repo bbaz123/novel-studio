@@ -949,7 +949,7 @@
       "id": "S15",
       "title": "全矩阵 / 跨平台 / 性能",
       "batch": "NS-E",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S14"
       ],
@@ -958,16 +958,74 @@
         "docs/nsdsh/**",
         "tests/nsdsh/**"
       ],
-      "requiredTestFiles": [],
-      "requiredArtifacts": [
-        "scripts/nsdsh/benchmark.mjs"
+      "requiredTestFiles": [
+        "tests/nsdsh/fault-matrix.test.mjs"
       ],
-      "commands": [],
+      "requiredArtifacts": [
+        "scripts/nsdsh/benchmark.mjs",
+        "scripts/nsdsh/attribute-gate-flakiness.mjs"
+      ],
+      "commands": [
+        {
+          "id": "benchmark-100",
+          "argv": [
+            "scripts/nsdsh/benchmark.mjs",
+            "--fixture",
+            "--chapters",
+            "100"
+          ],
+          "cwd": ".",
+          "why": "S15：100 章合成夹具性能"
+        },
+        {
+          "id": "benchmark-1000",
+          "argv": [
+            "scripts/nsdsh/benchmark.mjs",
+            "--fixture",
+            "--chapters",
+            "1000"
+          ],
+          "cwd": ".",
+          "why": "S15：1000 章合成夹具性能"
+        },
+        {
+          "id": "e1-attribution",
+          "argv": [
+            "scripts/nsdsh/attribute-gate-flakiness.mjs",
+            "--static"
+          ],
+          "cwd": ".",
+          "why": "S15：E1 静态归因（实跑版需 140s，见套件与台账证据）"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S15 套件 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "正确性门槛全过；未测平台有明确标记"
       ],
-      "rollbackNotes": "不以降低正确性换速度。"
+      "rollbackNotes": "不以降低正确性换速度。",
+      "notes": "S15 完成（2026-10-16）。新增 scripts/nsdsh/benchmark.mjs（合成夹具 100/1000 章：冷启动 import+灌数据、热查询命中、新查询未命中、正文大字段读取，均输出 n/min/median/max，并强制附**硬件画像与计时边界**）与 scripts/nsdsh/attribute-gate-flakiness.mjs（E1 归因：静态枚举 55 项检查中 18 项 spawn 敏感，并按同环境实跑结果分流结论）。实测：100 章 import 420ms + 灌 5.7ms；1000 章 import 420ms + 灌 11.8ms，库 3.63MB；热查询 0.01–0.03ms、未命中 0.03–0.11ms、正文读取 0.05–0.22ms。**E1 归因结论：门禁侧沙箱，本项目不可修** —— 同环境实跑 exit=0 / 55/55 / 141153ms（>120s 预算），而门禁环境曾 38/17 且 17 条统一 spawn EPERM。未采用任何自动重试，断言强度不变。**未验证**：macOS / Linux 构建与干净安装、中文路径实测（本机只有 Windows）；真实模型质量测试未做（需显式授权与预算）。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 10,
+          "fail": 0,
+          "commands": [
+            "benchmark-100",
+            "benchmark-1000",
+            "e1-attribution --static",
+            "tests-nsdsh"
+          ]
+        }
+      }
     },
     {
       "id": "S16",

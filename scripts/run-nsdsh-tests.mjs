@@ -83,6 +83,8 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/distribution-closure.test.mjs',
   'tests/nsdsh/distribution-clean-room.test.mjs',
   'tests/nsdsh/runtime-equivalence.test.mjs',
+  // S15: fault matrix -- benchmark report completeness + E1 attribution discipline
+  'tests/nsdsh/fault-matrix.test.mjs',
 ];
 
 /**

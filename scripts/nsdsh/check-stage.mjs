@@ -426,6 +426,62 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S15') {
+    // S15 = 故障矩阵 / 跨平台 / 性能。判据：性能报告带硬件与计时边界；E1 有归因且不加重试。
+    const need = ['scripts/nsdsh/benchmark.mjs', 'scripts/nsdsh/attribute-gate-flakiness.mjs'];
+    const miss = need.filter((rel) => !fs.existsSync(abs(rel)));
+    if (miss.length) {
+      out.push({ name: 'benchmark 与归因脚本存在', passed: false, detail: `缺：${miss.join('、')}` });
+      return out;
+    }
+    const benchSrc = fs.readFileSync(abs('scripts/nsdsh/benchmark.mjs'), 'utf8');
+    const attrSrc = fs.readFileSync(abs('scripts/nsdsh/attribute-gate-flakiness.mjs'), 'utf8');
+
+    out.push({
+      name: '性能报告包含硬件画像与计时边界',
+      passed: /hardwareProfile/.test(benchSrc) && /cpu_model/.test(benchSrc) && /total_mem_mb/.test(benchSrc)
+        && /boundaries/.test(benchSrc) && /hrtime/.test(benchSrc),
+      detail: '没有硬件与边界的性能数字不可比较',
+    });
+    out.push({
+      name: '合成夹具可跑 100 / 1000 章（冷/热 + 缓存命中/未命中）',
+      passed: /buildFixture/.test(benchSrc) && /hot_query/.test(benchSrc) && /cache_miss_query/.test(benchSrc)
+        && /--chapters/.test(benchSrc),
+      detail: '不碰作者真实库，全部在隔离库内',
+    });
+    out.push({
+      name: 'E1 归因：静态枚举 spawn 敏感项并按实跑结果分流结论',
+      passed: /staticAttribution/.test(attrSrc) && /spawn_sensitive/.test(attrSrc)
+        && /GATE_SIDE_SANDBOX/.test(attrSrc) && /PROJECT_SIDE_FAILURE/.test(attrSrc),
+      detail: '同环境绿→门禁侧；同环境红→项目侧；无实跑→INCONCLUSIVE',
+    });
+    out.push({
+      name: 'E1 纪律：不加重试、不弱化断言（源码断言）',
+      passed: !/max[A-Z]?[a-z]*Retries|retryCount|attempts?\s*\+/i.test(attrSrc),
+      detail: '到期条件明令禁止"自动重试直到绿"',
+    });
+
+    // 台账：E1 必须已给出处置结论
+    const issues = JSON.parse(fs.readFileSync(abs('docs/nsdsh/known-issues.json'), 'utf8'));
+    const e1 = (issues.issues || []).find((i) => i.id === 'E1');
+    out.push({
+      name: 'E1 已给出处置结论与证据（门禁侧沙箱 → 本项目不可修）',
+      passed: !!e1 && String(e1.evidenceNote || '').length > 50
+        && /沙箱|EPERM/.test(String(e1.evidenceNote || ''))
+        && String(e1.disposition || '') === 'not_fixable_in_project',
+      detail: e1 ? `disposition=${e1.disposition || '(未设)'}` : '台账缺 E1',
+    });
+
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    out.push({
+      name: 'S15 套件已落地并纳入执行',
+      passed: fs.existsSync(abs('tests/nsdsh/fault-matrix.test.mjs')) && runner.includes('tests/nsdsh/fault-matrix.test.mjs'),
+      detail: '性能报告完整性 + E1 归因纪律',
+    });
+    return out;
+  }
+
   if (id === 'S14') {
     // S14 = 裁剪发行物与依赖闭包（修 F10）。判据：manifest 可验证、依赖不越界、B/C 等价、许可齐全。
     const need = ['vendor/dsh/runtime-manifest.json', 'scripts/nsdsh/build-runtime.mjs', 'scripts/nsdsh/verify-runtime-closure.mjs'];

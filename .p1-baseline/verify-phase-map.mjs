@@ -1613,6 +1613,10 @@ export const PHASES = [
       'tests/nsdsh/distribution-closure.test.mjs',
       'tests/nsdsh/distribution-clean-room.test.mjs',
       'tests/nsdsh/runtime-equivalence.test.mjs',
+      'scripts/nsdsh/benchmark.mjs',
+      'scripts/nsdsh/attribute-gate-flakiness.mjs',
+      'tests/nsdsh/fault-matrix.test.mjs',
+
 
 
 

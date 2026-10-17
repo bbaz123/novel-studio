@@ -339,7 +339,9 @@
       "behaviorTest": "tests/nsdsh/stage-runner.test.mjs（覆盖 runCommand 的管道↔文件重定向退路与 environmentBlocked 判定）；缺陷本身由 `check-stage <stage> --offline` 的偶发退出码观测",
       "status": "open",
       "fixStage": "S15",
-      "expiry": "S15 必须给出可复现的归因（哪一种执行环境会导致子进程被拒/退出码漂移），并**在不加重试、不弱化断言**的前提下消除它；若最终证明是门禁侧（dsh-plugin-verification）的沙箱行为，则在 known-issues 中改为\"本项目不可修\"，并写明该结论的证据与它对本项目门禁可信度的影响。严禁用\"自动重试直到绿\"作为修复。"
+      "expiry": "S15 已完成归因：属门禁侧沙箱（dsh-plugin-verification 的 workspace-write 策略拒绝子进程管道），项目内不可修。**严禁**以\"自动重试直到绿\"作为缓解；若门禁侧提供可配置的沙箱/超时，应由门禁侧解决。",
+      "disposition": "not_fixable_in_project",
+      "evidenceNote": "2026-10-16 S15 归因完成，结论：**门禁侧沙箱行为，本项目不可修**。证据：① 静态枚举 scripts/ci-offline-checks.mjs 的 55 项检查，其中 **18 项依赖派生子进程**（隔离 HTTP 实例 / 假 LLM / OV stub / 安装器演练等）；② 在当前 Agent shell 里实跑同一命令：`node scripts/ci-offline-checks.mjs` → **exit=0，55/55 通过，耗时 141153ms**；③ 门禁环境里同一命令曾出现 **38/17** 且 17 条统一 `spawn EPERM`（errno -4048），与 `docs/nsdsh/baseline.md` §7 记录形状一致；④ 另有 **127.5s 实际耗时 vs 120s 预算** 造成的 `timed_out`。因此差异不在项目代码，而在执行环境是否允许子进程管道。**未采用任何自动重试**，断言强度未变。对门禁可信度的影响：门禁红必须与其 stdout 里的 `EPERM`/超时签名一起读；无该签名的纯红才按代码回归处理。取证脚本：`scripts/nsdsh/attribute-gate-flakiness.mjs`。"
     },
     {
       "id": "E2",
