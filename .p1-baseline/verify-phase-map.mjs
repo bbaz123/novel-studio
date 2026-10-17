@@ -1622,6 +1622,9 @@ export const PHASES = [
       'tests/nsdsh/bridge-retirement.test.mjs',
       'scripts/nsdsh/verify-delivery.mjs',
       'tests/nsdsh/delivery-report.test.mjs',
+      // ── S18 后收尾（R00 起）：真实运行证据补齐，不改写 S00–S18 的历史 PASS ──
+      // 这些文件只属于收尾轨（R00/R01/…），撤掉它们不影响 S00–S18 的任何产物。
+      'docs/nsdsh/post-s18-evidence-baseline.md',
 
 
 

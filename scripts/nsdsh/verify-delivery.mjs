@@ -130,7 +130,10 @@ export function verifyDelivery() {
         '真实裁剪发行物未产出（需完整打包流水线）',
         'macOS / Linux 构建与中文路径未验证',
         '真实模型质量测试未做（需显式授权与预算）',
-        'S11/S14 门禁在 offline 下为 BLOCKED（networkPolicy=build-prereq-explicit，构建前置已手动执行）',
+        // S11/S14 的门禁命令全是本地只读（verify-vendor 查 git/文件；verify-runtime-closure 与
+        // build-runtime --fixture 只读固定基线），因此 networkPolicy 是 none，offline 下**真跑**。
+        // 真正的构建（install/build/typecheck/lint 四条 exit 0）不是门禁命令，证据在 PROVENANCE.md §3。
+        'S11/S14 的构建前置（install/build/typecheck/lint）不在门禁内执行；证据记在 vendor/dsh/PROVENANCE.md §3',
       ],
     },
   };

@@ -1328,7 +1328,7 @@
   - ai/extraction/coverage.mjs 被**生产代码** ai/story-state/temporal/extraction.mjs（Z3/TT）import——撤掉会打断线上路径
 - **说明**：**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。 ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 `spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。 ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` 重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。
 - **验收证据**：`docs/nsdsh/PLAN.md`、`docs/nsdsh/baseline.md`、`docs/nsdsh/adr-001-boundaries.md`
-- **本阶段认领的文件**（101 个）：
+- **本阶段认领的文件**（102 个）：
   - `.gitignore`
   - `.p1-baseline/verify-phase-map.mjs`
   - `.p6-cutover/snapshot.mjs`
@@ -1351,6 +1351,7 @@
   - `docs/nsdsh/adr-001-boundaries.md`
   - `docs/nsdsh/baseline.md`
   - `docs/nsdsh/known-issues.json`
+  - `docs/nsdsh/post-s18-evidence-baseline.md`
   - `docs/nsdsh/stages.json`
   - `docs/nsdsh/upstream-maintenance.md`
   - `docs/phase-map.md`
@@ -1433,7 +1434,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**698** 个文件
+- 真实改动集：**699** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

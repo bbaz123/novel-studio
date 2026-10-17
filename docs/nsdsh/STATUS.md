@@ -43,13 +43,13 @@
 
 | 项 | 结果 |
 |---|---|
-| nsdsh 套件 | **44 套件 / 310 断言 / 0 失败** |
+| nsdsh 套件 | **45 套件 / 315 断言 / 0 失败** |
 | temporal | **15/15** |
 | 离线清单 | **55/55** |
 | 迁移幂等 | **15/0** |
 | Host Contract | **28/0**（78 表，v1.22.0） |
 | UTF-8 | 非法 0 / 缺 BOM 的 .ps1 0 |
-| 阶段台账 | 696 个文件**全部**有阶段归属 |
+| 阶段台账 | 698 个文件**全部**有阶段归属 |
 | 交付验收 | `verify-delivery.mjs` **exit 0**（12 项检查） |
 
 ## 性能（合成夹具，S15）
@@ -77,7 +77,7 @@
 ## 交付命令（全部零计费）
 
 ```bash
-node scripts/run-nsdsh-tests.mjs      # 44 套件 / 310 断言
+node scripts/run-nsdsh-tests.mjs      # 45 套件 / 315 断言
 node scripts/test-temporal-refactor.mjs
 node scripts/ci-offline-checks.mjs    # 55/55
 node .p1-baseline/verify-phase-map.mjs
