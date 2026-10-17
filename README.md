@@ -7,6 +7,7 @@
 Writing software + an AI writing assistant for **long-form fiction and Chinese web novels (网文写作)** — with a **foreshadowing tracker, character-state checks and a story bible** wired into every draft.
 
 [![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue)](https://github.com/bbaz123/novel-studio/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >= 22.13](https://img.shields.io/badge/node-%E2%89%A5%2022.13-3c873a?logo=node.js&logoColor=white)](https://nodejs.org)
 [![npm dependencies: 0](https://img.shields.io/badge/npm%20dependencies-0-brightgreen)](package.json)
@@ -19,7 +20,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.2.0** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page: [Release v1.2.0](https://github.com/bbaz123/novel-studio/releases/tag/v1.2.0).
+> 📌 Version **v1.2.0** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page; release notes live in [Releases](https://github.com/bbaz123/novel-studio/releases).
 
 <details>
 <summary><b>Contents</b></summary>
