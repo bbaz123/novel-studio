@@ -49,7 +49,7 @@ function suite(name, cases) {
 
 const readSvc = () => fs.readFileSync(path.join(REPO, SVC_REL), 'utf8');
 
-suite('nsdsh/module-boundaries', [
+await suiteAsync('nsdsh/module-boundaries', [
   // ── ① 静态：import 图里不得有服务/数据库/网络 ────────────────────────────────
   ['[静态] 服务模块不 import server.js / db.js / HTTP / 网络模块', () => {
     const src = readSvc();

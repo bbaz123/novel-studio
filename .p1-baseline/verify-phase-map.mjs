@@ -1602,6 +1602,12 @@ export const PHASES = [
       'tests/nsdsh/novel-profile.test.mjs',
       'tests/nsdsh/effective-tools.test.mjs',
       'tests/nsdsh/runtime-config-isolation.test.mjs',
+      'ai/runtime/dsh-sdk.mjs',
+      'tests/nsdsh/sdk-lifecycle.test.mjs',
+      'tests/nsdsh/sdk-cancel.test.mjs',
+      'tests/nsdsh/session-scope.test.mjs',
+      'tests/nsdsh/runtime-pool.test.mjs',
+
 
 
 

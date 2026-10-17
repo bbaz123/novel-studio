@@ -19,7 +19,13 @@ export function suite(name, cases) {
   const failed = [];
   for (const [label, fn] of cases) {
     try {
-      fn();
+      const r = fn();
+      // ⚠️ 异步用例不能在同步 suite 里跑：未 await 的 Promise 会把断言失败
+      // 变成 unhandled rejection —— 套件已经打印 PASS，失败却在事后才炸（典型假绿）。
+      // 这里**直接判错并指路**，而不是静默通过。
+      if (r && typeof r.then === 'function') {
+        throw new Error('ASYNC_CASE_IN_SYNC_SUITE：该用例返回 Promise，请改用 suiteAsync()');
+      }
       pass += 1;
       console.log(`  ok   ${label}`);
     } catch (e) {

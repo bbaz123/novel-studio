@@ -6,7 +6,7 @@
  * 且 `not_run`（没有模型）与 `failed`（模型坏了）必须分开。
  */
 import assert from 'node:assert/strict';
-import { suite } from '../temporal/harness.mjs';
+import { suiteAsync } from '../temporal/harness.mjs';
 
 const A = await import('../../ai/model-broker/adapters.mjs');
 const E = await import('../../ai/model-broker/envelope.mjs');
@@ -23,7 +23,7 @@ function makeEnvelope(overrides = {}) {
   });
 }
 
-suite('nsdsh/runtime-adapter-contract', [
+await suiteAsync('nsdsh/runtime-adapter-contract', [
   ['S10-C1 成功路径：direct 与 legacy 产出**同一形状**', async () => {
     const env = makeEnvelope();
     const direct = A.createDirectAdapter({ callAI: async () => ({ text: '{"events":[]}', usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }) });

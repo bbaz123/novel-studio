@@ -11,7 +11,7 @@
  *   R4 重排不重置传输态 → 新一轮尚未发送却按"上一轮已 sent"进 unknown
  */
 import assert from 'node:assert/strict';
-import { isolatedDir, suite } from '../temporal/harness.mjs';
+import { isolatedDir, suiteAsync } from '../temporal/harness.mjs';
 
 isolatedDir('nsdsh-task-fencing-');
 const { db } = await import('../../db.js');
@@ -38,7 +38,7 @@ function clock(start = 1_000_000) {
 
 const T0 = 1_000_000;
 
-suite('nsdsh/task-fencing', [
+await suiteAsync('nsdsh/task-fencing', [
   // ── R1：running 不可变；新修订另建 queued；旧 worker 不得吞掉它 ──────────────
   ['R1-01 分析 A 时保存 B：B 必须是独立 queued，且 A 完成不得把 B 标成 done', () => {
     const { workId, chapterId } = seed();

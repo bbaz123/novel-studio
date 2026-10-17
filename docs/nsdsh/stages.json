@@ -829,7 +829,7 @@
       "id": "S13",
       "title": "SDK 子进程、任务会话与取消",
       "batch": "NS-D",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S12"
       ],
@@ -839,15 +839,40 @@
       ],
       "requiredTestFiles": [
         "tests/nsdsh/sdk-lifecycle.test.mjs",
-        "tests/nsdsh/session-scope.test.mjs"
+        "tests/nsdsh/sdk-cancel.test.mjs",
+        "tests/nsdsh/session-scope.test.mjs",
+        "tests/nsdsh/runtime-pool.test.mjs"
       ],
-      "requiredArtifacts": [],
-      "commands": [],
+      "requiredArtifacts": [
+        "ai/runtime/dsh-sdk.mjs"
+      ],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S13 四件套 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "无进程泄漏、无跨任务结果混淆、无假取消 API"
       ],
-      "rollbackNotes": "关闭 SDK adapter，使用已验证回退。"
+      "rollbackNotes": "关闭 SDK adapter，使用已验证回退。",
+      "notes": "S13 完成（2026-10-16）：新增 ai/runtime/dsh-sdk.mjs。**先核对了锁定基线的真实协议面**（deepseek-harness/packages/sdk/protocol/src/types.ts：请求只有 initialize / session/prompt / shutdown，没有 session/cancel 也没有 session/new），因此：取消 = 终止独占进程并确认退出（无假取消 API）；session 由 session/prompt 的未知 sessionId 惰性创建，命名即隔离边界（ns:work:chapter:task）。默认单进程单活跃任务（并发启动被拒）；**活跃判据是进程是否退出，不是任务状态**（取消失败时进程未退出→仍算活跃，禁止新建）。池化默认关闭，且区分\"上下文不可信\"与\"尚未实现\"两种理由（方案允许关闭池化）。另修一处贯穿性假绿：tests/temporal/harness.mjs 的同步 suite() 不 await 异步用例，异步断言逃逸成 unhandled rejection，套件却已打印 PASS —— 现对\"返回 Promise 的用例\"直接判错并指路 suiteAsync()；并把 task-fencing / runtime-adapter-contract / module-boundaries 三个既有套件改用 suiteAsync（它们本来就有异步用例）。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 7,
+          "fail": 0,
+          "commands": [
+            "tests-nsdsh(278 断言)"
+          ]
+        }
+      }
     },
     {
       "id": "S14",

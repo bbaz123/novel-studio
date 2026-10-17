@@ -426,6 +426,64 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S13') {
+    // S13 = SDK 子进程、任务会话与取消。
+    // 最关键的一条：**不得发明上游方法** —— 锁定基线的协议面没有 session/cancel。
+    const rel = 'ai/runtime/dsh-sdk.mjs';
+    if (!fs.existsSync(abs(rel))) {
+      out.push({ name: 'SDK 运行时模块存在', passed: false, detail: `缺少 ${rel}` });
+      return out;
+    }
+    const src = fs.readFileSync(abs(rel), 'utf8');
+
+    out.push({
+      name: '协议面白名单只含上游真实方法（initialize / session/prompt / shutdown）',
+      passed: /SDK_PROTOCOL/.test(src)
+        && /'initialize'/.test(src) && /'session\/prompt'/.test(src) && /'shutdown'/.test(src)
+        && /SDK_PROTOCOL_VIOLATION/.test(src),
+      detail: '发现"发明 API"必须本地炸掉（fail-closed）',
+    });
+    out.push({
+      name: '无假取消 API：取消走终止独占进程，且确认已退出',
+      passed: /kill_process/.test(src) && /PROCESS_DID_NOT_EXIT/.test(src)
+        && !/send\(\s*\{[^}]*method:\s*['"]session\/cancel['"]/.test(src),
+      detail: '上游没有 session/cancel，取消只能是杀进程 + 确认退出',
+    });
+    out.push({
+      name: '默认单进程单活跃任务；上一个未确认退出前拒绝新建',
+      passed: /ANOTHER_TASK_ACTIVE/.test(src) && /canStartNewTask/.test(src),
+      detail: '不做"悄悄并行"',
+    });
+    out.push({
+      name: '会话作用域带 work/chapter/task；结果归属校验拒收不匹配 session',
+      passed: /sessionIdFor/.test(src) && /SESSION_MISMATCH/.test(src) && /resolveResult/.test(src),
+      detail: '防跨任务结果混淆',
+    });
+    out.push({
+      name: '池化默认关闭且理由可解释（不可安全池化时关闭是正确答案）',
+      passed: /poolingDecision/.test(src) && /UNTRUSTED_SESSION_CONTEXT/.test(src)
+        && /POOLING_NOT_IMPLEMENTED/.test(src),
+      detail: '要说清"不安全"与"还没做"是两件事',
+    });
+
+    const needTests = [
+      'tests/nsdsh/sdk-lifecycle.test.mjs',
+      'tests/nsdsh/sdk-cancel.test.mjs',
+      'tests/nsdsh/session-scope.test.mjs',
+      'tests/nsdsh/runtime-pool.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测四件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '4/4 就位',
+    });
+    return out;
+  }
+
   if (id === 'S12') {
     // S12 = 小说专用 profile。核心不变量：**模型实际拿到的工具集合 == 审批允许集合**，
     // 且任何配置覆盖层扩权都失败关闭。
