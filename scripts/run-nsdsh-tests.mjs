@@ -60,6 +60,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/domain-stream.test.mjs',
   'tests/nsdsh/frontend-revision-guard.test.mjs',
   'tests/nsdsh/editor-save-ime.test.mjs',
+  // S09: tool capability table (F11) + author approval boundary + cross-work isolation
+  'tests/nsdsh/tool-capabilities.test.mjs',
+  'tests/nsdsh/author-approval-boundary.test.mjs',
+  'tests/nsdsh/cross-work-isolation.test.mjs',
 ];
 
 /**

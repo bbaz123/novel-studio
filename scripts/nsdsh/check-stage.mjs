@@ -426,6 +426,68 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S09') {
+    // S09 = 收紧工具能力与作者权限（修 F11 + D6）。
+    const capRel = 'harness-plugins/novel-writing/capabilities.mjs';
+    if (!fs.existsSync(abs(capRel))) {
+      out.push({ name: '能力表模块存在', passed: false, detail: `缺少 ${capRel}` });
+      return out;
+    }
+    const capSrc = fs.readFileSync(abs(capRel), 'utf8');
+    const toolsSrc = fs.readFileSync(abs('harness-plugins/novel-writing/novel-tools.mjs'), 'utf8');
+
+    out.push({
+      name: '三类能力机器可检查（read_only / proposal / author_confirm）',
+      passed: /CAPABILITY\s*=\s*Object\.freeze/.test(capSrc) && /READ_ONLY/.test(capSrc)
+        && /PROPOSAL/.test(capSrc) && /AUTHOR_CONFIRM/.test(capSrc) && /TOOL_CAPABILITIES/.test(capSrc),
+      detail: 'F11：权限表必须是唯一事实来源，而不是各端点各自判断',
+    });
+    out.push({
+      name: '失败关闭：表里没有的工具一律拒绝（隐藏工具名也拿不到执行器）',
+      passed: /UNKNOWN_TOOL/.test(capSrc) && /hasOwnProperty\.call\(TOOL_CAPABILITIES/.test(capSrc),
+      detail: '必须用 hasOwnProperty 查表，原型链上的名字不能被当成工具',
+    });
+    out.push({
+      name: '作者确认边界：改正式状态必须带 approval_id，插件不得伪造',
+      passed: /APPROVAL_REQUIRED/.test(capSrc) && /APPROVAL_OP/.test(capSrc)
+        && /approvalId/.test(capSrc) && !/randomUUID\(\)[^\n]*approval/.test(capSrc),
+      detail: '审批 id 只能来自作者通道',
+    });
+    out.push({
+      name: '跨作品隔离：请求 work_id 与绑定 scope 不一致即拒绝',
+      passed: /WORK_SCOPE_MISMATCH/.test(capSrc),
+      detail: '绑定来源必须是任务启动器注入的环境身份，不是模型参数',
+    });
+    out.push({
+      name: '插件真的在每次执行前过统一判定（表不是装饰）',
+      passed: /assertModelCallable\(name,/.test(toolsSrc) && /if \(!verdict\.ok\)/.test(toolsSrc)
+        && /process\.env\.NOVELSTUDIO_WORK_ID/.test(toolsSrc),
+      detail: '判定必须早于 await execute(args)，且绑定 scope 来自环境身份',
+    });
+    out.push({
+      name: 'D6 已处理：未接线的 NOVELSTUDIO_HARNESS_POOL 已从契约移除且三处声明一致',
+      passed: !fs.readFileSync(abs('docs/host-contract.v1.json'), 'utf8').includes('NOVELSTUDIO_HARNESS_POOL')
+        && !fs.readFileSync(abs('README.md'), 'utf8').includes('NOVELSTUDIO_HARNESS_POOL'),
+      detail: '选择"删除"而不是"接线"：热备池从未被生产代码 import',
+    });
+
+    const needTests = [
+      'tests/nsdsh/tool-capabilities.test.mjs',
+      'tests/nsdsh/author-approval-boundary.test.mjs',
+      'tests/nsdsh/cross-work-isolation.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测三件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '3/3 就位',
+    });
+    return out;
+  }
+
   if (id === 'S08') {
     // S08 = 领域事件流与前端闭环。核心不是"有没有推送"，而是三条验收：
     // 断线不漏确认 / 重复事件不重复渲染 / 切章后旧结果不更新新章卡片。

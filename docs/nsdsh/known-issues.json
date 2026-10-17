@@ -203,9 +203,11 @@
       ],
       "impact": "『关闭一些插件』不等于小说权限最小化；模型仍可读写任意路径。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S09",
-      "expiry": "S09：建立只读/提案/作者确认三类操作的可检查权限表，模型可拿到的工具集合必须等于审批允许集合。"
+      "expiry": "S09：建立只读/提案/作者确认三类操作的可检查权限表，模型可拿到的工具集合必须等于审批允许集合。",
+      "fixedStage": "S09",
+      "evidenceNote": "2026-10-16 S09：新增 harness-plugins/novel-writing/capabilities.mjs：三类能力（read_only / proposal / author_confirm）的机器可检查权限表，逐条对齐 26 个真实注册工具；assertModelCallable 是唯一判定入口，**失败关闭**（未知工具 UNKNOWN_TOOL，用 hasOwnProperty 查表防原型链绕过）；AUTHOR_CONFIRM 必须带作者的一次性 approval_id（APPROVAL_REQUIRED），插件不生成/不缓存审批；请求 work_id 与绑定 scope（来自 NOVELSTUDIO_WORK_ID）不一致即 WORK_SCOPE_MISMATCH。已在 register() 内接线：判定早于 await execute(args)。断言：tool-capabilities 7/7、author-approval-boundary 6/6、cross-work-isolation 6/6。"
     },
     {
       "id": "F12",
@@ -313,9 +315,11 @@
       ],
       "impact": "文档承诺了一个不存在的开关，运维按文档设置却毫无效果。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S09",
-      "expiry": "S09：或接线（热备池经 RuntimeAdapter 接入）或从契约中移除；两者都要同步 docs/host-contract.md、docs/host-contract.v1.json 与 test-host-contract.mjs 四处互锁。"
+      "expiry": "S09：或接线（热备池经 RuntimeAdapter 接入）或从契约中移除；两者都要同步 docs/host-contract.md、docs/host-contract.v1.json 与 test-host-contract.mjs 四处互锁。",
+      "fixedStage": "S09",
+      "evidenceNote": "2026-10-16 S09：选择\"删除\"而不是\"接线\"：ai/harness-pool.mjs 从未被任何生产代码 import，NOVELSTUDIO_HARNESS_POOL 在代码中零读取者。已从 docs/host-contract.v1.json 的 settings_isolation.env 移除，README 无残留，头注释改为明确说明\"该开关已移除、勿再宣传\"。regression-findings 的 D6 表征已翻转为\"契约不得再声明 + 注释必须说明已移除\"（18/0 仍通过）。历史报告（docs/code-review-2026-09-19.md、.audit-2026 等）按项目约定不改写，它们描述的是当时的代码。"
     },
     {
       "id": "E1",
@@ -357,9 +361,9 @@
     "high": 7,
     "medium": 12,
     "low": 1,
-    "open": 6,
+    "open": 4,
     "notDirectlyDetectable": 0,
-    "fixedLocally": 14,
+    "fixedLocally": 16,
     "byFixStage": {
       "S04": [
         "E2",

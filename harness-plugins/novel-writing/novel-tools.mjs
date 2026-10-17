@@ -35,6 +35,10 @@ export const PLUGIN_VERSION = '0.17.0'
 
 const DEFAULT_BASE = 'http://127.0.0.1:3737'
 
+// S09（修 F11）：工具能力边界是**机器可检查**的表，不是靠每个工具自觉。
+// 表里没有的工具一律失败关闭；AUTHOR_CONFIRM 类必须带作者的一次性 approval_id。
+import { assertModelCallable, capabilityOf, CAPABILITY } from './capabilities.mjs'
+
 const textOutput = {
   schema: {
     type: 'object',
@@ -170,6 +174,21 @@ export function apply(ctx, config) {
       output: textOutput,
       async execute(args) {
         try {
+          // ── S09：统一能力判定（唯一入口，失败关闭） ──────────────────────────
+          // 绑定 scope 来自任务启动器注入的 NOVELSTUDIO_WORK_ID：它代表"这次会话被限定在哪个作品"。
+          // 若工具请求里显式给了不同的 work_id，就是跨作品越权，直接拒绝。
+          const boundWorkId = String(process.env.NOVELSTUDIO_WORK_ID || '').trim();
+          const verdict = assertModelCallable(name, {
+            approvalId: args && args.approval_id,
+            args: args || {},
+            scope: { workId: boundWorkId || null },
+          });
+          if (!verdict.ok) {
+            const err = new Error(verdict.detail);
+            err.code = verdict.code;
+            err.nsReported = true; // 能力拒绝是**预期内的策略结果**，不当作插件故障上报
+            throw err;
+          }
           const text = await execute(args)
           return { text: String(text ?? '') }
         } catch (e) {

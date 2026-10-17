@@ -593,7 +593,7 @@
       "id": "S09",
       "title": "收紧工具能力与作者权限（修 D6）",
       "batch": "NS-C",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S08"
       ],
@@ -605,15 +605,39 @@
       ],
       "requiredTestFiles": [
         "tests/nsdsh/tool-capabilities.test.mjs",
+        "tests/nsdsh/author-approval-boundary.test.mjs",
         "tests/nsdsh/cross-work-isolation.test.mjs"
       ],
-      "requiredArtifacts": [],
-      "commands": [],
+      "requiredArtifacts": [
+        "harness-plugins/novel-writing/capabilities.mjs"
+      ],
+      "commands": [
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S09 三件套 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "loopback-only",
       "requiredAcceptanceChecks": [
         "伪造 work/session/确认请求全部被拒绝"
       ],
-      "rollbackNotes": "可禁用模型写提案入口，不恢复越权写入。"
+      "rollbackNotes": "可禁用模型写提案入口，不恢复越权写入。",
+      "notes": "S09 完成（2026-10-16）：capabilities.mjs 能力表（read_only/proposal/author_confirm）逐条对齐 26 个注册工具；assertModelCallable 为唯一入口，失败关闭（UNKNOWN_TOOL，hasOwnProperty 防原型链）；AUTHOR_CONFIRM 必须带作者一次性 approval_id；work_id 与绑定 scope 不一致即 WORK_SCOPE_MISMATCH；已在 register() 内接线（判定早于执行）。D6 选择删除：未接线的 NOVELSTUDIO_HARNESS_POOL 已从契约移除，三处声明一致。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "PASS",
+          "pass": 8,
+          "fail": 0,
+          "commands": [
+            "tests-nsdsh(213 断言)"
+          ]
+        }
+      }
     },
     {
       "id": "S10",

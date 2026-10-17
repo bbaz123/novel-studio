@@ -760,21 +760,29 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // D6 契约声明 NOVELSTUDIO_HARNESS_POOL，但没有任何代码读它（→ S09）
   // ────────────────────────────────────────────────────────────────────────────
-  ['D6 [静态] host-contract 声明 NOVELSTUDIO_HARNESS_POOL；生产代码零读取者（D6→S09）', () => {
-    // ① 声明存在（并且是契约 JSON 里的正经键，不是注释）。
+  ['D6 [静态] 契约不再声明未接线的开关；三处声明一致（S09 已修）', () => {
+    // S09 选择"删除"而不是"接线"：热备池从未被任何生产代码 import，
+    // 保留一个没人读的开关只会让读者以为"设了就能启用"。
     const contractRaw = readRepo('docs/host-contract.v1.json');
-    assert.ok(contractRaw.includes('NOVELSTUDIO_HARNESS_POOL'), 'D6：契约里确实声明了它');
-    assert.ok(JSON.stringify(JSON.parse(contractRaw)).includes('NOVELSTUDIO_HARNESS_POOL'));
+    assert.ok(!contractRaw.includes('NOVELSTUDIO_HARNESS_POOL'),
+      'D6 已修：契约里不得再声明这个未接线的开关');
+    assert.ok(!JSON.stringify(JSON.parse(contractRaw)).includes('NOVELSTUDIO_HARNESS_POOL'));
 
-    // ② 语料：仓库内的生产代码（跳过 tests/ 与点开头的基线/侦察目录）。
+    // README 也不得再宣传它（README 是面向作者/开发者的"能用的东西"清单）
+    const readme = readRepo('README.md');
+    assert.ok(!readme.includes('NOVELSTUDIO_HARNESS_POOL'), 'D6 已修：README 不得再宣传该开关');
+
+    // 唯一允许提到它的生产文件是热备池自己，且必须**明确说它已移除/不生效**
     const codeFiles = PRODUCTION_CODE_FILES;
     assert.ok(codeFiles.length > 100, `语料应当覆盖生产代码，实际 ${codeFiles.length} 个文件`);
+    // 唯一**允许**提到它的生产文件是热备池自己（说明"已移除"），以及门禁脚本
+    //（check-stage 里那条验收项正是"断言契约不再声明它"，属于合法引用）。
     const mentions = codeFiles.filter((f) => fs.readFileSync(f, 'utf8').includes('NOVELSTUDIO_HARNESS_POOL')).map(relOf);
-    assert.deepEqual(mentions, ['ai/harness-pool.mjs'],
-      'D6：唯一提到它的生产文件是热备池自己（且只是"这个开关不存在"的注释）');
+    assert.deepEqual(mentions, ['ai/harness-pool.mjs', 'scripts/nsdsh/check-stage.mjs'],
+      'D6：只允许"热备池头注释"与"门禁断言"两处提及；不得有代码读取该环境变量');
     const poolSrc = readRepo('ai/harness-pool.mjs');
     assert.ok(!/process\.env\.NOVELSTUDIO_HARNESS_POOL/.test(poolSrc), 'D6：运行时代码从不读这个环境变量');
-    assert.ok(poolSrc.includes('NOVELSTUDIO_HARNESS_POOL=1'), 'D6：头注释自陈该开关"写了也不生效"');
+    assert.match(poolSrc, /已从 host-contract 中\*\*移除\*\*/, 'D6 已修：头注释必须说明已移除，而不是"写了不生效"');
 
     // ③ 连热备池本身也没有生产 importer：唯一引用它的 harness-sdk-worker 同样没人 import。
     const importers = codeFiles.filter((f) => /from\s+'\.\/harness-pool\.mjs'/.test(fs.readFileSync(f, 'utf8'))).map(relOf);

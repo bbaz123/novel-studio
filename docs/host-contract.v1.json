@@ -499,8 +499,7 @@
       "NOVELSTUDIO_CHAPTER_ID",
       "NOVELSTUDIO_MODE",
       "NOVELSTUDIO_PROPOSE_MODE",
-      "NOVELSTUDIO_OV_DISABLED",
-      "NOVELSTUDIO_HARNESS_POOL"
+      "NOVELSTUDIO_OV_DISABLED"
     ],
     "per_task_default_model": true,
     "task_settings_source": "settings 文档 → profile 补丁层 → 出厂默认（三级取值）",

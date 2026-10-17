@@ -1586,6 +1586,11 @@ export const PHASES = [
       'tests/nsdsh/domain-stream.test.mjs',
       'tests/nsdsh/frontend-revision-guard.test.mjs',
       'tests/nsdsh/editor-save-ime.test.mjs',
+      'harness-plugins/novel-writing/capabilities.mjs',
+      'tests/nsdsh/tool-capabilities.test.mjs',
+      'tests/nsdsh/author-approval-boundary.test.mjs',
+      'tests/nsdsh/cross-work-isolation.test.mjs',
+
 
 
 
