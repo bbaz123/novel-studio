@@ -348,7 +348,12 @@
       "fixStage": "S15",
       "expiry": "S15 已完成归因：属门禁侧沙箱（dsh-plugin-verification 的 workspace-write 策略拒绝子进程管道），项目内不可修。**严禁**以\"自动重试直到绿\"作为缓解；若门禁侧提供可配置的沙箱/超时，应由门禁侧解决。",
       "disposition": "not_fixable_in_project",
-      "evidenceNote": "2026-10-16 S15 归因完成，结论：**门禁侧沙箱行为，本项目不可修**。证据：① 静态枚举 scripts/ci-offline-checks.mjs 的 55 项检查，其中 **18 项依赖派生子进程**（隔离 HTTP 实例 / 假 LLM / OV stub / 安装器演练等）；② 在当前 Agent shell 里实跑同一命令：`node scripts/ci-offline-checks.mjs` → **exit=0，55/55 通过，耗时 141153ms**；③ 门禁环境里同一命令曾出现 **38/17** 且 17 条统一 `spawn EPERM`（errno -4048），与 `docs/nsdsh/baseline.md` §7 记录形状一致；④ 另有 **127.5s 实际耗时 vs 120s 预算** 造成的 `timed_out`。因此差异不在项目代码，而在执行环境是否允许子进程管道。**未采用任何自动重试**，断言强度未变。对门禁可信度的影响：门禁红必须与其 stdout 里的 `EPERM`/超时签名一起读；无该签名的纯红才按代码回归处理。取证脚本：`scripts/nsdsh/attribute-gate-flakiness.mjs`。"
+      "evidenceNote": "2026-10-16 S15 归因完成，结论：**门禁侧沙箱行为，本项目不可修**。证据：① 静态枚举 scripts/ci-offline-checks.mjs 的 55 项检查，其中 **18 项依赖派生子进程**（隔离 HTTP 实例 / 假 LLM / OV stub / 安装器演练等）；② 在当前 Agent shell 里实跑同一命令：`node scripts/ci-offline-checks.mjs` → **exit=0，55/55 通过，耗时 141153ms**；③ 门禁环境里同一命令曾出现 **38/17** 且 17 条统一 `spawn EPERM`（errno -4048），与 `docs/nsdsh/baseline.md` §7 记录形状一致；④ 另有 **127.5s 实际耗时 vs 120s 预算** 造成的 `timed_out`。因此差异不在项目代码，而在执行环境是否允许子进程管道。**未采用任何自动重试**，断言强度未变。对门禁可信度的影响：门禁红必须与其 stdout 里的 `EPERM`/超时签名一起读；无该签名的纯红才按代码回归处理。取证脚本：`scripts/nsdsh/attribute-gate-flakiness.mjs`。 2026-10-17（R06）：补充 spawn 探针（EPERM/ENOENT/非零/超时四分）与交给门禁所有者的取证包，见 docs/nsdsh/e1-gate-sandbox-evidence.md；本轮本机 shell 中 EPERM **复现不出来**（五条探针全部符合预期），因此维持 BLOCKED_EXTERNAL 而不改判。未加重试、未删测试、未改弱断言、未放宽 networkPolicy。",
+      "externalKind": "BLOCKED_EXTERNAL",
+      "externalOwner": "gate-maintainer",
+      "externalSignature": "spawn EPERM (errno -4048) / timed_out（非断言失败）",
+      "evidenceDoc": "docs/nsdsh/e1-gate-sandbox-evidence.md",
+      "resolutionGate": "门禁所有者在同一约束下多次真实执行稳定通过且 required checks 强度不变，才可改 RESOLVED_VERIFIED"
     },
     {
       "id": "E2",

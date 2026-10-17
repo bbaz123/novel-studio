@@ -1654,6 +1654,8 @@ export const PHASES = [
       // R05（F12-A）：HTTP 响应与请求体读取抽到单一所有者
       'ai/http/respond.mjs',
       'tests/nsdsh/http-respond.test.mjs',
+      // R06：E1 门禁沙箱外部归因材料
+      'docs/nsdsh/e1-gate-sandbox-evidence.md',
       // R03：跨平台矩阵与支持矩阵
       '.github/workflows/nsdsh-runtime-matrix.yml',
       'docs/nsdsh/support-matrix.md',
