@@ -79,6 +79,10 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/sdk-cancel.test.mjs',
   'tests/nsdsh/session-scope.test.mjs',
   'tests/nsdsh/runtime-pool.test.mjs',
+  // S14: runtime manifest + dependency closure (F10) / clean-room staging / B-C contract equivalence
+  'tests/nsdsh/distribution-closure.test.mjs',
+  'tests/nsdsh/distribution-clean-room.test.mjs',
+  'tests/nsdsh/runtime-equivalence.test.mjs',
 ];
 
 /**

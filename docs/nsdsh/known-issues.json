@@ -189,9 +189,11 @@
       ],
       "impact": "删除看似无关的包后会被误判为『运行时未构建』；反之这两个文件存在也不代表运行时可用。",
       "behaviorTest": "tests/nsdsh/regression-findings.test.mjs",
-      "status": "open",
+      "status": "fixed_locally",
       "fixStage": "S14",
-      "expiry": "S14：以 runtime manifest + 明确入口 + 协议握手取代产物文件猜测；旧标记只能作 legacy 兜底。"
+      "expiry": "S14：以 runtime manifest + 明确入口 + 协议握手取代产物文件猜测；旧标记只能作 legacy 兜底。",
+      "fixedStage": "S14",
+      "evidenceNote": "2026-10-16 S14：新增 vendor/dsh/runtime-manifest.json —— 记录基线（tag dsh-v0.1.7-rc.1 / vendor 7e06df2 / 指回 PROVENANCE）、明确入口（构建产物 apps/cli/lib/bin.js，dev 入口单独记录）、协议握手（initialize/session/prompt/shutdown，取自上游 HarnessSdkRequestMap）、依赖闭包（78 个工作区包，由 apps/cli 的 80 个 dependencies 解析得出，非手抄）、裁剪面（website/native/docs）与许可。新增 scripts/nsdsh/verify-runtime-closure.mjs（11 项校验：基线与 PROVENANCE 一致/入口存在/版本握手/协议不发明 API/闭包完整/许可非空/所有路径在基线内）与 scripts/nsdsh/build-runtime.mjs --fixture（staging 闭包 2581/23633 文件 = 裁剪 89.1%；B/C 契约签名三元要素逐字相等）。harness.js 的 isHarnessBuilt() 改为 manifest + 入口 + 版本握手，并抽出 harnessRuntimeState() 让界面与启动同源；**只有 dev 入口时如实判为\"未构建\"**。regression-findings 的 F10 表征已翻转为要求已修（18/0）。实测：build-runtime exit 0、verify-closure exit 0（11/11）、check-stage S14 PASS。**未做**：真实的裁剪发行物构建 C（需完整打包流水线）留待发布工程，已在 runtime-equivalence 的注释与本条写明。"
     },
     {
       "id": "F11",
@@ -363,9 +365,9 @@
     "high": 7,
     "medium": 12,
     "low": 1,
-    "open": 3,
+    "open": 2,
     "notDirectlyDetectable": 0,
-    "fixedLocally": 17,
+    "fixedLocally": 18,
     "byFixStage": {
       "S04": [
         "E2",

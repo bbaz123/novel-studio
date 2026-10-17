@@ -1607,6 +1607,13 @@ export const PHASES = [
       'tests/nsdsh/sdk-cancel.test.mjs',
       'tests/nsdsh/session-scope.test.mjs',
       'tests/nsdsh/runtime-pool.test.mjs',
+      'vendor/dsh/runtime-manifest.json',
+      'scripts/nsdsh/build-runtime.mjs',
+      'scripts/nsdsh/verify-runtime-closure.mjs',
+      'tests/nsdsh/distribution-closure.test.mjs',
+      'tests/nsdsh/distribution-clean-room.test.mjs',
+      'tests/nsdsh/runtime-equivalence.test.mjs',
+
 
 
 

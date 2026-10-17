@@ -476,18 +476,30 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F10 就绪检测只看两个生成文件（→ S14）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F10 [静态] isHarnessBuilt() 只看两个 typert.host.js 生成文件（F10→S14）', () => {
+  ['F10 [静态] 就绪判据改为 manifest + 入口 + 版本握手（S14 已修）', () => {
     // 为什么静态：harness.js 在模块顶层调用 restoreHarnessSettingsIfNeeded()（会碰作者的真实
     // DSH 设置），不能为了断言而 import 它。这里断的是函数文本，不是运行结果。
-    const body = sliceBetween(readRepo('harness.js'), 'export function isHarnessBuilt()', '\n}\n');
-    const markers = [...body.matchAll(/path\.join\(dir, '([^']+)'\)/g)].map((m) => m[1]);
-    assert.deepEqual(markers, [
-      'packages/interaction/commands/lib/typert.host.js',
-      'packages/goal/goal/lib/typert.host.js',
-    ], 'F10：就绪判据只有这两个文件');
-    assert.equal((body.match(/typert\.host\.js/g) || []).length, 2);
-    assert.match(body, /return markers\.every\(\(file\) => fs\.existsSync\(file\)\);/,
-      'F10：两个文件都存在就算"已构建"');
+    const harnessSrc = readRepo('harness.js');
+    const body = sliceBetween(harnessSrc, 'export function isHarnessBuilt()', '\n}\n');
+
+    // S14 已修：不再看"某两个生成文件在不在"
+    assert.ok(!/typert\.host\.js/.test(body), 'F10 已修：就绪判据不得再只看那两个生成文件');
+    assert.ok(!/markers\.every/.test(body), 'F10 已修：不得再审"两个标记文件都存在"');
+    assert.match(body, /harnessRuntimeState\(\)/, 'F10 已修：必须走统一的状态判定');
+
+    // 状态判定必须包含：manifest / 入口 / 版本握手
+    const stateBody = sliceBetween(harnessSrc, 'export function harnessRuntimeState()', '\n}\n');
+    assert.match(stateBody, /runtime-manifest\.json/, 'F10 已修：必须读 runtime manifest');
+    assert.match(stateBody, /manifest\.entry/, 'F10 已修：必须检查入口');
+    assert.match(stateBody, /expectVersion/, 'F10 已修：必须做版本握手');
+    assert.match(stateBody, /尚未构建|未构建/, 'F10 已修：只有 dev 入口时必须如实标注"未构建"');
+
+    // manifest 本身存在且可解析（就绪判据的数据来源）
+    const manifest = JSON.parse(readRepo('vendor/dsh/runtime-manifest.json'));
+    assert.equal(manifest.version, 'runtime-manifest-v1');
+    assert.ok(manifest.entry && manifest.entry.path, 'manifest 必须声明入口');
+    assert.ok(Array.isArray(manifest.handshake.methods) && manifest.handshake.methods.length > 0,
+      'manifest 必须声明协议握手方法');
   }],
 
   // ────────────────────────────────────────────────────────────────────────────

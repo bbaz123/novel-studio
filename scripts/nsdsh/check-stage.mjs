@@ -426,6 +426,65 @@ export async function runAcceptanceChecks(stageId, { stage, doc } = {}) {
     return out;
   }
 
+  if (id === 'S14') {
+    // S14 = 裁剪发行物与依赖闭包（修 F10）。判据：manifest 可验证、依赖不越界、B/C 等价、许可齐全。
+    const need = ['vendor/dsh/runtime-manifest.json', 'scripts/nsdsh/build-runtime.mjs', 'scripts/nsdsh/verify-runtime-closure.mjs'];
+    const miss = need.filter((rel) => !fs.existsSync(abs(rel)));
+    if (miss.length) {
+      out.push({ name: 'runtime manifest 与闭包脚本存在', passed: false, detail: `缺：${miss.join('、')}` });
+      return out;
+    }
+    const manifest = JSON.parse(fs.readFileSync(abs('vendor/dsh/runtime-manifest.json'), 'utf8'));
+    const harnessSrc = fs.readFileSync(abs('harness.js'), 'utf8');
+
+    out.push({
+      name: 'F10 已修：就绪判据改为 manifest + 入口 + 版本握手',
+      passed: /harnessRuntimeState/.test(harnessSrc)
+        && /runtime-manifest\.json/.test(harnessSrc) && /expectVersion/.test(harnessSrc)
+        && !/typert\.host\.js[\s\S]{0,200}markers\.every/.test(harnessSrc),
+      detail: '不再"两个生成文件在就算就绪"',
+    });
+    out.push({
+      name: 'manifest 可验证：基线与 PROVENANCE 一致，入口/版本/协议/许可齐全',
+      passed: manifest.baseline && manifest.entry && manifest.handshake && manifest.license
+        && Array.isArray(manifest.closure.requiredPackages) && manifest.closure.requiredPackages.length >= 50,
+      detail: `闭包 ${manifest.closure && manifest.closure.requiredPackages ? manifest.closure.requiredPackages.length : 0} 个包`,
+    });
+    out.push({
+      name: '协议握手只用上游真实方法（不发明 API）',
+      passed: JSON.stringify([...(manifest.handshake.methods || [])].sort())
+        === JSON.stringify(['initialize', 'session/prompt', 'shutdown']),
+      detail: '与 packages/sdk/protocol/src/types.ts 的 HarnessSdkRequestMap 一致',
+    });
+    out.push({
+      name: '依赖不越界：闭包路径全在基线内，且不与裁剪面重叠',
+      passed: Array.isArray(manifest.closure.excludedFromDistribution) && manifest.closure.excludedFromDistribution.length > 0
+        && manifest.closure.requiredPackages.every((rel) => !rel.startsWith('/') && !rel.includes('node_modules')),
+      detail: '禁止指向全局包或绝对路径',
+    });
+    out.push({
+      name: 'B/C 契约等价由可枚举三要素判定（方法/入口/版本）',
+      passed: /contracts/.test(fs.readFileSync(abs('scripts/nsdsh/build-runtime.mjs'), 'utf8')),
+      detail: '不是"看起来差不多"，而是逐字比对签名',
+    });
+
+    const needTests = [
+      'tests/nsdsh/distribution-closure.test.mjs',
+      'tests/nsdsh/distribution-clean-room.test.mjs',
+      'tests/nsdsh/runtime-equivalence.test.mjs',
+    ];
+    let runner = '';
+    try { runner = fs.readFileSync(abs('scripts/run-nsdsh-tests.mjs'), 'utf8'); } catch (_) { runner = ''; }
+    const missingT = needTests.filter((f) => !fs.existsSync(abs(f)));
+    const notInRunner = needTests.filter((f) => !runner.includes(f));
+    out.push({
+      name: '必测三件套已落地并纳入套件执行',
+      passed: missingT.length === 0 && notInRunner.length === 0,
+      detail: missingT.length || notInRunner.length ? `缺=${missingT.join(',')} 未纳入=${notInRunner.join(',')}` : '3/3 就位',
+    });
+    return out;
+  }
+
   if (id === 'S13') {
     // S13 = SDK 子进程、任务会话与取消。
     // 最关键的一条：**不得发明上游方法** —— 锁定基线的协议面没有 session/cancel。

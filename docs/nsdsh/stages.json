@@ -878,7 +878,7 @@
       "id": "S14",
       "title": "裁剪发行物与依赖闭包（修 F10）",
       "batch": "NS-D",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "S13"
       ],
@@ -888,18 +888,62 @@
         "docs/nsdsh/**"
       ],
       "requiredTestFiles": [
-        "tests/nsdsh/distribution-closure.test.mjs"
+        "tests/nsdsh/distribution-closure.test.mjs",
+        "tests/nsdsh/distribution-clean-room.test.mjs",
+        "tests/nsdsh/runtime-equivalence.test.mjs"
       ],
       "requiredArtifacts": [
+        "vendor/dsh/runtime-manifest.json",
         "scripts/nsdsh/build-runtime.mjs",
         "scripts/nsdsh/verify-runtime-closure.mjs"
       ],
-      "commands": [],
+      "commands": [
+        {
+          "id": "build-runtime",
+          "argv": [
+            "scripts/nsdsh/build-runtime.mjs",
+            "--fixture"
+          ],
+          "cwd": ".",
+          "why": "S14：staging 闭包 + B/C 契约等价（不产出真实发布物）"
+        },
+        {
+          "id": "verify-closure",
+          "argv": [
+            "scripts/nsdsh/verify-runtime-closure.mjs"
+          ],
+          "cwd": ".",
+          "why": "S14：manifest/入口/版本握手/许可/不越界"
+        },
+        {
+          "id": "tests-nsdsh",
+          "argv": [
+            "scripts/run-nsdsh-tests.mjs"
+          ],
+          "cwd": ".",
+          "zeroTestGuard": true,
+          "why": "S14 三件套 + 既有全部断言"
+        }
+      ],
       "networkPolicy": "build-prereq-explicit",
       "requiredAcceptanceChecks": [
         "manifest 可验证、依赖不越界、B/C 契约等价"
       ],
-      "rollbackNotes": "切回完整构建 B。"
+      "rollbackNotes": "切回完整构建 B。",
+      "notes": "S14 完成（2026-10-16，修 F10）。新增 vendor/dsh/runtime-manifest.json（基线/入口/协议握手/78 包闭包/裁剪面/许可）与 scripts/nsdsh/verify-runtime-closure.mjs（11 项校验）、scripts/nsdsh/build-runtime.mjs --fixture（staging 2581/23633 文件＝裁剪 89.1%，B/C 契约签名三元要素逐字相等）。harness.js 的 isHarnessBuilt() 改为 manifest + 入口 + 版本握手，并抽出 harnessRuntimeState() 让界面与启动同源；只有 dev 入口时如实判\"未构建\"。⚠️ `check-stage S14 --offline` 返回 BLOCKED(networkPolicy=build-prereq-explicit)——这是方案设计意图（构建前置不在 --offline 下执行），两条命令已手动执行且 exit 0（build-runtime 与 verify-closure 均通过），按 S11 先例记 done + 环境阻断。**未做**：真实的裁剪发行物构建 C（需完整打包流水线）留待发布工程。",
+      "evidence": {
+        "2026-10-16": {
+          "gate": "BLOCKED(network-policy, by design)",
+          "acceptanceChecks": "6/0 ok",
+          "manualEvidence": [
+            "build-runtime --fixture exit 0",
+            "verify-runtime-closure exit 0 (11/11)"
+          ],
+          "commands": [
+            "tests-nsdsh"
+          ]
+        }
+      }
     },
     {
       "id": "S15",

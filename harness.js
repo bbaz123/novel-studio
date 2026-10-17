@@ -254,14 +254,72 @@ export function isHarnessAvailable() {
   return fs.existsSync(harnessPackagePath());
 }
 
-// 判断 dsh 是否已经构建出运行所需的 lib 产物。
+/**
+ * 运行时是否真的可启动 —— **F10 已修**（S14）。
+ *
+ * 旧判据只看两个生成文件是否存在：
+ *   `packages/interaction/commands/lib/typert.host.js`
+ *   `packages/goal/goal/lib/typert.host.js`
+ * 于是"构建好了" = "这两个文件在"。它既不检查**入口**、也不检查**版本**，
+ * 一个半构建或版本错配的树照样被判"就绪"（F10）。
+ *
+ * 现在改为 **manifest + 明确入口 + 版本/协议握手**（见 `harnessRuntimeState()`）。
+ */
 export function isHarnessBuilt() {
+  return harnessRuntimeState().built === true;
+}
+
+/**
+ * 运行时状态明细（manifest / 入口 / 版本握手）。
+ * 与 `isHarnessBuilt()` **同源**，避免"界面说就绪、启动又说没就绪"这类口径分裂。
+ */
+export function harnessRuntimeState() {
   const dir = harnessDir();
-  const markers = [
-    path.join(dir, 'packages/interaction/commands/lib/typert.host.js'),
-    path.join(dir, 'packages/goal/goal/lib/typert.host.js')
-  ];
-  return markers.every((file) => fs.existsSync(file));
+  const reasons = [];
+  const out = { dir, built: false, reasons, entry: null, version: '', manifest: null };
+
+  const manifestPath = path.join(__dirname, 'vendor', 'dsh', 'runtime-manifest.json');
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    out.manifest = manifest.version || null;
+  } catch {
+    reasons.push('缺少可读的 runtime manifest（vendor/dsh/runtime-manifest.json）');
+    return out;
+  }
+
+  // ① 版本握手：基线 package.json 的 version 必须等于 manifest 的期望值
+  let pkgVersion = '';
+  try {
+    pkgVersion = String(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version || '');
+  } catch {
+    reasons.push('读不到基线的 package.json（基线目录不对或未安装）');
+    return out;
+  }
+  out.version = pkgVersion;
+  const expect = String((manifest.handshake && manifest.handshake.expectVersion) || '');
+  if (expect && pkgVersion !== expect) {
+    reasons.push(`版本握手失败：基线 ${pkgVersion}，manifest 期望 ${expect}`);
+    return out;
+  }
+
+  // ② 入口：必须用构建产物；只有 dev 入口说明"尚未构建"
+  const entryRel = String((manifest.entry && manifest.entry.path) || '');
+  const devRel = String((manifest.entry && manifest.entry.devEntry) || '');
+  const builtAbs = entryRel ? path.join(dir, entryRel) : '';
+  const devAbs = devRel ? path.join(dir, devRel) : '';
+  if (builtAbs && fs.existsSync(builtAbs)) {
+    out.entry = entryRel;
+    out.built = true;
+    return out;
+  }
+  if (devAbs && fs.existsSync(devAbs)) {
+    out.entry = devRel;
+    reasons.push(`只有开发入口 ${devRel}（未构建）：发行物必须用 ${entryRel}`);
+    return out;
+  }
+  reasons.push(`入口缺失：${entryRel || '(未声明)'} 与 ${devRel || '(未声明)'} 都不存在`);
+  return out;
 }
 
 /**
