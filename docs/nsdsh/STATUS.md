@@ -5,8 +5,26 @@
 > 阶段清单与命令的机器可读版本见 [`stages.json`](stages.json)。
 
 - 基线 HEAD：`b7919f75624c4e788fd3ffe916f2339ec8f04913`（NSDSH 起点）
-- 最近更新：2026-10-16（S18 交付验收）
+- 最近更新：2026-10-17（S18 后收尾 R00–R06）
 - 交付验收：`node scripts/nsdsh/verify-delivery.mjs` → **exit 0**
+
+## S18 后收尾（R00–R06）—— 补的是"真实运行证据"，**不改写** S00–S18 的历史
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| **R00** 证据与版本冻结 | **PASS** | `post-s18-evidence-baseline.md`：8 条命令实测退出码；310/315 与 696/698 口径定量闭合为 `RECONCILED` |
+| **R01** 真实 DSH SDK 子进程（P0） | **PASS** | `verify-sdk-real.mjs` **12/12**：真 PID `14512`、真握手 `deepseek-harness-sdk-runtime@0.0.1`、真终态 `turn/end`、真取消、双会话 17/17 零交叉、作者配置零触碰 |
+| **R02** 真实裁剪发行物（P0） | **PASS** | 503 包 / 22,530 条目 / 69.5MB / sha256 `7bfc4f19…`；冷环境 **8/8**（含中文+空格路径）；B/C 两个独立进程 **7/7**，消息摘要一致 |
+| **R03** 跨平台矩阵 | **PARTIAL（按设计）** | workflow 已入库但**从未在 CI 执行**；`support-matrix.md` 逐格标注：Windows 全 `VERIFIED`，Ubuntu/macOS/Node 22.x 全 `UNVERIFIED` |
+| **R04-Q0** 质量语料与评分器 | **PASS** | 25 条合成用例 / 12 类；评分器四类零容忍；12 条套件含 6 条负向对照 |
+| **R04-Q1** 真实模型质量 | **NOT_RUN_REQUIRES_AUTHORIZATION** | `auto_plan_gate G3` → `REAL_AUTHORIZATION_REQUIRED`；未发起任何付费调用 |
+| **R05 / F12-A** HTTP 响应层抽取 | **PASS** | `ai/http/respond.mjs` 单一所有者；server.js 删 122 行并真实 import；离线清单 55/55、51 套件 385 断言、temporal 15/15 |
+| **R06 / E1** 门禁沙箱归因 | **BLOCKED_EXTERNAL** | `e1-gate-sandbox-evidence.md`：取证包 + spawn 探针四形态可分；本机 EPERM **复现不出来**，故不改判 |
+
+**对外状态用语**：`CORE_PLAN_COMPLETED_VERIFIED`（R00/R01/R02/R05/R06 与 R04-Q0 已验收；
+R03 未跑过的平台、R04-Q1、F12 剩余域、E1 仍如实列出）。
+
+**费用**：全程 **¥0.00**（全部本机假 provider / 临时 SQLite / 临时 DSH_HOME；无真实模型调用）。
 
 ## 阶段总览
 
@@ -43,13 +61,13 @@
 
 | 项 | 结果 |
 |---|---|
-| nsdsh 套件 | **45 套件 / 315 断言 / 0 失败** |
+| nsdsh 套件 | **51 套件 / 385 断言 / 0 失败** |
 | temporal | **15/15** |
 | 离线清单 | **55/55** |
 | 迁移幂等 | **15/0** |
 | Host Contract | **28/0**（78 表，v1.22.0） |
 | UTF-8 | 非法 0 / 缺 BOM 的 .ps1 0 |
-| 阶段台账 | 698 个文件**全部**有阶段归属 |
+| 阶段台账 | 724 个文件**全部**有阶段归属 |
 | 交付验收 | `verify-delivery.mjs` **exit 0**（12 项检查） |
 
 ## 性能（合成夹具，S15）
@@ -77,11 +95,19 @@
 ## 交付命令（全部零计费）
 
 ```bash
-node scripts/run-nsdsh-tests.mjs      # 45 套件 / 315 断言
+node scripts/run-nsdsh-tests.mjs      # 51 套件 / 385 断言
 node scripts/test-temporal-refactor.mjs
 node scripts/ci-offline-checks.mjs    # 55/55
 node .p1-baseline/verify-phase-map.mjs
 node .p1-baseline/check-utf8.mjs
 node scripts/nsdsh/check-stage.mjs S18 --offline
 node scripts/nsdsh/verify-delivery.mjs
+
+# S18 后收尾（R01/R02/R04/R05 的真实证据链，均零计费）
+node scripts/nsdsh/verify-sdk-real.mjs        # 12 场景真实子进程
+node scripts/nsdsh/package-runtime.mjs --output .nsdsh/dist/runtime --archive .nsdsh/dist/runtime.zip
+node scripts/nsdsh/verify-distribution.mjs --artifact .nsdsh/dist/runtime.zip
+node scripts/nsdsh/compare-runtime-bc.mjs --artifact .nsdsh/dist/runtime.zip
+node scripts/nsdsh/score-quality.mjs          # 自检（不调用模型）
+node tests/quality/quality-corpus.test.mjs
 ```
