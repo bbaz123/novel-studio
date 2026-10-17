@@ -119,15 +119,18 @@ export function verifyDelivery() {
         model_routing: '实测（S10 套件，fake provider）',
         plugin_capabilities: '实测（S09/S12 套件）',
         sdk_subprocess: '实测（R01：真实 DSH 子进程 12 场景 · verify-sdk-real.mjs；真 PID / 真终态 / 真取消 / 双会话隔离）',
-        runtime_distribution: '闭包与契约等价已验证；未产出裁剪发行物',
+        runtime_distribution: '实测（R02：503 包 / 22,530 条目 / 69.5MB 档案 / sha256 7bfc4f19…；冷环境 8/8 + B/C 7/7），仅 win32-x64',
         migration: '实测（S16 演练：旧库副本 → 新 schema）',
+        // 支持矩阵里必须保留「还没好」的格子：全部写成实测才是真正的不诚实。
+        platform_matrix: '未验证（macOS / Linux 无任何运行证据，Node 22.x 未测）—— 详见 docs/nsdsh/support-matrix.md',
       },
       platforms_tested: [`${os.platform()} ${os.release()} ${os.arch()} / node ${process.version}`],
       platforms_unverified: ['macOS', 'Linux'],
       performance_raw: 'scripts/nsdsh/benchmark.mjs --fixture --chapters 100|1000（含硬件画像与计时边界）',
       remaining_limits: [
         ...openIds.map((id) => `台账 open 项：${id}`),
-        '真实裁剪发行物未产出（需完整打包流水线）',
+        '裁剪发行物只对 win32-x64 产出并验证；Linux / macOS 需重新打包（含平台原生绑定）',
+        'Node 22.x 未验证（只测了 24.19.0，虽然落在 engines 区间内）',
         'macOS / Linux 构建与中文路径未验证',
         '真实模型质量测试未做（需显式授权与预算）',
         // S11/S14 的门禁命令全是本地只读（verify-vendor 查 git/文件；verify-runtime-closure 与

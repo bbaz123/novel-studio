@@ -1,0 +1,230 @@
+# NSDSH 收尾：跨平台运行时矩阵（R03）
+#
+# ⚠️ **本文件从未在 GitHub Actions 上执行过**（本机无 CI 凭据、仓库未 push）。
+#    因此 docs/nsdsh/support-matrix.md 里除 Windows 之外的所有格子都是 `UNVERIFIED`。
+#    写一个 workflow 不等于证明某平台可用 —— 本文件的存在只说明"怎么验"，不说明"验过了"。
+#
+# 三条纪律（与仓库其它 CI 同源）：
+#   1. **零计费**：全部使用本机 127.0.0.1 假 provider，不带任何真实 API key。
+#   2. **只信退出码**：不写 continue-on-error 来把失败变绿；确实要临时放行时只对那一步加，
+#      并在旁边写原因与跟进项。
+#   3. **跳过 ≠ 通过**：拿不到锁定上游时 job **失败**并打印原因，而不是静默 skip。
+#
+# 为什么单独一个 workflow 而不是塞进 ci.yml：
+#   内置 DSH 运行时需要"锁定上游 + 完整构建"这个**独立的、较重的**前置步骤。
+#   把它塞进用户程序的常规 CI 会让每次 push 都装一遍巨大依赖。
+name: NSDSH Runtime Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_distribution:
+        description: '同时构建并验证裁剪发行物（重，需要锁定上游）'
+        type: boolean
+        default: false
+  push:
+    branches: ['Experimental-Version-v1.0']
+    paths:
+      - 'ai/runtime/**'
+      - 'scripts/nsdsh/**'
+      - 'vendor/dsh/**'
+      - 'tests/nsdsh/**'
+      - '.github/workflows/nsdsh-runtime-matrix.yml'
+
+# 同一分支只保留最新一次（矩阵很重）
+concurrency:
+  group: nsdsh-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 锁定上游（与 vendor/dsh/PROVENANCE.md 一致；改这里必须同步 PROVENANCE 与 verify-vendor.mjs）
+  DSH_UPSTREAM_REPO: deepseek-ai/deepseek-harness
+  DSH_UPSTREAM_SHA: 46a7f68b
+  DSH_UPSTREAM_TAG: dsh-v0.1.7-rc.1
+  CI: 'true'
+  # 显式关闭任何可能计费的入口
+  NOVELSTUDIO_OV_DISABLED: '1'
+  NOVELSTUDIO_GATE_CONFIRMED_ISOLATED: '0'
+
+jobs:
+  # ── 1. 平台事实 + 零计费离线套件（不需要 DSH 上游，任何平台都能跑）──────────────
+  offline:
+    name: offline / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+          cache: ''   # 本项目零 npm 依赖，没有 lockfile 需要缓存
+
+      # 平台事实放第一步：平台差异必须在第一屏就可见，而不是埋在测试输出里
+      - name: 平台事实（platform / arch / OS release / node / SQLite）
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "
+            const os = require('node:os');
+            const { DatabaseSync } = require('node:sqlite');
+            const db = new DatabaseSync(':memory:');
+            const v = db.prepare('select sqlite_version() as v').get().v;
+            console.log(JSON.stringify({
+              platform: process.platform, arch: process.arch, release: os.release(),
+              node: process.versions.node, sqlite: v, cpus: os.cpus().length,
+              runner_os: process.env.RUNNER_OS, runner_arch: process.env.RUNNER_ARCH,
+            }, null, 1));
+          "
+
+      - name: 离线清单（55 项，零计费）
+        shell: bash
+        run: node scripts/ci-offline-checks.mjs
+
+      - name: NSDSH 套件（真实断言，不是形状检查）
+        shell: bash
+        run: node scripts/run-nsdsh-tests.mjs
+
+      - name: 阶段门禁 S18（离线）
+        shell: bash
+        run: node scripts/nsdsh/check-stage.mjs S18 --offline
+
+      - name: 阶段台账 + UTF-8
+        shell: bash
+        run: |
+          node .p1-baseline/verify-phase-map.mjs
+          node .p1-baseline/check-utf8.mjs
+
+      - name: 交付验收
+        shell: bash
+        run: node scripts/nsdsh/verify-delivery.mjs
+
+  # ── 2. 锁定上游 + 完整构建 B（重前置；拿不到就失败，不跳过）──────────────────
+  runtime-build:
+    name: runtime-build / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: offline
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.7.0'
+
+      # 上游必须放在与产品仓库**同级**的兄弟目录：vendor/dsh/runtime-manifest.json 的
+      # baseline.location 就是 '../deepseek-harness'。checkout 不能写到 workspace 之外，
+      # 所以先落到 workspace 内再移动。
+      - name: 取锁定上游（同 SHA）
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none "https://github.com/${DSH_UPSTREAM_REPO}.git" .upstream
+          cd .upstream
+          git checkout "${DSH_UPSTREAM_TAG}"
+          echo "HEAD=$(git rev-parse HEAD)"
+          cd ..
+          SIBLING="$(dirname "$GITHUB_WORKSPACE")/deepseek-harness"
+          rm -rf "$SIBLING"
+          mv .upstream "$SIBLING"
+          echo "SIBLING=$SIBLING" >> "$GITHUB_ENV"
+
+      - name: 安装上游依赖（冻结 lockfile）
+        shell: bash
+        run: pnpm install --frozen-lockfile
+        working-directory: ${{ env.SIBLING }}
+
+      - name: 完整构建 B（typecheck / build / lint）
+        shell: bash
+        run: |
+          pnpm run typecheck
+          pnpm run build
+          pnpm run lint
+        working-directory: ${{ env.SIBLING }}
+
+      - name: 校验基线来源与版本（verify-vendor）
+        shell: bash
+        run: node vendor/dsh/verify-vendor.mjs
+
+      - name: 真实 SDK 子进程矩阵（12 场景，零计费）
+        shell: bash
+        run: node scripts/nsdsh/verify-sdk-real.mjs
+
+  # ── 3. 裁剪发行物 + 冷环境 + B/C（默认不跑，需显式勾选或发行前手动触发）────────
+  distribution:
+    name: distribution / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: runtime-build
+    if: ${{ inputs.run_distribution == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.7.0'
+
+      - name: 取锁定上游 + 完整构建
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none "https://github.com/${DSH_UPSTREAM_REPO}.git" .upstream
+          cd .upstream && git checkout "${DSH_UPSTREAM_TAG}" && cd ..
+          SIBLING="$(dirname "$GITHUB_WORKSPACE")/deepseek-harness"
+          rm -rf "$SIBLING"
+          mv .upstream "$SIBLING"
+          echo "SIBLING=$SIBLING" >> "$GITHUB_ENV"
+          ( cd "$SIBLING" && pnpm install --frozen-lockfile && pnpm run build )
+
+      - name: 打包发行物
+        shell: bash
+        run: node scripts/nsdsh/package-runtime.mjs --output .nsdsh/dist/runtime --archive .nsdsh/dist/runtime.zip
+
+      - name: 冷环境验收（从档案解压 + 中文/空格路径）
+        shell: bash
+        run: node scripts/nsdsh/verify-distribution.mjs --artifact .nsdsh/dist/runtime.zip
+
+      - name: B/C 动态等价（两个独立进程）
+        shell: bash
+        run: node scripts/nsdsh/compare-runtime-bc.mjs --artifact .nsdsh/dist/runtime.zip
+
+      - name: 归档（含 SHA-256 清单）
+        shell: bash
+        run: |
+          node -e "
+            const { createHash } = require('node:crypto');
+            const fs = require('node:fs');
+            const buf = fs.readFileSync('.nsdsh/dist/runtime.zip');
+            const sha = createHash('sha256').update(buf).digest('hex');
+            const os = require('node:os');
+            fs.writeFileSync('.nsdsh/dist/runtime.zip.sha256',
+              sha + '  runtime.zip\\n' + 'platform=' + process.platform + ' arch=' + process.arch
+              + ' node=' + process.versions.node + ' os=' + os.release() + '\\n');
+            console.log(sha);
+          "
+          cat .nsdsh/dist/runtime.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.os }}
+          path: |
+            .nsdsh/dist/runtime.zip
+            .nsdsh/dist/runtime.zip.sha256
+          retention-days: 14

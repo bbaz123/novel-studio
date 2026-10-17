@@ -1645,6 +1645,9 @@ export const PHASES = [
       'scripts/nsdsh/compare-runtime-bc.mjs',
       'tests/nsdsh/distribution-artifact.test.mjs',
       'docs/nsdsh/distribution.md',
+      // R03：跨平台矩阵与支持矩阵
+      '.github/workflows/nsdsh-runtime-matrix.yml',
+      'docs/nsdsh/support-matrix.md',
 
 
 
