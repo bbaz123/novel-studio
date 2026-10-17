@@ -1353,13 +1353,49 @@ const MIGRATIONS = [
   // 新修订落成**另一条 queued**；因此约束改为"最多一个 queued + 最多一个 running"。
   `DROP INDEX IF EXISTS idx_story_analysis_tasks_open`,
 ];
-for (const sql of MIGRATIONS) {
-  try { db.exec(sql); } catch (e) {
-    if (!/duplicate column/i.test(String(e?.message || ''))) {
-      console.warn(`[db] 迁移失败：${sql} → ${e.message}`);
+// ── D4（S06 已修）：迁移必须**有账本**且**事务化** ──────────────────────────────
+// 病灶：旧循环逐条 `try { db.exec(sql) } catch {}` ——
+//   · 没有任何记录说明"这条迁移跑没跑过"，只能靠 `duplicate column` 这种错误文本去猜；
+//   · 单条迁移若中途失败，库会停在**半迁移**状态，而调用方只看到一句 console.warn。
+// 现在：先查账本（幂等判据只认账本，不认错误文本），再在**一个事务里**执行并记账；
+// 失败整条回滚且账本不写，失败被累计到 MIGRATION_FAILURES 供启动自检/测试断言。
+db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  sql TEXT NOT NULL DEFAULT '',
+  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+)`);
+const MIGRATION_FAILURES = [];
+{
+  const applied = new Set(db.prepare('SELECT id FROM schema_migrations').all().map((r) => String(r.id)));
+  MIGRATIONS.forEach((sql, i) => {
+    const id = `m${String(i + 1).padStart(3, '0')}`;
+    if (applied.has(id)) return; // 幂等：跑过就跳过
+    try {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.exec(sql);
+        db.prepare('INSERT OR IGNORE INTO schema_migrations (id, sql) VALUES (?, ?)').run(id, sql);
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+    } catch (e) {
+      const msg = String(e?.message || e);
+      // 旧库可能已手工加过列：仍记账，避免每次启动重试同一条。
+      if (/duplicate column/i.test(msg)) {
+        db.prepare('INSERT OR IGNORE INTO schema_migrations (id, sql) VALUES (?, ?)').run(id, sql);
+      } else {
+        MIGRATION_FAILURES.push({ id, sql, message: msg });
+        console.warn(`[db] 迁移失败（已回滚，账本未写入）：${id} → ${msg}`);
+      }
     }
+  });
+  if (MIGRATION_FAILURES.length) {
+    console.warn(`[db] 共 ${MIGRATION_FAILURES.length} 条迁移失败：${MIGRATION_FAILURES.map((f) => f.id).join(', ')}`);
   }
 }
+if (typeof globalThis !== 'undefined') globalThis.__DB_MIGRATION_FAILURES = MIGRATION_FAILURES;
 
 // 章节蓝图历史：把存量 chapters.blueprint_json 种进 chapter_blueprints（每章一份，时间取章节的
 // updated_at —— 那正是当初写下这份蓝图的时刻）。必须放在 MIGRATIONS 之后：旧库里 blueprint_json
