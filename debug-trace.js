@@ -836,6 +836,67 @@ function normalizeUsage(raw) {
   };
 }
 
+/**
+ * P10：AI 错误专用摘要 —— 不落 message / stack 原文。
+ * provider 的错误消息经常整段回显请求（含 prompt 片段），stack 首行同样带 message。
+ * 诊断所需的事实（类型 / 错误码 / HTTP 状态 / 消息长度）全部保留。
+ */
+function shapeOfAIError(v) {
+  if (!v || typeof v !== 'object') {
+    return { type: 'error', name: 'Error', code: null, status: null, message_len: String(v ?? '').length, omitted: true };
+  }
+  return {
+    type: 'error',
+    name: String(v.name || 'Error').slice(0, 80),
+    code: v.code === undefined ? null : String(v.code).slice(0, 60),
+    status: Number.isFinite(Number(v.status)) ? Number(v.status) : null,
+    message_len: String(v.message ?? '').length,
+    omitted: true,
+  };
+}
+
+/**
+ * P10（2026-10-18）：AI 结果专用摘要 —— **任何长度都不保留原文**。
+ *
+ * 旧实现走通用 shapeOf：短于 160 字符的字符串会原样落盘。可"短"的 AI 结果恰恰是
+ * 最容易泄露的：连接测试回复、单句续写、报错里回显的 prompt 片段。追踪文件是长期留在
+ * 本机磁盘上的 JSONL，一旦落盘就无法回收，所以这里宁可与通用形状分道。
+ */
+function shapeOfAIResult(v) {
+  if (v === null || v === undefined) return { type: repr(v) };
+  const t = typeof v;
+  if (t === 'string') return { type: 'string', len: v.length, omitted: true };
+  if (t === 'number' || t === 'boolean') return { type: t, value: v };
+  if (Array.isArray(v)) return { type: 'array', len: v.length, omitted: true };
+  if (t === 'object') {
+    let keys = [];
+    try { keys = Object.keys(v).slice(0, 20); } catch (_) { keys = []; }
+    return { type: 'object', keys, omitted: true };
+  }
+  return { type: t };
+}
+
+/**
+ * P10：endpoint 脱敏。API key 可能出现在 query（`?api-key=…`）或 URL 用户信息里；
+ * 只保留协议/主机/路径，query 值一律替换为 `***`。
+ */
+export function sanitizeEndpoint(raw) {
+  const text = String(raw || '');
+  if (!text) return '';
+  try {
+    const u = new URL(text);
+    u.username = '';
+    u.password = '';
+    for (const k of [...u.searchParams.keys()]) u.searchParams.set(k, '***');
+    return u.toString().slice(0, 200);
+  } catch (_) {
+    return text
+      .replace(/\/\/[^/@\s]+@/g, '//***@')
+      .replace(/([?&](?:key|api[-_]?key|token|access_token|authorization)=)[^&\s]+/gi, '$1***')
+      .slice(0, 200);
+  }
+}
+
 /** AI 调用节点：把 provider 返回的 usage 归一化后挂上（Token 采集）。 */
 export function traceAI(name, data = {}) {
   if (!state.recording || !als.getStore()) return;
@@ -848,7 +909,7 @@ export function traceAI(name, data = {}) {
     name: String(name || 'callAI').slice(0, 120),
     code: data.code || captureLocation(),
     model: String(data.model || '').slice(0, 80),
-    endpoint: String(data.endpoint || '').slice(0, 200),
+    endpoint: sanitizeEndpoint(data.endpoint),
     stream: data.stream === true,
     attempt: Number(data.attempt) || 1,
     args: data.messageStats || [],
@@ -856,11 +917,12 @@ export function traceAI(name, data = {}) {
     status: data.status === 'error' ? 'error' : 'ok',
     usage: normalizeUsage(data.usage),
     usage_unavailable_reason: data.usage_unavailable_reason ? String(data.usage_unavailable_reason).slice(0, 300) : null,
-    result: data.result === undefined ? null : shapeOf(data.result, MAX_DEPTH - 4),
-    error: data.error ? shapeOfError(data.error) : null,
-    stack: data.error ? errorStackOf(data.error) : ''
+    result: data.result === undefined ? null : shapeOfAIResult(data.result),
+    error: data.error ? shapeOfAIError(data.error) : null,
+    stack: ''
   });
 }
+
 
 /** 慢通道（harness 子进程）节点：只到进程边界，Token 按产品决策标注为不可得。 */
 export function traceHarness(name, data = {}) {
@@ -879,9 +941,11 @@ export function traceHarness(name, data = {}) {
     status: data.status === 'error' ? 'error' : (data.status === 'timeout' ? 'timeout' : 'ok'),
     usage: null,
     usage_unavailable_reason: '慢通道 Token 不可得：dsh-headless 显式丢弃 usage 事件（case "usage": return），stdout 只输出正文',
-    result: data.result === undefined ? null : shapeOf(data.result, MAX_DEPTH - 4),
-    error: data.error ? shapeOfError(data.error) : null,
-    stack: data.error ? errorStackOf(data.error) : ''
+    endpoint: sanitizeEndpoint(data.endpoint),
+    stream: false,
+    result: data.result === undefined ? null : shapeOfAIResult(data.result),
+    error: data.error ? shapeOfAIError(data.error) : null,
+    stack: ''
   });
 }
 

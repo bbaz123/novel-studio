@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 // 模型名从策略表单点取用：这里此前写死了 'deepseek-flash' 字面量，而 verify-ai-branches 的
 // 扫描清单只有三个文件（不含 db.js）——于是"改分工"时建库默认值与迁移 SQL 会静默留在旧名上。
 import { MODELS, LEGACY_MODEL_NAMES } from './ai/policy.mjs';
+// P13：迁移失败必须 fail-fast；判据是纯函数，可离线单测（见 ai/db-migration-failfast.mjs）。
+import { migrationFailureError } from './ai/db-migration-failfast.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // NOVELSTUDIO_DATA_DIR：冒烟测试/多实例部署时重定向数据库目录（默认 data/）。
@@ -1367,6 +1369,12 @@ const MIGRATIONS = [
   // 正确模型：running 的任务**不可变**（它的 revision 就是它要分析的那一版），
   // 新修订落成**另一条 queued**；因此约束改为"最多一个 queued + 最多一个 running"。
   `DROP INDEX IF EXISTS idx_story_analysis_tasks_open`,
+  // ── P12（2026-10-18）：投影 outbox 的租约与认领令牌 ──────────────────────────
+  // 旧实现把 pending → running 写成无条件 UPDATE，进程在 running 时被杀就永久悬挂；
+  // 且 done 写入不校验"谁认领的"，崩溃前的旧 worker 可能把别人刚接手的任务错误标成 done。
+  // 两个附加列默认空串 → 存量行为不变；worker_token/lease_expires_at 由 worker 在认领时写入。
+  `ALTER TABLE projection_outbox ADD COLUMN worker_token TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE projection_outbox ADD COLUMN lease_expires_at TEXT NOT NULL DEFAULT ''`,
 ];
 // ── D4（S06 已修）：迁移必须**有账本**且**事务化** ──────────────────────────────
 // 病灶：旧循环逐条 `try { db.exec(sql) } catch {}` ——
@@ -1407,10 +1415,25 @@ const MIGRATION_FAILURES = [];
     }
   });
   if (MIGRATION_FAILURES.length) {
-    console.warn(`[db] 共 ${MIGRATION_FAILURES.length} 条迁移失败：${MIGRATION_FAILURES.map((f) => f.id).join(', ')}`);
+    // P13（2026-10-18）：**fail-fast**。以前这里只 warn，服务照常 listen——于是 schema 停在
+    // 半迁移状态的库会进入可写 ready，之后每个请求都可能踩到缺列/缺表（错误散落在业务路径里）。
+    // 迁移本身已是"单事务 + 账本"（失败整条回滚、不记账），所以拒绝启动是安全的：
+    // 修好迁移或从备份恢复后重跑即可；已成功的迁移不会重复执行。
+    // 允许幂等跳过的只有 duplicate column（旧库手工加过列），它已在上面记账、不进本列表。
+    const detail = MIGRATION_FAILURES.map((f) => `${f.id}（${f.message}）`).join('；');
+    console.error(`[db] 迁移失败 ${MIGRATION_FAILURES.length} 条，已拒绝启动写入：${detail}`);
+    throw migrationFailureError(MIGRATION_FAILURES);
   }
 }
 if (typeof globalThis !== 'undefined') globalThis.__DB_MIGRATION_FAILURES = MIGRATION_FAILURES;
+/** 迁移状态（供 /api/readiness 与离线测试查询）：正常情况下 failures 恒为空。 */
+export function migrationDiagnostics() {
+  let applied = 0;
+  try {
+    applied = Number(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()?.n) || 0;
+  } catch (_) { /* 账本读不到本身也说明迁移不完整 */ }
+  return { failures: MIGRATION_FAILURES.map((f) => ({ id: f.id, message: f.message })), applied };
+}
 
 // 章节蓝图历史：把存量 chapters.blueprint_json 种进 chapter_blueprints（每章一份，时间取章节的
 // updated_at —— 那正是当初写下这份蓝图的时刻）。必须放在 MIGRATIONS 之后：旧库里 blueprint_json

@@ -1716,6 +1716,56 @@ export const PHASES = [
       + ' ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` '
       + '重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。',
   },
+  {
+    id: 'V12',
+    title: 'v1.2.0 修复（P01–P16）：授权边界 / 写入原子性 / 入口安全 / 启动就绪 / 异步一致性',
+    files: [
+      // 新模块（本阶段新增，可独立确认）
+      'ai/http/origin.mjs',
+      'ai/http/validation.mjs',
+      'ai/db-migration-failfast.mjs',
+      'ai/provider-url.mjs',
+      'server/services/projection-outbox.mjs',
+      // 回归套件（每项修复一个分套件 + 总入口）
+      '.p1-baseline/test-1018-auth-and-memory.mjs',
+      '.p1-baseline/test-1018-foreshadow-atomic.mjs',
+      '.p1-baseline/test-1018-http-entry.mjs',
+      '.p1-baseline/test-1018-startup-readiness.mjs',
+      '.p1-baseline/test-1018-projection-outbox.mjs',
+      '.p1-baseline/test-1018-analysis-fencing.mjs',
+      '.p1-baseline/test-1018-ai-privacy-limits.mjs',
+      '.p1-baseline/test-1018-input-search.mjs',
+      '.p1-baseline/test-1018-ai-provider-boundary.mjs',
+      '.p1-baseline/test-1018-hardening.mjs',
+      // 输入方案（用户提供的任务书，原样保留）
+      '10.18修复.md',
+      // 交付文档
+      'docs/v1.2.0-1018-fix-report.md',
+      'docs/v1.2.0-p16-p14-decisions.md',
+      // 业务接线（均被其它阶段共用，只能整体回滚）
+      'server.js',
+      'db.js',
+      'debug-trace.js',
+      'start-novel-studio.cmd',
+      'ai/story-state/temporal/service.mjs',
+      'ai/story-state/temporal/analysis.mjs',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+    ],
+    evidence: [
+      'docs/v1.2.0-1018-fix-report.md',
+      'docs/v1.2.0-p16-p14-decisions.md',
+      '.p1-baseline/test-1018-hardening.mjs',
+    ],
+    // shared 是**推导结果**：server.js / db.js / debug-trace.js / 时态内核 / ci 清单 /
+    // 阶段映射自身都被既有阶段共用，文件级回滚会卷走别人的改动。
+    rollback: 'shared',
+    note: '**目的**：按方案 §8 的顺序消除 P01–P16 的授权、原子性、启动与异步缺陷，'
+      + '并为每项修复建立可离线复现的断言（不依赖真实 LLM / 作者私有数据）。'
+      + 'P14 只测量不改（结论见 docs/v1.2.0-p16-p14-decisions.md）；P17 按方案为 P3 非阻塞，本轮不做。'
+      + '**费用**：全部检查零计费。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

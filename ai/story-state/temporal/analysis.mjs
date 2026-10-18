@@ -89,7 +89,7 @@ export async function analyzeChapter({ workId, chapterId, generate = null, provi
     }));
   } catch (e) {
     const error = sanitizeText(String((e && e.message) || e), 300);
-    finishAnalysis({ workId, chapterId, bindingId: begun.binding_id, status: 'failed', error, provider });
+    finishAnalysis({ workId, chapterId, bindingId: begun.binding_id, status: 'failed', error, provider, requestId: begun.analysis?.request_id, attempt: begun.analysis?.attempts });
     return { ok: false, enabled: true, work_id: ctx.work_id, chapter_id: ctx.chapter_id, status: 'failed', ran: true, binding_id: begun.binding_id, reason: error };
   }
   const parsed = parseExtractionResponse(output, { workId, chapterId, revisionId: revision.id, plainText });
@@ -97,9 +97,11 @@ export async function analyzeChapter({ workId, chapterId, generate = null, provi
   const done = completeAnalysis({
     workId, chapterId, bindingId: begun.binding_id, events: parsed.events, assumptions: parsed.assumptions,
     provider, model, inputHash: prompt.input_hash, resultHash, issues: parsed.issues,
+    // P08：带同一个 attempt 的 fencing token；旧 attempt 晚到时会被判 stale 且零副作用。
+    requestId: begun.analysis?.request_id, attempt: begun.analysis?.attempts,
   });
   if (!done.ok) {
-    finishAnalysis({ workId, chapterId, bindingId: begun.binding_id, status: done.decision === 'stale' ? 'stale' : 'failed', error: done.reason || '', provider });
+    finishAnalysis({ workId, chapterId, bindingId: begun.binding_id, status: done.decision === 'stale' ? 'stale' : 'failed', error: done.reason || '', provider, requestId: begun.analysis?.request_id, attempt: begun.analysis?.attempts });
     return { ok: false, enabled: true, work_id: ctx.work_id, chapter_id: ctx.chapter_id, status: done.decision || 'failed', ran: true, binding_id: begun.binding_id, reason: done.reason || '', issues: done.issues || [] };
   }
   return { ok: true, enabled: true, work_id: ctx.work_id, chapter_id: ctx.chapter_id, status: 'done', ran: true, binding_id: done.binding_id, proposal: done.proposal, dependencies: done.dependencies, issues: done.issues || [] };

@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { db, withTransaction, inTransaction } from './db.js';
+import { db, withTransaction, inTransaction, migrationDiagnostics } from './db.js';
 import { isHarnessAvailable, isHarnessBuilt, runHarnessTaskWithProgress, modelSwitchLoad, harnessRuntimeInfo, setHarnessRepoOverride, looksLikeDshRepo, bootstrapHarnessSettings, dshSettingsPath } from './harness.js';
 import { readZip } from './zip-reader.mjs';
 import * as ImportGuard from './ai/import/guard.mjs';
@@ -66,10 +66,18 @@ import { confirmEvents, confirmProposalGroup, analyzeChapterUseCase, queryStoryS
 import * as ModelBroker from './ai/model-broker/routing.mjs';
 // R05（F12-A）：HTTP 响应与请求体读取抽到单一所有者；调用签名保持不变。
 import { sendJSON, sendError, readBody, readBodyOrError, MAX_BODY_BYTES } from './ai/http/respond.mjs';
+// P11：严格的正整数/可空解析；LIKE 转义（P15 的转义口径与它同源）。
+import { parsePositiveInteger as parsePosInt, likeContainsPattern } from './ai/http/validation.mjs';
+// P04：写请求来源校验（Origin 协议+主机+端口 / Host 精确比较），纯函数、可离线单测。
+import { checkWriteOrigin, isLocalHostname } from './ai/http/origin.mjs';
+// P16：provider 地址的信任边界（纯函数，可离线断言）。
+import { validateProviderBaseUrl, assertModelChannelProvider, checkAgentMessages } from './ai/provider-url.mjs';
 // R01：真实 SDK 子进程通道（默认关闭；未设 NOVELSTUDIO_SDK_ROUTE 时行为与改造前逐字一致）。
 import { runSdkAnalysis, routeShapeFor } from './ai/runtime/sdk-route.mjs';
 import { recordIntent as recordAnalysisIntent } from './ai/jobs/queue-store.mjs';
 import { createDispatcher, reconcileOnStart } from './ai/jobs/dispatcher.mjs';
+// P12：投影 outbox 的租约/认领/排空判据（可离线单测）。
+import { createProjectionOutbox, drainUntilIdle } from './server/services/projection-outbox.mjs';
 import { buildCompressionPrompt } from './ai/memory-compress-prompt.mjs';
 import { editDistance } from './ai/edit-distance.mjs';
 // 2026-09-22 报告 · 第 1 步：审稿前的**零 token 确定性连续性预检**。
@@ -92,10 +100,53 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
-// 端口归一：与 ai/harness-env.mjs 的 `Number(port ?? base.PORT) || DEFAULT_PORT` 保持同一套语义——
-// 此前这里是 `process.env.PORT || 3737`（不转数字），于是 PORT='abc' 时服务会拿字符串去 listen，
-// 而下发给 dsh 子进程的 NOVELSTUDIO_BASE_URL 却是 3737：两边指向不同实例，且报错信息很难懂。
-const PORT = Number(process.env.PORT) || 3737;
+// 端口校验（P07，2026-10-18）：只接受 1–65535 的整数，非法值**明确报错退出**，不静默回退。
+// 旧行为 `Number(env) || 3737` 会把 PORT='abc' 悄悄变成 3737，而下发给 dsh 子进程的
+// NOVELSTUDIO_BASE_URL 仍按原字符串拼——两边指向不同实例，排查成本极高。
+const PORT = (() => {
+  const raw = process.env.PORT;
+  if (raw === undefined || String(raw).trim() === '') return 3737;
+  const text = String(raw).trim();
+  if (!/^[0-9]+$/.test(text)) {
+    console.error(`[Novel Studio] 非法端口 PORT=${raw}：必须是 1–65535 的整数。`);
+    process.exit(1);
+  }
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`[Novel Studio] 非法端口 PORT=${raw}：必须是 1–65535 的整数。`);
+    process.exit(1);
+  }
+  return n;
+})();
+
+// P07：健康（进程活着）/ 就绪（可提供完整服务）分离。未就绪时写请求一律 503，
+// 避免"看起来在运行"的半初始化服务把数据写进未迁移的库。
+const readinessState = {
+  ready: false,
+  reason: 'initializing',
+  started_at: new Date().toISOString(),
+  checks: { database: false, dispatcher: false, projections: false },
+};
+let serviceReady = false;
+function readinessChecks() {
+  let diag = { failures: [{ id: 'db', message: '迁移状态不可读' }], applied: 0 };
+  try { diag = migrationDiagnostics(); } catch (_) { /* 保持不可读即未就绪 */ }
+  return {
+    database: { ok: diag.failures.length === 0, migrations_applied: diag.applied, failures: diag.failures },
+    dispatcher: { ok: readinessState.checks.dispatcher === true },
+    projections: { ok: readinessState.checks.projections === true },
+  };
+}
+function markServiceReady() {
+  const diag = migrationDiagnostics();
+  if (diag.failures.length) {
+    throw new Error(`迁移未完成（${diag.failures.map((f) => f.id).join(', ')}），拒绝进入可写状态`);
+  }
+  readinessState.checks = { database: true, dispatcher: true, projections: true };
+  readinessState.ready = true;
+  readinessState.reason = '';
+  serviceReady = true;
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -281,47 +332,55 @@ function listProjections({ workId = 0, status = '', limit = 50 } = {}) {
   return rows.map(projectionRowPublic);
 }
 
-function projectionSummary(workId = 0) {
-  const rows = workId
-    ? prepare('SELECT status, COUNT(*) AS n FROM projection_outbox WHERE work_id = ? GROUP BY status').all(Number(workId))
-    : prepare('SELECT status, COUNT(*) AS n FROM projection_outbox GROUP BY status').all();
-  const by = { pending: 0, running: 0, done: 0, failed: 0 };
-  for (const r of rows) by[r.status] = Number(r.n) || 0;
-  return by;
-}
+// P12：outbox 的「租约 / 原子认领 / token 校验 / 连续排空」判据抽到独立模块，
+// 以便用 in-memory SQLite 离线证明（server.js 里只能靠真外部服务间接观察）。
+const PROJECTION_WORKER_TOKEN = `w_${randomBytes(12).toString('hex')}`;
+const PROJECTION_LEASE_MS = Math.max(5_000, Number(process.env.NOVELSTUDIO_PROJECTION_LEASE_MS) || 60_000);
+const projectionOutbox = createProjectionOutbox({ db, workerToken: PROJECTION_WORKER_TOKEN, leaseMs: PROJECTION_LEASE_MS });
+function projectionSummary(workId = 0) { return projectionOutbox.summary(workId); }
 
 let projectionDrainRunning = false;
+
+/** 执行一条投影（外部副作用）：目前只有 syncWorkFull 一种 kind。 */
+async function runProjection(row) {
+  if (row.kind !== 'ov_work_sync') throw new Error(`未知投影类型：${row.kind}`);
+  const outcome = await syncWorkFull(Number(row.work_id));
+  // syncWorkFull 用 ok:false 表达"没同步成功"（如集成被禁用 / 服务端不可达），不抛异常——
+  // 这里必须把它当失败：把 skipped 记成 done 就是"假成功"，正是本任务书禁止的。
+  if (outcome && outcome.ok === false) throw new Error(outcome.reason || '投影未完成');
+}
+
 /** 事务外的 worker：只根据持久化状态推进，失败保留 failed + last_error（可见、可 retry）。 */
-async function drainProjectionOutbox({ limit = 5 } = {}) {
+async function drainProjectionOutbox({ limit = 5, budgetMs = 0 } = {}) {
   if (projectionDrainRunning) return { skipped: true, drained: 0 };
   projectionDrainRunning = true;
-  const results = [];
   try {
-    for (let i = 0; i < Math.max(1, Number(limit) || 5); i += 1) {
-      const row = prepare(`SELECT * FROM projection_outbox WHERE status = 'pending' ORDER BY id ASC LIMIT 1`).get();
-      if (!row) break;
-      prepare(`UPDATE projection_outbox SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ?`).run(now(), row.id);
-      try {
-        let outcome = null;
-        if (row.kind === 'ov_work_sync') outcome = await syncWorkFull(Number(row.work_id));
-        else throw new Error(`未知投影类型：${row.kind}`);
-        // syncWorkFull 用 ok:false 表达"没同步成功"（如集成被禁用 / 服务端不可达），不抛异常——
-        // 这里必须把它当失败：把 skipped 记成 done 就是"假成功"，正是本任务书禁止的。
-        if (outcome && outcome.ok === false) throw new Error(outcome.reason || '投影未完成');
-        prepare(`UPDATE projection_outbox SET status = 'done', last_error = '', updated_at = ? WHERE id = ?`).run(now(), row.id);
-        results.push({ id: row.id, ok: true });
-      } catch (e) {
-        const message = readableErrorMessage(e).slice(0, 500);
-        prepare(`UPDATE projection_outbox SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?`).run(message, now(), row.id);
-        results.push({ id: row.id, ok: false, error: message });
-        break; // 外部服务不可用时连续重试没有意义，保留 failed 等 retry / 下个周期
-      }
-    }
+    return await projectionOutbox.drain({ run: runProjection, limit, budgetMs });
   } finally {
     projectionDrainRunning = false;
   }
-  return { drained: results.length, results, pending: projectionSummary().pending, failed: projectionSummary().failed };
 }
+
+/** P12：连续分批排空，直到「无 pending / 时间预算用尽 / 某批没有推进（外部失败退避）」。 */
+async function drainProjectionsUntilIdle({ budgetMs = 20_000, batch = 25 } = {}) {
+  if (projectionDrainRunning) return { skipped: true, drained: 0 };
+  projectionDrainRunning = true;
+  try {
+    return await drainUntilIdle(projectionOutbox, { run: runProjection, budgetMs, batch });
+  } finally {
+    projectionDrainRunning = false;
+  }
+}
+
+const recoverStaleProjections = () => projectionOutbox.recoverStale();
+
+// P12：持续 drain。只在有 pending 时动手，且每 60s 一次——既不会忙循环，也不会让
+// "一次只排 5 条"的旧行为把 50/100 条的队列永远留在 pending。
+setInterval(() => {
+  try {
+    if (projectionSummary().pending > 0) drainProjectionsUntilIdle({ budgetMs: 10000 }).catch(() => { /* 下个周期再试 */ });
+  } catch (_) { /* 统计失败不影响服务 */ }
+}, 60_000).unref();
 
 /** 把 failed 复位为 pending（作者界面的「恢复投影」入口 / 重启后的恢复路径）。 */
 function retryFailedProjections({ workId = 0, id = 0 } = {}) {
@@ -335,30 +394,43 @@ function retryFailedProjections({ workId = 0, id = 0 } = {}) {
   return { reset: Number(info.changes) || 0 };
 }
 
-// 写请求的跨源防护：浏览器页面发起的 POST/PUT/DELETE 必须来自本机工坊页面
-// （Origin 为 localhost/127.0.0.1）；不带 Origin 的非浏览器客户端（curl/dsh 工具）放行。
-const MUTATING_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
-const isLocalHost = (h) => h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+// 写请求的跨源防护（P04，2026-10-18）：**完整 Origin（协议+主机+端口）** 与 Host 双重校验。
+// 旧实现只比 hostname，于是同机不同端口的页面（5173 开发服务器等）可以直接作为作者写库。
+// 判据本体在 ai/http/origin.mjs（纯函数、可离线单测），这里只把请求与监听端口传进去。
 function isLocalRequest(req) {
-  if (!MUTATING_METHODS.has(req.method || '')) return true;
-  const origin = String(req.headers.origin || '');
-  if (origin) {
-    try {
-      return isLocalHost(new URL(origin).hostname);
-    } catch (_) {
-      return false;
-    }
-  }
-  // 无 Origin 的非浏览器客户端（curl/dsh 工具）：校验 Host 主机名，
-  // 拒绝经非本机主机名到达的写请求（如 DNS rebinding 场景）。
-  const hostHeader = String(req.headers.host || '');
-  if (hostHeader) {
-    const host = hostHeader.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-    return isLocalHost(host);
-  }
-  return true;
+  return checkWriteOrigin({ method: req.method, headers: req.headers }, { port: PORT }).ok;
 }
 
+
+// ── 作者决策类路由的权限矩阵（2026-10-18，P03）────────────────────────────────
+// 为什么需要这张表：此前「apply 要审批、reject 不要审批」「正典写入要审批、改判定规则却
+// 不审批」同时存在——模型的拒绝、红线编辑、豁免、蓝图删除都能绕过作者边界。这些操作没有
+// 可绑定的审批对象（不是"某条提案/某个快照"），所以不给模型留审批旁路：模型通道一律 403，
+// 作者通道（浏览器同源）行为不变。表放在路由分派之前统一执行，避免只在某个分支里检查。
+const AUTHOR_ONLY_WRITES = [
+  { resource: 'novel', label: '写作红线编辑', method: 'PUT', seg2: 'redlines' },
+  { resource: 'novel', label: '连续性豁免/恢复', method: 'POST', seg2: 'continuity_exemption' },
+  { resource: 'novel', label: '连续性阈值编辑', method: 'POST', seg2: 'continuity_thresholds' },
+  { resource: 'novel', label: '旧提案拒绝', method: 'POST', seg2: 'proposals', seg3: 'reject' },
+  { resource: 'novel', label: '状态提案拒绝', method: 'POST', seg2: 'state', seg3: 'proposals', seg4: 'reject' },
+  { resource: 'novel', label: '章节蓝图保存', method: 'PUT', seg2: 'chapter_blueprint' },
+  { resource: 'novel', label: '章节蓝图删除', method: 'DELETE', seg2: 'chapter_blueprints' },
+  { resource: 'novel', label: '审稿提示关闭', method: 'POST', seg2: 'review', seg3: 'dismiss' },
+  { resource: 'novel', label: '审稿确认清单', method: 'PUT', seg2: 'review', seg3: 'checklist' },
+  { resource: 'novel', label: '生成稿关闭', method: 'POST', seg2: 'draft', seg3: 'dismiss' },
+  { resource: 'story_memory', label: '长期记忆回滚', method: 'POST', seg2: 'rollback' },
+];
+// 只匹配「资源 + 方法 + 路径段」；seg3/seg4 缺省表示不约束该层。
+// 说明：`state/proposals/apply` 故意**不在**这张表里——它有自己的单条 + 审批 + 事务边界。
+function authorOnlyWriteOf(resource, segments, method) {
+  for (const rule of AUTHOR_ONLY_WRITES) {
+    if (rule.resource !== resource || rule.method !== method || rule.seg2 !== segments[2]) continue;
+    if (rule.seg3 && rule.seg3 !== segments[3]) continue;
+    if (rule.seg4 && rule.seg4 !== segments[4]) continue;
+    return rule;
+  }
+  return null;
+}
 
 function getPath(req) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -371,6 +443,15 @@ function getPath(req) {
 function parseId(str) {
   const id = Number(str);
   return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * 严格正整数解析（P11）：唯一实现见 ai/http/validation.mjs（可离线断言）。
+ * 拒绝 NaN / Infinity / 小数 / 负数 / 空串 / 科学计数法 / 夹带非数字字符——这些在旧写法里
+ * 会被 `Number()` 静默转换（`'12abc'` → NaN 被当作"没有过滤条件"），于是 GET 退化成全库查询。
+ */
+function parsePositiveInt(value) {
+  return parsePosInt(value);
 }
 
 function now() {
@@ -636,7 +717,7 @@ function normalizeOvEndpoint(raw) {
   if (!url.hostname) return { ok: false, error: `地址缺少主机名：${text}` };
   const host = String(url.hostname || '').toLowerCase();
   // OpenViking 会接收章节正文；默认只允许本机回环，避免把整部作品误发到私网/公网。
-  if (!isLocalHost(host)) {
+  if (!isLocalHostname(host)) {
     return { ok: false, error: 'OpenViking 地址只能使用本机回环地址（127.0.0.1、localhost 或 ::1）；作品正文不会发送到远端主机' };
   }
   return { ok: true, value: withScheme.replace(/\/+$/, '') };
@@ -743,7 +824,9 @@ function validateOwnership(resource, data) {
   const check = (table, id, label) => {
     if (id === undefined || id === null || id === '') return;
     const nid = Number(id);
-    if (!Number.isInteger(nid) || nid <= 0) return;
+    // P11：以前这里对非法数字 `return`（静默跳过）——于是 volume_id='abc' 会以 NULL 落库，
+    // 跨作品/不存在的外键也只在恰好能转成整数时才被检查。现在"给了但不是正整数"直接 400。
+    if (!Number.isInteger(nid) || nid <= 0) throw new Error(`${label} id 必须是正整数`);
     const row = prepare(`SELECT work_id FROM ${table} WHERE id = ?`).get(nid);
     if (!row) throw new Error(`${label}不存在`);
     if (wid !== null && Number(row.work_id) !== wid) throw new Error(`${label}不属于该作品`);
@@ -831,18 +914,34 @@ function deleteRow(resource, id) {
 // ---------- search ----------
 // 多关键词检索：全部关键词 AND 匹配；标题/名称命中权重最高（×3），标签/身份次之（×2），
 // 内容命中兜底；按得分排序取前 20，片段围绕最早命中的关键词截取。
+//
+// P15（2026-10-18）：
+//   ① LIKE 里的 `%`/`_`/`\` 必须转义（配 `ESCAPE '\'`）——旧实现把用户输入直接拼进 `%…%`，
+//      "100%" 会被当成通配符，搜出全部记录；
+//   ② 候选集**先按相关度排序再截断**。旧实现是裸 `LIMIT 200`（无 ORDER BY）：表里第 201 行
+//      以后的高分记录永远进不了候选集，这正是"高相关结果被前 200 条挤掉"的根因。
+//      排序表达式与下方 scoreRow 同权（只用于决定谁进入候选集；跨表全局 Top20 仍在 JS 里做）。
 function search(q, workId) {
   const empty = { terms: [], chapters: [], characters: [], plotlines: [], world_entries: [], relations: [] };
   if (!q) return empty;
   const keywords = String(q).toLowerCase().split(/\s+/).map((k) => k.trim()).filter(Boolean).slice(0, 5);
   if (!keywords.length) return empty;
+  const CANDIDATE_LIMIT = Math.max(200, Math.min(20000, Number(process.env.NOVELSTUDIO_SEARCH_CANDIDATE_LIMIT) || 2000));
 
   const queryRows = (table, fields, extra = '') => {
-    const conds = keywords.map((k) => `(${fields.map((f) => `${f} LIKE ?`).join(' OR ')})`).join(' AND ');
-    const params = keywords.flatMap((k) => fields.map(() => `%${k}%`));
-    if (workId) params.push(workId);
-    const sql = `SELECT * FROM ${table} WHERE ${conds}${workId ? ` AND work_id = ?` : ''}${extra} LIMIT 200`;
-    return prepare(sql).all(...params);
+    const conds = keywords.map(() => `(${fields.map((f) => `${f} LIKE ? ESCAPE '\\'`).join(' OR ')})`).join(' AND ');
+    const whereParams = keywords.flatMap((k) => fields.map(() => likeContainsPattern(k)));
+    const scoreExpr = keywords.map(() => fields.map((f, i) => {
+      const w = i === 0 ? 3 : 1;
+      return `(CASE WHEN lower(${f}) = ? THEN ${300 * w} WHEN substr(lower(${f}),1,length(?)) = ? THEN ${150 * w} ELSE ${20 * w} END)`;
+    }).join(' + ')).join(' + ');
+    const scoreParams = keywords.flatMap((k) => fields.flatMap(() => [k, k, k]));
+    const args = [...whereParams];
+    if (workId) args.push(workId);
+    args.push(...scoreParams, CANDIDATE_LIMIT);
+    const sql = `SELECT * FROM ${table} WHERE ${conds}${workId ? ' AND work_id = ?' : ''}${extra}`
+      + ` ORDER BY (${scoreExpr}) DESC, id ASC LIMIT ?`;
+    return prepare(sql).all(...args);
   };
 
   // 字段权重：名称/标题 ×3，标签/身份 ×2，其它 ×1；全词相等 > 前缀 > 包含。
@@ -1009,6 +1108,55 @@ const AI_REQUEST_TIMEOUT_MS = LONG_AI_TIMEOUT_MS;
 // enable_scope（预算 + 待重建范围）；未开启作品不触发额外模型调用、旧上下文不变；插件工具/端点面不变，无新表。
 const HOST_CONTRACT_VERSION = '1.22.0';
 
+// 非流式 AI 响应的字节上限（P09，2026-10-18）。
+// 旧实现直接 `await resp.text()`：provider 返回异常大响应（或错误页）时，进程会把整段
+// 读进内存。上限按现有最大合法输出留足余量（默认 8MB），可用环境变量覆盖以便现场调整。
+const MAX_AI_RESPONSE_BYTES = Math.max(
+  256 * 1024,
+  Number(process.env.NOVELSTUDIO_MAX_AI_RESPONSE_BYTES) || 8 * 1024 * 1024
+);
+
+/**
+ * 读取非流式 AI 响应，按字节限额；超限立即中止并抛 `AI_RESPONSE_TOO_LARGE`。
+ * 同时覆盖两类对端：声明了 Content-Length 的（立即拒绝，不读 body）与 chunked（边读边计）。
+ */
+async function readAIResponseText(resp, maxBytes = MAX_AI_RESPONSE_BYTES) {
+  const tooLarge = (received) => {
+    const err = new Error(`AI 响应过大（${received} 字节 > 上限 ${maxBytes} 字节），已中止读取`);
+    err.code = 'AI_RESPONSE_TOO_LARGE';
+    err.status = 502;
+    return err;
+  };
+  const declared = Number(resp.headers.get('content-length') || 0);
+  if (declared > maxBytes) {
+    try { await resp.body?.cancel(); } catch (_) { /* 已关闭 */ }
+    throw tooLarge(declared);
+  }
+  if (!resp.body) {
+    const text = await resp.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) throw tooLarge(Buffer.byteLength(text, 'utf8'));
+    return text;
+  }
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let received = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        try { await reader.cancel(); } catch (_) { /* 已中止 */ }
+        throw tooLarge(received);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    try { reader.releaseLock(); } catch (_) { /* 已释放 */ }
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 // 调用 OpenAI 兼容的 Chat Completions 接口，带超时与 URL 自动回退。
 async function callAI(config, messages, options = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -1018,6 +1166,13 @@ async function callAI(config, messages, options = {}) {
     if (!m || typeof m.role !== 'string' || typeof m.content !== 'string') {
       throw new Error('messages 格式错误：每个消息必须包含 role 和 content');
     }
+  }
+  // P16：URL 与凭证位置的信任边界（作者配置了非法地址 → 400，而不是把 key 发出去）。
+  const providerCheck = validateProviderBaseUrl(config.base_url || 'https://api.deepseek.com');
+  if (!providerCheck.ok) {
+    const err = new Error(providerCheck.reason);
+    err.status = 400;
+    throw err;
   }
   const base = String(config.base_url || 'https://api.deepseek.com').trim().replace(/\/+$/, '');
   const rawMaxTokens = options.max_tokens ?? config.max_tokens ?? 4096;
@@ -1046,13 +1201,16 @@ async function callAI(config, messages, options = {}) {
           'Authorization': `Bearer ${config.api_key}`
         },
         body: JSON.stringify(body),
-        signal: controller.signal
+        signal: controller.signal,
+        // P16：不跟随重定向——provider 不能把 Authorization 转发到另一个主机。
+        redirect: 'error'
       });
-      const text = await resp.text();
+      const text = await readAIResponseText(resp);
       let data;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
       if (!resp.ok) {
-        const detail = data?.error?.message || data?.message || `AI request failed (${resp.status})`;
+        // 错误消息也限长：上游错误页可能整段回显请求（含 prompt 片段）。
+        const detail = String(data?.error?.message || data?.message || `AI request failed (${resp.status})`).slice(0, 600);
         const err = new Error(`${detail}（接口：${url}）`);
         err.status = resp.status;
         err.detail = data;
@@ -1159,7 +1317,9 @@ async function callAIStream(config, messages, options = {}, onDelta) {
           'Authorization': `Bearer ${config.api_key}`
         },
         body: JSON.stringify(body),
-        signal: controller.signal
+        signal: controller.signal,
+        // P16：流式通道同样不跟随重定向（凭证不能经 302 转发到别的主机）。
+        redirect: 'error'
       });
       if (!resp.ok || !resp.body) {
         const text = await resp.text().catch(() => '');
@@ -1331,28 +1491,38 @@ async function handleAIWriteStream(req, res, body, config) {
 }
 
 function getConfigFromBody(body) {
-  if (body.config_id !== undefined && body.config_id !== null && body.config_id !== '') {
-    const id = Number(body.config_id);
-    if (!Number.isInteger(id) || id <= 0) {
-      const err = new Error('API 配置不存在或非法');
-      err.status = 400;
-      throw err;
+  const cfg = (() => {
+    if (body.config_id !== undefined && body.config_id !== null && body.config_id !== '') {
+      const id = Number(body.config_id);
+      if (!Number.isInteger(id) || id <= 0) {
+        const err = new Error('API 配置不存在或非法');
+        err.status = 400;
+        throw err;
+      }
+      const row = prepare('SELECT * FROM api_configs WHERE id = ?').get(id);
+      if (!row) {
+        const err = new Error('API 配置不存在');
+        err.status = 400;
+        throw err;
+      }
+      return row;
     }
-    const row = prepare('SELECT * FROM api_configs WHERE id = ?').get(id);
-    if (!row) {
-      const err = new Error('API 配置不存在');
-      err.status = 400;
-      throw err;
-    }
-    return row;
+    return {
+      base_url: body.base_url || 'https://api.deepseek.com',
+      api_key: body.api_key || '',
+      model: body.model || MODELS.fast,
+      temperature: body.temperature ?? 0.8,
+      max_tokens: body.max_tokens ?? 4096
+    };
+  })();
+  // P16：作者自己填的地址也要过协议/凭证位置校验（http/https、不得内嵌账号密码）。
+  const checked = validateProviderBaseUrl(cfg.base_url);
+  if (!checked.ok) {
+    const err = new Error(checked.reason);
+    err.status = 400;
+    throw err;
   }
-  return {
-    base_url: body.base_url || 'https://api.deepseek.com',
-    api_key: body.api_key || '',
-    model: body.model || MODELS.fast,
-    temperature: body.temperature ?? 0.8,
-    max_tokens: body.max_tokens ?? 4096
-  };
+  return cfg;
 }
 
 // ---------- AI error history ----------
@@ -2983,13 +3153,26 @@ function listMemoryVersions(workId) {
 }
 
 // 回滚到指定版本：把该版本写回当前生效摘要，并记一条 rollback 快照。
-function rollbackMemory(versionId) {
-  const version = prepare('SELECT * FROM memory_versions WHERE id = ?').get(versionId);
-  if (!version) throw new Error('记忆版本不存在');
-  const result = saveStoryMemory(version.work_id, version.summary, { source: 'rollback', note: `回滚到版本 #${version.id}` });
-  const version_id = result.version_id
-    ?? (prepare('SELECT MAX(id) AS id FROM memory_versions WHERE work_id = ?').get(version.work_id)?.id ?? null);
-  return { ok: true, work_id: version.work_id, summary: result.summary, version_id };
+// P02：版本归属校验与回滚写在同一事务里——先查后写若分开，版本在两次查询之间被剪除
+// （MEMORY_VERSION_KEEP 保留策略会删最旧版本）就会带着一个不存在的版本继续写。
+function rollbackMemory(versionId, { expectedWorkId = null } = {}) {
+  return withTransaction(() => {
+    const version = prepare('SELECT * FROM memory_versions WHERE id = ?').get(versionId);
+    if (!version) {
+      const err = new Error('记忆版本不存在');
+      err.code = 'MEMORY_VERSION_NOT_FOUND';
+      throw err;
+    }
+    if (expectedWorkId !== null && Number(version.work_id) !== Number(expectedWorkId)) {
+      const err = new Error('该记忆版本不属于指定作品');
+      err.code = 'MEMORY_VERSION_WORK_MISMATCH';
+      throw err;
+    }
+    const result = saveStoryMemory(version.work_id, version.summary, { source: 'rollback', note: `回滚到版本 #${version.id}` });
+    const version_id = result.version_id
+      ?? (prepare('SELECT MAX(id) AS id FROM memory_versions WHERE work_id = ?').get(version.work_id)?.id ?? null);
+    return { ok: true, work_id: version.work_id, summary: result.summary, version_id };
+  });
 }
 
 // ---------- 场景化创作上下文（ST 式装配） ----------
@@ -5541,6 +5724,24 @@ async function handleAPI(req, res, pathname, query) {
   const resource = segments[1];
   const id = segments[2] ? parseId(segments[2]) : null;
 
+  // P07：健康（进程活着）/ 就绪（可提供完整服务）分离。这两个端点不参与追踪、不要求就绪。
+  if (resource === 'health' && segments.length === 2 && method === 'GET') {
+    return sendJSON(res, 200, {
+      ok: true, service: 'novel-studio', pid: process.pid, port: PORT,
+      ready: serviceReady, uptime_s: Math.round(process.uptime()),
+    });
+  }
+  if (resource === 'readiness' && segments.length === 2 && method === 'GET') {
+    return sendJSON(res, serviceReady ? 200 : 503, {
+      ok: serviceReady, ready: serviceReady, port: PORT,
+      reason: readinessState.reason || '', checks: readinessChecks(),
+    });
+  }
+  // 未就绪期间的写请求一律 503：半初始化的服务不能改数据。
+  if (!serviceReady && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    return sendError(res, 503, `服务尚未就绪（${readinessState.reason || 'initializing'}）：写操作已暂时拒绝，请稍后重试`);
+  }
+
   // 宿主副作用路由集中 fail-closed：这些接口没有“模型提案”语义，
   // 不能因遗漏某个分支而把 X-Novel-Agent 请求当作作者操作放行。
   const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
@@ -5561,6 +5762,14 @@ async function handleAPI(req, res, pathname, query) {
     return sendError(res, 403, '跨源请求被拒绝：写操作仅允许本机工坊页面发起');
   }
 
+  // P03：作者决策类路由的权限矩阵。放在路由分派之前——不能只在 apply 分支检查，
+  // 否则 reject / 红线 / 豁免 / 蓝图 / 审稿这些旁路仍然对模型敞开（本轮之前正是如此）。
+  const authorOnly = authorOnlyWriteOf(resource, segments, method);
+  if (authorOnly) {
+    const author = requireAuthorChannel(req, authorOnly.label);
+    if (!author.ok) return sendError(res, author.status, author.message);
+  }
+
   // ---------- 🐞 运行追踪（调试录制） ----------
   // 本组接口自身不参与追踪（debug-trace 的 isExcludedPath 排除 /api/debug），
   // 否则「查看追踪」这个动作会不断产生新的追踪数据。
@@ -5570,7 +5779,11 @@ async function handleAPI(req, res, pathname, query) {
       return sendJSON(res, 200, { ok: true, state: traceState(), config: traceConfigInfo() });
     }
     if (method === 'POST' && action === 'start') {
-      const body = await readBody(req).catch(() => ({}));
+      // P05：请求体解析失败必须中止——旧写法 `.catch(() => ({}))` 会把畸形 JSON 当成
+      // 空对象继续执行，于是"请求失败"与"追踪已开启"可以同时发生。
+      const parsed = await readBodyOrError(req, res);
+      if (!parsed.ok) return;
+      const body = parsed.body;
       const out = startTracing({ from: body?.from || 'ui', work_id: body?.work_id ?? null });
       log({ level: 'info', layer: 'server', kind: 'trace_start', message: `运行追踪已开启（会话 ${out.session_id}）`, context: { session_id: out.session_id } });
       return sendJSON(res, 200, out);
@@ -5586,7 +5799,9 @@ async function handleAPI(req, res, pathname, query) {
     }
     if (method === 'POST' && action === 'op') {
       // 前端上报一次操作的客户端节点、渲染结果与 toast（第 9 题：调用时间 + 代码 + 代码响应）。
-      const body = await readBody(req).catch(() => ({}));
+      const parsed = await readBodyOrError(req, res);
+      if (!parsed.ok) return;
+      const body = parsed.body;
       const opId = String(body.op_id || '');
       if (!opId) return sendError(res, 400, '缺少 op_id');
       const before = getOperation(opId, { withNodes: false });
@@ -5664,7 +5879,12 @@ async function handleAPI(req, res, pathname, query) {
   }
 
   if (resource === 'search' && method === 'GET') {
-    const workId = query.work_id ? Number(query.work_id) : null;
+    // P11：非法 work_id 不再退化成"全库检索"。给了就必须是正整数。
+    let workId = null;
+    if (query.work_id !== undefined && String(query.work_id).trim() !== '') {
+      workId = parsePositiveInt(query.work_id);
+      if (workId === null) return sendError(res, 400, 'work_id 必须是正整数');
+    }
     const base = timed('server', '关键词检索（search）', () => search(query.q || '', workId), SLOW_REQUEST_MS);
     // 关键词检索 + OpenViking 语义检索合并返回（novel_lookup 与全局搜索共用）。
     const semantic = await timedAsync('sync', 'OpenViking 语义检索（semanticSearchMerge）', () => semanticSearchMerge(query.q || '', workId), 1000);
@@ -5992,16 +6212,26 @@ async function handleAPI(req, res, pathname, query) {
     return sendJSON(res, 200, { work_id: workId, summary: getStoryMemory(workId), segments: listStoryMemorySegments(workId, Number(query.through_chapter_index)) });
   }
   if (resource === 'story_memory' && method === 'POST' && segments[2] === 'rollback') {
+    // P02：回滚会**直接替换正式记忆**，没有"提案"语义，因此只允许作者通道。
+    // 权限矩阵里已登记同一条规则；这里再显式判一次，避免以后调整表时漏掉这条直接写入。
+    const author = requireAuthorChannel(req, '长期记忆回滚');
+    if (!author.ok) return sendError(res, author.status, author.message);
     const body = await readBody(req);
-    const versionId = Number(body.version_id);
-    if (!versionId) return sendError(res, 400, '缺少 version_id');
+    const versionId = parsePositiveInt(body.version_id);
+    if (versionId === null) return sendError(res, 400, 'version_id 必须是正整数');
+    const declaredWork = body.work_id ?? query.work_id;
+    const expectedWorkId = declaredWork === undefined || declaredWork === null || declaredWork === ''
+      ? null : parsePositiveInt(declaredWork);
+    if (expectedWorkId === null && declaredWork !== undefined && declaredWork !== null && declaredWork !== '') {
+      return sendError(res, 400, 'work_id 必须是正整数');
+    }
     try {
-      const result = rollbackMemory(versionId);
-      const vrow = prepare('SELECT work_id FROM memory_versions WHERE id = ?').get(versionId);
-      if (vrow?.work_id) notifyChange('story_memory', { workId: vrow.work_id, id: vrow.work_id });
+      // 版本归属校验 + 记忆恢复 + 版本记录新增都在同一个事务里（TOCTOU 也一并关掉）。
+      const result = withTx(() => rollbackMemory(versionId, { expectedWorkId }));
+      notifyChange('story_memory', { workId: result.work_id, id: result.work_id });
       return sendJSON(res, 200, { ok: true, ...result });
     } catch (e) {
-      return sendError(res, 404, e.message);
+      return sendError(res, e.code === 'MEMORY_VERSION_NOT_FOUND' ? 404 : 400, e.message);
     }
   }
   if (resource === 'story_memory' && method === 'PUT') {
@@ -7300,6 +7530,20 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         if (Number(snap.work_id) !== workId) return sendError(res, 400, '快照不属于该作品');
         baselineHash = String(snap.state_hash || '');
         binding.snapshot_id = snapshotId;
+      }
+      // P01：伏笔状态是一次性审批的合法 op，但此前创建分支**没有写绑定**，
+      // 于是 checkBinding 永远拿到空 event_id → 带审批也永远失败（整条授权链是死的）。
+      // 绑定由服务端从真实存储计算：事件必须存在、属于该作品、且是伏笔。
+      if (op === 'foreshadow_status') {
+        const eventId = parsePositiveInt(body.event_id);
+        const target = asString(body.status, '');
+        if (eventId === null) return sendError(res, 400, 'foreshadow_status 审批需要 event_id（正整数）');
+        if (!['open', 'resolved', 'dropped'].includes(target)) return sendError(res, 400, 'foreshadow_status 审批需要 status（open/resolved/dropped）');
+        const ev = prepare('SELECT id, work_id, kind FROM story_events WHERE id = ?').get(eventId);
+        if (!ev || String(ev.kind) !== 'foreshadow') return sendError(res, 404, '伏笔不存在');
+        if (Number(ev.work_id) !== workId) return sendError(res, 400, '伏笔不属于该作品');
+        binding.event_id = eventId;
+        binding.status = target;
       }
       // 时态引擎（T2/T4）：一次性作者授权精确绑定到「某个提案组 / 某组更正 / 某次重建运行」；
       // 基线与绑定一律由服务端从真实存储计算，客户端自报无效。
@@ -8812,27 +9056,67 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   }
   if (resource === 'novel' && segments[2] === 'foreshadows' && segments[3] && segments[4] === 'status' && method === 'POST') {
     const body = await readBody(req);
-    const id = Number(segments[3]);
+    const id = parsePositiveInt(segments[3]);
+    if (id === null) return sendError(res, 404, '伏笔不存在');
     const status = asString(body.status, '');
     if (!['open', 'resolved', 'dropped'].includes(status)) return sendError(res, 400, 'status 必须是 open/resolved/dropped');
     const row = prepare('SELECT * FROM story_events WHERE id = ? AND kind = ?').get(id, 'foreshadow');
     if (!row) return sendError(res, 404, '伏笔不存在');
-    // P1-09：这里是**直接改账本**（没有提案表可落），因此模型通道必须持作者的一次性审批，
-    // 且审批精确绑定 (event_id, status) —— 一次授权只能改这一条伏笔的这一个状态。
-    // 作者通道（浏览器同源）行为不变：作者本人就是授权。
+    // P01：**所有只读业务校验都必须早于任何写入（包括审批消费）**。
+    // 旧实现先消费审批、再改状态、最后才校验 resolves_event_id，于是"接口 404"与
+    // "状态已改 / 审批已被吃掉"可以同时成立——失败留下了部分副作用。
+    let resolveId = null;
+    if (status === 'resolved' && body.resolves_event_id !== undefined && body.resolves_event_id !== null && body.resolves_event_id !== '') {
+      resolveId = parsePositiveInt(body.resolves_event_id);
+      if (resolveId === null) return sendError(res, 400, 'resolves_event_id 必须是正整数');
+      if (resolveId === id) return sendError(res, 400, '伏笔不能回收自己');
+      const target = prepare('SELECT id, work_id FROM story_events WHERE id = ?').get(resolveId);
+      if (!target) return sendError(res, 404, '回收事件不存在');
+      if (Number(target.work_id) !== Number(row.work_id)) return sendError(res, 400, '回收事件不属于该作品');
+    }
+    // P1-09：模型通道必须持作者的一次性审批，精确绑定 (event_id, status)。
+    // 这里只做**不消费**的预检；消费与写入放进同一个事务（见下）。
     const guard = guardAgentWrite(req, {
       op: 'foreshadow_status',
       workId: row.work_id,
       binding: { event_id: id, status },
       approvalId: body.approval_id,
+      consume: false,
     });
     if (!guard.ok) return sendError(res, guard.status, guard.message);
-    prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ?').run(status, id);
-    if (status === 'resolved' && body.resolves_event_id) {
-      const rid = Number(body.resolves_event_id);
-      const target = prepare('SELECT id FROM story_events WHERE id = ? AND work_id = ?').get(rid, row.work_id);
-      if (!target) return sendError(res, 404, '回收事件不存在或不属于该作品');
-      prepare('UPDATE story_events SET resolves_event_id = ? WHERE id = ?').run(rid, id);
+    try {
+      withTx(() => {
+        if (guard.approval) {
+          const verdict = Approvals.consumeApproval(guard.approval.id, {
+            op: 'foreshadow_status', workId: row.work_id, binding: { event_id: id, status }, by: 'agent',
+          });
+          if (!verdict.ok) {
+            const err = new Error(`审批消费失败（${verdict.code}）：${verdict.reason}`);
+            err.status = 403;
+            throw err;
+          }
+        }
+        // 当前状态条件更新（P01 第 5 步）：同一伏笔的相邻请求不得互相覆盖。
+        // 值没变时（重复提交同一结果）视为幂等，不报错——界面重复点按不应变成冲突。
+        const info = prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ? AND COALESCE(foreshadow_status, \'open\') = ?')
+          .run(status, id, String(row.foreshadow_status || 'open'));
+        if (Number(info.changes) !== 1) {
+          const nowRow = prepare('SELECT foreshadow_status, resolves_event_id FROM story_events WHERE id = ?').get(id);
+          const same = String(nowRow?.foreshadow_status || 'open') === status
+            && (resolveId === null || Number(nowRow?.resolves_event_id) === resolveId);
+          if (!same) {
+            const err = new Error('伏笔状态已被并发修改，请刷新后重试');
+            err.status = 409;
+            err.code = 'FORESHADOW_CONFLICT';
+            throw err;
+          }
+        }
+        if (resolveId !== null) {
+          prepare('UPDATE story_events SET resolves_event_id = ? WHERE id = ?').run(resolveId, id);
+        }
+      });
+    } catch (e) {
+      return sendError(res, Number(e.status) || 500, e.message);
     }
     touchWork(row.work_id);
     notifyChange('events', { workId: row.work_id, id: row.work_id });
@@ -9023,7 +9307,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   // 删除一份（带 blueprint_id）或整章蓝图（不带）—— 作者点「已保存蓝图」那一行的「删除」。
   // 返回删除之后的**真值**列表：界面直接照它重画，不自己猜"还剩几份 / 最新是哪一份"。
   if (resource === 'novel' && segments[2] === 'chapter_blueprints' && method === 'DELETE') {
-    const body = await readBody(req).catch(() => ({}));
+    // P05：畸形请求体不得静默变成 `{}` 然后执行删除。
+    const parsed = await readBodyOrError(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const chapterId = Number(body.chapter_id) || Number(query.chapter_id);
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const chapter = prepare('SELECT id, work_id FROM chapters WHERE id = ?').get(chapterId);
@@ -9489,7 +9776,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   // 标记任务产出已被应用（成文弹窗打开 / 审稿报告展示 / 修稿差异预览之后调用）。
   // 作用：恢复条不再把这条任务当「已完成，结果待应用」重复提示。
   if (resource === 'harness' && method === 'POST' && segments[2] === 'mark_applied') {
-    const body = await readBody(req).catch(() => ({}));
+    // P05：畸形请求体不得被当成"某个任务已应用"继续写状态。
+    const parsed = await readBodyOrError(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body;
     const jobId = String(body.job_id || '');
     if (!jobId) return sendError(res, 400, '缺少 job_id');
     markHarnessJobApplied(jobId);
@@ -9679,7 +9969,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
   if (resource === 'backup' && method === 'POST' && !segments[2]) {
     const author = requireAuthorChannel(req, '整库备份');
     if (!author.ok) return sendError(res, author.status, author.message);
-    try { const body = await readBody(req).catch(() => ({})); return sendJSON(res, 201, { ok: true, backup: createDatabaseBackup(body.label || 'manual') }); }
+    // P05：备份是**最具破坏性可见后果**的副作用之一：畸形 JSON 绝不能被吞成 `{}` 再执行 VACUUM。
+    const parsed = await readBodyOrError(req, res);
+    if (!parsed.ok) return;
+    try { return sendJSON(res, 201, { ok: true, backup: createDatabaseBackup(parsed.body.label || 'manual') }); }
     catch (e) { return sendError(res, 500, `备份失败：${e.message}`); }
   }
   if (resource === 'backup' && method === 'POST' && segments[2] === 'restore') {
@@ -9724,6 +10017,17 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (method !== 'POST') return sendError(res, 405, 'Method not allowed');
     let body;
     try { body = await readBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    // P16：模型通道不得自带 provider 地址/凭证——只能复用作者保存的 config_id；
+    // 消息条数与总字节也设上限，避免一次请求把整部作品与费用一起放大。
+    if (isAgentRequest(req)) {
+      const providerGuard = assertModelChannelProvider(body);
+      if (!providerGuard.ok) return sendError(res, 403, providerGuard.reason);
+      if (body.config_id === undefined || body.config_id === null || String(body.config_id).trim() === '') {
+        return sendError(res, 403, '模型通道请求 AI 时必须使用作者配置的 config_id（不能内联地址或凭证）');
+      }
+      const msgCheck = checkAgentMessages(body.messages);
+      if (!msgCheck.ok) return sendError(res, 403, msgCheck.reason);
+    }
     try {
       const config = getConfigFromBody(body);
       if (!config.api_key) return sendError(res, 400, '请先填写 API Key');
@@ -10164,19 +10468,49 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// P07：监听错误必须给出可分辨的原因并非零退出；不能留下"正在运行"的误导日志。
+server.on('error', (e) => {
+  const code = String((e && e.code) || '');
+  if (code === 'EADDRINUSE') {
+    console.error(`[Novel Studio] 端口 ${PORT} 已被其它程序占用（EADDRINUSE）：请关闭占用者或设置 PORT 换一个端口。`);
+  } else if (code === 'EACCES') {
+    console.error(`[Novel Studio] 无权监听端口 ${PORT}（EACCES）：请换一个 >=1024 的端口，或改用有权限的账户。`);
+  } else {
+    console.error(`[Novel Studio] 监听失败（${code || '未知错误'}）：${(e && e.message) || e}`);
+  }
+  console.error('[Novel Studio] 服务未启动，未进入可写状态。');
+  process.exit(1);
+});
+
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Novel Studio is running at http://localhost:${PORT}`);
-  // [S17] 崩溃残留的 settings.yaml 还原：只在**真实启动路径**执行。
-  // 以前它在 harness.js 的模块顶层——任何 import 都会写用户全局设置，现已改为显式引导。
-  bootstrapHarnessSettings();
-  // 启动后异步把尚未索引的作品导入 OpenViking 共享记忆库（语义召回开启时）。
-  autoIndexExistingWorks();
-  startTemporalDispatcher(); // [S04-WIRING] 先 reconciliation，再事务外领取
-  // R03：重启恢复——上次进程在"采纳已提交、投影还没执行"之间退出时，记录仍在 outbox 里
-  // （pending/failed），这里只凭持久化状态续跑，不依赖任何内存队列。
-  if (projectionSummary().pending > 0) {
-    drainProjectionOutbox().then((r) => {
-      if (r.drained) log({ level: 'info', layer: 'sync', kind: 'projection_recovered', message: `启动恢复投影 ${r.drained} 条（pending ${r.pending} / failed ${r.failed}）` });
-    }).catch(() => { /* 保持 failed，界面可见可重试 */ });
+  // 初始化顺序（P07）：迁移自检 → 宿主配置回收 → 记忆索引 → 时态 dispatcher → 投影恢复，
+  // 任何一步失败都不进入 ready；ready 之前写请求是 503（见 handleAPI 顶部）。
+  try {
+    bootstrapHarnessSettings();
+    // 启动后异步把尚未索引的作品导入 OpenViking 共享记忆库（语义召回开启时）。
+    autoIndexExistingWorks();
+    startTemporalDispatcher(); // [S04-WIRING] 先 reconciliation，再事务外领取
+    // R03/P12：重启恢复——上次进程在"采纳已提交、投影还没执行"之间退出时，记录仍在 outbox 里。
+    // 先把租约过期的 running 收回 pending（崩溃恢复），再连续分批排空直到无 pending / 预算用尽。
+    const recovered = recoverStaleProjections();
+    if (recovered) {
+      log({ level: 'warn', layer: 'sync', kind: 'projection_recovered_stale', message: `重启收回 ${recovered} 条租约过期的 running 投影（已重新排队）` });
+    }
+    if (projectionSummary().pending > 0) {
+      drainProjectionsUntilIdle({ budgetMs: 20000 }).then((r) => {
+        if (r.drained) log({ level: 'info', layer: 'sync', kind: 'projection_recovered', message: `启动恢复投影 ${r.drained} 条（${r.stopped} / pending ${r.pending} / failed ${r.failed}）` });
+      }).catch(() => { /* 保持 failed，界面可见可重试 */ });
+    }
+    if (process.env.NOVELSTUDIO_HOLD_READY === '1') {
+      // 仅供离线测试：停在"未就绪"状态，用来观察写请求 503 与 readiness 503 的真实行为。
+      readinessState.reason = 'held-for-test';
+      console.log('[Novel Studio] NOVELSTUDIO_HOLD_READY=1：停在未就绪状态（仅离线测试使用）');
+    } else {
+      markServiceReady();
+      console.log(`Novel Studio is running at http://localhost:${PORT}（ready）`);
+    }
+  } catch (e) {
+    console.error(`[Novel Studio] 启动初始化失败，服务不会进入可写状态：${(e && e.message) || e}`);
+    process.exit(1);
   }
 });

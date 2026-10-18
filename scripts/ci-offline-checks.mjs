@@ -149,6 +149,8 @@ export const CHECKS = [
   // 于是全仓改动集=0 → 推导出的回滚档全变 independent，与声明的 shared 冲突 → 恒红 7 条。
   // 它是**提交前**的核对工具（需要「未提交的工作区」这个前提），跑在 verify-all 与本地流程里。
   { name: '前端执行验证（vm + DOM 桩）', cmd: ['frontend-test.mjs'], why: '界面契约' },
+  // v1.2.0（2026-10-18）P01–P16 修复的回归总入口：每项修复一个分套件，任一失败即非零退出。
+  { name: 'v1.2.0 修复回归（P01–P16：权限边界/原子性/入口安全/启动就绪/outbox/fencing/AI 隐私/输入校验，零计费）', cmd: ['.p1-baseline/test-1018-hardening.mjs'], why: '方案 §P01–P16 的验收断言必须可离线复现：失败请求零副作用、未授权模型操作 0 次成功、旧 attempt 不覆盖新结果、追踪不落正文' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。
   // ⚠️ 在 DSH 受限文件沙箱里，本套件内部再起子进程时会撞上"禁止管道 stdio"，

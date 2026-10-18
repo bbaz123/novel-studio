@@ -586,8 +586,39 @@ export function beginAnalysis({ workId, chapterId, expectedBindingId = null } = 
   };
   return commitOrRollback(run);
 }
+/**
+ * P08（2026-10-18）：分析 attempt 的 fencing 判据。
+ *
+ * 竞争形状：worker A 开始分析（request_id=A）→ 租约过期 → worker B 重新开始（request_id=B）
+ * → A 晚到的结果回来。旧实现只校验 binding 是否 pending / revision 是否最新，不校验
+ * "这次完成动作属于哪个 attempt"，于是 A 可以把 B 正在跑（甚至已经写的）结果覆盖掉。
+ *
+ * 判据：只有当前 running attempt 的 token 才允许回写；没有 running attempt 的历史路径
+ *（直接对 pending 绑定调用 completeAnalysis 的离线夹具）不受影响，因为没有可被覆盖的租约。
+ */
+export function analysisFenceVerdict(analysis, { requestId = '', attempt = null } = {}) {
+  const a = analysis || {};
+  if (!a.request_id) return { ok: true };
+  const got = String(requestId || '').trim();
+  if (!got) {
+    // 没有记录过 token 的绑定不受影响；有记录且当前正在跑时，缺 token 一律拒绝。
+    if (a.status === 'running') {
+      return { ok: false, reason: '缺少分析 attempt 的 fencing token（request_id）：拒绝回写，避免旧 worker 覆盖当前结果' };
+    }
+    return { ok: true };
+  }
+  // 只要提交的 token 与记录不符，**无论当前状态是 running 还是 done** 都拒绝：
+  // 旧 attempt 的"完成"晚于新 attempt 完成时，不能把旧结果叠加到新结果上。
+  if (got !== String(a.request_id)) {
+    return { ok: false, reason: `fencing token 不匹配（当前 ${a.request_id}，提交 ${got}）：旧 attempt 的结果不得回写` };
+  }
+  if (attempt !== null && attempt !== undefined && Number(attempt) !== Number(a.attempts)) {
+    return { ok: false, reason: `attempt 不匹配（当前 ${a.attempts}，提交 ${attempt}）：旧 attempt 的结果不得回写` };
+  }
+  return { ok: true };
+}
 /** 分析完成：把候选事件挂到待确认绑定上（**不写正式状态**，等作者确认）。 */
-export function completeAnalysis({ workId, chapterId, bindingId, events = [], assumptions = [], provider = 'model', model = '', inputHash = '', resultHash = '', issues = [] } = {}) {
+export function completeAnalysis({ workId, chapterId, bindingId, events = [], assumptions = [], provider = 'model', model = '', inputHash = '', resultHash = '', issues = [], requestId = '', attempt = null } = {}) {
   const w = Number(workId) || 0;
   const c = Number(chapterId) || 0;
   if (!w || !c) throw new Error('completeAnalysis: 缺少 workId / chapterId');
@@ -603,6 +634,22 @@ export function completeAnalysis({ workId, chapterId, bindingId, events = [], as
     const revision = latestRevisionOf(c);
     if (!revision || String(revision.id) !== String(binding.revision_id)) {
       return { ok: false, enabled: true, decision: 'stale', reason: '保存了更新的正文：分析结果已过期' };
+    }
+    // P08：在写事件之前先核对 fencing token —— 不匹配时**零副作用**。
+    const currentAnalysis = (binding.validation || {}).analysis || {};
+    const fence = analysisFenceVerdict(currentAnalysis, { requestId, attempt });
+    if (!fence.ok) {
+      return { ok: false, enabled: true, decision: 'stale', reason: fence.reason, binding_id: binding.id };
+    }
+    // 同一 attempt 重复完成：幂等回执（不重复写事件，也不把已完成的结果再叠加一次）。
+    if (currentAnalysis.status === 'done' && currentAnalysis.request_id && String(requestId) === String(currentAnalysis.request_id)) {
+      return {
+        ok: true, enabled: true, status: 'done', repeated: true, binding_id: binding.id, revision_id: binding.revision_id,
+        event_ids: Array.isArray(binding.event_ids) ? binding.event_ids : [],
+        proposal: (binding.contract_ref || {}).proposal || null,
+        dependencies: (binding.contract_ref || {}).dependencies || null,
+        issues: currentAnalysis.issues || [],
+      };
     }
     let stored = [];
     try {
@@ -644,13 +691,16 @@ export function completeAnalysis({ workId, chapterId, bindingId, events = [], as
   return inTransaction() ? run() : withTransaction(run);
 }
 /** 分析失败 / 未运行（无模型）：如实记录，保存本身不受影响。 */
-export function finishAnalysis({ workId, chapterId, bindingId, status = 'failed', error = '', provider = 'model' } = {}) {
+export function finishAnalysis({ workId, chapterId, bindingId, status = 'failed', error = '', provider = 'model', requestId = '', attempt = null } = {}) {
   const w = Number(workId) || 0;
   const c = Number(chapterId) || 0;
   if (!w || !c) throw new Error('finishAnalysis: 缺少 workId / chapterId');
   if (!guard(w)) return { ok: false, enabled: false, work_id: w, chapter_id: c };
   const binding = getBinding(bindingId);
   if (!binding || binding.validity !== 'pending') return { ok: false, enabled: true, reason: '提案不存在或已不是待确认状态' };
+  // P08：旧 attempt 的失败回调同样不得改写当前任务状态（否则会把新 attempt 标成 failed）。
+  const fence = analysisFenceVerdict((binding.validation || {}).analysis || {}, { requestId, attempt });
+  if (!fence.ok) return { ok: false, enabled: true, decision: 'stale', status: 'stale', reason: fence.reason, binding_id: binding.id };
   const analysis = {
     ...((binding.validation || {}).analysis || {}),
     status: String(status), provider,
