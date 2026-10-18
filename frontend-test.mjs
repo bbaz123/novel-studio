@@ -935,6 +935,7 @@ globalThis.__probe = {
   showRevisionUnresolved, refineByFullRewrite, revisionCoverageHtml, showRevisionDispositions,
   revisionPlanEngine, revisionPlanFor, revisionAuthorizationFor, issueStableId, revisionRetryBudgetFor, revisionRetryBudgetKey, revisionSpanCatalogue, showReviewReport, revisionPreference, setRevisionPreference,
   revisionFindingsFor, revisionHasStructuredEvidence, revisionSemanticFor, revisionClosureFor, revisionResultToast, revisionClosureHtml,
+  revisionAutoRepairEnabled, revisionAutoRepairNotice, runRevisionAutoRepair, revisionPlanForIssues, mergeRepairPatches, mergeRepairCoverage,
   reportConsistencyHtml,
   revisionComparisonHtml, showRevisionComparison,
   patchSafetyEngine, patchSafetyOptions, patchSafetyGate, patchSafetyVerify, patchSafetyNotesHtml,
@@ -6566,6 +6567,48 @@ P.traceStopStream();
     && opened[0].body.includes('PARTIAL_VERIFIED'), opened[0].body.slice(0, 120));
   check('QC-10 本轮没有"已按清单改好"这类把补丁数当修复数的文案',
     !/已按清单改好|已全部修好/.test(opened[0].title + opened[0].body), opened[0].title);
+
+  // v1.2.2 自动二次复修：默认开、最多 2 轮、成本门与提示词接线。
+  check('QC-11 自动二次复修默认开启（可用 localStorage 关闭），轮次上限 2',
+    typeof P.revisionAutoRepairEnabled === 'function' && P.revisionAutoRepairEnabled() === true
+    && /REVISION_AUTO_REPAIR_MAX_ROUNDS = 2/.test(fs.readFileSync(path.join(repoRoot, 'public', 'app.js'), 'utf8')));
+  const autoPrompt = P.buildAIRevisionPatchPrompt('正文一句话。', ['检测单折数不一致'], {
+    snapshot: P.revisionSnapshotFor('正文一句话。', 1), chapterId: 1, issueIds: ['R-1'],
+    autoRepair: { round: 1, failures: [{ issue_id: 'R-1', reason_code: 'SEMANTIC_FAILED', reason: '章尾仍是一折', hint: '只改章尾' }] },
+  });
+  check('QC-12 自动复修提示词写明轮次/失败原因/定向提示，并要求不扩大范围',
+    autoPrompt.includes('自动定向复修') && autoPrompt.includes('SEMANTIC_FAILED')
+    && autoPrompt.includes('章尾仍是一折') && autoPrompt.includes('只改章尾')
+    && autoPrompt.includes('不要扩大范围'), autoPrompt.slice(autoPrompt.indexOf('自动定向复修'), autoPrompt.indexOf('自动定向复修') + 80));
+  const notice = P.revisionAutoRepairNotice({
+    rounds: [{ round: 1, status: 'applied', applied: 2, verified: 1, unresolved: 1 }],
+  });
+  check('QC-13 自动复修摘要同时给出补丁数、语义通过与未解决数（不宣称全部修好）',
+    /自动定向复修 1 轮/.test(notice) && /语义通过 1/.test(notice) && /未解决 1/.test(notice), notice);
+  check('QC-14 被成本门/预算挡住时如实说明原因（不静默跳过）',
+    /费用无法可靠核价/.test(P.revisionAutoRepairNotice({ rounds: [{ round: 1, status: 'skipped', reason: 'COST_UNKNOWN' }] }))
+    && /超出本轮预算上界/.test(P.revisionAutoRepairNotice({ rounds: [{ round: 1, status: 'skipped', reason: 'BUDGET_EXCEEDED' }] })),
+    P.revisionAutoRepairNotice({ rounds: [{ round: 1, status: 'skipped', reason: 'COST_UNKNOWN' }] }));
+  check('QC-15 自动复修接线在源码里存在，且候选仍走差异预览（不自动写库）',
+    /runRevisionAutoRepair\(/.test(fs.readFileSync(path.join(repoRoot, 'public', 'app.js'), 'utf8'))
+    && /state\.pendingRevisionClosure = \{/.test(fs.readFileSync(path.join(repoRoot, 'public', 'app.js'), 'utf8')));
+
+  // 补丁合并：先失败条目整条替换，其余保留；覆盖表未回答的条目标 uncounted，不假装处理过。
+  const baseText = '开头折过一折，结尾有雨。';
+  const prior = [{ issue_ids: ['R-2'], span_id: 'p1s1~0', op: 'replace', original: '有雨', replacement: '下雨', start: baseText.indexOf('有雨'), end: baseText.indexOf('有雨') + 2 }];
+  const repaired = [{ issue_ids: ['R-1'], span_id: 'p1s1~0', op: 'replace', original: '折过一折', replacement: '折过两折', start: baseText.indexOf('折过一折'), end: baseText.indexOf('折过一折') + 4 }];
+  const merged = P.mergeRepairPatches(baseText, prior, repaired, ['R-1']);
+  check('QC-16 自动复修补丁按 issue 合并回原候选（两处都生效）',
+    merged.ok === true && merged.text === '开头折过两折，结尾下雨。' && merged.applied.length === 2,
+    JSON.stringify(merged));
+  const covMerged = P.mergeRepairCoverage(
+    [{ issue_id: 'R-1', status: 'blocked' }, { issue_id: 'R-2', status: 'patched' }],
+    [{ issue_id: 'R-1', status: 'patched' }], ['R-1']);
+  check('QC-17 覆盖表按 issue 替换，未回答的条目标 unaccounted（不伪装已处理）',
+    covMerged.find((c) => c.issue_id === 'R-1').status === 'patched'
+    && covMerged.find((c) => c.issue_id === 'R-2').status === 'patched'
+    && P.mergeRepairCoverage([{ issue_id: 'R-1', status: 'blocked' }], [], ['R-1'])[0].status === 'unaccounted',
+    JSON.stringify(covMerged));
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

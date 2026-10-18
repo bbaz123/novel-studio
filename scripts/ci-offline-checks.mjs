@@ -154,6 +154,12 @@ export const CHECKS = [
   // v1.2.1（2026-10-18）审稿质量闭环：finding.v2 / 多热点授权 / 逐条语义验收 / 闭环状态 / 回执与插件只读工具。
   // R-01…R-30 的覆盖表在总入口里：26 条有断言归属 + 4 条显式 SKIP（理由写进输出；skipped 不算 passed）。
   { name: 'v1.2.1 审稿质量闭环回归（R-01–R-30：finding.v2/多热点/语义验收/闭环/回执，零计费）', cmd: ['.p1-baseline/test-1019-revision-closure.mjs'], why: '补丁数 ≠ 修复数、候选稿 ≠ 已入库：每条 R 项必须有断言归属或显式 SKIP；"语义未运行"不得判 resolved' },
+  // v1.2.2（2026-10-18）：自动二次复修 + P1 增强 + 外部插件真实联调。
+  // R-24/25/26 依赖兄弟仓库（CI 干净检出没有）→ 套件内**显式 SKIP** 并打印原因，不把"没跑"记成通过。
+  { name: 'v1.2.2 P1-1 词条版本化（追加式版本 + 回滚 + 版本验收，零计费）', cmd: ['.p1-baseline/test-1021-entry-versioning.mjs'], why: '词条引用必须能说清"按哪一版判定"；回滚不删历史；模型通道不得回滚' },
+  { name: 'v1.2.2 P1-2 道具状态链（章级迁移 + 逐字证据 + 验收，零计费）', cmd: ['.p1-baseline/test-1022-prop-chain.mjs'], why: '状态迁移必须有正文证据；状态不符/证据丢失不得判通过' },
+  { name: 'v1.2.2 P1-3 伏笔自动登记（deferred → 待确认候选，零计费）', cmd: ['.p1-baseline/test-1023-foreshadow-autoregister.mjs'], why: '只登记 pending 候选，不写事件账本；幂等去重与上限' },
+  { name: 'v1.2.2 R-24/25/26 外部插件真实联调（拉起工坊 + 双插件 + C 账本隔离，零计费）', cmd: ['.p1-baseline/test-1020-dsh-real-integration.mjs'], why: '外部插件行为不在本仓库，缺前置时显式 SKIP；有前置时必须真跑（真实 Cordis 上下文）' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。
   // ⚠️ 在 DSH 受限文件沙箱里，本套件内部再起子进程时会撞上"禁止管道 stdio"，

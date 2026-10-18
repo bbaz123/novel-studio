@@ -49,6 +49,15 @@ import { LAYERS as CONTEXT_LAYER_SPEC, capOf as contextCapOf, capOfId, entityCap
 // ⚠ 全部为**门控**接入：作品开关（story_state_config.enabled）关闭时，下面用到的
 // 每一个函数都不会被调用——未开启的作品在上下文装配、预算与生成路径上与接入前完全一致。
 import * as StoryState from './ai/story-state/index.mjs';
+// v1.2.2 P1-1：词条不可变版本（世界观的"按哪一版判定"必须可追溯）。
+import { createEntryVersioning } from './ai/story-state/entry-versioning.mjs';
+// 词条版本化实例：只读写 world_entries / world_entry_versions，不触碰正文与时态状态。
+const EntryVersioning = createEntryVersioning({ db });
+// v1.2.2 P1-2：道具状态链（每次迁移带本章正文逐字证据；没有证据拒绝登记）。
+import { createPropChain } from './ai/story-state/prop-chain.mjs';
+const PropChain = createPropChain({ db });
+// v1.2.2 P1-3：审稿 deferred → 待确认伏笔候选（纯函数，去重/上限在模块里）。
+import { planAutoRegistrations, normalizeForeshadowSummary } from './ai/story-state/foreshadow-autoregister.mjs';
 // 作者审批记录（2026-09-27，R02.2）：把"作者同意"变成服务端可校验的执行边界。
 import * as Approvals from './ai/story-state/approval.mjs';
 import * as ImportRebuild from './ai/import/rebuild.mjs';
@@ -432,6 +441,10 @@ const AUTHOR_ONLY_WRITES = [
   { resource: 'novel', label: '审稿确认清单', method: 'PUT', seg2: 'review', seg3: 'checklist' },
   // v1.2.1 质量闭环：回执是作者侧观测数据（不属于模型可写的决策类），仍按作者通道限制。
   { resource: 'novel', label: '修稿闭环回执', method: 'POST', seg2: 'revision', seg3: 'closure-receipt' },
+  // v1.2.2 P1-1：词条回滚是正典决策，模型通道不得直接做。
+  { resource: 'novel', label: '词条版本回滚', method: 'POST', seg2: 'world_entries', seg3: 'rollback' },
+  // v1.2.2 P1-2：道具状态登记会进入验收判据，属于作者/内核写入口。
+  { resource: 'novel', label: '道具状态登记', method: 'POST', seg2: 'prop_chain' },
   { resource: 'novel', label: '生成稿关闭', method: 'POST', seg2: 'draft', seg3: 'dismiss' },
   { resource: 'story_memory', label: '长期记忆回滚', method: 'POST', seg2: 'rollback' },
 ];
@@ -4328,7 +4341,35 @@ function saveReview(workId, chapterId, report, extra = {}) {
       SELECT id FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 10
     )
   `).run(chapterId, chapterId);
+  // v1.2.2 P1-3：审稿 deferred 里的"疑似伏笔"自动登记为**待确认候选**（不写事件账本）。
+  // 失败不阻断审稿落库：登记是"别忘"的辅助，报告本身才是作者要看的产物。
+  try { autoRegisterForeshadowProposals(workId, chapterId, payload); } catch (_) { /* 不阻断审稿 */ }
   return Number(info.lastInsertRowid);
+}
+
+/**
+ * 把审稿 deferred 中的疑似伏笔登记成 pending 提案（作者确认后才成为事件）。
+ * 幂等：同 work + 同归一化摘要只登记一次（同时对照既有事件与既有提案）。
+ */
+function autoRegisterForeshadowProposals(workId, chapterId, report) {
+  if (String(process.env.NOVELSTUDIO_FORESHADOW_AUTOREGISTER || '1') === '0') return { created: 0, disabled: true };
+  const deferred = Array.isArray(report && report.deferred) ? report.deferred : [];
+  if (!deferred.length) return { created: 0 };
+  const existingKeys = prepare('SELECT dedup_key FROM story_event_proposals WHERE work_id = ?').all(workId)
+    .map((r) => String(r.dedup_key || ''));
+  const existingSummaries = prepare("SELECT summary FROM story_events WHERE work_id = ? AND kind = 'foreshadow'").all(workId)
+    .map((r) => normalizeForeshadowSummary(r.summary));
+  const plan = planAutoRegistrations({ workId, chapterId, deferred, existingKeys, existingSummaries });
+  if (!plan.candidates.length) return { created: 0, skipped: plan.skipped };
+  const insert = prepare(`INSERT INTO story_event_proposals
+    (work_id, chapter_id, kind, summary, payload, foreshadow_status, dedup_key, note, status)
+    VALUES (?, ?, 'foreshadow', ?, '{}', 'open', ?, ?, 'pending')`);
+  let created = 0;
+  for (const candidate of plan.candidates) {
+    insert.run(workId, chapterId, candidate.summary, candidate.dedup_key, candidate.note);
+    created += 1;
+  }
+  return { created, skipped: plan.skipped };
 }
 
 // 审稿报告解析（服务端侧）：严格 JSON 失败时逐字段抢救。
@@ -9408,6 +9449,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       rawText,
       status: body.status === 'raw' || (!asString(structured.summary, '').trim() && !asArray(structured.issues).length) ? 'raw' : 'parsed'
     });
+    // v1.2.2 P1-3：用**原始报告**的 deferred 自动登记（结构化结果可能不携带 deferred，不能拿它做唯一来源）。
+    try { autoRegisterForeshadowProposals(chapter.work_id, chapterId, report); } catch (_) { /* 不阻断审稿 */ }
     return sendJSON(res, 201, {
       ok: true,
       review_id: reviewId,
@@ -9448,6 +9491,57 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const sel = latestRevisionSelection(chapterId);
     return sendJSON(res, 200, { ok: true, selection: sel });
+  }
+  // ── v1.2.2 P1-1：词条版本历史（只读）与回滚（作者通道）────────────────────
+  if (resource === 'novel' && segments[2] === 'world_entries' && segments[3] === 'versions' && method === 'GET') {
+    const entryId = parsePositiveInt(query.entry_id);
+    if (entryId === null) return sendError(res, 400, 'entry_id 必须是正整数');
+    const data = EntryVersioning.list(entryId);
+    if (!data) return sendError(res, 404, '词条不存在');
+    return sendJSON(res, 200, { ok: true, ...data });
+  }
+  if (resource === 'novel' && segments[2] === 'world_entries' && segments[3] === 'rollback' && method === 'POST') {
+    const body = await readBody(req);
+    const entryId = parsePositiveInt(body.entry_id);
+    const version = parsePositiveInt(body.version);
+    if (entryId === null || version === null) return sendError(res, 400, 'entry_id / version 必须是正整数');
+    const result = withTx(() => EntryVersioning.rollback(entryId, version, { note: String(body.note || '作者回滚') }));
+    if (!result.ok) {
+      if (result.code === 'ENTRY_NOT_FOUND') return sendError(res, 404, '词条不存在');
+      if (result.code === 'VERSION_NOT_FOUND') return sendError(res, 404, '该词条没有这个版本');
+      return sendError(res, 400, result.code);
+    }
+    const list = EntryVersioning.list(entryId);
+    return sendJSON(res, 200, { ok: true, ...result, current_version: list.current_version, versions: list.versions });
+  }
+  // ── v1.2.2 P1-2：道具状态链（只读查询 + 作者登记；证据必须逐字来自本章正文）──
+  if (resource === 'novel' && segments[2] === 'prop_chain' && method === 'GET') {
+    const workId = parsePositiveInt(query.work_id);
+    const propKey = String(query.prop_key || '').trim();
+    if (workId === null) return sendError(res, 400, '缺少 work_id');
+    if (!propKey) return sendError(res, 400, '缺少 prop_key');
+    const rows = PropChain.chain(workId, propKey);
+    return sendJSON(res, 200, {
+      ok: true, work_id: workId, prop_key: propKey, chain: rows,
+      latest: rows.length ? rows[rows.length - 1] : null,
+    });
+  }
+  if (resource === 'novel' && segments[2] === 'prop_chain' && method === 'POST') {
+    const body = await readBody(req);
+    const chapterId = parsePositiveInt(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== Number(chapter.work_id)) return sendError(res, 400, '章节不属于该作品');
+    const result = PropChain.record({
+      workId: chapter.work_id, chapterId,
+      propKey: body.prop_key, propName: body.prop_name, state: body.state,
+      evidenceQuote: body.evidence_quote,
+      // 证据核验用**纯文本**（章节存储是 HTML）：拿 HTML 去比对会让合法证据永远找不到。
+      chapterText: htmlToPlain(chapter.content || ''),
+      source: body.source || 'author',
+    });
+    if (!result.ok) return sendError(res, 400, `${result.reason}（${result.code}）`);
+    return sendJSON(res, 201, { ok: true, ...result, work_id: chapter.work_id, chapter_id: chapterId });
   }
   // ── v1.2.1 质量闭环：回执（只附加到最近一次选择记录，不能改正文/勾选）──────
   if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'closure-receipt' && method === 'POST') {
@@ -9588,6 +9682,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         rawText: parsed ? '' : output.slice(0, 200000),
         status: parsed ? 'parsed' : 'raw'
       });
+      // v1.2.2 P1-3：长任务回填的审稿同样自动登记 deferred 里的疑似伏笔（幂等）。
+      try { autoRegisterForeshadowProposals(chapter.work_id, chapterId, report); } catch (_) { /* 不阻断审稿 */ }
       if (jobId) markHarnessJobApplied(jobId);
       return sendJSON(res, 201, { ok: true, review_id: reviewId, parsed: !!parsed, issue_count: parsed ? parsed.issues.length : 0 });
     }
@@ -10214,6 +10310,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         const orderBefore = resource === 'chapters' ? captureOrderState(Number(body.work_id) || 0) : null;
         const wrote = withTx(() => {
           const newId = insertRow(resource, body);
+          // v1.2.2 P1-1：词条新建即 v1（历史与当前同一事务；失败一起回滚）。
+          if (resource === 'world_entries' && newId) EntryVersioning.snapshot(newId, { note: 'create', source: 'create' });
           if (body.work_id) touchWork(body.work_id);
           if (resource === 'works') {
             touchWork(newId);
@@ -10279,6 +10377,8 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         const putResult = withTx(() => {
           const changes = updateRow(resource, id, body);
           if (changes === 0) return { notFound: true };
+          // v1.2.2 P1-1：词条每次保存 = 新版本（追加式，不覆盖历史；同一事务内完成）。
+          if (resource === 'world_entries') EntryVersioning.bumpAndSnapshot(id, { note: 'update', source: 'update' });
           if (contentChanged && autoSnapshotAllowed(id)) {
             saveChapterVersion(id, old.title, old.summary, old.content, 'auto');
             pruneChapterVersions(id);

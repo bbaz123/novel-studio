@@ -11664,52 +11664,71 @@ async function refineByChecklist() {
       if (patched.allBlocked) toast('这一版修稿的高风险改动全部被安全门禁拦下（未改动正文），原因见差异预览', 'error');
       // v1.2.1 质量闭环（P0-6/P0-8）：先算**免费**的确定性验收与闭环指标，再展示。
       // 语义层此时尚未运行 → 覆盖表会如实显示"待语义复核"，不会把补丁数说成已修好。
-      const semantic = revisionSemanticFor({
+      let semantic = revisionSemanticFor({
         article: info.article, patched, plan: revisionPlan, findings: revisionPlanFindings,
         invariants: { must_keep: [] }, protectedSpans: extraProtected,
         currentBaseHash: revisionSnapshot.body_hash,
       });
-      const closure = revisionClosureFor({ patched, semantic, selectedIssueIds });
+      // v1.2.2 自动二次复修：只有**确定性验收已经判失败**的条目才会触发；
+      // 全部"待语义复核"时不会乱跑（那会变成没目标也付费）。最终候选仍等作者批准。
+      let finalPatched = patched;
+      let autoRepair = null;
+      if (revisionAutoRepairEnabled() && semantic && semantic.summary && Number(semantic.summary.unresolved) > 0) {
+        autoRepair = await runRevisionAutoRepair({
+          article: info.article, patched, semantic, plan: revisionPlan, findings: revisionPlanFindings,
+          authorization, snapshot: revisionSnapshot, chapterId: revisionChapterId,
+          selectedIssueIds, review, jobBase, applyOpts,
+          invariants: { must_keep: [] }, protectedSpans: extraProtected,
+        });
+        if (autoRepair && autoRepair.rounds.some((r) => r.status === 'applied')) {
+          finalPatched = autoRepair.patched;
+          semantic = autoRepair.semantic;
+        }
+      }
+      const closure = revisionClosureFor({ patched: finalPatched, semantic, selectedIssueIds });
+      const autoNotice = revisionAutoRepairNotice(autoRepair);
       const diffArgs = {
         baseFingerprint: info.baseChapterFingerprint || null,
         checklist: confirmed.length,
-        applied: patched.applied.length,
-        notes: patched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40)),
+        applied: finalPatched.applied.length,
+        notes: finalPatched.unresolved.map((u) => u.reason + '：' + (u.anchor || '').slice(0, 40)),
         chapterId: revisionChapterId,
-        blocked: patched.blocked,
-        findings: patched.findings,
-        coverage: patched.coverage,
+        blocked: finalPatched.blocked,
+        findings: finalPatched.findings,
+        coverage: finalPatched.coverage,
         // §4（v118）：修后核验候选一并进预览，供覆盖表显示"最终结论"。
         //   v1.2.1：真正的**逐条**语义结论来自上面的 semantic（确定性层 + 语义层），
         //   不再像旧实现那样固定传 null；语义没跑时结论是"待复核"，不是"已解决"。
-        issueCoverage: patched.issue_coverage,
+        issueCoverage: finalPatched.issue_coverage,
         // E06：逐条改动 + 校验状态一起进预览；相对结论在没读 diff 时只返回"需要先看 diff"。
-        patches: patched.applied,
+        patches: finalPatched.applied,
         verification: {
-          safety_blocked: !!patched.safety_blocked,
-          verified: !!patched.verified,
-          unresolved: patched.unresolved,
-          findings: patched.findings,
+          safety_blocked: !!finalPatched.safety_blocked,
+          verified: !!finalPatched.verified,
+          unresolved: finalPatched.unresolved,
+          findings: finalPatched.findings,
           comparison: revisionPlanEngine() && revisionPlanEngine().comparisonVerdict
             ? revisionPlanEngine().comparisonVerdict({ metricDelta: 0, diffRead: true })
             : null,
         },
         semantic,
         closure,
+        notice: autoNotice,
       };
       // 语义复验按钮要能拿回这一轮的候选与授权（弹窗关掉后 DOM 就没了，必须在这里固化）。
       state.pendingRevisionClosure = {
         article: info.article, review, plan: revisionPlan, findings: revisionPlanFindings,
-        patched, chapterId: revisionChapterId, selectedIssueIds, diffArgs, snapshot: revisionSnapshot,
-        semantic, closure, semanticRuns: 0,
+        patched: finalPatched, chapterId: revisionChapterId, selectedIssueIds, diffArgs, snapshot: revisionSnapshot,
+        semantic, closure, autoRepair, semanticRuns: 0,
+        authorization, protected_spans: extraProtected,
       };
       await postRevisionClosureReceipt(revisionChapterId, closure, semantic);
-      showReviewDiff(info.article, patched.text, diffArgs);
+      showReviewDiff(info.article, finalPatched.text, diffArgs);
       markJobApplied(refinedData && refinedData.job_id);
-      if (!patched.allBlocked) {
+      if (!finalPatched.allBlocked) {
         const summary = semantic && semantic.summary ? semantic.summary : null;
         const allVerified = summary && summary.total > 0 && summary.verified === summary.total;
-        toast(revisionResultToast(confirmed.length, patched, semantic), allVerified ? 'success' : 'error');
+        toast(revisionResultToast(confirmed.length, finalPatched, semantic) + (autoNotice ? `；${autoNotice}` : ''), allVerified ? 'success' : 'error');
       }
       return;
     }
@@ -11854,9 +11873,21 @@ function buildAIRevisionPatchPrompt(article, issues, opts = {}) {
         '无法按协议返回时，把对应问题写成 disposition 的 blocked/deferred 并说明理由。',
       ]
     : [];
+  // v1.2.2 自动二次复修：只重写下一条没通过独立验收的条目，旧补丁已被丢弃。
+  const autoRepair = opts.autoRepair && typeof opts.autoRepair === 'object' ? opts.autoRepair : null;
+  const autoRepairBlock = autoRepair && Array.isArray(autoRepair.failures) && autoRepair.failures.length
+    ? [
+        '',
+        `【这是第 ${Number(autoRepair.round) || 1} 轮自动定向复修】`,
+        '上一轮这些条目没有通过独立验收（语义/确定性判定未通过）。只针对它们重写补丁，**不要扩大范围**：',
+        ...autoRepair.failures.map((f) => `- issue ${f.issue_id}｜原因 ${String(f.reason_code || '未通过')}：${String(f.reason || '').slice(0, 160)}${f.hint ? `｜定向提示：${String(f.hint).slice(0, 120)}` : ''}`),
+        '旧补丁已丢弃：不要重复上一轮被判定无效的改法；仍无法修好就把该条写成 blocked 并说明缺少什么（不得编造证据，也不得改到清单之外）。',
+      ]
+    : [];
   return [
     '你是资深中文网络小说修稿编辑。**只修改下面「作者确认的问题清单」涉及的跨度**，其它跨度一个字都不要动、也不要输出。',
     ...formatRetry,
+    ...autoRepairBlock,
     '',
     protectionRuleBlock(),
     '',
@@ -11991,6 +12022,38 @@ function setRevisionPreference(name, on) {
   const key = REVISION_PREF_KEYS[name];
   if (!key) return;
   try { localStorage.setItem(key, on ? '1' : '0'); } catch (_) { /* 存不下就只影响本次 */ }
+}
+
+/**
+ * 自动二次复修（v1.2.2）：默认**开启**，最多 2 轮，最终候选仍停在差异预览等作者批准。
+ *
+ * 为什么默认开、但它不是"无限重试"：作者要的是"修不动就再修一次，别让我手动催"，
+ * 而不是"模型自己改到满意为止"。轮次上限、成本上界、原始授权集合三者同时约束：
+ *   · 只重修 `verdict=fail` 的条目（语义/确定性验收判定没过）；
+ *   · 只在**原勾选集合**内修，不新增跨度；
+ *   · 每轮先算成本上界，超 `ns_revision_budget_cents`（默认 200 分）就停下并说明原因；
+ *   · 修完仍然失败的条目如实留在覆盖表里，绝不因为"又跑了一轮"就写成通过。
+ * 关闭方式：`localStorage['ns_revision_auto_repair'] = '0'`。
+ */
+const REVISION_AUTO_REPAIR_KEY = 'ns_revision_auto_repair';
+const REVISION_BUDGET_KEY = 'ns_revision_budget_cents';
+const REVISION_AUTO_REPAIR_MAX_ROUNDS = 2;
+function revisionAutoRepairEnabled() {
+  try {
+    const v = localStorage.getItem(REVISION_AUTO_REPAIR_KEY);
+    return v == null ? true : v === '1';
+  } catch (_) { return true; }
+}
+function revisionBudgetCents() {
+  try {
+    const n = Number(localStorage.getItem(REVISION_BUDGET_KEY));
+    return Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 200;
+  } catch (_) { return 200; }
+}
+function setRevisionBudgetCents(cents) {
+  const n = Number(cents);
+  if (!Number.isInteger(n) || n <= 0) return;
+  try { localStorage.setItem(REVISION_BUDGET_KEY, String(Math.min(n, 200))); } catch (_) { /* 仅影响本次 */ }
 }
 
 /**
@@ -12172,6 +12235,158 @@ function revisionClosureFor({ patched, semantic, selectedIssueIds } = {}) {
       verdict,
     });
   } catch (_) { return null; }
+}
+
+/** 只保留指定 issue 的计划视图（自动复修只下发失败条目的授权与只读证据）。 */
+function revisionPlanForIssues(plan, ids) {
+  if (!plan || typeof plan !== 'object') return plan;
+  const set = new Set((Array.isArray(ids) ? ids : []).map(String));
+  const pick = (list) => (Array.isArray(list) ? list.filter((x) => set.has(String(x && x.issue_id))) : []);
+  const issueEvidence = {};
+  for (const [k, v] of Object.entries(plan.issue_evidence || {})) if (set.has(String(k))) issueEvidence[k] = v;
+  return {
+    ...plan,
+    hotspots: (Array.isArray(plan.hotspots) ? plan.hotspots : []).filter((h) => set.has(String(h && h.issue_id))),
+    groups: (Array.isArray(plan.groups) ? plan.groups : []).filter((g) => (Array.isArray(g && g.issue_ids) ? g.issue_ids : []).some((id) => set.has(String(id)))),
+    issue_evidence: issueEvidence,
+    coverage: pick(plan.coverage),
+  };
+}
+
+/**
+ * 把"本轮定向复修"的补丁替换回原候选：同 issue 的旧补丁整条丢弃，换成新一轮的。
+ * 为什么按 issue 替换而不是追加：同一处文字被两轮补丁先后修改时，偏移会互相破坏；
+ * 只保留**该 issue 最后一轮**的补丁，才能保证所有补丁仍按原稿偏移一次重建。
+ */
+function mergeRepairPatches(baseText, priorApplied, repairApplied, repairIds) {
+  const ids = new Set((Array.isArray(repairIds) ? repairIds : []).map(String));
+  const kept = (Array.isArray(priorApplied) ? priorApplied : [])
+    .filter((p) => !(Array.isArray(p && p.issue_ids) ? p.issue_ids : []).map(String).some((id) => ids.has(id)));
+  const merged = [...kept, ...(Array.isArray(repairApplied) ? repairApplied : [])];
+  const RP = revisionPatchEngine();
+  if (!RP || typeof RP.applyPlan !== 'function') return { ok: false, reason: '补丁协议模块未加载' };
+  const rebuilt = RP.applyPlan(String(baseText == null ? '' : baseText), { patches: merged.map((p) => ({ ...p })) });
+  if (!rebuilt.unchanged_ok) return { ok: false, reason: '新一轮补丁与原稿不再逐字一致（stale）：保留上一版候选' };
+  return { ok: true, text: rebuilt.text, applied: merged };
+}
+
+/** 覆盖表合并：失败条目的旧行被新一轮替换；新一轮没回答的条目仍记 unaccounted（不假装处理过）。 */
+function mergeRepairCoverage(priorCoverage, repairCoverage, repairIds) {
+  const ids = new Set((Array.isArray(repairIds) ? repairIds : []).map(String));
+  const kept = (Array.isArray(priorCoverage) ? priorCoverage : []).filter((c) => !ids.has(String(c && c.issue_id)));
+  const next = (Array.isArray(repairCoverage) ? repairCoverage : []).filter((c) => ids.has(String(c && c.issue_id)));
+  const answered = new Set(next.map((c) => String(c.issue_id)));
+  for (const id of ids) {
+    if (!answered.has(id)) kept.push({ issue_id: id, status: 'unaccounted', reason: '自动复修没有回答这一条（本轮未产生可用补丁）' });
+  }
+  return [...kept, ...next];
+}
+
+/** 自动复修结果的可读摘要（有执行才出现；被跳过时写明原因，不静默）。 */
+function revisionAutoRepairNotice(autoRepair) {
+  if (!autoRepair || !Array.isArray(autoRepair.rounds) || !autoRepair.rounds.length) return '';
+  const applied = autoRepair.rounds.filter((r) => r.status === 'applied');
+  const skipped = autoRepair.rounds.filter((r) => r.status === 'skipped');
+  const parts = [];
+  if (applied.length) {
+    parts.push(`自动定向复修 ${applied.length} 轮：应用 ${applied.reduce((n, r) => n + (Number(r.applied) || 0), 0)} 个补丁`);
+    const last = applied[applied.length - 1];
+    parts.push(`复修后语义通过 ${last.verified ?? '—'} / 未解决 ${last.unresolved ?? '—'}`);
+  }
+  if (skipped.length) {
+    const label = { COST_UNKNOWN: '费用无法可靠核价', BUDGET_EXCEEDED: '超出本轮预算上界', ROUND_LIMIT: '达到轮次上限', NO_TARGETS: '没有可自动复修的条目' };
+    parts.push(`自动复修未执行：${label[skipped[0].reason] || skipped[0].reason}`);
+  }
+  const other = autoRepair.rounds.find((r) => ['no_patch', 'stale', 'gate_blocked', 'error'].includes(r.status));
+  if (other) parts.push(`自动复修中止：${other.reason || other.status}`);
+  return parts.join('；');
+}
+
+/**
+ * 自动二次复修（v1.2.2）：对 `verdict=fail` 的条目做最多 2 轮定向重写。
+ *
+ * 边界（与方案 §5.5 一致）：
+ *   · 只在**原勾选集合**内修；新增跨度、保护区、蓝图冲突、底稿变化一律不碰；
+ *   · 每轮应用后重新跑安全门禁（组合核验）与逐条确定性验收，而不是沿用上一轮结论；
+ *   · 仍失败的条目如实留在覆盖表；候选稿始终只是候选，写回仍需作者批准。
+ */
+async function runRevisionAutoRepair({ article, patched, semantic, plan, findings, authorization, snapshot, chapterId, selectedIssueIds, review, jobBase, applyOpts, invariants, protectedSpans }) {
+  const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  const RP = revisionPatchEngine();
+  if (!CL || !RP || !patched || !semantic || !Array.isArray(semantic.issues)) return null;
+  if (!revisionAutoRepairEnabled()) return null;
+  let current = patched;
+  let sem = semantic;
+  let spent = 0;
+  const budget = revisionBudgetCents();
+  const rounds = [];
+  for (let round = 0; round < REVISION_AUTO_REPAIR_MAX_ROUNDS; round += 1) {
+    const failing = (sem.issues || []).filter((i) => i && i.verdict === 'fail');
+    const failingIds = [...new Set(failing.map((i) => String(i.issue_id)))];
+    if (!failingIds.length) break;
+    const failingFindings = (findings || []).filter((f) => failingIds.includes(String(f && f.id)));
+    const planForRound = revisionPlanForIssues(plan, failingIds);
+    const prompt = buildAIRevisionPatchPrompt(article, failingFindings.map((f) => f.explanation || f.title || ''), {
+      snapshot, chapterId, plan: planForRound, issueIds: failingIds,
+      invariants: invariants || { must_keep: [], do_not_add: [] }, protectedSpans: protectedSpans || [],
+      autoRepair: {
+        round: round + 1,
+        failures: failing.map((i) => ({ issue_id: i.issue_id, reason_code: i.reason_code, reason: i.reason, hint: i.repair_hint })),
+      },
+    });
+    const estimateCents = CL.estimateRevisionCostCents({ promptChars: prompt.length, maxOutputTokens: 2048 });
+    const verdict = CL.planAutoRepair({
+      issues: sem.issues, round, maxRounds: REVISION_AUTO_REPAIR_MAX_ROUNDS,
+      budgetCents: Math.max(0, budget - spent), estimateCents, allowedIssueIds: selectedIssueIds,
+    });
+    if (!verdict.ok) {
+      rounds.push({ round: round + 1, status: 'skipped', reason: verdict.reason, issue_ids: verdict.issue_ids || [] });
+      break;
+    }
+    let repair = null;
+    try {
+      const data = await runHarnessJob({
+        ...jobBase, prompt, kind: 'revision_auto_repair', stage: `AI 修稿（第 ${round + 1} 轮定向复修）`,
+      }, `AI 修稿 · 自动二次复修（第 ${round + 1} 轮）…`);
+      repair = tryApplyRevisionOutput(data.output || '', article, applyOpts, {
+        snapshot, chapterId, selectedIssueIds: failingIds, authorization, expectedSchemaVersion: 2,
+        issueQuotes: review ? revisionIssueQuotes(review, failingIds) : null,
+      });
+    } catch (e) {
+      rounds.push({ round: round + 1, status: 'error', reason: e && e.message ? e.message : String(e) });
+      break;
+    }
+    if (!repair || !repair.ok || !Array.isArray(repair.applied) || !repair.applied.length) {
+      rounds.push({ round: round + 1, status: 'no_patch', reason: repair && repair.error_code ? repair.error_code : '模型没有产出可用补丁' });
+      break;
+    }
+    const merged = mergeRepairPatches(article, current.applied, repair.applied, failingIds);
+    if (!merged.ok) { rounds.push({ round: round + 1, status: 'stale', reason: merged.reason }); break; }
+    const combined = RP.verifyCombinedCandidate(article, merged.text, {
+      engine: patchSafetyEngine(), opts: applyOpts, plan: { patches: merged.applied },
+    });
+    if (combined.blocked) { rounds.push({ round: round + 1, status: 'gate_blocked', reason: '组合核验拦下（候选保持上一版）' }); break; }
+    current = {
+      ...current,
+      text: merged.text,
+      applied: merged.applied,
+      coverage: mergeRepairCoverage(current.coverage, repair.coverage, failingIds),
+      verified: combined.verified === true,
+      safety_blocked: !!current.safety_blocked,
+    };
+    spent += Number(verdict.estimateCents) || 0;
+    sem = revisionSemanticFor({
+      article, patched: current, plan, findings,
+      invariants: invariants || { must_keep: [] }, protectedSpans, currentBaseHash: snapshot.body_hash,
+    });
+    rounds.push({
+      round: round + 1, status: 'applied', applied: repair.applied.length,
+      estimate_cents: verdict.estimateCents, verified: sem ? sem.summary.verified : 0,
+      unresolved: sem ? sem.summary.unresolved : null,
+    });
+    if (!sem || !sem.summary || !sem.summary.unresolved) break;
+  }
+  return { patched: current, semantic: sem, rounds, spent_cents: spent };
 }
 
 /** 回执载荷：只带"这一轮修稿的事实"，不带正文、不带模型原文（服务端还有 64KB 上限）。 */
@@ -13053,13 +13268,52 @@ async function runRevisionSemanticVerify() {
       semanticByIssue: parsed.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
       currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
     });
-    const closure = revisionClosureFor({ patched: ctx.patched, semantic, selectedIssueIds: ctx.selectedIssueIds });
-    state.pendingRevisionClosure = { ...ctx, semantic, closure, semanticRuns: Number(ctx.semanticRuns) + 1 };
-    await postRevisionClosureReceipt(ctx.chapterId, closure, semantic);
-    const s = (semantic && semantic.summary) || { verified: 0, total: 0 };
-    showReviewDiff(ctx.article, ctx.patched.text, {
-      ...ctx.diffArgs, semantic, closure,
-      notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}（结论见下方覆盖表）`,
+    // v1.2.2：语义复验判失败 → 自动做一次定向复修（成本门通过才执行），再自动复验一次。
+    // 为什么复验只跑一次：同一份候选重复付费复验没有新信息；要再验必须先改候选。
+    let finalPatched = ctx.patched;
+    let finalSemantic = semantic;
+    let autoRepair = null;
+    if (revisionAutoRepairEnabled() && semantic && semantic.summary && Number(semantic.summary.unresolved) > 0) {
+      autoRepair = await runRevisionAutoRepair({
+        article: ctx.article, patched: ctx.patched, semantic, plan: ctx.plan, findings: ctx.findings,
+        authorization: ctx.authorization,
+        snapshot: ctx.snapshot, chapterId: ctx.chapterId, selectedIssueIds: ctx.selectedIssueIds,
+        review: ctx.review, jobBase, applyOpts: patchSafetyOptions(ctx.chapterId, Array.isArray(ctx.protected_spans) ? ctx.protected_spans : []),
+        invariants: { must_keep: [] }, protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
+      });
+      if (autoRepair && autoRepair.rounds.some((r) => r.status === 'applied')) {
+        finalPatched = autoRepair.patched;
+        finalSemantic = autoRepair.semantic;
+        // 复修后的候选要重新过一次语义层，否则"修完仍失败"只是确定性结论。
+        if (finalSemantic && finalSemantic.summary && Number(finalSemantic.summary.unresolved) > 0) {
+          const recheckPrompt = buildRevisionSemanticPrompt({ article: ctx.article, revised: finalPatched.text, findings: ctx.findings });
+          try {
+            const recheck = await runHarnessJob({
+              ...jobBase, prompt: recheckPrompt, kind: 'revision_semantic_verify', stage: 'AI 修稿语义复验（复修后）',
+            }, 'AI 修稿 · 复修后再次逐条复验…');
+            const parsedAgain = parseSemanticVerification(recheck.output || '', ctx.selectedIssueIds);
+            if (parsedAgain.ok) {
+              finalSemantic = revisionSemanticFor({
+                article: ctx.article, patched: finalPatched, plan: ctx.plan, findings: ctx.findings,
+                semanticByIssue: parsedAgain.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
+                currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
+              });
+            }
+          } catch (e) {
+            if (e && e.cancelled) throw e;
+            // 复验失败不改变候选：如实保留"待复核"，不假装通过。
+          }
+        }
+      }
+    }
+    const closure = revisionClosureFor({ patched: finalPatched, semantic: finalSemantic, selectedIssueIds: ctx.selectedIssueIds });
+    const autoNotice = revisionAutoRepairNotice(autoRepair);
+    state.pendingRevisionClosure = { ...ctx, patched: finalPatched, semantic: finalSemantic, closure, autoRepair, semanticRuns: Number(ctx.semanticRuns) + 1 };
+    await postRevisionClosureReceipt(ctx.chapterId, closure, finalSemantic);
+    const s = (finalSemantic && finalSemantic.summary) || { verified: 0, total: 0 };
+    showReviewDiff(ctx.article, finalPatched.text, {
+      ...ctx.diffArgs, semantic: finalSemantic, closure,
+      notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}（结论见下方覆盖表）${autoNotice ? `；${autoNotice}` : ''}`,
     });
   } catch (e) {
     if (!e.cancelled) toast('语义复验失败：' + e.message, 'error');

@@ -5,6 +5,31 @@
 
 ---
 
+### 🛠️ 最近更新（2026-10-18 · **v1.2.2** 补丁版：自动二次复修 + P1 质量增强 + DSH 协调器）
+
+**补丁版本**，不绕过任何既有门禁。对应 v1.2.1 方案的追加裁决。
+
+- **自动二次复修（源码内生效，默认开启）**：对逐条验收判失败的条目自动定向重写，最多 2 轮；
+  只修作者原勾选集合内的条目；每轮先算成本上界，超预算/无法核价 → 不执行并写明原因；
+  每轮重跑安全门禁与确定性验收；**最终候选仍停在差异预览，写回必须作者点「合并到正文」**。
+  关闭：`localStorage['ns_revision_auto_repair']='0'`。
+- **P1-1 词条版本化**：`world_entry_versions` 追加式不可变版本 + `world_entries.version` 当前指针；
+  回滚 = 恢复内容并新增一版（不删历史）；只读版本端点 + 作者通道回滚端点；语义验收器新增 `ENTRY_VERSION_STALE`。
+- **P1-2 道具状态链**：`story_prop_states` 章级迁移，必须带本章正文逐字证据（找不到/歧义都拒绝）；
+  验收器新增 `PROP_STATE_MISMATCH` / `PROP_EVIDENCE_LOST`。
+- **P1-3 伏笔自动登记**：审稿 `deferred` 中疑似伏笔自动落为 `story_event_proposals` 的 pending 候选
+  （幂等去重 + 每章上限 10）；**不写事件账本**，作者确认后才成为正典；`NOVELSTUDIO_FORESHADOW_AUTOREGISTER=0` 可关。
+- **DSH 协调器**：`dsh-auto-plan-executor/lib/writing/*` 7 个只读模块 + 8 条单测；
+  只读 Studio 闭环状态、给出下一步，不注册写作工具、不代写正文。
+- **R-24/25/26 真实验证**：拉起 Novel Studio 隔离实例 + 真实 Cordis 上下文双插件共载 +
+  确认插件账本测试；全程零付费调用（实际 ¥0，上限 ¥2）；CI 缺兄弟仓库时显式 SKIP。
+
+**验证**：`test-1020` 17/17、`test-1021` 11/11、`test-1022` 9/9、`test-1023` 9/9、
+`test-1019-closure` 39/39、`frontend-test` ALL PASS、executor `npm test` 138/138；
+`node scripts/ci-offline-checks.mjs` 见 CI 输出。详见 [docs/v1.2.2-quality-closure.md](v1.2.2-quality-closure.md)。
+
+---
+
 ### 🛠️ 最近更新（2026-10-18 · **v1.2.1** 补丁版：授权边界、原子性、入口安全、启动就绪与异步一致性）
 
 **补丁版本**，不改变合法调用的业务契约。对应方案 P01–P16（P17 为 P3 非阻塞，未做）。

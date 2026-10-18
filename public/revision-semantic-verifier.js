@@ -167,6 +167,36 @@
         [String(input.currentBaseHash), String(plan.base_hash)], { code: 'BASE_STALE' });
     }
 
+    // ⑥ 词条版本（v1.2.2 P1-1）：引用版本 ≠ 当前版本时，不得按旧口径判冲突。
+    // 这一步是确定性的：只要调用方给出了"这条 finding 引用的是哪一版词条"，版本对不上就不再是"语义分歧"。
+    const entryVersions = input.entryVersions && typeof input.entryVersions === 'object' ? input.entryVersions : null;
+    const vs = entryVersions && finding && entryVersions[String(finding.id)];
+    if (vs && vs.entry_id != null && vs.referenced_version != null && vs.current_version != null) {
+      pushCheck(checks, `词条版本与验收基准一致（#${vs.entry_id}）`,
+        Number(vs.referenced_version) === Number(vs.current_version),
+        [`引用 v${vs.referenced_version} / 当前 v${vs.current_version}`], { code: 'ENTRY_VERSION_STALE' });
+    }
+
+    // ⑦ 道具状态链（v1.2.2 P1-2）：最终状态与预期不符、或状态证据在候选里丢失 → 确定性失败。
+    const propChains = input.propChains && typeof input.propChains === 'object' ? input.propChains : null;
+    const pc = propChains && finding && propChains[String(finding.id)];
+    if (pc) {
+      const rows = Array.isArray(pc.chain) ? pc.chain : [];
+      const latestRow = rows.length ? rows[rows.length - 1] : null;
+      if (!latestRow) {
+        pushCheck(checks, `道具状态链已登记（${pc.prop_key || '?'}）`, false, ['没有登记任何状态'], { code: 'PROP_NOT_REGISTERED' });
+      } else {
+        if (pc.expected_state) {
+          pushCheck(checks, `道具最终状态一致（${pc.prop_key || '?'}）`, String(latestRow.state) === String(pc.expected_state),
+            [`最新「${latestRow.state}」/ 预期「${pc.expected_state}」`], { code: 'PROP_STATE_MISMATCH' });
+        }
+        if (latestRow.evidence_quote) {
+          pushCheck(checks, `道具状态证据仍在候选正文（${pc.prop_key || '?'}）`, countOf(revisedText, latestRow.evidence_quote) > 0,
+            [String(latestRow.evidence_quote)], { code: 'PROP_EVIDENCE_LOST' });
+        }
+      }
+    }
+
     return { checks, failed: checks.filter((c) => !c.passed), needContext };
   }
 
@@ -305,6 +335,10 @@
         protectedSpans: input.protectedSpans,
         canonConflict: canonIds.has(id),
         semantic: semanticByIssue[id],
+        entryVersions: input.entryVersionsByIssue && typeof input.entryVersionsByIssue === 'object'
+          ? { [id]: input.entryVersionsByIssue[id] } : undefined,
+        propChains: input.propChainsByIssue && typeof input.propChainsByIssue === 'object'
+          ? { [id]: input.propChainsByIssue[id] } : undefined,
         currentBaseHash: input.currentBaseHash,
       });
       if (globalFailed) {

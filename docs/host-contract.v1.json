@@ -586,6 +586,7 @@
       "story_memories",
       "story_memory_proposals",
       "story_memory_segments",
+      "story_prop_states",
       "story_repair_runs",
       "story_repair_steps",
       "story_snapshots",
@@ -600,6 +601,7 @@
       "volumes",
       "works",
       "world_entries",
+      "world_entry_versions",
       "writing_redlines"
     ],
     "migration_style": "additive-only（CREATE TABLE IF NOT EXISTS + try ALTER TABLE ADD COLUMN，绝不 DROP/RENAME 用户数据）",

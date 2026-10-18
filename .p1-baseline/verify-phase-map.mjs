@@ -1813,6 +1813,49 @@ export const PHASES = [
       + '分段修稿仍走 v1 单热点计划（R-30 显式 SKIP）；DSH 自动方案插件侧的触发/双插件联调不在本仓库（R-24/25/26 SKIP）。'
       + '**费用**：全部离线检查零计费；语义复验只在作者点按钮时发生一次付费调用。',
   },
+  {
+    id: 'V14',
+    title: 'v1.2.2 自动二次复修 + P1 增强（词条版本 / 道具状态链 / 伏笔自动登记）+ 外部插件联调',
+    files: [
+      // 三个新模块
+      'ai/story-state/entry-versioning.mjs',
+      'ai/story-state/prop-chain.mjs',
+      'ai/story-state/foreshadow-autoregister.mjs',
+      // 回归套件（P1 三项 + 外部插件真实验证）
+      '.p1-baseline/test-1020-dsh-real-integration.mjs',
+      '.p1-baseline/test-1021-entry-versioning.mjs',
+      '.p1-baseline/test-1022-prop-chain.mjs',
+      '.p1-baseline/test-1023-foreshadow-autoregister.mjs',
+      // 业务接线（与既有阶段共用，只能整体回滚）
+      'public/app.js',
+      'public/revision-closure.js',
+      'public/revision-semantic-verifier.js',
+      'frontend-test.mjs',
+      'server.js',
+      'db.js',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+      // 交付文档
+      'docs/v1.2.2-quality-closure.md',
+      // 版本与说明（T08）
+      'package.json',
+      'docs/CHANGELOG.md',
+      'README.md',
+    ],
+    evidence: [
+      'docs/v1.2.2-quality-closure.md',
+      '.p1-baseline/test-1020-dsh-real-integration.mjs',
+      '.p1-baseline/test-1021-entry-versioning.mjs',
+      '.p1-baseline/test-1022-prop-chain.mjs',
+      '.p1-baseline/test-1023-foreshadow-autoregister.mjs',
+    ],
+    rollback: 'shared',
+    note: '**目的**：把"修不动就再自动修一次、但最终仍由作者批准写回"闭环落地，并补上 P1 三项质量增强。'
+      + '**边界**：自动复修最多 2 轮、只修原勾选集合内的失败条目、每轮先算成本上界（超预算/无法核价→跳过并说明）；'
+      + '不自动写正文（写回仍需作者一次性审批）；词条/道具/伏笔自动登记都是追加式或待确认候选，不静默改正典。'
+      + '**费用**：全部离线检查零计费；R-24/25/26 验证实际花费 ¥0。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

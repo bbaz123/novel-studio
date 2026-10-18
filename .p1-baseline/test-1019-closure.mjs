@@ -204,4 +204,37 @@ const failed = (id, code = 'SEMANTIC_FAILED') => ({ issue_id: id, verdict: 'fail
     && CL.transition('VERIFIED_CANDIDATE', 'AUTHOR_COMMIT_APPROVAL').ok === true);
 }
 
+// ── v1.2.2 自动二次复修：成本上界 + 规划器 ─────────────────────────────────
+{
+  const est = CL.estimateRevisionCostCents({ promptChars: 20000, maxOutputTokens: 2048 });
+  check('A-01 成本按"字符=token 上界 + 输出上限"保守估算（20000 字 + 2048 输出 → 8 分）',
+    est === 8, String(est));
+  check('A-02 无法定价（缺 prompt/输出上限）→ null，绝不返回 0 冒充免费',
+    CL.estimateRevisionCostCents({}) === null
+    && CL.estimateRevisionCostCents({ promptChars: 100, maxOutputTokens: 0 }) === null);
+
+  const issues = [
+    { issue_id: 'R-1', final_status: 'UNRESOLVED', verdict: 'fail', reason_code: 'SEMANTIC_FAILED' },
+    { issue_id: 'R-2', final_status: 'UNRESOLVED', verdict: 'fail', reason_code: 'CANON_CONFLICT' },
+    { issue_id: 'R-3', final_status: 'ISSUE_VERIFIED', verdict: 'pass', reason_code: 'ISSUE_VERIFIED' },
+    { issue_id: 'R-4', final_status: 'AWAITING_SEMANTIC', verdict: 'need_context', reason_code: 'SEMANTIC_NOT_RUN' },
+  ];
+  const plan1 = CL.planAutoRepair({ issues, round: 0, estimateCents: 8, budgetCents: 200, allowedIssueIds: ['R-1', 'R-2'] });
+  check('A-03 只选 fail 且在原授权集合内、且非硬阻塞的条目（R-1）',
+    plan1.ok === true && plan1.issue_ids.join(',') === 'R-1' && plan1.round === 1,
+    JSON.stringify(plan1));
+  check('A-04 蓝图冲突（CANON_CONFLICT）不自动复修',
+    CL.planAutoRepair({ issues, round: 0, estimateCents: 8, budgetCents: 200 }).issue_ids.join(',') === 'R-1');
+  check('A-05 轮次上限：第 3 轮拒绝（maxRounds=2）',
+    CL.planAutoRepair({ issues, round: 2, estimateCents: 8, budgetCents: 200 }).reason === 'ROUND_LIMIT');
+  check('A-06 费用无法核价 → COST_UNKNOWN（不自动付费）',
+    CL.planAutoRepair({ issues, round: 0, estimateCents: null, budgetCents: 200 }).reason === 'COST_UNKNOWN');
+  check('A-07 上界超预算 → BUDGET_EXCEEDED（不拆轮绕限）',
+    CL.planAutoRepair({ issues, round: 0, estimateCents: 300, budgetCents: 200 }).reason === 'BUDGET_EXCEEDED');
+  check('A-08 没有失败条目 → NO_TARGETS（不空跑付费调用）',
+    CL.planAutoRepair({ issues: [issues[2], issues[3]], round: 0, estimateCents: 8 }).reason === 'NO_TARGETS');
+  check('A-09 不在原授权集合内的失败条目不自动修（需要作者补授权）',
+    CL.planAutoRepair({ issues, round: 0, estimateCents: 8, budgetCents: 200, allowedIssueIds: ['R-9'] }).reason === 'NO_TARGETS');
+}
+
 finish('test-1019-closure');

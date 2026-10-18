@@ -198,6 +198,41 @@ CREATE TABLE IF NOT EXISTS world_entries (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- 词条版本历史（v1.2.2 P1-1）：追加式不可变版本；world_entries.version 只是"当前指针"。
+-- 为什么要历史：审稿/修稿引用词条时必须能说清"按哪一版判定"，否则作者改过词条后，
+-- 旧结论会被当成真冲突（旧版 vs 新版），而回滚又无法证明回到的是哪一版。
+CREATE TABLE IF NOT EXISTS world_entry_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES world_entries(id) ON DELETE CASCADE,
+  work_id INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  keywords TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 50,
+  is_pinned INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'save',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_world_entry_versions_no ON world_entry_versions(entry_id, version);
+
+-- 道具状态链（v1.2.2 P1-2）：每次状态迁移一行，带**本章正文逐字证据**。
+-- 为什么不用 story_events 兼职：事件是叙事事实（可提案、可正典化），而道具状态是
+-- **可确定性核验的检查点**（"检测单最终是几折"），混在一起会让两类判据互相污染。
+CREATE TABLE IF NOT EXISTS story_prop_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL,
+  prop_key TEXT NOT NULL,
+  prop_name TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  evidence_quote TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'author',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_story_prop_states_chain ON story_prop_states(work_id, prop_key, chapter_id, id);
+
 CREATE TABLE IF NOT EXISTS creation_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   work_id INTEGER REFERENCES works(id) ON DELETE SET NULL,
@@ -1380,6 +1415,9 @@ const MIGRATIONS = [
   // 同一行的输入/输出放在一起，才不会出现"选择记录说选了 5 条、回执说处理了 3 条"对不上号。
   // 默认空串 → 旧记录/旧代码行为不变；只是多一列可读的观测数据，不参与任何权限判定。
   `ALTER TABLE revision_selections ADD COLUMN closure_json TEXT NOT NULL DEFAULT ''`,
+  // ── v1.2.2 P1-1：词条版本指针（历史在 world_entry_versions，见基础 schema）──────
+  // 默认 1 → 存量词条视为 v1；首次保存会由 entry-versioning 幂等落一版历史。
+  `ALTER TABLE world_entries ADD COLUMN version INTEGER NOT NULL DEFAULT 1`,
 ];
 // ── D4（S06 已修）：迁移必须**有账本**且**事务化** ──────────────────────────────
 // 病灶：旧循环逐条 `try { db.exec(sql) } catch {}` ——

@@ -351,6 +351,73 @@
     return { stale: true, reason: '底稿已变化：旧授权/旧候选不得复用（BASE_STALE）' };
   }
 
+  /**
+   * 修稿成本预估（v1.2.2 自动二次复修）。
+   *
+   * 为什么必须先算再调用：自动复修是**付费**动作，而"大概不到 2 元"不是授权。
+   * 这里用保守口径（CJK 一个字按 1 token、输出取 max_tokens 上限）算出**上界**，
+   * 超预算就拒绝自动执行并给出原因 —— 宁可退回人工触发，也不静默超支。
+   *
+   * 价格单位：分 / 百万 token。默认值刻意取高（¥2/M 输入、¥16/M 输出），
+   * 使估算偏向"高估"而不是低价放行；真实单价可由调用方传入。
+   * @returns {number|null} 分；无法定价（缺 prompt 或输出上限）时返回 null
+   */
+  const DEFAULT_PRICE_CENTS = { inputPerMTok: 200, outputPerMTok: 1600 };
+  function estimateRevisionCostCents({ promptChars = 0, maxOutputTokens = 2048, price = {} } = {}) {
+    const chars = Math.max(0, Number(promptChars) || 0);
+    const out = Math.max(0, Number(maxOutputTokens) || 0);
+    if (!chars || !out) return null;
+    const pIn = Number.isFinite(Number(price && price.inputPerMTok)) ? Number(price.inputPerMTok) : DEFAULT_PRICE_CENTS.inputPerMTok;
+    const pOut = Number.isFinite(Number(price && price.outputPerMTok)) ? Number(price.outputPerMTok) : DEFAULT_PRICE_CENTS.outputPerMTok;
+    const cents = (chars * pIn) / 1e6 + (out * pOut) / 1e6;
+    return Math.max(1, Math.ceil(cents));
+  }
+
+  const AUTO_REPAIR_HARD_BLOCK = new Set(['BASE_STALE', 'CANON_CONFLICT', 'PROTECTED_SPAN', 'AUTHORIZATION_MISSING', 'LAYER_CONFLICT']);
+
+  /**
+   * 自动复修规划（纯函数）：决定"这一轮要不要自动再修、修哪几条、能不能付得起"。
+   *
+   * 只选 `verdict=fail` 且**仍在作者原授权集合内**的问题：
+   *   · 未勾选/新增跨度的不给修（需要作者补授权）；
+   *   · 底稿变化、蓝图冲突、保护区、授权冲突是**人处理项**，自动复修不得碰；
+   *   · 轮次上限、预算上界、费用可核价三者缺一不可 —— 任一不满足就返回明确原因，不静默执行。
+   */
+  function planAutoRepair(input = {}) {
+    const issues = Array.isArray(input.issues) ? input.issues : [];
+    const maxRounds = Number.isInteger(Number(input.maxRounds)) ? Number(input.maxRounds) : 2;
+    const round = Number.isInteger(Number(input.round)) ? Number(input.round) : 0;
+    const allowed = input.allowedIssueIds == null ? null : new Set(uniqueStrings(input.allowedIssueIds));
+    const hard = input.hardBlockCodes == null ? AUTO_REPAIR_HARD_BLOCK : new Set(uniqueStrings(input.hardBlockCodes));
+    const eligible = issues.filter((i) => {
+      const failed = i && (i.verdict === 'fail' || i.final_status === 'UNRESOLVED');
+      if (!failed) return false;
+      if (hard.has(textOf(i.reason_code))) return false;
+      if (allowed && !allowed.has(String(i.issue_id))) return false;
+      return true;
+    });
+    if (!eligible.length) return { ok: false, reason: 'NO_TARGETS', issue_ids: [], round, estimateCents: null };
+    if (round >= maxRounds) {
+      return { ok: false, reason: 'ROUND_LIMIT', issue_ids: [], round, estimateCents: null, maxRounds };
+    }
+    const estimateCents = input.estimateCents == null ? null : Number(input.estimateCents);
+    if (input.costKnown === false || estimateCents == null || !Number.isFinite(estimateCents)) {
+      return { ok: false, reason: 'COST_UNKNOWN', issue_ids: eligible.map((i) => String(i.issue_id)), round, estimateCents: null };
+    }
+    const budgetCents = Number.isFinite(Number(input.budgetCents)) ? Math.max(0, Number(input.budgetCents)) : MAX_TOTAL_CENTS;
+    if (estimateCents > budgetCents) {
+      return { ok: false, reason: 'BUDGET_EXCEEDED', issue_ids: eligible.map((i) => String(i.issue_id)), round, estimateCents, budgetCents };
+    }
+    return {
+      ok: true,
+      reason: 'ELIGIBLE',
+      issue_ids: eligible.map((i) => String(i.issue_id)),
+      round: round + 1,
+      estimateCents,
+      budgetCents,
+    };
+  }
+
   return {
     VERSION,
     STATES,
@@ -358,6 +425,8 @@
     FINAL_STATUS_LABEL,
     MAX_SINGLE_CENTS,
     MAX_TOTAL_CENTS,
+    AUTO_REPAIR_HARD_BLOCK,
+    DEFAULT_PRICE_CENTS,
     canTransition,
     transition,
     buildIssueStates,
@@ -369,5 +438,7 @@
     closureIdempotencyKey,
     createSeenKeys,
     isBaseStale,
+    estimateRevisionCostCents,
+    planAutoRepair,
   };
 });
