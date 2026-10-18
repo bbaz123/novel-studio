@@ -3211,11 +3211,288 @@ async function renderOutline(content) {
  * 只给**一行**短状态 + 一个入口：编辑器上方**不再**永久堆"8 项进度 + 图表 + 问题全文"。
  * 没有候选、或候选属于别的章时返回空串 —— 不显示比显示错的强。
  */
+// ---------- v1.2.4 P1/P2：作品级质量档案 / 运行记录 / 历史与洞察 ----------
+// 为什么集中在这几个小函数里：它们都是"本地偏好与本地记录"，不写库、不发请求，
+// 出问题最多影响一次界面显示，不该散落在渲染逻辑里各写一份。
+
+const QUALITY_PROFILE_KEY = (workId) => `ns_quality_profile:${Number(workId) || 0}`;
+const QUALITY_HISTORY_KEY = (workId) => `ns_quality_history:${Number(workId) || 0}`;
+const QUALITY_HISTORY_MAX = 40;
+
+function qualityProfileModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelQualityProfile) || null;
+}
+
+/** 读作品级质量档案；没有就用默认值（**不**偷偷写回存储）。 */
+function qualityProfileFor(workId) {
+  const QP = qualityProfileModule();
+  const fallback = QP ? QP.defaults() : {};
+  try {
+    const raw = localStorage.getItem(QUALITY_PROFILE_KEY(workId));
+    if (!raw) return fallback;
+    if (!QP) return fallback;
+    return QP.normalizeProfile(JSON.parse(raw)).profile;
+  } catch (_) { return fallback; }
+}
+
+function setQualityProfile(workId, profile) {
+  const QP = qualityProfileModule();
+  if (!QP) return { ok: false, reason: 'MODULE_MISSING' };
+  const norm = QP.normalizeProfile(profile);
+  try { localStorage.setItem(QUALITY_PROFILE_KEY(workId), JSON.stringify(norm.profile)); } catch (_) { return { ok: false, reason: 'QUOTA' }; }
+  return { ok: true, profile: norm.profile, errors: norm.errors, ignoredKeys: norm.ignoredKeys };
+}
+
+/** 本作品的修稿历史（趋势/效果统计的输入）：只存计数与结论，不存正文。 */
+function qualityHistoryLoad(workId) {
+  try {
+    const list = JSON.parse(localStorage.getItem(QUALITY_HISTORY_KEY(workId)) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch (_) { return []; }
+}
+
+function qualityHistoryAppend(workId, entry) {
+  const list = qualityHistoryLoad(workId);
+  list.push(entry);
+  // 只保留最近 N 次：历史是"观测"，不是账本，无限增长会撑爆 localStorage。
+  const trimmed = list.slice(-QUALITY_HISTORY_MAX);
+  try { localStorage.setItem(QUALITY_HISTORY_KEY(workId), JSON.stringify(trimmed)); } catch (_) { /* 存不下只影响本次显示 */ }
+  return trimmed;
+}
+
+/**
+ * 作品级质量规则档案（v1.2.4 P2-②/④）：查看、导入应用、导出成跨作品模板。
+ *
+ * 为什么用弹窗而不是设置页：档案是"这次修稿要用的验收口径"，作者是在审稿现场意识到
+ * "这一部作品的字数下限是 3900"的；跑到设置页去改再回来，上下文就丢了。
+ * 导入是白名单合并（未知键丢弃并回报），且**不写库**——只存本机偏好。
+ */
+function openQualityProfileModal() {
+  const QP = qualityProfileModule();
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  const profile = qualityProfileFor(workId);
+  const payload = QP ? QP.exportTemplate(profile) : profile;
+  openModal({
+    title: '🎛 作品级质量规则档案',
+    body: `<div class="muted mb-8">这份档案会真正影响验收：篇幅硬下限会补进 'target_length' 的 <code>min_chars</code>，
+      必落地字面会补进 'world_time_anchor'/'canon_conflict' 的 'must_contain'。
+      它**不能**关掉语义复验、不能放宽授权跨度、不能改自动复修上限（那些是产品门禁，不是作品偏好）。</div>
+      <textarea id="quality-profile-json" rows="14">${esc(JSON.stringify(payload, null, 2))}</textarea>
+      ${QP ? `<div class="muted mt-8" style="font-size:12px">白名单键：${esc(QP.ALLOWED_KEYS.join('、'))}；其余键导入时会被丢弃并回报。</div>` : '<div class="muted">档案模块未加载</div>'}`,
+    footer: `<button class="btn secondary" data-close-modal>关闭</button>
+      <button class="btn secondary" data-action="quality-profile-export">导出模板</button>
+      <button class="btn" data-action="quality-profile-apply">导入并应用</button>`,
+    large: true,
+  });
+}
+
+/** 从弹窗里的 JSON 导入并应用（白名单合并；失败如实报错，不静默吞掉）。 */
+function applyQualityProfileFromModal() {
+  const QP = qualityProfileModule();
+  const el = $('#quality-profile-json');
+  if (!QP) { toast('质量档案模块未加载：无法导入', 'error'); return false; }
+  if (!el) { toast('找不到档案输入框：请重新打开档案弹窗', 'error'); return false; }
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  const res = QP.importTemplate(String(el.value || ''), qualityProfileFor(workId));
+  if (!res.ok) { toast(`导入失败（${res.reason}）：档案保持不变`, 'error'); return false; }
+  const saved = setQualityProfile(workId, res.profile);
+  if (!saved.ok) { toast(`档案写入本机失败（${saved.reason || '未知'}）`, 'error'); return false; }
+  toast(`已应用作品级质量档案：接受 ${QP.ALLOWED_KEYS.length} 个白名单键，丢弃 ${res.ignoredKeys.length} 个未知键${res.errors.length ? `，${res.errors.length} 项被修正` : ''}`, 'success');
+  closeModal();
+  render().catch(() => {});
+  return true;
+}
+
+/** 导出成跨作品模板（纯文本下载；不含正文、不含私有数据）。 */
+function exportQualityProfileTemplate() {
+  const QP = qualityProfileModule();
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  const profile = qualityProfileFor(workId);
+  const payload = QP ? QP.exportTemplate(profile) : profile;
+  downloadTextFile(`quality-template-work${workId}.json`, JSON.stringify(payload, null, 2));
+  toast('已导出跨作品质量模板（JSON）', 'success');
+}
+
+function revisionRunStoreModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelRevisionRunStore) || null;
+}
+
+/** 把这一轮运行落本地（可恢复）；失败只影响"刷新后能否恢复"，不阻断修稿。 */
+function revisionRunStoreSave(ctx, finalized) {
+  const S = revisionRunStoreModule();
+  if (!S || !ctx || !ctx.patched || !finalized) return { ok: false, reason: 'NO_INPUT' };
+  try {
+    const rec = S.serialize({
+      runId: finalized.candidate && finalized.candidate.revision_run_id,
+      workId: Number(state.workId || (state.work && state.work.id)) || 0,
+      chapterId: Number(ctx.chapterId) || 0,
+      reviewId: Number(ctx.reviewId) || null,
+      baseHash: finalized.candidate && finalized.candidate.original_hash,
+      candidateText: ctx.patched.text,
+      patches: ctx.patched.applied,
+      semanticByIssue: ctx.semanticByIssue || {},
+      semanticRuns: Number(ctx.semanticRuns) || 0,
+      status: finalized.status,
+      rows: finalized.rows,
+      at: new Date().toISOString(),
+    });
+    return S.save(localStorage, rec);
+  } catch (_) { return { ok: false, reason: 'EXCEPTION' }; }
+}
+
+function revisionRunStoreLoad(chapterId) {
+  const S = revisionRunStoreModule();
+  if (!S) return null;
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  return S.load(localStorage, workId, chapterId);
+}
+
+function revisionRunStoreClear(chapterId) {
+  const S = revisionRunStoreModule();
+  if (!S) return false;
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  return S.clear(localStorage, workId, chapterId);
+}
+
+/**
+ * 从本地记录恢复一次修稿运行（Q-15）。
+ *
+ * 安全边界（与 §11.2 一致）：
+ *   · 底稿变了 → `BASE_STALE`，**不复用候选**，也不复活任何授权（只提示"重新修稿"）；
+ *   · 已用掉的付费复验额度随记录一起恢复（`semanticRuns`），刷新不给新额度；
+ *   · 恢复后仍要重跑一次统一终审（用存下来的语义结论 + 当前底稿），所以结论不会被"存档"固化。
+ */
+async function reviewWorkspaceRestoreRun() {
+  const S = revisionRunStoreModule();
+  if (!S) { toast('运行记录模块未加载：无法恢复', 'error'); return false; }
+  const chapterId = Number(state.currentChapterId) || 0;
+  if (!chapterId) return false;
+  const rec = revisionRunStoreLoad(chapterId);
+  if (!rec) { toast('这一章没有可恢复的修稿运行', 'error'); return false; }
+  const chapter = state.chapters.find((c) => Number(c.id) === chapterId) || null;
+  const currentText = chapter ? editorPlainText(chapter.content || '') : '';
+  const restored = S.restore(rec, { currentText, hashOf: textFingerprint });
+  if (!restored.ok) {
+    if (restored.stale) {
+      toast('这一章的正文在保存候选之后被改过：旧候选与旧授权已作废，需要重新修稿（不会自动复活权限）', 'error');
+      revisionRunStoreClear(chapterId);
+    } else {
+      toast(`无法恢复这次修稿运行（${restored.reason}）`, 'error');
+    }
+    return false;
+  }
+  const patched = {
+    text: restored.candidate,
+    applied: (restored.patches || []).map((p) => ({ ...p, issue_ids: p.issue_ids || [] })),
+    blocked: [],
+    unresolved: [],
+    findings: [],
+    coverage: [],
+    safety_available: true,
+    verified: false,
+  };
+  const findings = revisionFindingsForFromStore(restored);
+  const finalized = revisionFinalizeFor({
+    mode: (restored.patches || []).some((p) => p.segment_id) ? 'segmented' : 'single',
+    article: currentText, patched, plan: null, findings,
+    selectedIssueIds: finalizedIssueIdsOf(finalizedRows(restored), restored),
+    snapshot: revisionSnapshotFor(currentText, chapterId),
+    chapterId, reviewId: rec && rec.review_id,
+    semanticByIssue: restored.semanticByIssue,
+    invariants: { must_keep: [] }, protectedSpans: [],
+    segments: (restored.patches || []).some((p) => p.segment_id) ? [] : null,
+    mergeComplete: (restored.patches || []).some((p) => p.segment_id) ? true : false,
+  });
+  if (!finalized) { toast('恢复后无法重算终审结论（验收模块不可用）', 'error'); return false; }
+  state.pendingRevisionClosure = {
+    article: currentText, review: null, plan: null, findings, patched,
+    chapterId, selectedIssueIds: finalized.rows.map((r) => String(r.issue_id)),
+    diffArgs: {
+      oldText: currentText, newText: restored.candidate, checklist: finalized.rows.length,
+      chapterId, findings, notice: `已从本地记录恢复（${fmtTraceTime(restored.at)}）：底稿未变，结论已按当前底稿重算`,
+    },
+    snapshot: revisionSnapshotFor(currentText, chapterId),
+    semantic: finalized.semantic, closure: finalized.closure, finalized,
+    autoRepair: null, semanticRuns: restored.semanticRuns, reviewId: rec && rec.review_id,
+    mode: 'single', authorization: null, protected_spans: [],
+  };
+  toast(`已恢复上次修稿运行：已验证 ${finalized.summary.verified} / 未通过 ${finalized.summary.unresolved}（复验额度沿用上次，不额外赠送）`, 'success');
+  return presentRevisionResult(state.pendingRevisionClosure.diffArgs);
+}
+
+/** 从本地记录里的 rows 反推 findings（只有编号与理由，没有逐字证据——如实标注）。 */
+function revisionFindingsForFromStore(restored) {
+  return (Array.isArray(restored.rows) ? restored.rows : []).map((r) => ({
+    id: String(r.issue_id || ''),
+    title: String(r.issue_id || ''),
+    explanation: '',
+    type: 'other',
+    severity: 'medium',
+    evidence: [],
+    acceptance: { rule: '', preserve: [] },
+    restored: true,
+    reason_code: String(r.reason_code || ''),
+    final_status: String(r.final_status || ''),
+  }));
+}
+
+function finalizedRows(restored) { return Array.isArray(restored.rows) ? restored.rows : []; }
+function finalizedIssueIdsOf(rows) { return (Array.isArray(rows) ? rows : []).map((r) => String(r.issue_id)).filter(Boolean); }
+
+/** 修稿历史的一条（趋势/洞察的输入）：只放计数与原因码。 */
+function qualityHistoryEntryOf(finalized, chapterId, autoRepair) {
+  const rows = finalized && Array.isArray(finalized.rows) ? finalized.rows : [];
+  const metric = (id) => rows.reduce((n, r) => n + (Number(r && r[id]) || 0), 0);
+  return {
+    at: new Date().toISOString(),
+    chapter_index: (() => {
+      const idx = state.chapters.findIndex((c) => Number(c.id) === Number(chapterId));
+      return idx >= 0 ? idx : 0;
+    })(),
+    metrics: {
+      template_hits: metric('template_hits'),
+      repetition: metric('repetition'),
+      negation_runs: metric('negation_runs'),
+      ai_flavor: metric('ai_flavor'),
+      chars: Number(finalized && finalized.summary ? finalized.summary.total : 0) * 0,
+    },
+    auto_repair_rounds: (autoRepair && Array.isArray(autoRepair.rounds)) ? autoRepair.rounds.filter((r) => r.status === 'applied').length : 0,
+    rows: rows.map((r) => ({ issue_id: r.issue_id, final_status: r.final_status, reason_code: r.reason_code, type: r.canon ? 'canon' : (r.cross_segment ? 'cross_segment' : 'rewrite') })),
+  };
+}
+
+/** 一次运行结束后：落本地记录（可恢复）+ 追加质量历史（趋势/洞察的输入）。 */
+function persistRevisionRun(ctx, finalized, chapterId, autoRepair) {
+  if (!ctx || !finalized) return { ok: false, reason: 'NO_INPUT' };
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  const saved = revisionRunStoreSave(ctx, finalized);
+  if (saved && saved.ok === false && saved.reason !== 'TOO_LARGE') {
+    reportClientLog({ level: 'warn', kind: 'revision_run_store_skipped', message: `[修稿] 运行记录未落本地：${saved.reason}` });
+  }
+  qualityHistoryAppend(workId, qualityHistoryEntryOf(finalized, chapterId, autoRepair));
+  return saved;
+}
+
 function revisionClosureStripHtml(chapterId) {
   const ctx = state.pendingRevisionClosure;
-  if (!ctx || !ctx.finalized) return '';
-  if (Number(ctx.chapterId) !== Number(chapterId)) return '';
   const RW = reviewWorkspaceModule();
+  if (!ctx || !ctx.finalized) {
+    // v1.2.4 P1（Q-15）：内存里没有候选，但本地可能留着"上次未提交的运行"。
+    // 给一个**可恢复**入口（并明确它不是"已合并"）；底稿变过时恢复会主动作废。
+    const S = revisionRunStoreModule();
+    if (S && RW) {
+      const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+      let idx = null;
+      try { idx = S.loadIndex(localStorage, workId, chapterId); } catch (_) { idx = null; }
+      if (idx && idx.at) {
+        return `<span class="rcs-item tone-wait">上次修稿运行未提交（${esc(fmtTraceTime(idx.at))}）· 可恢复</span>
+          <button class="btn small secondary" data-action="review-restore-run" title="恢复候选与逐条结论；底稿变过则作废（不复活权限，不赠送复验额度）">恢复</button>
+          <button class="btn small secondary" data-action="revision-run-discard" data-id="${Number(chapterId) || 0}" title="丢弃这条本地记录（不影响正文）">✕</button>`;
+      }
+    }
+    return '';
+  }
+  if (Number(ctx.chapterId) !== Number(chapterId)) return '';
   if (!RW) return '';
   const rows = Array.isArray(ctx.finalized.rows) ? ctx.finalized.rows : [];
   const c = RW.countsOf(rows);
@@ -11732,6 +12009,13 @@ async function refineByChecklist() {
       const segments = segPlans.map((seg) => {
         const r = segResults.find((x) => x && x.segment_id === seg.segment_id) || null;
         const extra = (r && r.extra) || {};
+        const segText = String((seg.target && seg.target.text) || '');
+        // v1.2.4 P1 跨边界联合证据：这一片里承载了哪几条问题的**可编辑锚点**。
+        // 只统计 candidate_edit（只读引用天然可以落在别的片，不该被当成"没改到"）。
+        const editableIds = revisionPlanFindings
+          .filter((f) => Array.isArray(f.evidence) && f.evidence.some((e) => e && e.role === 'candidate_edit'
+            && String(e.quote || '').trim() && segText.includes(String(e.quote).trim())))
+          .map((f) => String(f.id));
         return {
           segment_id: seg.segment_id,
           ordinal: seg.ordinal,
@@ -11742,6 +12026,7 @@ async function refineByChecklist() {
           proof_ok: !!(r && r.status === 'done' && extra.reconstruct_ok !== false),
           issue_ids: Array.isArray(extra.appliedIssueIds) ? extra.appliedIssueIds.map(String) : [],
           patch_count: Number(extra.applied) || 0,
+          evidence_editable_issue_ids: editableIds,
         };
       });
       // 2) 合并保真：合并正文必须逐字等于"各片输出的 trim 以空行拼接"，否则说明有片没参与合并（Q-12）。
@@ -11808,7 +12093,9 @@ async function refineByChecklist() {
         // 复验后要重算同一个出口，否则分段候选会被当成单请求候选重算（结论会不一致）。
         segments, segmentCoverage, mergeComplete: mergedOk,
         authorization, protected_spans: extraProtected,
+        semanticByIssue: null,
       };
+      persistRevisionRun(state.pendingRevisionClosure, finalized, revisionChapterId, null);
       await postRevisionClosureReceipt(revisionChapterId, closure, semantic, finalized);
       presentRevisionResult(diffArgs);
       toast(revisionResultToast(confirmed.length, segPatched, semantic)
@@ -11968,7 +12255,9 @@ async function refineByChecklist() {
         semantic, closure, finalized, autoRepair, semanticRuns: 0,
         reviewId, mode: 'single',
         authorization, protected_spans: extraProtected,
+        semanticByIssue: null,
       };
+      persistRevisionRun(state.pendingRevisionClosure, finalized, revisionChapterId, autoRepair);
       await postRevisionClosureReceipt(revisionChapterId, closure, semantic, finalized);
       presentRevisionResult(diffArgs);
       markJobApplied(refinedData && refinedData.job_id);
@@ -12427,7 +12716,7 @@ function revisionFindingsFor(issues, issueIds, review, bodyText) {
     const f = byId.get(id);
     // ⚠️ v1.2.4：结构化条目**存在但没有 evidence**（例如"缺纪年锚点""篇幅不足"这类
     //   证据天然不在正文里的问题）时，必须保留它的 acceptance —— 否则
-    //   `must_contain` / `min_chars` 会在进入验收器之前就被丢掉，硬约束退化成"模型说什么就是什么"。
+    //   'must_contain' / 'min_chars' 会在进入验收器之前就被丢掉，硬约束退化成"模型说什么就是什么"。
     if (f) return { ...f, id, evidence: Array.isArray(f.evidence) ? f.evidence : [] };
     const issue = (issues || [])[i];
     const text = typeof issue === 'string' ? issue : String((issue && (issue.text || issue.title)) || '');
@@ -12528,6 +12817,26 @@ function revisionFinalizeFor(opts = {}) {
   const FZ = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionFinalize) || null;
   if (!FZ) return null;
   const patched = opts.patched || null;
+  // v1.2.4 P1：把「词条强弱 + 版本」真正接进验收器（v1.2.2 的验收器能力此前没有界面接线）。
+  // 为什么在入口统一算：单段/分段/复验三条路径都必须用同一份归因，否则同一份稿子换个入口
+  // 就换一个"这是硬冲突还是建议"的结论。
+  const CS = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionCanonStrength) || null;
+  const entries = Array.isArray(state.worldEntries) ? state.worldEntries : [];
+  // 作品级质量档案（P2-②）：只**补**验收契约里缺省的部分（不覆盖审稿给出的更具体值），
+  // 但正因为它会改 `acceptance`，规则档案才**真的影响验收**，而不是设置页里的摆设。
+  const QP = (typeof globalThis !== 'undefined' && globalThis.NovelQualityProfile) || null;
+  const rawFindings = Array.isArray(opts.findings) ? opts.findings : [];
+  const profile = qualityProfileFor(state.workId || (state.work && state.work.id) || 0);
+  const findings = QP ? QP.applyProfile(rawFindings, profile) : rawFindings;
+  let canon = { conflictIds: [], strengthByIssue: {}, unmatched: [], matched: {} };
+  let entryVersionsByIssue = {};
+  if (CS) {
+    try {
+      canon = CS.resolveCanon(findings, entries);
+      entryVersionsByIssue = CS.resolveEntryVersions(findings, entries) || {};
+    } catch (_) { /* 归因失败不阻断修稿：按"没有词条"处理，不擅自判冲突 */ }
+  }
+  const conflictIds = [...new Set([...(opts.canonConflictIds || []), ...(canon.conflictIds || [])].map(String))];
   try {
     return FZ.finalizeRevisionCandidate({
       mode: opts.mode === 'segmented' ? 'segmented' : 'single',
@@ -12540,13 +12849,15 @@ function revisionFinalizeFor(opts = {}) {
       segmentCoverage: opts.segmentCoverage || [],
       segments: opts.segments || null,
       mergeComplete: opts.mergeComplete === true,
-      findings: opts.findings || [],
+      findings,
       plan: opts.plan || null,
       invariants: opts.invariants || { must_keep: [] },
       protectedSpans: opts.protectedSpans || [],
       currentBaseHash: opts.snapshot ? opts.snapshot.body_hash : undefined,
       semanticByIssue: opts.semanticByIssue || {},
-      canonConflictIds: opts.canonConflictIds || [],
+      canonConflictIds: conflictIds,
+      entryVersionsByIssue,
+      canonByIssue: canon.strengthByIssue || {},
       safetyAvailable: patched ? patched.safety_available !== false : true,
       safetyVerified: patched ? patched.verified === true : false,
       revisionRunId: opts.revisionRunId,
@@ -13710,7 +14021,9 @@ async function runRevisionSemanticVerify() {
     state.pendingRevisionClosure = {
       ...ctx, patched: finalPatched, semantic: finalSemantic, closure: (finalized && finalized.closure) || closure,
       finalized: finalized || null, autoRepair, semanticRuns: Number(ctx.semanticRuns) + 1,
+      semanticByIssue,
     };
+    persistRevisionRun(state.pendingRevisionClosure, finalized, ctx.chapterId, autoRepair);
     await postRevisionClosureReceipt(ctx.chapterId, (finalized && finalized.closure) || closure, finalSemantic, finalized);
     const s = (finalSemantic && finalSemantic.summary) || { verified: 0, total: 0 };
     presentRevisionResult({
@@ -13753,6 +14066,14 @@ function reviewWorkspaceContext() {
   if (!RW) return null;
   const d = ctx.diffArgs || {};
   const rows = ctx.finalized && Array.isArray(ctx.finalized.rows) ? ctx.finalized.rows : [];
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  // v1.2.4：费用三栏 + 质量历史/洞察（P1/P2）。预计上界用与自动复修同一套口径
+  // （estimateRevisionCostCents 只给"上界"，不假装是账单）；已扣费服务端不提供 → null=未知。
+  const CL2 = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  const articleText = String(d.oldText != null ? d.oldText : (ctx.article || ''));
+  const estimateCents = (CL2 && typeof CL2.estimateRevisionCostCents === 'function')
+    ? CL2.estimateRevisionCostCents({ promptChars: articleText.length + 6000, maxOutputTokens: 2048 })
+    : null;
   return {
     rows,
     issueRows: RW.issueRowsOf({ rows }),
@@ -13768,6 +14089,9 @@ function reviewWorkspaceContext() {
     notice: String(d.notice || ''),
     blocked: Array.isArray(d.blocked) ? d.blocked : [],
     closure: (ctx.finalized && ctx.finalized.closure) || ctx.closure || null,
+    cost: { estimateCents, authorizedCents: revisionBudgetCents(), chargedCents: null },
+    history: qualityHistoryLoad(workId),
+    profile: qualityProfileFor(workId),
   };
 }
 
@@ -13846,6 +14170,8 @@ function reviewEvidenceHtml(RW, model, row) {
   return `<div class="rw-detail-head"><b>#${esc(row.issue_id)} ${esc(row.title)}</b>
     <span class="rw-issue-status tone-${esc(RW.statusOf(row.final_status).tone)}">${esc(RW.statusOf(row.final_status).text)}</span></div>
   <div class="muted">${esc(row.reason || '（没有验收理由）')}${row.reason_code ? ` · ${esc(row.reason_code)}` : ''}</div>
+  ${row.canon ? `<div class="muted">词条归因：${esc(row.canon.entry_title || '（按关键词命中）')} · ${row.canon.strength === 'hard' ? '硬约束（需作者裁决）' : row.canon.strength === 'soft' ? '弱约束（只作建议）' : '缺权威词条'}（${esc(row.canon.basis || '')}）</div>` : ''}
+  ${row.cross_segment && row.cross_segment.split ? `<div class="muted">证据跨片：${esc(row.cross_segment.evidence_segments.join('、'))}；已改到：${esc(row.cross_segment.patched_segments.join('、') || '无')}${row.cross_segment.untouched_segments.length ? `；未处理：${esc(row.cross_segment.untouched_segments.join('、'))}` : ''}</div>` : ''}
   ${row.repair_hint ? `<div class="muted">下一步：${esc(row.repair_hint)}</div>` : ''}
   ${ev.length ? `<div class="ref-group-title">逐字证据（${ev.length}）</div>${ev.map((e) => `
     <div class="rw-evidence ${e.before.found ? '' : 'missing'}">
@@ -13881,6 +14207,15 @@ function renderReviewWorkspace(content) {
   const blocks = RW.diffBlocks(model.oldText, model.newText);
   const shown = RW.visibleBlocks(blocks, ws.mode);
   const diffInfo = RW.diffSummary(blocks);
+  // v1.2.4 P2：质量历史/趋势只从**已落地的运行记录**聚合，不重新调用模型。
+  const QI = (typeof globalThis !== 'undefined' && globalThis.NovelQualityInsights) || null;
+  const QT = (typeof globalThis !== 'undefined' && globalThis.NovelQualityTrend) || null;
+  const insightText = QI ? QI.summaryLine(QI.effectStats(model.history || [])) : '';
+  const trendText = (() => {
+    if (!QT) return '';
+    const series = QT.seriesOf(model.history || [], 'template_hits');
+    return QT.trendOf(series.points).note;
+  })();
   const actions = RW.actionsOf({ stage: model.stage, rows: model.rows, semanticRuns: model.semanticRuns });
   const blocker = RW.blockerText({ stage: model.stage, rows: model.rows, reason: (model.finalize && model.finalize.reasons || []).join('；') });
   const actionBtn = (a) => {
@@ -13927,6 +14262,10 @@ function renderReviewWorkspace(content) {
         <div class="rw-drawer-head"><b>验收详情</b><button class="btn small secondary" data-action="review-drawer">关闭</button></div>
         <div class="muted" style="font-size:12px">已选 ${counts.selected}｜已验证 ${counts.verified}｜未通过 ${counts.unresolved}｜待复验 ${counts.pending}${counts.canon ? `｜蓝图冲突 ${counts.canon}` : ''}</div>
         ${model.finalize && model.finalize.next_action ? `<div class="muted">下一步：${esc(model.finalize.next_action.label)}</div>` : ''}
+        ${model.cost ? `<div class="muted">费用：${esc(RW.costLine(model.cost))}</div>` : ''}
+        ${insightText ? `<div class="muted">修复效果：${esc(insightText)}</div>` : ''}
+        ${trendText ? `<div class="muted">质量趋势：${esc(trendText)}</div>` : ''}
+        <div class="row mt-8"><button class="btn small secondary" data-action="quality-profile-open">🎛 作品级质量规则档案</button></div>
         ${model.closure && model.closure.text ? `<pre class="muted rw-closure">${esc(model.closure.text)}</pre>` : ''}
         ${model.blocked.length ? `<div class="redline-scan warn">安全门禁拦下 ${model.blocked.length} 处：${model.blocked.slice(0, 4).map((b) => esc(String(b.code || b.reason || ''))).join('；')}</div>` : ''}
         <div class="muted" style="font-size:12px">费用：语义复验是显式付费动作；工作区不会自己发起模型调用。</div>
@@ -17629,6 +17968,28 @@ async function handleAction(action, actionEl, e) {
         break;
       case 'review-export-pending':
         reviewWorkspaceExportPending();
+        break;
+
+      // v1.2.4 P1（Q-15）：从本地记录恢复未提交的修稿运行 / 丢弃它
+      case 'review-restore-run':
+        await reviewWorkspaceRestoreRun();
+        break;
+      case 'quality-profile-open':
+        openQualityProfileModal();
+        break;
+      case 'quality-profile-apply':
+        applyQualityProfileFromModal();
+        break;
+      case 'quality-profile-export':
+        exportQualityProfileTemplate();
+        break;
+      case 'revision-run-discard':
+        if (revisionRunStoreClear(Number(actionEl.dataset.id) || Number(state.currentChapterId) || 0)) {
+          toast('已丢弃这条本地修稿记录（正文未受影响）', 'success');
+          await render();
+        } else {
+          toast('没有可丢弃的记录', 'error');
+        }
         break;
 
       // E06：单独撤销一处（按问题 ID）。用原稿 + 其余补丁重建候选，并在同一个预览里刷新；

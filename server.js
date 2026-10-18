@@ -9580,7 +9580,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       ok: true,
       closure: {
         enabled: REVISION_CLOSURE_MODE,
-        contract_version: 2,
+        // v1.2.4：回执契约从 v2 升到 v3（多了 stage/覆盖完备性/run/next_action）。
+        // 这里必须**跟着回执走**，否则外围（DSH 协调器、插件）会按 v2 解读 v3 回执，
+        // 把"候选已验证但未入库"读成别的状态。没有回执时仍报 2（旧客户端兼容）。
+        contract_version: Math.max(2, Number(sel && sel.closure && sel.closure.closure_version) || 2),
         chapter_id: chapterId,
         work_id: chapter.work_id,
         selection_id: sel ? sel.id : null,

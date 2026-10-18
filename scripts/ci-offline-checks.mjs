@@ -164,6 +164,10 @@ export const CHECKS = [
   // 顺序刻意是"先有失败样本，再有新判据"：夹具先证明旧缺陷能被识别，终验器再证明能被拦住。
   { name: 'v1.2.4 两轮真实章稿夹具（A01–A08 / B01–B08：旧缺陷必须能被识别，零计费）', cmd: ['.p1-baseline/test-1024-chapter-fixtures.mjs'], why: '"修了一个句子就说这一项修好了"必须被测试抓住：证据未消除/该出现的字面缺失/必须保留被删 → 模型说 pass 也不通过' },
   { name: 'v1.2.4 统一终验出口（单段↔分段等价 / 语义覆盖完备 / 审稿工作区 / 时态设置，零计费）', cmd: ['.p1-baseline/test-1025-finalize.mjs'], why: '两条修稿路径必须同一套判据；未跑语义不得计入通过；分段合并无证明不得 VERIFIED_CANDIDATE' },
+  // v1.2.4 补全轮：P1 三项（时间线/词条强弱/运行记录）+ P2 四项（趋势/档案/效果统计/模板）+ 跨边界证据。
+  { name: 'v1.2.4 P1 时间线 / 词条强弱 / 运行记录可恢复（零计费）', cmd: ['.p1-baseline/test-1026-timeline-canon-store.mjs'], why: '时序矛盾必须结构化判定；词条 hard/soft 分开；刷新不复活失效授权、也不赠送复验额度' },
+  { name: 'v1.2.4 P2 质量趋势 / 规则档案 / 效果统计 / 跨边界证据（零计费）', cmd: ['.p1-baseline/test-1027-quality-insights.mjs'], why: '样本不足不给趋势；档案只补缺省且不削弱门禁；统计不把未跑语义计入分母' },
+  { name: 'v1.2.4 DSH 联调 / 真实写回 / 备份恢复演练（隔离实例，零计费）', cmd: ['.p1-baseline/test-1028-integration-drills.mjs'], why: '外层只读消费 v3 回执；作者合并不变量守恒；备份能直接当数据目录启动' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。
   // ⚠️ 在 DSH 受限文件沙箱里，本套件内部再起子进程时会撞上"禁止管道 stdio"，

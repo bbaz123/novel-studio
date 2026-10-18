@@ -218,6 +218,43 @@
     return { total: list.length, changed, unchanged: list.length - changed };
   }
 
+  /** 金额格式（整数分 → ¥x.xx）。非有限值一律"未知"，不显示 ¥0.00。 */
+  function formatCents(cents) {
+    const n = Number(cents);
+    if (!Number.isFinite(n) || n < 0) return '未知';
+    return `¥${(n / 100).toFixed(2)}`;
+  }
+
+  /**
+   * 费用三栏（v1.2.4 P1「修稿输入预算预检与调用/已扣费分离」）。
+   *
+   * 为什么必须分三栏：旧界面只有一个"预计费用"，于是三件事被混成一件：
+   *   ① **预计上界**（调用前估算，可能高估）；② **已授权**（作者批准的额度）；
+   *   ③ **已扣费**（真实账单）。三者不相等是常态，而把"未知"显示成 0 会被读成"没花钱"。
+   * 本函数只做展示口径，不做计费判定（判定在 `planAutoRepair`/`createClosureBudget`）。
+   */
+  function costOf(input = {}) {
+    const estimate = Number.isFinite(Number(input.estimateCents)) ? Number(input.estimateCents) : null;
+    const authorized = Number.isFinite(Number(input.authorizedCents)) ? Number(input.authorizedCents) : null;
+    // 只认**显式**的已扣费；null / undefined 一律"未知"，绝不当 0
+    const charged = (input.chargedCents == null) ? null : (Number.isFinite(Number(input.chargedCents)) ? Number(input.chargedCents) : null);
+    return {
+      estimateCents: estimate,
+      authorizedCents: authorized,
+      chargedCents: charged,
+      estimateText: estimate == null ? '未知（没有可信计价）' : `≤ ${formatCents(estimate)}`,
+      authorizedText: authorized == null ? '未授权' : formatCents(authorized),
+      chargedText: charged == null ? '未知（不当作 0）' : formatCents(charged),
+      overBudget: estimate != null && authorized != null && estimate > authorized,
+    };
+  }
+
+  /** 一行费用说明（界面与导出共用，避免两处措辞漂移）。 */
+  function costLine(input = {}) {
+    const c = costOf(input);
+    return `预计上界：${c.estimateText} · 已授权：${c.authorizedText} · 已扣费：${c.chargedText}${c.overBudget ? ' · ⚠️ 预计已超过已授权额度' : ''}`;
+  }
+
   /** 该显示哪些块：差异模式只给改过的段，全文模式给全部。 */
   function visibleBlocks(blocks, mode) {
     const list = Array.isArray(blocks) ? blocks : [];
@@ -322,6 +359,9 @@
     changedBlocks,
     diffSummary,
     visibleBlocks,
+    formatCents,
+    costOf,
+    costLine,
     actionsOf,
     blockerText,
     pendingChecklistText,

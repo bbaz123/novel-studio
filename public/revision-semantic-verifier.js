@@ -155,6 +155,21 @@
         [`候选 ${plain(revisedText)} 字 / 目标 ${minChars} 字`], { code: 'TARGET_LENGTH_MISSED', hard: true });
     }
 
+    // ②d 时序结构化（v1.2.4 P1）：只对 `temporal_consistency` 类问题跑，且只收**确定性**判定的项。
+    //     为什么必须结构化：B-02/B-03 这类缺陷用字符串判据永远分不清（把 10:23 改成"刚发的"
+    //     就能骗过"旧引文消失"），必须把时刻抽出来算间隔与先后。
+    //     字面要求（纪年等）已经由上面的 must_contain 处理，这里传空数组避免重复计费同一条检查。
+    const TL = (root && root.NovelRevisionTimeline) || (typeof globalThis !== 'undefined' ? globalThis.NovelRevisionTimeline : null);
+    if (TL && typeof TL.detectTemporalIssues === 'function' && textOf(finding.type) === 'temporal_consistency') {
+      let tl = null;
+      try { tl = TL.detectTemporalIssues(revisedText, { requiredTerms: [] }); } catch (_) { tl = null; }
+      if (tl && Array.isArray(tl.issues)) {
+        for (const it of tl.issues) {
+          pushCheck(checks, it.criterion || '时间线自洽', false, [it.detail || ''], { code: it.code || 'TIMELINE_CONFLICT', hard: it.hard !== false, timeline: true });
+        }
+      }
+    }
+
     // ③ 声称已改但没有实际 diff（R-17）：覆盖表说 patched，却没有任何补丁落在本 issue 上。
     const coverage = input.coverage && typeof input.coverage === 'object' ? input.coverage : null;
     const status = textOf(coverage && coverage.status) || '';

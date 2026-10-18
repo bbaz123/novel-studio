@@ -967,6 +967,9 @@ globalThis.__probe = {
   presentRevisionResult, openReviewWorkspace, renderReviewWorkspace, reviewWorkspaceBack, reviewWorkspaceSelect, reviewWorkspaceMove,
   reviewWorkspaceSetFilter, reviewWorkspaceSetMode, reviewWorkspaceToggleDrawer, reviewWorkspaceExportPending, reviewWorkspaceContext, reviewWorkspaceModule,
   revisionClosureStripHtml, primePendingReviewDiff, runRevisionSemanticVerify, canonConflictIdsFrom, downloadTextFile, revisionReceiptPayload, revisionResultToast,
+  revisionFinalizeFor, qualityProfileFor, setQualityProfile, qualityHistoryLoad, qualityHistoryAppend,
+  revisionRunStoreSave, revisionRunStoreLoad, revisionRunStoreClear, reviewWorkspaceRestoreRun, persistRevisionRun,
+  openQualityProfileModal, applyQualityProfileFromModal, exportQualityProfileTemplate, revisionRunStoreModule, qualityProfileModule,
   loadLibrary, renderLibrary, renderLibraryDocCard, libraryDocRow, libraryHitRow, libraryPlanHtml, libraryImportResultHtml, libraryStatusChip, librarySkipLabel, LIBRARY_SKIP_LABEL,
   libraryRefresh, librarySearchRun, librarySetCategory, libraryViewDoc, libraryToggleEnabled, libraryPreviewImport, libraryConfirmImport, libraryMarkMissing, libraryDeleteDoc, libraryRenderSafely, handleAction,
   longTextEngine, longTextLimits, longTextPlanFor, longTextRunTask, longTextStatusHtml, longTextContextBlock,
@@ -994,7 +997,7 @@ try {
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
   // v1.2.4：统一终验出口 + 审稿工作区 + 时态设置页（与 index.html 同序，仍先于 app.js）。
-  for (const name of ['revision-finalize.js', 'review-workspace.js', 'temporal-settings.js']) {
+  for (const name of ['revision-timeline.js', 'revision-canon-strength.js', 'revision-finalize.js', 'revision-run-store.js', 'review-workspace.js', 'temporal-settings.js', 'quality-trend.js', 'quality-profile.js', 'quality-insights.js']) {
     const code = fs.readFileSync(path.join(repoRoot, 'public', name), 'utf8');
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
@@ -6927,6 +6930,97 @@ P.traceStopStream();
   ];
   const missing = keep.filter(([, re]) => !re.test(appSrc)).map(([k]) => k);
   check('QC-37 既有能力没有被"升级"顺手改回去（逐项在源码里仍成立）', missing.length === 0, JSON.stringify(missing));
+}
+
+
+// ==================== v1.2.4 补全轮：时间线 / 词条强弱 / 运行记录 / 费用 / P2 洞察 ====================
+{
+  const FZ = sandbox.NovelRevisionFinalize;
+  const RW = sandbox.NovelRevisionWorkspace;
+  const TL = sandbox.NovelRevisionTimeline;
+  const CS = sandbox.NovelRevisionCanonStrength;
+  const QP = sandbox.NovelQualityProfile;
+  const QI = sandbox.NovelQualityInsights;
+  const QT = sandbox.NovelQualityTrend;
+  check('QC-38 补全轮模块随页面加载（时间线/词条强弱/运行记录/趋势/档案/洞察）',
+    !!TL && !!CS && !!sandbox.NovelRevisionRunStore && !!QT && !!QP && !!QI,
+    JSON.stringify({ TL: !!TL, CS: !!CS, RS: !!sandbox.NovelRevisionRunStore, QT: !!QT, QP: !!QP, QI: !!QI }));
+
+  // ── 时间线 + 词条强弱：经**统一终审出口**真的改变结论 ─────────────────────
+  const savedEntries = P.state.worldEntries;
+  P.state.worldEntries = [{ id: 5, title: '等级体系', keywords: 'D 级,普通职业', content: 'D 级 = 普通职业', is_pinned: 1, version: 3 }];
+  const base = '他掏出手机，10:41，没有新消息。\n\n母亲的消息是 10:23 发的。\n\n母亲这个点刚交完班。晚上十点出门，早上八点半回来。';
+  const after = base.replace('10:23 发的', '刚发的');
+  const temporal = FZ.finalizeRevisionCandidate({
+    mode: 'single', originalText: base, candidateText: after,
+    selectedIssueIds: ['B03'],
+    applied: [{ issue_ids: ['B03'], span_id: 's', op: 'replace', original: 'x', replacement: 'y', start: 0, end: 0 }],
+    coverage: [{ issue_id: 'B03', status: 'patched' }],
+    findings: [{ id: 'B03', type: 'temporal_consistency', title: '母亲行程矛盾', evidence: [{ quote: '母亲这个点刚交完班', role: 'candidate_edit' }], acceptance: { rule: '行程自洽' } }],
+    semanticByIssue: { B03: { status: 'pass', reason: '模型自称已修好' } },
+  });
+  check('QC-39 时间线接入：时序矛盾在"模型说已修好"时仍判 UNRESOLVED（SHIFT_GAP_CONFLICT）',
+    temporal.rows[0].final_status === 'UNRESOLVED'
+      && temporal.rows[0].checks.some((c) => c.code === 'SHIFT_GAP_CONFLICT' && !c.passed),
+    JSON.stringify({ final: temporal.rows[0].final_status, code: temporal.rows[0].reason_code }));
+
+  const canon = P.revisionFinalizeFor({
+    mode: 'single', article: 'D 级评价：普通作业类。', patched: {
+      text: 'D 级评价：普通职业。', applied: [{ issue_ids: ['A03'], span_id: 's', op: 'replace', original: '普通作业类', replacement: '普通职业', start: 6, end: 11 }],
+      blocked: [], coverage: [{ issue_id: 'A03', status: 'patched' }], safety_available: true, verified: false,
+    },
+    findings: [{ id: 'A03', type: 'canon_conflict', title: 'D 级评价与词条冲突', evidence: [{ quote: '普通作业类', role: 'candidate_edit' }], acceptance: { rule: '与词条一致' } }],
+    selectedIssueIds: ['A03'],
+  });
+  check('QC-40 词条强弱接线：命中硬约束 + canon_conflict → 走 CANON_CONFLICT（无需调用方手工注入）',
+    canon && canon.rows[0].final_status === 'CANON_CONFLICT'
+      && canon.rows[0].canon && canon.rows[0].canon.strength === 'hard',
+    JSON.stringify({ final: canon && canon.rows[0].final_status, canon: canon && canon.rows[0].canon }));
+  P.state.worldEntries = savedEntries;
+
+  // ── 费用三栏 ─────────────────────────────────────────────────────────────
+  const cost = RW.costLine({ estimateCents: 37, authorizedCents: 200 });
+  check('QC-41 费用三栏分开，且"已扣费未知"不被显示成 ¥0.00',
+    /预计上界/.test(cost) && /已授权：¥2\.00/.test(cost) && /已扣费：未知/.test(cost) && !/已扣费：¥0\.00/.test(cost),
+    cost);
+
+  // ── 质量档案：真的改验收 + 白名单 ────────────────────────────────────────
+  const savedProfile = P.qualityProfileFor(P.state.workId || 0);
+  P.setQualityProfile(P.state.workId || 0, { hard_min_chars: 5000, required_terms: ['3751'], bogus: 1 });
+  const withProfile = P.revisionFinalizeFor({
+    mode: 'single', article: '短正文。', patched: { text: '短正文。', applied: [], blocked: [], coverage: [], safety_available: true, verified: false },
+    findings: [{ id: 'B08', type: 'target_length', title: '篇幅不足', evidence: [], acceptance: {} }],
+    selectedIssueIds: ['B08'],
+  });
+  check('QC-42 作品级档案影响验收（min_chars 从档案补进 acceptance 并判失败）',
+    withProfile && withProfile.rows[0].final_status === 'UNRESOLVED'
+      && /TARGET_LENGTH_MISSED|DETERMINISTIC/.test(withProfile.rows[0].reason_code),
+    JSON.stringify({ final: withProfile && withProfile.rows[0].final_status, code: withProfile && withProfile.rows[0].reason_code }));
+  P.setQualityProfile(P.state.workId || 0, savedProfile);
+
+  // ── 运行记录：写作台出现恢复入口（索引存在即可）──────────────────────────
+  const store = P.revisionRunStoreModule();
+  const workId = P.state.workId || 0;
+  const chapterId = 999;
+  store.save(sandbox.localStorage, store.serialize({
+    runId: 'run:ui', workId, chapterId, baseHash: 'h', candidateText: '候选', patches: [], rows: [], semanticRuns: 1, status: 'AWAITING_SEMANTIC', at: new Date().toISOString(),
+  }));
+  const prevChapter = P.state.currentChapterId;
+  const strip = P.revisionClosureStripHtml(chapterId);
+  check('QC-43 有本地运行记录时，写作台给出"可恢复"入口（并说明它不是已合并）',
+    /可恢复/.test(strip) && /review-restore-run/.test(strip) && /revision-run-discard/.test(strip),
+    strip.slice(0, 120));
+  P.revisionRunStoreClear(chapterId);
+  P.state.currentChapterId = prevChapter;
+  check('QC-44 清除记录后入口消失（不留幽灵按钮）',
+    P.revisionClosureStripHtml(chapterId) === '', P.revisionClosureStripHtml(chapterId).slice(0, 60));
+
+  // ── P2：洞察/趋势文案只在有数据时出现，且措辞不夸大 ─────────────────────
+  const stats = QI.effectStats([{ rows: [{ final_status: 'ISSUE_VERIFIED', type: 'a' }] }]);
+  const trend = QT.trendOf([{ value: 1 }, { value: 2 }]);
+  check('QC-45 质量洞察与趋势遵守样本守卫（不足时明说，不给成功率/方向）',
+    /样本不足/.test(QI.summaryLine(stats)) && trend.enough === false && /少于 5/.test(trend.note),
+    JSON.stringify({ stats: QI.summaryLine(stats), trend: trend.note }));
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

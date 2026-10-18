@@ -5,6 +5,57 @@
 
 ---
 
+### 🛠️ 最近更新（2026-10-18 · **v1.2.4 补全轮**：P1 剩余 + P2 四项 + 三项真实环境验收）
+
+同一版本内的补全（v1.2.4 尚未发布，故不另起版本号）。目标是把上一轮明确标注为
+`NOT_RUN` / 未做的项全部做完，而不是把它们留在文档里。
+
+**P1 剩余（全部落地）**
+- **剧情时间线结构化** `public/revision-timeline.js`：把 `10:41 / 晚上十点 / 早上八点半` 抽成"当天分钟数"，
+  检查 ① 先读后到（消息早于查看时间却没看到）② 班次间隔（"这个点刚交完班" vs 归家时刻）
+  ③ 设定要求的字面缺失。明确冲突按**硬事实**处理（模型说 pass 也挡不住），
+  "跨天关系未声明"只进 advisories、不污染软判断层。
+- **分段跨边界联合证据**：`finalize` 记录每条问题的可编辑锚点分布在哪些片、哪片没被处理，
+  写进运行记录（回执可复核），界面在详情里显示"证据跨片 / 未处理片"。
+- **世界观词条强弱约束** `public/revision-canon-strength.js`：显式 `strength` > `is_pinned` >
+  设定类关键词（等级/职业/纪年…）> 风格类关键词 > `unknown`。只有 **hard + canon_conflict**
+  才进 `conflictIds`（交作者裁决）；soft 只作建议；匹配不到权威词条按 `unmatched` 交给 `NEED_CONTEXT`。
+  同时把 v1.2.2 就写好但**从未接线**的 `entryVersionsByIssue` / `canonByIssue` 真正接进 `finalize`。
+- **审稿运行记录可恢复** `public/revision-run-store.js`（Q-15）：候选 + 逐条语义结论 + 已用复验额度
+  存本地，配轻量索引；恢复前核对 `base_hash`，**底稿变了就作废且不返回候选**（不复活失效授权），
+  刷新也不赠送复验额度；写作台出现"上次修稿未提交 · 可恢复 [恢复] [✕]"。
+- **修稿预算预检与已扣费分离** `Rw.costOf/costLine`：预计上界 / 已授权 / 已扣费三栏分开，
+  **未知扣费显示"未知（不当作 0）"**，并在超授权时明示。
+- **DSH 外层质量流程接入**（`dsh-auto-plan-executor`）：新增 `lib/writing/revision-run.js`
+  （`normalizeRunReceipt` / `runReadiness`），`quality-state` 改为**优先读回执的 `stage`**，
+  并把"覆盖不完备"判为待复验；协调器输出 `contract_version / coverage_complete / next_action / run`。
+  Studio 侧 `GET /novel/revision/closure/status` 的 `contract_version` 改为**跟随回执**（v3 回执报 3）。
+
+**P2 四项（全部落地）**
+- `public/quality-trend.js`：指标序列 / 最小二乘趋势（**少于 5 个样本不给方向**）/ 章节级回归
+  （相对历史中位数 + 阈值），措辞明确"这只是观测，不是好坏结论"。
+- `public/quality-profile.js`：作品级质量规则档案（白名单 7 键），**真的影响验收**——
+  `hard_min_chars` 补进 `target_length.min_chars`、`required_terms` 并入字面硬约束；
+  非法值/未知键**回报而不静默**；导入是白名单合并，不能关语义复验、不能放宽授权、不能改复修上限。
+- `public/quality-insights.js`：按问题类型与原因码聚合修复效果，**未跑语义不进分母**，
+  运行 < 3 次不给成功率，输出"反复修不掉的问题类型"。
+- 跨作品模板：`exportTemplate / importTemplate / diffProfiles`（迁移前先看差异），
+  审稿工作区详情里可打开「🎛 作品级质量规则档案」并导出/导入。
+
+**三项真实环境验收（原 NOT_RUN → 已通过）**
+- **UI-08** 深色主题 + **200% 缩放**（真实 Chromium + CDP 模拟）：深色下字色 `rgb(232,230,225)`
+  对底色 `rgb(23,25,24)`、字号 13px、按钮 23px；200% 下 dpr=2、视口 825 CSS px、差异区 603px、
+  字号不缩、**无横向溢出**。
+- **V-03** 备份恢复演练：把备份 `novel.db` 拷进临时数据目录直接启动真实实例，
+  作品 2 本、章节 50 章可读，演练全程只读。
+- **Q-14** 真实写回 + 回读：隔离实例上 `POST /novel/adopt` → 回读正文与写入一致、
+  同一 `operation_key` 重复提交幂等、写回后状态接口仍为只读视图。
+
+**新增回归**：`test-1026` 31 条、`test-1027` 23 条、`test-1028` 18 条（隔离实例）、
+`frontend-test` QC-38…QC-44、真实浏览器 BA-13/BA-14；`dsh-auto-plan-executor` 单测 138 → **143**。
+
+---
+
 ### 🛠️ 最近更新（2026-10-18 · **v1.2.4**：统一终验 + 独立审稿工作区 + 时态设置独立页）
 
 **增量升级**（基线 v1.2.3，不回退任何既有能力）。对应 `Novel_Studio_v1.2.4_完整优化升级实施方案.md`。

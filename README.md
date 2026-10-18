@@ -417,7 +417,10 @@ round — lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent releases on 
 
 - **v1.2.4** — one final gate for both repair paths (single-shot and segmented), per-issue semantic
   coverage that never counts an unverified item as passing, a dedicated review workspace that leaves the
-  writing desk unsqueezed, and a separate temporal-engine settings view. See
+  writing desk unsqueezed, and a separate temporal-engine settings view. Same version also adds
+  timeline-aware conflict detection, hard/soft world-entry constraints, resumable revision runs, a
+  three-column cost view (estimate / authorised / charged), and P2 quality insights (trends, per-work
+  quality profiles, repair-effect stats, cross-project templates). See
   `docs/v1.2.4-review-workspace.md`.
 - **v1.2.3** — UI fixes: the model/human/structure comparison now stacks above the review report
   (closing it returns to the report), revision recovers the reviewed text as its base when the live

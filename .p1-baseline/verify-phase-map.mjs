@@ -1901,6 +1901,56 @@ export const PHASES = [
       + 'P0E/P0F 只是视图层级拆分，不动数据库与时态语义。'
       + '**费用**：全部离线检查零计费（模型输出在测试里是注入的）。',
   },
+  {
+    id: 'V16',
+    title: 'v1.2.4 补全：时间线结构化 / 词条强弱 / 运行记录恢复 / P2 质量洞察 / DSH 外层接入 / 恢复演练',
+    files: [
+      // 新增纯函数模块
+      'public/revision-timeline.js',
+      'public/revision-canon-strength.js',
+      'public/revision-run-store.js',
+      'public/quality-trend.js',
+      'public/quality-profile.js',
+      'public/quality-insights.js',
+      // 回归套件
+      '.p1-baseline/test-1026-timeline-canon-store.mjs',
+      '.p1-baseline/test-1027-quality-insights.mjs',
+      '.p1-baseline/test-1028-integration-drills.mjs',
+      // 业务接线（与既有阶段共用，只能整体回滚）
+      'public/app.js',
+      'public/index.html',
+      'public/revision-finalize.js',
+      'public/revision-semantic-verifier.js',
+      'public/review-workspace.js',
+      'server.js',
+      'frontend-test.mjs',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/browser-acceptance-v124.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+      // 版本与说明
+      'package.json',
+      'docs/CHANGELOG.md',
+      'README.md',
+      'docs/v1.2.4-review-workspace.md',
+      'docs/host-contract.v1.json',
+      'docs/host-contract.md',
+    ],
+    evidence: [
+      '.p1-baseline/test-1026-timeline-canon-store.mjs',
+      '.p1-baseline/test-1027-quality-insights.mjs',
+      '.p1-baseline/test-1028-integration-drills.mjs',
+      'docs/v1.2.4-review-workspace.md',
+    ],
+    rollback: 'shared',
+    note: '**目的**：把 v1.2.4 方案里剩余的 P1（时间线、词条强弱、运行记录可恢复、跨边界证据、DSH 外层接入）'
+      + '与 P2 四项（质量趋势与章节级回归、作品级规则档案、修复效果统计、跨作品模板）全部落地，'
+      + '并补上 UI-08（深色/200% 缩放）、V-03（备份恢复演练）、Q-14（真实写回回读）三项真实验收。'
+      + '**边界**：时间线与词条强弱只做**可确定性判定**的那一半（其余交语义层/作者）；'
+      + '运行记录恢复 fail-closed（底稿变了作废、不复活权限、不赠送复验额度）；'
+      + '外层协调器只读，不创建 Goal、不代作者合并。'
+      + '**费用**：全部离线/隔离实例检查零计费。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

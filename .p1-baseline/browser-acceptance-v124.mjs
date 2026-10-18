@@ -326,6 +326,65 @@ async function main() {
       narrow && narrow.present === true && !narrow.overflowX && narrow.diffW > 300,
       JSON.stringify(narrow));
 
+    // ── UI-08：深色主题 + 200% 缩放（可读、可点、无横向溢出）────────────────
+    // 为什么用 CDP 模拟而不是只断言 CSS：深色由 `<html data-theme="dark">` 驱动变量，
+    // 到底"文字还看得见吗、按钮还点得到吗"只有真实排版引擎能回答。
+    await send('Emulation.setDeviceMetricsOverride', { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+    const dark = await evaluate(`(async () => {
+      document.documentElement.dataset.theme = 'dark';
+      await new Promise(r => setTimeout(r, 200));
+      const body = getComputedStyle(document.body);
+      const nav = document.querySelector('.rw-issue');
+      const btn = document.querySelector('.rw-mode') || document.querySelector('.rw-foot .btn');
+      const diff = document.querySelector('.rw-diff');
+      return {
+        theme: document.documentElement.dataset.theme,
+        bg: body.backgroundColor,
+        fg: body.color,
+        sameColor: body.backgroundColor === body.color,
+        navFont: nav ? parseFloat(getComputedStyle(nav).fontSize) : 0,
+        navColor: nav ? getComputedStyle(nav).color : '',
+        btnH: btn ? btn.getBoundingClientRect().height : 0,
+        diffW: diff ? diff.getBoundingClientRect().width : 0,
+        overflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+      };
+    })()`);
+    check('BA-13 深色主题：正文可读（字色≠底色）、按钮仍可点、无横向溢出',
+      dark && dark.theme === 'dark' && dark.sameColor === false
+        && dark.navFont >= 12 && dark.btnH >= 20 && dark.diffW > 300 && dark.overflowX === false,
+      JSON.stringify(dark));
+
+    // 200% 缩放等效：视口减半 + devicePixelRatio=2（CSS px 不变，交付给用户的可用宽度减半）
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: Math.round(VIEWPORT.width / 2), height: Math.round(VIEWPORT.height / 2),
+      deviceScaleFactor: 2, mobile: false,
+    });
+    const zoom = await evaluate(`(async () => {
+      await new Promise(r => setTimeout(r, 300));
+      const box = (sel) => { const el = document.querySelector(sel); return el ? el.getBoundingClientRect() : null; };
+      const diff = box('.rw-diff');
+      const nav = box('.rw-nav');
+      const btn = document.querySelector('.rw-foot .btn');
+      const issue = document.querySelector('.rw-issue');
+      return {
+        dpr: window.devicePixelRatio,
+        vw: window.innerWidth,
+        diffW: diff ? diff.width : 0,
+        navW: nav ? nav.width : 0,
+        buttonH: btn ? btn.getBoundingClientRect().height : 0,
+        issueFont: issue ? parseFloat(getComputedStyle(issue).fontSize) : 0,
+        overflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+      };
+    })()`);
+    check('BA-14 200% 缩放（视口减半 + dpr=2）：布局自适应、字号不缩、按钮可点、无横向溢出',
+      zoom && zoom.dpr === 2 && zoom.diffW > 200 && zoom.issueFont >= 12
+        && zoom.buttonH >= 20 && zoom.overflowX === false,
+      JSON.stringify(zoom));
+    // 还原主题与视口，避免影响后续手工查看
+    await evaluate("document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : document.documentElement.dataset.theme; true");
+    await send('Emulation.setDeviceMetricsOverride', { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false });
+
     ws.close();
   } finally {
     try { child.kill(); } catch (_) { /* 已退出 */ }
