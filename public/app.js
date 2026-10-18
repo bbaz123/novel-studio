@@ -657,6 +657,22 @@ const HELP_TEXT = {
   }
 };
 
+// 审稿工作区里「运行独立语义复验 / 跳过复验直接合并」的悬停说明。
+// 文案只在 `review-workspace.js` 里写一次（按钮 title、悬停帮助、离线测试都读它），
+// 这里只是把它接进现有的 data-help 通道 —— 两处各写一份必然漂成两套说法。
+(() => {
+  const RW = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionWorkspace) || null;
+  if (!RW || typeof RW.forcedMergeWarning !== 'function') return;
+  const w = RW.forcedMergeWarning();
+  HELP_TEXT.review_merge_forced = { title: w.title, body: w.body };
+  HELP_TEXT.review_semantic_verify = {
+    title: '运行一次独立语义复验（付费）',
+    body: '确定性检查只能证明"字符变了"；这一步让模型逐条回答"这条问题真的解决了吗"，结论会写进覆盖表。'
+      + '同一份候选只允许跑一次（重复跑同一份稿没有新信息，只会重复付费）；要再验必须先改候选。'
+      + '它会用你的模型配置发一次请求，费用按你的服务商计；界面上"预计上界"是估算，不是账单。'
+  };
+})();
+
 // 标题旁的小问号：悬停或键盘聚焦（Tab 到）都能看到解释。
 // R06 兼容别名：内部键 `sillytavern` 是历史名，语义上它就是「创作上下文」。
 HELP_TEXT.creation_context = HELP_TEXT.sillytavern;
@@ -13929,6 +13945,11 @@ async function runRevisionSemanticVerify() {
     toast('这次修稿已经做过一次语义复验：同一份候选不重复付费复验；如需再验请先修改候选', 'error');
     return;
   }
+  if (state.revisionSemanticRunning) return; // 双击保护：进度条已经起来了就别再起一次
+  // 先把"正在跑"画到工作区上（按钮全灰 + 进度条），再发付费请求。
+  // 以前这里是先 await 再渲染，作者点完只看到按钮没反应 —— 那正是 2026-10-18 的报障。
+  startRevisionSemanticProgress((ctx.findings || []).length || (ctx.selectedIssueIds || []).length);
+  if (state.view === 'review') { try { await render(); } catch (_) { /* 画进度失败不阻塞付费动作 */ } }
   const jobBase = {
     timeout: longAiTimeout(),
     model: policyModel('quality'),
@@ -13947,6 +13968,10 @@ async function runRevisionSemanticVerify() {
     }, 'AI 修稿 · 正在逐条复验是否真的修好…');
     const parsed = parseSemanticVerification(data.output || '', ctx.selectedIssueIds);
     if (!parsed.ok) {
+      // 这条是**提前 return**：不先收进度条，界面会一直停在"正在复验…"（按钮全灰、条还在跑），
+      // 作者就会以为这次付费调用还没结束。所以这里自己收口，不依赖 finally 的无声收尾。
+      stopRevisionSemanticProgress();
+      if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响下面的通报 */ } }
       toast(`语义复验没有返回可用结论（${parsed.reason}）：候选稿保持不变，仍按"待语义复验"处理`, 'error');
       return;
     }
@@ -14026,13 +14051,20 @@ async function runRevisionSemanticVerify() {
     persistRevisionRun(state.pendingRevisionClosure, finalized, ctx.chapterId, autoRepair);
     await postRevisionClosureReceipt(ctx.chapterId, (finalized && finalized.closure) || closure, finalSemantic, finalized);
     const s = (finalSemantic && finalSemantic.summary) || { verified: 0, total: 0 };
+    // 结果已经算出来了：先撤进度条，再交给统一出口渲染（否则工作区会把按钮一直画成灰的）。
+    stopRevisionSemanticProgress();
     presentRevisionResult({
       ...ctx.diffArgs, oldText: ctx.article, newText: finalPatched.text,
       semantic: finalSemantic, closure: (finalized && finalized.closure) || closure, finalize: finalized || null,
       notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}（结论见下方覆盖表）${autoNotice ? `；${autoNotice}` : ''}`,
     });
   } catch (e) {
+    // 失败也要把进度条撤掉并重画：留一张"永远在跑"的界面比报错更糟（作者会以为还在计费）。
+    stopRevisionSemanticProgress();
+    if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响下面的事实通报 */ } }
     if (!e.cancelled) toast('语义复验失败：' + e.message, 'error');
+  } finally {
+    stopRevisionSemanticProgress();
   }
 }
 
@@ -14081,7 +14113,14 @@ function reviewWorkspaceContext() {
     oldText: String(d.oldText != null ? d.oldText : (ctx.article || '')),
     newText: String(d.newText != null ? d.newText : ((ctx.patched && ctx.patched.text) || '')),
     finalize: ctx.finalized || null,
-    stage: ctx.finalized ? String(ctx.finalized.status || 'AWAITING_SEMANTIC') : 'AWAITING_SEMANTIC',
+    // 合并之后不能再停在上一次终审的档位：那样界面会一直说"尚未语义复验"，
+    // 作者以为没合并成功（旧实现确实如此）。已合并 + 没跑复验 ⇒ PERSISTED_UNVERIFIED（warn）。
+    stage: (() => {
+      if (ctx.mergedAt) return ctx.mergedUnverified ? 'PERSISTED_UNVERIFIED' : 'PERSISTED_VERIFIED';
+      return ctx.finalized ? String(ctx.finalized.status || 'AWAITING_SEMANTIC') : 'AWAITING_SEMANTIC';
+    })(),
+    // 付费复验正在跑：界面据此画进度条、把按钮全置灰（以前只有按钮点不动，看不出在跑）。
+    busy: Boolean(state.revisionSemanticRunning),
     checklist: Number(d.checklist) || rows.length,
     patchedCount: Array.isArray(ctx.patched && ctx.patched.applied) ? ctx.patched.applied.length : 0,
     semanticRuns: Number(ctx.semanticRuns) || 0,
@@ -14188,6 +14227,50 @@ function reviewEvidenceHtml(RW, model, row) {
     <div class="rw-check ${c && c.passed ? 'ok' : 'bad'}">${c && c.passed ? '✓' : '✗'} ${esc(String((c && c.criterion) || ''))}${c && Array.isArray(c.evidence) && c.evidence.length ? `<span class="muted" style="font-size:12px">（${esc(String(c.evidence[0]).slice(0, 80))}）</span>` : ''}</div>`).join('')}` : ''}`;
 }
 
+/**
+ * 复验进行中的进度条（2026-10-18 作者报："点了复验只有按钮点不动，看不出后台在跑"）。
+ *
+ * 为什么单独一块、而不是只靠右下角那张通用进度卡：
+ *   ① 通用卡是全局的，作者在审稿工作区里视线在中间差异区，右下角那张卡容易被忽略；
+ *   ② 工作区自己的按钮已经全灰，必须**在同一屏**解释"灰是因为正在跑"；
+ *   ③ 一次付费调用拿不到内部进度 → 进度条是**不确定**的（来回跑动），只报已用时间，
+ *      不编百分比、不编剩余时间（编了就是撒谎）。
+ */
+function revisionSemanticProgressHtml(RW, model) {
+  const run = state.revisionSemanticRunning;
+  if (!run || !RW) return '';
+  const p = RW.progressOf({ startedAt: run.startedAt, now: Date.now(), count: run.count || 0 });
+  return `<div class="rw-progress" id="rw-progress" role="status" aria-live="polite">
+      <div class="rw-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${esc(p.text)}"><i></i></div>
+      <div class="rw-progress-text" id="rw-progress-text">${esc(p.text)}</div>
+    </div>`;
+}
+
+/** 起一次复验进度：先把状态放进 state（下一次 render 就画出进度条），再挂一个只更新文案的计时器。 */
+function startRevisionSemanticProgress(count) {
+  stopRevisionSemanticProgress();
+  state.revisionSemanticRunning = { startedAt: Date.now(), count: Number(count) || 0 };
+  const tick = setInterval(() => {
+    const run = state.revisionSemanticRunning;
+    if (!run) { clearInterval(tick); return; }
+    const RW = reviewWorkspaceModule();
+    const el = document.getElementById('rw-progress-text');
+    // 视图被切走（返回写作台/切章）时 DOM 不在了：停写屏，但保留 startedAt，
+    // 回到工作区重新渲染时已用时间仍然连续，不会从 0:00 重新开始。
+    if (!RW || !el) return;
+    el.textContent = RW.progressOf({ startedAt: run.startedAt, now: Date.now(), count: run.count }).text;
+  }, 500);
+  state.revisionSemanticTimer = tick;
+}
+
+function stopRevisionSemanticProgress() {
+  if (state.revisionSemanticTimer) {
+    clearInterval(state.revisionSemanticTimer);
+    state.revisionSemanticTimer = null;
+  }
+  state.revisionSemanticRunning = null;
+}
+
 function renderReviewWorkspace(content) {
   const RW = reviewWorkspaceModule();
   const model = reviewWorkspaceContext();
@@ -14216,15 +14299,24 @@ function renderReviewWorkspace(content) {
     const series = QT.seriesOf(model.history || [], 'template_hits');
     return QT.trendOf(series.points).note;
   })();
-  const actions = RW.actionsOf({ stage: model.stage, rows: model.rows, semanticRuns: model.semanticRuns });
-  const blocker = RW.blockerText({ stage: model.stage, rows: model.rows, reason: (model.finalize && model.finalize.reasons || []).join('；') });
+  const actions = RW.actionsOf({
+    stage: model.stage, rows: model.rows, semanticRuns: model.semanticRuns, busy: model.busy,
+  });
+  const blocker = RW.blockerText({
+    stage: model.stage, rows: model.rows, busy: model.busy,
+    reason: (model.finalize && model.finalize.reasons || []).join('；'),
+  });
   const actionBtn = (a) => {
     const map = {
       'semantic-verify': 'diff-semantic-verify', merge: 'diff-merge', 'merge-partial': 'diff-merge',
+      // 作者 2026-10-18 授权：跳过语义复验直接合并（走同一条合并路径，差别只在"没有逐条结论"）。
+      'merge-forced': 'diff-merge',
       export: 'review-export-pending', back: 'review-back',
     };
     const action = map[a.action] || 'review-back';
-    return `<button class="btn small ${a.primary ? '' : 'secondary'}" data-action="${action}"${a.disabled ? ' disabled' : ''} title="${esc(a.note || '')}">${esc(a.label)}</button>`;
+    // data-help 走现成的悬停/键盘通道（.tooltip，z-index 400），比原生 title 更早出现、能换行、Tab 可达。
+    const help = a.help ? ` data-help="${esc(a.help)}"` : '';
+    return `<button class="btn small ${a.primary ? '' : 'secondary'}${a.danger ? ' danger' : ''}" data-action="${action}"${help}${a.disabled ? ' disabled' : ''} title="${esc(a.note || '')}">${esc(a.label)}</button>`;
   };
   content.innerHTML = `
   <div class="review-ws" data-stage="${esc(model.stage)}">
@@ -14271,6 +14363,7 @@ function renderReviewWorkspace(content) {
         <div class="muted" style="font-size:12px">费用：语义复验是显式付费动作；工作区不会自己发起模型调用。</div>
       </aside>` : ''}
     </div>
+    ${revisionSemanticProgressHtml(RW, model)}
     <footer class="rw-foot">
       <div class="rw-blocker ${blocker ? 'warn' : 'ok'}">${esc(blocker || '（无阻塞）')}</div>
       <div class="grow"></div>
@@ -17934,9 +18027,23 @@ async function handleAction(action, actionEl, e) {
         break;
       }
 
-      case 'diff-merge':
+      case 'diff-merge': {
+        // 合并成功后必须把工作区落到"已合并"那一档：旧实现在工作区里合并完还会停在
+        // "尚未语义复验"，作者以为没合并、又点一次（虽然无害，但界面在说谎）。
+        // 判据用 pendingReviewDiff 的身份变化 —— mergeReviewDiff 只在**真的写进库之后**消费它。
+        const before = state.pendingReviewDiff;
         await mergeReviewDiff();
+        const merged = Boolean(before) && state.pendingReviewDiff !== before;
+        const ctx = state.pendingRevisionClosure;
+        if (merged && ctx) {
+          const stage = ctx.finalized && ctx.finalized.status;
+          ctx.mergedAt = new Date().toISOString();
+          // 只有"全部通过再合并"才算复核过；跳过复验就合并的，如实记为**未复验**。
+          ctx.mergedUnverified = stage !== 'VERIFIED_CANDIDATE';
+          if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响合并事实 */ } }
+        }
         break;
+      }
 
       // v1.2.1 P0-6：作者显式触发一次独立语义复验（付费；同一候选只允许一次）。
       case 'diff-semantic-verify':

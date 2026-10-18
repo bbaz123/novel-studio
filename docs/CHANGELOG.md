@@ -81,9 +81,17 @@
   钉住"修了一个句子就说这一项修好了"必须被抓住：B03/B06/B07 等即便模型自称已修好也不通过。
 - **P0G 发布与验收**：`package.json`/README/CHANGELOG 统一 1.2.4；README 版本徽章从 1.2.1 更正为 1.2.4
   （公开页面读到的旧版本号来源之一）；新增真实 Chromium 布局验收脚本。
+- **作者授权的例外：跳过复验直接合并**（2026-10-18，作者明确要求）：待复验档位新增次按钮
+  「跳过复验直接合并」（`danger` 样式）。鼠标悬停 / Tab 聚焦即出后果说明（`data-help="review_merge_forced"`，
+  文案唯一来源 `review-workspace.forcedMergeWarning()`）：不产生任何逐条结论、整章替换正文但旧稿进历史版本、
+  合并后这份候选**不能再复验**。跳过并合并后档位是 `PERSISTED_UNVERIFIED`（warn，写"已合并 · 未做语义复验"），
+  绝不冒充 `PERSISTED_VERIFIED`。
+- **复验进行中可见**（作者报："点了复验只有按钮点不动，看不出在跑"）：工作区自己画出不确定进度条
+  （`#rw-progress`，来回跑动、不编百分比）+ 已用时间 + 阶段推进，按钮全灰且主按钮改文案"正在复验…"；
+  失败/成功都会撤掉进度条，不留"永远在跑"的界面。
 
-**验证**：`ci-offline-checks` 63/63（新增 2 套）、`test-1024` 26/26、`test-1025` 43/43、
-`frontend-test` ALL PASS（新增 QC-21…QC-37，含一条 8 项全选的端到端修稿链路）、
+**验证**：`ci-offline-checks` 66/66（新增 5 套：夹具 / 终验 / 时间线·词条·运行记录 / P2 / 联调演练）、
+`test-1024` 26/26、`test-1025` 47/47、`frontend-test` ALL PASS（新增 QC-21…QC-48，含一条 8 项全选的端到端修稿链路）、
 真实 Edge/Chromium 布局验收 13/13、阶段映射与 UTF-8 通过。详见 `docs/v1.2.4-review-workspace.md`。
 
 ---

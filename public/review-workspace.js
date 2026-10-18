@@ -42,6 +42,9 @@
     BLOCKED: { text: '候选受阻（门禁/蓝图/底稿）', tone: 'bad' },
     VERIFIED_CANDIDATE: { text: '全部通过 · 等待作者合并', tone: 'ok' },
     PERSISTED_VERIFIED: { text: '已入库并复核', tone: 'ok' },
+    // 2026-10-18 作者授权：允许"跳过语义复验直接合并"。合并是发生了，但"哪几条真修好"没有结论，
+    // 所以这一档必须是**warn**且措辞写明"未做语义复验"，不能混进 PERSISTED_VERIFIED 冒充复核过。
+    PERSISTED_UNVERIFIED: { text: '已合并 · 未做语义复验', tone: 'warn' },
   };
 
   const FILTERS = [
@@ -265,11 +268,15 @@
   /**
    * 底栏按钮（方案 §8.7）：只给**当前状态真的能执行**的动作。
    * 不把"确认要修"当成"确认永久写回"，也不给"再验一次"这种同一份候选重复付费的入口。
+   *
+   * `busy`（一次付费复验正在跑）：所有按钮置灰，主按钮文案改成"正在复验…"。
+   * 为什么不给"边跑边点别的"：复验结果会重写候选与终审行，中途切筛选/合并会把旧状态当新状态用。
    */
   function actionsOf(input = {}) {
     const stage = textOf(input.stage) || 'AWAITING_SEMANTIC';
     const counts = countsOf(input.rows);
     const semanticRuns = Number(input.semanticRuns) || 0;
+    const busy = input.busy === true;
     const out = [];
     if (stage === 'BLOCKED') {
       out.push({ action: 'back', label: '返回写作台', primary: true, note: '先按阻塞原因处理（门禁/蓝图/底稿），不要绕过' });
@@ -279,12 +286,33 @@
       out.push({ action: 'back', label: '返回写作台', primary: true, note: '已入库并复核' });
       return out;
     }
+    // 2026-10-18：作者授权"跳过复验直接合并"。只给返回按钮 —— 正文已经合并过了，
+    // 再点合并只会把同一份候选再写一次，没有任何意义。
+    if (stage === 'PERSISTED_UNVERIFIED') {
+      out.push({ action: 'back', label: '返回写作台', primary: true, note: '已合并到正文；本次没有跑语义复验' });
+      return out;
+    }
     if (stage === 'AWAITING_SEMANTIC') {
       out.push({
-        action: 'semantic-verify', label: '运行独立语义复验（一次付费调用）', primary: true,
-        disabled: semanticRuns >= 1,
+        action: 'semantic-verify',
+        label: busy ? '正在复验…（请勿关闭）' : '运行独立语义复验（一次付费调用）',
+        primary: true,
+        disabled: busy || semanticRuns >= 1,
+        help: 'review_semantic_verify',
         note: semanticRuns >= 1 ? '同一份候选只复验一次；要再验必须先改候选' : '未复验的条目不算通过',
       });
+      // 作者明确要求：不给"直接合并"就等于把作者锁在付费动作后面。所以给一个**并列的**
+      // 次按钮，鼠标放上去就把跳过的后果说清楚（后果文案只有一处：forcedMergeWarning()）。
+      if (!busy && semanticRuns < 1) {
+        out.push({
+          action: 'merge-forced',
+          label: '跳过复验直接合并',
+          primary: false,
+          danger: true,
+          help: 'review_merge_forced',
+          note: '跳过语义复验：只证明字符变了，不证明问题解决了；旧稿存历史版本可回退',
+        });
+      }
     }
     if (stage === 'VERIFIED_CANDIDATE') {
       out.push({ action: 'merge', label: '申请合并正文（仍走作者批准）', primary: true, note: '合并是作者动作，系统不会自己写库' });
@@ -298,7 +326,27 @@
     }
     out.push({ action: 'export', label: '导出待处理清单', primary: false, note: '只导出编号/原因码/理由，不含正文' });
     out.push({ action: 'back', label: '返回写作台（保留候选）', primary: false, note: '关闭工作区不删候选、不写库' });
+    // 复验在跑：其余动作一律置灰（复验结果落地前，任何"下一步"都是在读旧状态）。
+    // 想中断请用右下角进度卡上的「停止」——那条通道不经过工作区。
+    if (busy) for (const a of out) a.disabled = true;
     return out;
+  }
+
+  /**
+   * 「跳过复验直接合并」的后果文案（**唯一来源**：按钮 title、悬停帮助、测试都读这里）。
+   *
+   * 为什么必须写死"没有结论"而不是"可能没修好"：跳过之后真的没有任何逐条判定，
+   * 既不能说修好了，也不能说没修好。用户要能凭这句话决定"先付费复验"还是"直接合并"。
+   */
+  function forcedMergeWarning() {
+    return {
+      title: '跳过语义复验，直接合并到正文',
+      body: '确定性检查只能证明"字符变了"，不能证明"问题真的解决了"。跳过复验会失去三样东西：'
+        + '① 这 8 条里到底几条修好了，**没有任何结论**（界面不会替你宣称通过，也不会记成已验证）；'
+        + '② 合并是整章替换正文，被换掉的那一版存进本章「历史版本」，可以回退；'
+        + '③ 这份候选合并后就从界面消费掉，**之后不能再对它做语义复验**（要验只能重新审稿、重新修稿）。'
+        + '想要"每条是否修好"的证据，请先点「运行独立语义复验（一次付费调用）」。',
+    };
   }
 
   /** 底部提示：把"为什么现在不能合并"说清楚，而不是只禁一个灰按钮。 */
@@ -311,6 +359,10 @@
       return `候选受阻：${reason}`;
     }
     if (stage === 'AWAITING_SEMANTIC') {
+      // busy 时把"正在跑什么"说出来：以前只有按钮变灰，作者看不出后台有没有在干活。
+      if (input.busy === true) {
+        return `正在跑一次付费语义复验（${c.pending} 条待验）：进度见下方进度条，中断请用右下角进度卡的「停止」`;
+      }
       return `${c.pending} 条尚未语义复验：现在既不能算修好，也不该直接合并`;
     }
     if (stage === 'PARTIAL_CANDIDATE') {
@@ -319,7 +371,44 @@
     }
     if (stage === 'VERIFIED_CANDIDATE') return '全部已选问题通过语义验收；候选尚未合并到正文';
     if (stage === 'PERSISTED_VERIFIED') return '已入库并复核';
+    // 跳过复验就合并的那条路：正文已经写进去了，但"哪几条真修好"是未知的 —— 说出来，别让人以为验过。
+    if (stage === 'PERSISTED_UNVERIFIED') {
+      return '已合并到正文（本次跳过语义复验）：哪些问题真的解决了没有结论；被替换的那一版在「历史版本」里可回退';
+    }
     return '';
+  }
+
+  /**
+   * 复验进行中的进度（2026-10-18 作者报：「点了复验，除了按钮点不动，没有任何明显在跑的样子」）。
+   *
+   * 一次付费调用是**不可分割的黑盒等待**：模型内部跑到第几条拿不到，所以这里
+   * ① 给不确定进度条（来回跑动，不是假的百分比）② 如实报已用时间与阶段
+   * ③ 明说"界面拿不到模型内部进度"，不编造剩余时间。
+   */
+  function progressOf(input = {}) {
+    const startedAt = Number(input.startedAt) || 0;
+    const now = Number.isFinite(Number(input.now)) ? Number(input.now) : Date.now();
+    const elapsed = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+    const sec = Math.floor(elapsed / 1000);
+    const clock = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+    const count = Number(input.count) || 0;
+    const phase = sec < 8
+      ? '正在启动模型引擎'
+      : (sec < 45 ? '模型正在逐条复验' : '仍在等待模型返回（长章可能超过 1 分钟）');
+    const parts = [`${phase}…`];
+    if (count > 0) parts.push(`${count} 条问题`);
+    parts.push(`已用 ${clock}`);
+    parts.push('一次付费调用，界面拿不到模型内部进度');
+    return {
+      running: true,
+      // 不编造百分比：调用不可分割，给数字就是撒谎。界面据此画不确定进度条。
+      percent: null,
+      indeterminate: true,
+      elapsedMs: elapsed,
+      clock,
+      phase,
+      text: parts.join(' · '),
+    };
   }
 
   /** 导出待处理清单（纯文本；不含正文，避免把作者稿子带出界面）。 */
@@ -363,6 +452,8 @@
     costOf,
     costLine,
     actionsOf,
+    forcedMergeWarning,
+    progressOf,
     blockerText,
     pendingChecklistText,
   };

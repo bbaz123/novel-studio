@@ -353,10 +353,43 @@ check1('FZ-03 Q-11 同一 issue 横跨多片时只认一个 final verdict（不�
     txt.includes('#B01') && !txt.includes('检测单在口袋里') && txt.split('\n').length >= 3,
     txt.split('\n').slice(0, 3).join(' | '));
 
-  check1('WS-15 阶段标签是文字（不是只有颜色）：五种阶段都有中文说明',
-    ['AWAITING_SEMANTIC', 'PARTIAL_CANDIDATE', 'BLOCKED', 'VERIFIED_CANDIDATE', 'PERSISTED_VERIFIED']
+  check1('WS-15 阶段标签是文字（不是只有颜色）：六种阶段都有中文说明',
+    ['AWAITING_SEMANTIC', 'PARTIAL_CANDIDATE', 'BLOCKED', 'VERIFIED_CANDIDATE', 'PERSISTED_VERIFIED', 'PERSISTED_UNVERIFIED']
       .every((s) => RW.stageOf(s).text && RW.stageOf(s).text.length > 2),
     RW.stageOf('AWAITING_SEMANTIC').text);
+
+  // ── 2026-10-18 作者授权："跳过复验直接合并" + 复验进度条 + 合并后档位 ──────���
+  const forced = awaitingActions.filter((a) => a.action === 'merge-forced');
+  const forceWarn = RW.forcedMergeWarning();
+  check1('WS-16 待复验档位给"跳过复验直接合并"次按钮，后果文案写明三条（无结论 / 可回退 / 不能再复验）',
+    forced.length === 1 && forced[0].primary === false && forced[0].danger === true
+      && forced[0].help === 'review_merge_forced'
+      && /没有任何结论/.test(forceWarn.body) && /历史版本/.test(forceWarn.body)
+      && /不能再对它做语义复验/.test(forceWarn.body) && forceWarn.title.includes('跳过'),
+    JSON.stringify({ actions: awaitingActions.map((a) => a.action), title: forceWarn.title }));
+
+  const busyActions = RW.actionsOf({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 0, busy: true });
+  check1('WS-17 复验进行中：按钮全置灰、主按钮改文案、且不再给"跳过合并"（结果落地前不给下一步）',
+    busyActions.every((a) => a.disabled === true)
+      && busyActions.some((a) => a.action === 'semantic-verify' && /正在复验/.test(a.label))
+      && !busyActions.some((a) => a.action === 'merge-forced'),
+    JSON.stringify(busyActions.map((a) => ({ a: a.action, d: !!a.disabled }))));
+
+  const prog1 = RW.progressOf({ startedAt: 1000, now: 1000 + 12000, count: 8 });
+  const prog2 = RW.progressOf({ startedAt: 1000, now: 1000 + 70000, count: 8 });
+  check1('WS-18 进度条如实：不确定进度（不编百分比）+ 已用时间 + 阶段推进 + 明说拿不到内部进度',
+    prog1.indeterminate === true && prog1.percent === null && /已用 0:12/.test(prog1.text)
+      && /8 条问题/.test(prog1.text) && /拿不到模型内部进度/.test(prog1.text)
+      && prog2.clock === '1:10' && prog1.phase !== prog2.phase,
+    JSON.stringify({ a: prog1.text, b: prog2.text }));
+
+  const afterSkip = RW.actionsOf({ stage: 'PERSISTED_UNVERIFIED', rows, semanticRuns: 0 });
+  check1('WS-19 跳过复验合并后：只给返回按钮，阶段文字如实写"未做语义复验"（不冒充已复核）',
+    afterSkip.length === 1 && afterSkip[0].action === 'back'
+      && RW.stageOf('PERSISTED_UNVERIFIED').text.includes('未做语义复验')
+      && RW.stageOf('PERSISTED_UNVERIFIED').tone === 'warn'
+      && RW.blockerText({ stage: 'PERSISTED_UNVERIFIED', rows }).includes('没有结论'),
+    JSON.stringify({ stage: RW.stageOf('PERSISTED_UNVERIFIED') }));
 }
 
 // ══════════════════════════════════════════════════════════════════════════

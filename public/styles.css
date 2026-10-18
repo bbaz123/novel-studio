@@ -1807,6 +1807,45 @@ mark.search-hit {
 .rw-blocker.ok { color: #3fb950; }
 .rw-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* 复验进行中的进度条（2026-10-18：作者报"点了复验，除了按钮点不动，看不出在跑"）。
+   不确定进度：一次付费调用不可分割、拿不到内部百分比 —— 所以画"来回跑"的条，
+   而不是假装个 30%。prefers-reduced-motion 下把速度调慢（不是停住：停住就看不出在跑）。 */
+.rw-progress {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.rw-progress-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  overflow: hidden;
+}
+.rw-progress-track > i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: rw-progress-slide 1.15s linear infinite;
+}
+@keyframes rw-progress-slide {
+  from { left: -34%; }
+  to { left: 100%; }
+}
+.rw-progress-text { font-size: 12px; color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  .rw-progress-track > i { animation-duration: 3.2s; }
+}
+
 /* 窄屏：侧栏变抽屉式按钮、差异退单栏（方案 §8.3 的 <1000px 列） */
 @media (max-width: 999px) {
   .rw-nav { flex-basis: 180px; min-width: 150px; }

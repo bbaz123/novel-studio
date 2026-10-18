@@ -1478,6 +1478,13 @@ const usedKeys = new Set();
 for (const m of src.matchAll(/helpDot\('([a-z_]+)'\)|fieldHelp\('([a-z_]+)'|helpTitle\('([a-z_]+)'\)/g)) {
   usedKeys.add(m[1] || m[2] || m[3]);
 }
+// 第二条通道（v1.2.4）：审稿工作区的底栏按钮把 help key 写在动作对象里（`help: 'xxx'`），
+// 由 actionBtn 转成 `data-help="xxx"` 才真正挂到界面上。这里把那条通道也纳入"有人真的用它"，
+// 否则合法用法会被当成死条目；反过来，任何 HELP_TEXT key 在两处都找不到调用点，仍然判红。
+{
+  const wsSrc = fs.readFileSync(path.join(repoRoot, 'public', 'review-workspace.js'), 'utf8');
+  for (const m of wsSrc.matchAll(/help:\s*'([a-z_]+)'/g)) usedKeys.add(m[1]);
+}
 check('52 没有永远不会显示的帮助文案（死条目）', helpKeys.every((k) => usedKeys.has(k)), helpKeys.filter((k) => !usedKeys.has(k)).join(','));
 check('53 helpDot/fieldHelp 的 key 都真实存在（拼错不会静默变空白）', [...usedKeys].every((k) => k in P.HELP_TEXT), [...usedKeys].filter((k) => !(k in P.HELP_TEXT)).join(','));
 check('54 用户点名的术语既写好了解释、也真的挂到了界面上', ['sillytavern', 'creation_context', 'chapter_note', 'plotline', 'outline', 'plotline_vs_outline'].every((k) => k in P.HELP_TEXT && usedKeys.has(k)));
@@ -6838,10 +6845,17 @@ P.traceStopStream();
       && /已应用 5 补丁/.test(String(containers['#content'].innerHTML))
       && !/已验证 [1-9]/.test(String(containers['#content'].innerHTML)),
     String(containers['#content'].innerHTML).match(/已选[^<]*/));
-  check('QC-26 底栏在"未跑语义"时只给语义复验入口，不给合并',
-    String(containers['#content'].innerHTML).includes('diff-semantic-verify')
-      && !String(containers['#content'].innerHTML).includes('data-action="diff-merge"'),
-    '');
+  // 2026-10-18 作者授权"跳过复验直接合并"：这一档不再只有复验入口，但**唯一**的合并入口必须是
+  // 那个显式的次按钮（danger + 悬停后果），绝不能出现普通"合并到正文"（那会让人以为验过了）。
+  const idleHtml = String(containers['#content'].innerHTML);
+  const idleMergeButtons = (idleHtml.match(/data-action="diff-merge"/g) || []).length;
+  check('QC-26 底栏在"未跑语义"时只给复验入口；合并只能来自显式"跳过复验"次按钮（danger + 悬停后果）',
+    idleHtml.includes('diff-semantic-verify')
+      && idleMergeButtons === 1
+      && /data-action="diff-merge"[^>]*data-help="review_merge_forced"/.test(idleHtml)
+      && /class="btn small secondary danger"/.test(idleHtml)
+      && !/data-action="diff-merge"[^>]*>(?!跳过)/.test(idleHtml),
+    JSON.stringify({ mergeButtons: idleMergeButtons }));
 
   // ── 语义复验（付费动作由作者显式触发；这里等价于点了那个按钮）──────────────
   e2eErr = '';
@@ -7021,6 +7035,60 @@ P.traceStopStream();
   check('QC-45 质量洞察与趋势遵守样本守卫（不足时明说，不给成功率/方向）',
     /样本不足/.test(QI.summaryLine(stats)) && trend.enough === false && /少于 5/.test(trend.note),
     JSON.stringify({ stats: QI.summaryLine(stats), trend: trend.note }));
+
+  // ── 2026-10-18 作者要求：「跳过复验直接合并」（悬停说清后果）+ 复验进度条 ──────
+  // 这三条钉的是**界面真的画出来**（不只纯函数返回对）：作者点不到/看不到的入口等于不存在。
+  const prevClosure = P.state.pendingRevisionClosure;
+  const mkRows = () => ([
+    { issue_id: '1', final_status: 'AWAITING_SEMANTIC', title: '开头第一段', patch_count: 1 },
+    { issue_id: '2', final_status: 'AWAITING_SEMANTIC', title: '大厅直播段', patch_count: 1 },
+  ]);
+  P.state.pendingRevisionClosure = {
+    patched: { text: '新正文', applied: [] },
+    article: '旧正文',
+    diffArgs: { oldText: '旧正文', newText: '新正文', chapterId: 1 },
+    finalized: { status: 'AWAITING_SEMANTIC', rows: mkRows(), findings: [], closure: null },
+    findings: [],
+    chapterId: 1,
+    semanticRuns: 0,
+  };
+  const drawWs = () => { const box = { innerHTML: '' }; P.renderReviewWorkspace(box); return box.innerHTML; };
+
+  const idlHtml = drawWs();
+  check('QC-46 待复验档位把"跳过复验直接合并"画成真实按钮，并挂上悬停后果（data-help + title 都指向同一份文案）',
+    /data-action="diff-merge"[\s\S]{0,200}跳过复验直接合并/.test(idlHtml)
+      && /data-help="review_merge_forced"/.test(idlHtml)
+      && /跳过语义复验：只证明字符变了/.test(idlHtml)
+      && /class="btn small secondary danger"/.test(idlHtml),
+    (idlHtml.match(/<button[^>]*跳过复验直接合并/) || [''])[0].slice(0, 220));
+
+  P.state.revisionSemanticRunning = { startedAt: Date.now() - 12000, count: 2 };
+  const busyHtml = drawWs();
+  P.state.revisionSemanticRunning = null;
+  const disabledCount = (busyHtml.match(/<button class="btn small[^"]*" data-action="[^"]+"[^>]*disabled/g) || []).length;
+  check('QC-47 复验进行中：工作区自己画出进度条（不确定进度 + 已用时间），且按钮全灰、文案改"正在复验…"',
+    /id="rw-progress"/.test(busyHtml) && /class="rw-progress-track"/.test(busyHtml)
+      && /已用 0:(11|12|13)/.test(busyHtml)
+      && /正在复验…（请勿关闭）/.test(busyHtml)
+      && /拿不到模型内部进度/.test(busyHtml)
+      && disabledCount >= 3
+      && !/跳过复验直接合并/.test(busyHtml),
+    JSON.stringify({ disabled: disabledCount, progress: /id="rw-progress"/.test(busyHtml) }));
+
+  P.state.pendingRevisionClosure.mergedAt = new Date().toISOString();
+  P.state.pendingRevisionClosure.mergedUnverified = true;
+  const mergedHtml = drawWs();
+  check('QC-48 跳过复验后合并：档位变成"已合并 · 未做语义复验"，不再给任何合并按钮（同一份候选不重复写库）',
+    /data-stage="PERSISTED_UNVERIFIED"/.test(mergedHtml)
+      && /已合并 · 未做语义复验/.test(mergedHtml)
+      && /没有结论/.test(mergedHtml)
+      && !/data-action="diff-merge"/.test(mergedHtml),
+    (mergedHtml.match(/data-stage="[^"]+"/) || [''])[0]);
+
+  // 收尾：把工作区状态还给后续用例（这里只是内存桩，不写库）
+  P.state.pendingRevisionClosure = prevClosure;
+  P.state.revisionSemanticRunning = null;
+  if (P.state.revisionSemanticTimer) { clearInterval(P.state.revisionSemanticTimer); P.state.revisionSemanticTimer = null; }
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);
