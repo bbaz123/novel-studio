@@ -1864,6 +1864,8 @@ export const PHASES = [
       'public/revision-finalize.js',
       'public/review-workspace.js',
       'public/temporal-settings.js',
+      // 2026-10-18 作者要求：修稿存档（审稿前原文 / 未复验候选 / 已复验候选）+ 跳过复验直接合并
+      'public/revision-archive.js',
       // 回归套件：夹具先行（先能识别旧缺陷），再验终审出口与界面判据
       '.p1-baseline/test-1024-chapter-fixtures.mjs',
       '.p1-baseline/test-1025-finalize.mjs',

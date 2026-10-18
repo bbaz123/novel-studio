@@ -284,12 +284,25 @@
     }
     if (stage === 'PERSISTED_VERIFIED') {
       out.push({ action: 'back', label: '返回写作台', primary: true, note: '已入库并复核' });
+      pushArchive(out, input);
       return out;
     }
-    // 2026-10-18：作者授权"跳过复验直接合并"。只给返回按钮 —— 正文已经合并过了，
-    // 再点合并只会把同一份候选再写一次，没有任何意义。
+    // 2026-10-18：跳过复验就合并的那一档，**不能是死路** —— 作者要能再点一次复验（反悔机会），
+    // 也要能从历史版本回到任何一份存档。所以这里给"补跑复验 + 存档入口 + 返回"，不给合并。
     if (stage === 'PERSISTED_UNVERIFIED') {
+      out.push({
+        action: 'semantic-verify',
+        label: busy ? '正在复验…（请勿关闭）' : '对已合并的候选运行语义复验（一次付费调用）',
+        primary: true,
+        disabled: busy || semanticRuns >= 1,
+        help: 'review_semantic_verify',
+        note: semanticRuns >= 1
+          ? '这份候选已经补验过一次；要再验请重新发起审稿修稿'
+          : '合并已完成，但逐条结论还没有：补跑一次就知道哪几条真修好了',
+      });
+      pushArchive(out, input);
       out.push({ action: 'back', label: '返回写作台', primary: true, note: '已合并到正文；本次没有跑语义复验' });
+      if (busy) for (const a of out) a.disabled = true;
       return out;
     }
     if (stage === 'AWAITING_SEMANTIC') {
@@ -324,11 +337,25 @@
         note: '部分合并必须明确知道剩余未通过项；不宣称全部修好',
       });
     }
+    pushArchive(out, input);
     out.push({ action: 'export', label: '导出待处理清单', primary: false, note: '只导出编号/原因码/理由，不含正文' });
     out.push({ action: 'back', label: '返回写作台（保留候选）', primary: false, note: '关闭工作区不删候选、不写库' });
     // 复验在跑：其余动作一律置灰（复验结果落地前，任何"下一步"都是在读旧状态）。
     // 想中断请用右下角进度卡上的「停止」——那条通道不经过工作区。
     if (busy) for (const a of out) a.disabled = true;
+    return out;
+  }
+
+  /** 存档入口：有存档才给（没有就给一个点了也没东西的按钮，等于骗人）。 */
+  function pushArchive(out, input = {}) {
+    const n = Number(input.archiveCount) || 0;
+    if (!(n > 0)) return out;
+    out.push({
+      action: 'archive',
+      label: `修稿存档 ${n} 份 · 查看/回退`,
+      primary: false,
+      note: '审稿前原文 / 未复验候选 / 已复验候选都在「历史版本」里：可逐条查看，也可恢复任意一份',
+    });
     return out;
   }
 
@@ -372,8 +399,10 @@
     if (stage === 'VERIFIED_CANDIDATE') return '全部已选问题通过语义验收；候选尚未合并到正文';
     if (stage === 'PERSISTED_VERIFIED') return '已入库并复核';
     // 跳过复验就合并的那条路：正文已经写进去了，但"哪几条真修好"是未知的 —— 说出来，别让人以为验过。
+    // 同时说清"还能自救"：可以补跑复验，也可以从历史版本回到任意一份存档。
     if (stage === 'PERSISTED_UNVERIFIED') {
-      return '已合并到正文（本次跳过语义复验）：哪些问题真的解决了没有结论；被替换的那一版在「历史版本」里可回退';
+      return '已合并到正文（本次跳过语义复验）：哪些问题真的解决了没有结论；可以补跑一次复验，'
+        + '也能在「历史版本」/ 修稿存档里恢复到审稿前原文或另一份候选';
     }
     return '';
   }

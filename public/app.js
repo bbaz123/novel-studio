@@ -3370,6 +3370,52 @@ function revisionRunStoreClear(chapterId) {
   return S.clear(localStorage, workId, chapterId);
 }
 
+function revisionArchiveModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelRevisionArchive) || null;
+}
+
+/**
+ * 把"审稿前原文 / 未复验候选 / 已复验候选"落成**服务端历史版本**（2026-10-18 作者要求）。
+ *
+ * 为什么落 `chapter_save_versions` 而不是新表：作者已经有一个「🕘 历史版本」面板，
+ * 每一条都能查看 / 恢复，且恢复本身会先把当前正文再存一份（服务端固定安全底线）。
+ * 也就是说"反悔"走的是**已经存在的通道**，不新增任何正文写入路径。
+ *
+ * 去重口径：同一槽位只按"内容指纹"去重 —— 同一份内容不重复存第二遍；
+ * 内容变了（例如复验后又定向复修了一轮）就会成为这一槽的新记录，历史面板里能看到差异。
+ */
+async function archiveReviewVersions(ctx, input = {}) {
+  const A = revisionArchiveModule();
+  if (!A || !ctx) return { saved: 0, skipped: 0, records: {} };
+  const chapterId = Number(ctx.chapterId) || Number(state.currentChapterId) || 0;
+  if (!chapterId) return { saved: 0, skipped: 0, records: {} };
+  let records = A.load(localStorage, chapterId);
+  const slots = A.buildSlots({ article: input.article != null ? input.article : ctx.article, candidateText: input.text, verified: input.verified === true });
+  let saved = 0;
+  let skipped = 0;
+  for (const slot of slots) {
+    if (A.hasSlot(records, slot.id, slot.hash)) { skipped += 1; continue; }
+    try {
+      const row = await api('/chapter_versions', {
+        method: 'POST',
+        body: { chapter_id: chapterId, title: slot.title, summary: slot.summary, content: slot.content },
+      });
+      records = A.remember(localStorage, chapterId, slot.id, { hash: slot.hash, versionId: row && row.id, at: new Date().toISOString() });
+      saved += 1;
+    } catch (e) {
+      // 存档失败**不影响**已经写进正文的事实；如实留痕，界面据此说"这一份没能存进历史版本"。
+      reportClientLogSafe({
+        level: 'warn', kind: 'revision_archive_failed',
+        message: `[修稿存档] ${slot.title} 没能存进历史版本：${e && e.message ? e.message : e}`,
+        context: { chapter_id: chapterId, slot: slot.id },
+      });
+    }
+  }
+  ctx.archives = A.load(localStorage, chapterId);
+  return { saved, skipped, records: ctx.archives };
+}
+
+
 /**
  * 从本地记录恢复一次修稿运行（Q-15）。
  *
@@ -3492,6 +3538,9 @@ function persistRevisionRun(ctx, finalized, chapterId, autoRepair) {
 function revisionClosureStripHtml(chapterId) {
   const ctx = state.pendingRevisionClosure;
   const RW = reviewWorkspaceModule();
+  // 2026-10-18：修稿存档（审稿前原文 / 未复验候选 / 已复验候选）—— 反悔入口必须**长期可见**，
+  // 而不是只活在那一次工作区里（作者离开工作区、甚至刷新页面之后仍然要能回到某一版）。
+  const archiveItem = revisionArchiveStripItems(chapterId);
   if (!ctx || !ctx.finalized) {
     // v1.2.4 P1（Q-15）：内存里没有候选，但本地可能留着"上次未提交的运行"。
     // 给一个**可恢复**入口（并明确它不是"已合并"）；底稿变过时恢复会主动作废。
@@ -3503,13 +3552,14 @@ function revisionClosureStripHtml(chapterId) {
       if (idx && idx.at) {
         return `<span class="rcs-item tone-wait">上次修稿运行未提交（${esc(fmtTraceTime(idx.at))}）· 可恢复</span>
           <button class="btn small secondary" data-action="review-restore-run" title="恢复候选与逐条结论；底稿变过则作废（不复活权限，不赠送复验额度）">恢复</button>
-          <button class="btn small secondary" data-action="revision-run-discard" data-id="${Number(chapterId) || 0}" title="丢弃这条本地记录（不影响正文）">✕</button>`;
+          <button class="btn small secondary" data-action="revision-run-discard" data-id="${Number(chapterId) || 0}" title="丢弃这条本地记录（不影响正文）">✕</button>
+          ${archiveItem}`;
       }
     }
-    return '';
+    return archiveItem;
   }
-  if (Number(ctx.chapterId) !== Number(chapterId)) return '';
-  if (!RW) return '';
+  if (Number(ctx.chapterId) !== Number(chapterId)) return archiveItem;
+  if (!RW) return archiveItem;
   const rows = Array.isArray(ctx.finalized.rows) ? ctx.finalized.rows : [];
   const c = RW.countsOf(rows);
   const stage = RW.stageOf(ctx.finalized.status);
@@ -3518,7 +3568,24 @@ function revisionClosureStripHtml(chapterId) {
     ? '候选已验证 · 尚未合并'
     : (pending ? `${pending} 项待处理` : '');
   return `<span class="rcs-item tone-${esc(stage.tone)}">修稿验收 · 已验证 ${c.verified}/${c.selected}${tail ? ` · ${esc(tail)}` : ''}</span>
-    <button class="btn small secondary" data-action="review-open" title="打开独立审稿工作区：左问题导航 / 中间大面积对照 / 右侧详情按需展开">查看</button>`;
+    <button class="btn small secondary" data-action="review-open" title="打开独立审稿工作区：左问题导航 / 中间大面积对照 / 右侧详情按需展开">查看</button>
+    ${archiveItem}`;
+}
+
+/**
+ * 收口条上的"修稿存档"入口（有存档才出现）。
+ * 为什么放在写作台上而不是只放在工作区里：作者合并完就回到写作台了，
+ * 反悔的机会必须在他**日常待的那一屏**上仍然点得到；刷新页面后也一样（索引存在 localStorage）。
+ */
+function revisionArchiveStripItems(chapterId) {
+  const A = revisionArchiveModule();
+  if (!A) return '';
+  let records = {};
+  try { records = A.load(localStorage, Number(chapterId) || 0); } catch (_) { return ''; }
+  const sum = A.summaryOf(records);
+  if (!sum.count) return '';
+  return `<span class="rcs-item tone-wait">修稿存档 ${sum.count} 份（可回退）</span>
+    <button class="btn small secondary" data-action="review-archive-history" data-chapter="${Number(chapterId) || 0}" title="审稿前原文 / 未复验候选 / 已复验候选：逐条查看，恢复任意一份（恢复前会自动把当前正文再存一份）">查看</button>`;
 }
 
 async function renderWriting(content) {
@@ -5001,9 +5068,14 @@ async function refreshChapterBaselineAfterForeignWrite(chapterId) {
   }
 }
 
-async function openSaveHistory() {
+/**
+ * 历史版本面板（手动保存 / 修稿存档 / AI 草稿之外的整章快照）。
+ * @param {number} [forcedChapterId] 指定章节：审稿工作区里编辑器可能是别的章（或不在写作视图），
+ *   不传就沿用旧行为（编辑器当前章 → state.currentChapterId）。
+ */
+async function openSaveHistory(forcedChapterId) {
   const editor = $('#editor-content');
-  const id = editor ? Number(editor.dataset.chapterId) : state.currentChapterId;
+  const id = Number(forcedChapterId) || (editor ? Number(editor.dataset.chapterId) : state.currentChapterId);
   if (!id) return;
   let versions = [];
   try {
@@ -13941,8 +14013,14 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
 async function runRevisionSemanticVerify() {
   const ctx = state.pendingRevisionClosure;
   if (!ctx || !ctx.patched) { toast('没有可复验的修稿候选：请重新发起修稿', 'error'); return; }
-  if (Number(ctx.semanticRuns) >= 1) {
-    toast('这次修稿已经做过一次语义复验：同一份候选不重复付费复验；如需再验请先修改候选', 'error');
+  // 2026-10-18 作者：跳过复验直接合并之后，也必须能再点一次复验（反悔机会）。
+  // 所以"已用一次额度"只在**没有合并**时封锁；合并后补跑一次是允许的，
+  // 但仍只给一次（补跑过一次就不再给，避免同一份稿子反复付费）。
+  const postMergeRetry = Boolean(ctx.mergedAt && !ctx.reverifiedAfterMerge);
+  if (Number(ctx.semanticRuns) >= 1 && !postMergeRetry) {
+    toast(postMergeRetry
+      ? '这次修稿已经补跑过一次复验：同一份候选不重复付费复验；如需再验请先修改候选'
+      : '这次修稿已经做过一次语义复验：同一份候选不重复付费复验；如需再验请先修改候选', 'error');
     return;
   }
   if (state.revisionSemanticRunning) return; // 双击保护：进度条已经起来了就别再起一次
@@ -14047,8 +14125,20 @@ async function runRevisionSemanticVerify() {
       ...ctx, patched: finalPatched, semantic: finalSemantic, closure: (finalized && finalized.closure) || closure,
       finalized: finalized || null, autoRepair, semanticRuns: Number(ctx.semanticRuns) + 1,
       semanticByIssue,
+      // 合并之后补跑的这一轮：把档位交回终审自己（PARTIAL / VERIFIED 都可能），
+      // 不再被 PERSISTED_UNVERIFIED 挡住 —— 否则作者点了复验却看不到任何结论。
+      reverifiedAfterMerge: Boolean(ctx.mergedAt),
+      mergedUnverified: ctx.mergedAt
+        ? !(finalized && finalized.status === 'VERIFIED_CANDIDATE')
+        : ctx.mergedUnverified,
     };
     persistRevisionRun(state.pendingRevisionClosure, finalized, ctx.chapterId, autoRepair);
+    // 复验通过 ⇒ 这份候选就是要的"已复验候选"，落进第 3 个存档槽（正文里那份可能是未复验版）。
+    if (finalized && finalized.status === 'VERIFIED_CANDIDATE') {
+      await archiveReviewVersions(state.pendingRevisionClosure, {
+        article: ctx.article, text: finalPatched.text, verified: true,
+      });
+    }
     await postRevisionClosureReceipt(ctx.chapterId, (finalized && finalized.closure) || closure, finalSemantic, finalized);
     const s = (finalSemantic && finalSemantic.summary) || { verified: 0, total: 0 };
     // 结果已经算出来了：先撤进度条，再交给统一出口渲染（否则工作区会把按钮一直画成灰的）。
@@ -14115,12 +14205,28 @@ function reviewWorkspaceContext() {
     finalize: ctx.finalized || null,
     // 合并之后不能再停在上一次终审的档位：那样界面会一直说"尚未语义复验"，
     // 作者以为没合并成功（旧实现确实如此）。已合并 + 没跑复验 ⇒ PERSISTED_UNVERIFIED（warn）。
+    // 但**合并不该关掉复验的门**（2026-10-18 作者："合并了我也要能再点一次复验"）：
+    // 合并后补跑过复验就回到终审自己的档位（PARTIAL / VERIFIED 都可能），让作者继续处理；
+    // 只有"合并了、且合并后没再复验"才停在那两个 PERSISTED_* 档。
     stage: (() => {
-      if (ctx.mergedAt) return ctx.mergedUnverified ? 'PERSISTED_UNVERIFIED' : 'PERSISTED_VERIFIED';
+      const reverified = Boolean(ctx.mergedAt && ctx.reverifiedAfterMerge);
+      if (ctx.mergedAt && !reverified) return ctx.mergedUnverified ? 'PERSISTED_UNVERIFIED' : 'PERSISTED_VERIFIED';
       return ctx.finalized ? String(ctx.finalized.status || 'AWAITING_SEMANTIC') : 'AWAITING_SEMANTIC';
     })(),
     // 付费复验正在跑：界面据此画进度条、把按钮全置灰（以前只有按钮点不动，看不出在跑）。
     busy: Boolean(state.revisionSemanticRunning),
+    // 修稿存档（审稿前原文 / 未复验候选 / 已复验候选）：存在 localStorage 索引里，
+    // 正文本身在服务端历史版本表里；界面据此给"查看 / 回退"入口并如实报有几份。
+    archives: (() => {
+      const A = revisionArchiveModule();
+      if (!A) return { count: 0, line: '', records: {}, missing: [] };
+      let records = {};
+      try { records = A.load(localStorage, Number(ctx.chapterId) || Number(state.currentChapterId) || 0); } catch (_) { records = {}; }
+      const sum = A.summaryOf(records);
+      return { count: sum.count, line: sum.line, records, missing: sum.missing };
+    })(),
+    merged: Boolean(ctx.mergedAt),
+    mergedUnverified: Boolean(ctx.mergedUnverified),
     checklist: Number(d.checklist) || rows.length,
     patchedCount: Array.isArray(ctx.patched && ctx.patched.applied) ? ctx.patched.applied.length : 0,
     semanticRuns: Number(ctx.semanticRuns) || 0,
@@ -14301,6 +14407,7 @@ function renderReviewWorkspace(content) {
   })();
   const actions = RW.actionsOf({
     stage: model.stage, rows: model.rows, semanticRuns: model.semanticRuns, busy: model.busy,
+    archiveCount: model.archives ? model.archives.count : 0,
   });
   const blocker = RW.blockerText({
     stage: model.stage, rows: model.rows, busy: model.busy,
@@ -14311,6 +14418,8 @@ function renderReviewWorkspace(content) {
       'semantic-verify': 'diff-semantic-verify', merge: 'diff-merge', 'merge-partial': 'diff-merge',
       // 作者 2026-10-18 授权：跳过语义复验直接合并（走同一条合并路径，差别只在"没有逐条结论"）。
       'merge-forced': 'diff-merge',
+      // 修稿存档（审稿前原文 / 未复验候选 / 已复验候选）：走现成的「历史版本」面板查看与恢复。
+      archive: 'review-archive-history',
       export: 'review-export-pending', back: 'review-back',
     };
     const action = map[a.action] || 'review-back';
@@ -14355,6 +14464,7 @@ function renderReviewWorkspace(content) {
         <div class="muted" style="font-size:12px">已选 ${counts.selected}｜已验证 ${counts.verified}｜未通过 ${counts.unresolved}｜待复验 ${counts.pending}${counts.canon ? `｜蓝图冲突 ${counts.canon}` : ''}</div>
         ${model.finalize && model.finalize.next_action ? `<div class="muted">下一步：${esc(model.finalize.next_action.label)}</div>` : ''}
         ${model.cost ? `<div class="muted">费用：${esc(RW.costLine(model.cost))}</div>` : ''}
+        ${model.archives && model.archives.count ? `<div class="muted">修稿存档：${esc(model.archives.line)}</div>` : ''}
         ${insightText ? `<div class="muted">修复效果：${esc(insightText)}</div>` : ''}
         ${trendText ? `<div class="muted">质量趋势：${esc(trendText)}</div>` : ''}
         <div class="row mt-8"><button class="btn small secondary" data-action="quality-profile-open">🎛 作品级质量规则档案</button></div>
@@ -18032,14 +18142,28 @@ async function handleAction(action, actionEl, e) {
         // "尚未语义复验"，作者以为没合并、又点一次（虽然无害，但界面在说谎）。
         // 判据用 pendingReviewDiff 的身份变化 —— mergeReviewDiff 只在**真的写进库之后**消费它。
         const before = state.pendingReviewDiff;
+        const ctx = state.pendingRevisionClosure;
+        // 合并进正文的那一份候选（存档要用）：在 mergeReviewDiff 消费 pending 之前先抓住。
+        const mergedText = before && typeof before.newText === 'string' ? before.newText : '';
+        const baseText = before && typeof before.oldText === 'string' ? before.oldText : (ctx ? ctx.article : '');
+        const stageNow = ctx && ctx.finalized ? String(ctx.finalized.status || '') : '';
+        // 存档槽看的是"**跑过语义复验没有**"，不是"全过没有"：
+        // 部分合并（PARTIAL）也是跑过复验的候选，塞进"未复验"槽会让作者以为那份没验过。
+        const hadSemanticRun = stageNow === 'VERIFIED_CANDIDATE' || stageNow === 'PARTIAL_CANDIDATE';
+        const allVerified = stageNow === 'VERIFIED_CANDIDATE';
         await mergeReviewDiff();
         const merged = Boolean(before) && state.pendingReviewDiff !== before;
-        const ctx = state.pendingRevisionClosure;
         if (merged && ctx) {
-          const stage = ctx.finalized && ctx.finalized.status;
           ctx.mergedAt = new Date().toISOString();
+          ctx.mergedText = mergedText;
           // 只有"全部通过再合并"才算复核过；跳过复验就合并的，如实记为**未复验**。
-          ctx.mergedUnverified = stage !== 'VERIFIED_CANDIDATE';
+          ctx.mergedUnverified = !allVerified;
+          // 2026-10-18 作者要求：无论走哪条路，正文三份都要留档（审稿前 / 未复验候选 / 已复验候选）。
+          // 存档失败不影响"正文已经写进去"这个事实，只是历史版本里少一条记录。
+          const arch = await archiveReviewVersions(ctx, { article: baseText, text: mergedText, verified: hadSemanticRun });
+          if (arch && arch.saved) {
+            toast(`已留存 ${arch.saved} 份修稿存档（历史版本里可随时回退）`, 'success');
+          }
           if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响合并事实 */ } }
         }
         break;
@@ -18077,6 +18201,15 @@ async function handleAction(action, actionEl, e) {
         reviewWorkspaceExportPending();
         break;
 
+      // 2026-10-18：修稿存档的"查看 / 回退"入口。落到现成的「历史版本」面板：
+      // 三份存档（审稿前原文 / 未复验候选 / 已复验候选）都是普通历史版本，恢复走同一条通道。
+      case 'review-archive-history': {
+        const ctx = state.pendingRevisionClosure;
+        const fromEl = Number(actionEl && actionEl.dataset ? actionEl.dataset.chapter : 0) || 0;
+        await openSaveHistory(fromEl || Number(ctx && ctx.chapterId) || Number(state.currentChapterId) || 0);
+        break;
+      }
+
       // v1.2.4 P1（Q-15）：从本地记录恢复未提交的修稿运行 / 丢弃它
       case 'review-restore-run':
         await reviewWorkspaceRestoreRun();
@@ -18099,8 +18232,7 @@ async function handleAction(action, actionEl, e) {
         }
         break;
 
-      // E06：单独撤销一处（按问题 ID）。用原稿 + 其余补丁重建候选，并在同一个预览里刷新；
-      // 任何一条缺位置信息或与原稿不一致时**拒绝重建**（不部分应用，避免"撤销一处、改坏另一处"）。
+      // E06：单独撤销一处（按问题 ID）。用原稿 + 其余补丁重建候选，并在同一个预览里刷新；      // 任何一条缺位置信息或与原稿不一致时**拒绝重建**（不部分应用，避免"撤销一处、改坏另一处"）。
       case 'diff-drop-issue': {
         const pending = state.pendingReviewDiff;
         // ⚠️ 形参是 actionEl（不是 target）：写错变量名会让 issue 恒为空 → 撤销静默失效（本站曾被 E06 用例抓到）。

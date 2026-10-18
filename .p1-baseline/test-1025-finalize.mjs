@@ -24,11 +24,13 @@ await import(asUrl('public/revision-semantic-verifier.js'));
 await import(asUrl('public/revision-closure.js'));
 await import(asUrl('public/revision-finalize.js'));
 await import(asUrl('public/review-workspace.js'));
+await import(asUrl('public/revision-archive.js'));
 await import(asUrl('public/temporal-settings.js'));
 const SV = globalThis.NovelRevisionSemanticVerifier;
 const CL = globalThis.NovelRevisionClosure;
 const FZ = globalThis.NovelRevisionFinalize;
 const RW = globalThis.NovelRevisionWorkspace;
+const AR = globalThis.NovelRevisionArchive;
 const TS = globalThis.NovelTemporalSettings;
 
 const check1 = (id, desc, cond, detail = '') => check(id, desc, cond, detail);
@@ -384,12 +386,60 @@ check1('FZ-03 Q-11 同一 issue 横跨多片时只认一个 final verdict（不�
     JSON.stringify({ a: prog1.text, b: prog2.text }));
 
   const afterSkip = RW.actionsOf({ stage: 'PERSISTED_UNVERIFIED', rows, semanticRuns: 0 });
-  check1('WS-19 跳过复验合并后：只给返回按钮，阶段文字如实写"未做语义复验"（不冒充已复核）',
-    afterSkip.length === 1 && afterSkip[0].action === 'back'
+  check1('WS-19 跳过复验合并后：能补跑一次复验（不是死路），也如实写"未做语义复验"（不冒充已复核）',
+    afterSkip.some((a) => a.action === 'semantic-verify' && !a.disabled)
+      && afterSkip.some((a) => a.action === 'back')
+      && !afterSkip.some((a) => ['merge', 'merge-partial', 'merge-forced'].includes(a.action))
       && RW.stageOf('PERSISTED_UNVERIFIED').text.includes('未做语义复验')
       && RW.stageOf('PERSISTED_UNVERIFIED').tone === 'warn'
       && RW.blockerText({ stage: 'PERSISTED_UNVERIFIED', rows }).includes('没有结论'),
-    JSON.stringify({ stage: RW.stageOf('PERSISTED_UNVERIFIED') }));
+    JSON.stringify({ actions: afterSkip.map((a) => a.action), stage: RW.stageOf('PERSISTED_UNVERIFIED') }));
+
+  // ── 2026-10-18 作者要求：三份存档 + 补验后仍可反悔 ─────────────────────────
+  const AR_BASE = '审稿前原文';
+  const AR_UNVER = '候选（未复验）';
+  const AR_VER = '候选（已复验）';
+  const unverifiedSlots = AR.buildSlots({ article: AR_BASE, candidateText: AR_UNVER, verified: false });
+  const verifiedSlots = AR.buildSlots({ article: AR_BASE, candidateText: AR_VER, verified: true });
+  check1('AR-01 存档三个槽位分开且不混淆：未复验候选只进 unverified 槽，已复验候选只进 verified 槽',
+    unverifiedSlots.map((s) => s.id).join(',') === 'base,unverified'
+      && verifiedSlots.map((s) => s.id).join(',') === 'base,verified'
+      && unverifiedSlots.every((s) => s.content !== AR_VER)
+      && verifiedSlots.every((s) => s.content !== AR_UNVER)
+      && AR.slotOf('verified').title.includes('已语义复验'),
+    JSON.stringify({ a: unverifiedSlots.map((s) => s.id), b: verifiedSlots.map((s) => s.id) }));
+
+  const mem = {
+    _m: {},
+    getItem(k) { return Object.prototype.hasOwnProperty.call(this._m, k) ? this._m[k] : null; },
+    setItem(k, v) { this._m[k] = String(v); },
+    removeItem(k) { delete this._m[k]; },
+  };
+  let recs = AR.load(mem, 7);
+  check1('AR-02 同一槽位同一内容不重复存（去重按内容指纹）；内容变了才允许再存一份',
+    AR.hasSlot(recs, 'base', AR.hashOf(AR_BASE)) === false,
+    JSON.stringify(recs));
+  recs = AR.remember(mem, 7, 'base', { hash: AR.hashOf(AR_BASE), versionId: 11, at: '2026-10-18T20:00:00Z' });
+  recs = AR.remember(mem, 7, 'unverified', { hash: AR.hashOf(AR_UNVER), versionId: 12, at: '2026-10-18T20:01:00Z' });
+  check1('AR-03 存档索引记录版本 id，摘要如实报"已存 2 份、还缺已复验候选"（不吹成三份齐全）',
+    AR.hasSlot(recs, 'base', AR.hashOf(AR_BASE)) && recs.base.version_id === 11
+      && AR.summaryOf(recs).count === 2
+      && /还没有：已复验候选/.test(AR.summaryOf(recs).line),
+    AR.summaryOf(recs).line);
+
+  recs = AR.remember(mem, 7, 'verified', { hash: AR.hashOf(AR_VER), versionId: 13, at: '2026-10-18T20:02:00Z' });
+  check1('AR-04 三份齐全时摘要列出三种版本，且按章隔离（另一章读不到这一章的存档）',
+    AR.summaryOf(recs).count === 3
+      && /审稿前原文 \/ 未复验候选 \/ 已复验候选/.test(AR.summaryOf(recs).line)
+      && AR.summaryOf(AR.load(mem, 8)).count === 0,
+    JSON.stringify({ same: AR.summaryOf(recs).line, other: AR.summaryOf(AR.load(mem, 8)).line }));
+
+  const verifiedActions2 = RW.actionsOf({ stage: 'VERIFIED_CANDIDATE', rows, semanticRuns: 1, archiveCount: 3 });
+  const noArchive = RW.actionsOf({ stage: 'VERIFIED_CANDIDATE', rows, semanticRuns: 1, archiveCount: 0 });
+  check1('AR-05 有存档才给"查看/回退"入口（0 份时不画一个点了没东西的按钮）',
+    verifiedActions2.some((a) => a.action === 'archive' && /修稿存档 3 份/.test(a.label))
+      && !noArchive.some((a) => a.action === 'archive'),
+    JSON.stringify({ with: verifiedActions2.map((a) => a.action), without: noArchive.map((a) => a.action) }));
 }
 
 // ══════════════════════════════════════════════════════════════════════════

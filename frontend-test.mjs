@@ -969,6 +969,7 @@ globalThis.__probe = {
   revisionClosureStripHtml, primePendingReviewDiff, runRevisionSemanticVerify, canonConflictIdsFrom, downloadTextFile, revisionReceiptPayload, revisionResultToast,
   revisionFinalizeFor, qualityProfileFor, setQualityProfile, qualityHistoryLoad, qualityHistoryAppend,
   revisionRunStoreSave, revisionRunStoreLoad, revisionRunStoreClear, reviewWorkspaceRestoreRun, persistRevisionRun,
+  archiveReviewVersions, revisionArchiveModule, revisionArchiveStripItems,
   openQualityProfileModal, applyQualityProfileFromModal, exportQualityProfileTemplate, revisionRunStoreModule, qualityProfileModule,
   loadLibrary, renderLibrary, renderLibraryDocCard, libraryDocRow, libraryHitRow, libraryPlanHtml, libraryImportResultHtml, libraryStatusChip, librarySkipLabel, LIBRARY_SKIP_LABEL,
   libraryRefresh, librarySearchRun, librarySetCategory, libraryViewDoc, libraryToggleEnabled, libraryPreviewImport, libraryConfirmImport, libraryMarkMissing, libraryDeleteDoc, libraryRenderSafely, handleAction,
@@ -997,7 +998,7 @@ try {
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
   // v1.2.4：统一终验出口 + 审稿工作区 + 时态设置页（与 index.html 同序，仍先于 app.js）。
-  for (const name of ['revision-timeline.js', 'revision-canon-strength.js', 'revision-finalize.js', 'revision-run-store.js', 'review-workspace.js', 'temporal-settings.js', 'quality-trend.js', 'quality-profile.js', 'quality-insights.js']) {
+  for (const name of ['revision-timeline.js', 'revision-canon-strength.js', 'revision-finalize.js', 'revision-run-store.js', 'revision-archive.js', 'review-workspace.js', 'temporal-settings.js', 'quality-trend.js', 'quality-profile.js', 'quality-insights.js']) {
     const code = fs.readFileSync(path.join(repoRoot, 'public', name), 'utf8');
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
@@ -7078,12 +7079,78 @@ P.traceStopStream();
   P.state.pendingRevisionClosure.mergedAt = new Date().toISOString();
   P.state.pendingRevisionClosure.mergedUnverified = true;
   const mergedHtml = drawWs();
-  check('QC-48 跳过复验后合并：档位变成"已合并 · 未做语义复验"，不再给任何合并按钮（同一份候选不重复写库）',
+  check('QC-48 跳过复验后合并：档位变成"已合并 · 未做语义复验"，不再给合并按钮，但**还能补跑复验**',
     /data-stage="PERSISTED_UNVERIFIED"/.test(mergedHtml)
       && /已合并 · 未做语义复验/.test(mergedHtml)
       && /没有结论/.test(mergedHtml)
-      && !/data-action="diff-merge"/.test(mergedHtml),
+      && !/data-action="diff-merge"/.test(mergedHtml)
+      && /data-action="diff-semantic-verify"/.test(mergedHtml)
+      && /对已合并的候选运行语义复验/.test(mergedHtml),
     (mergedHtml.match(/data-stage="[^"]+"/) || [''])[0]);
+
+  // ── 2026-10-18 作者要求：三份存档 + 存档入口 + 真页面必须加载这些模块 ─────────
+  const AR = sandbox.NovelRevisionArchive;
+  const A_BASE = '审稿前原文';
+  const A_UNV = '候选（未复验）';
+  const slotsUnv = AR.buildSlots({ article: A_BASE, candidateText: A_UNV, verified: false });
+  const slotsVer = AR.buildSlots({ article: A_BASE, candidateText: '候选（已复验）', verified: true });
+  check('QC-49 存档槽位不混淆：未复验候选只进 unverified、已复验候选只进 verified；摘要不吹成齐全',
+    slotsUnv.map((s) => s.id).join(',') === 'base,unverified'
+      && slotsVer.map((s) => s.id).join(',') === 'base,verified'
+      && AR.summaryOf({ base: { hash: 'x' } }).count === 1
+      && /还没有：未复验候选、已复验候选/.test(AR.summaryOf({ base: { hash: 'x' } }).line),
+    JSON.stringify({ unv: slotsUnv.map((s) => s.id), ver: slotsVer.map((s) => s.id) }));
+
+  // 存档入口：真把索引写进 localStorage，工作区就该画出"修稿存档 N 份 · 查看/回退"
+  const AR_KEY = AR.storageKey(1);
+  sandbox.localStorage.setItem(AR_KEY, JSON.stringify({ v: 1, slots: { base: { hash: 'h', version_id: 21 }, unverified: { hash: 'h2', version_id: 22 } } }));
+  const withArchive = drawWs();
+  sandbox.localStorage.removeItem(AR_KEY);
+  const withoutArchive = drawWs();
+  check('QC-50 有存档才画"查看/回退"入口，且点了落到历史版本（没有存档时不给空按钮）',
+    /data-action="review-archive-history"/.test(withArchive)
+      && /修稿存档 2 份 · 查看\/回退/.test(withArchive)
+      && !/data-action="review-archive-history"/.test(withoutArchive),
+    JSON.stringify({ with: /review-archive-history/.test(withArchive), without: /review-archive-history/.test(withoutArchive) }));
+
+  // 真页面装载守卫（2026-10-18 实测踩中过）：app.js 用 globalThis.NovelXxx 取的每个纯函数模块，
+  // 都必须在 index.html 里有对应 script 标签。缺一个时界面不会报错，只会**静默少一块功能**
+  //（这次少的是运行记录恢复与质量档案/趋势），而当时的测试因为自己手动加载模块，绿着。
+  const indexHtmlSrc = fs.readFileSync(path.join(repoRoot, 'public', 'index.html'), 'utf8');
+  const pageScripts = new Set([...indexHtmlSrc.matchAll(/<script src="\/([^"]+)"/g)].map((m) => m[1]));
+  const kebab = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  const referenced = new Set();
+  for (const m of src.matchAll(/globalThis\.Novel([A-Za-z0-9]+)/g)) {
+    const file = `${kebab(m[1])}.js`;
+    if (fs.existsSync(path.join(repoRoot, 'public', file))) referenced.add(file);
+  }
+  const missingScripts = [...referenced].filter((f) => !pageScripts.has(f)).sort();
+  check('QC-51 app.js 用到的每个前端模块都在 index.html 里真的有 script 标签（缺了会静默少功能）',
+    missingScripts.length === 0 && referenced.size >= 12,
+    JSON.stringify({ missing: missingScripts, checked: referenced.size }));
+
+  // 存档落库：真的调 POST /chapter_versions，标题带槽位标记，同一份内容不重复存
+  const versionPosts2 = [];
+  const prevApi = sandbox.api;
+  sandbox.api = async (p, o = {}) => {
+    if (String(p).includes('/chapter_versions')) { versionPosts2.push(o && o.body); return { id: 100 + versionPosts2.length, created_at: 't' }; }
+    return { ok: true };
+  };
+  const archCtx = { chapterId: 1, article: '审稿前原文' };
+  const arch1 = await P.archiveReviewVersions(archCtx, { article: '审稿前原文', text: '未复验候选', verified: false });
+  const arch2 = await P.archiveReviewVersions(archCtx, { article: '审稿前原文', text: '未复验候选', verified: false });
+  const arch3 = await P.archiveReviewVersions(archCtx, { article: '审稿前原文', text: '已复验候选', verified: true });
+  sandbox.api = prevApi;
+  const titles2 = versionPosts2.map((b) => String(b && b.title || ''));
+  check('QC-52 存档真的写进历史版本：审稿前原文 + 对应候选各一条，标题带槽位标记；同一内容重复调用不再写',
+    arch1.saved === 2 && arch2.saved === 0 && arch2.skipped === 2
+      && titles2.some((t) => /审稿前原文/.test(t))
+      && titles2.some((t) => /未语义复验/.test(t))
+      && titles2.some((t) => /已语义复验/.test(t))
+      && !titles2.slice(0, 2).some((t) => /已语义复验/.test(t))
+      && arch3.saved === 1,
+    JSON.stringify({ titles: titles2, first: arch1.saved, again: arch2.saved, verified: arch3.saved }));
+  sandbox.localStorage.removeItem(AR_KEY);
 
   // 收尾：把工作区状态还给后续用例（这里只是内存桩，不写库）
   P.state.pendingRevisionClosure = prevClosure;

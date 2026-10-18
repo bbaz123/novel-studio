@@ -1591,7 +1591,7 @@
   - 文件 docs/v1.2.4-review-workspace.md 同时属于 V15/V16——改动改在同一批代码里，撤不干净
 - **说明**：**目的**：把"8 项全选 → 每项有可定位的编辑任务 → 精确安全修稿 → 逐项复验 → 失败项定向复修 → 明确阻塞原因 → 在不挤压写作台的独立空间展示"落成可复核的事实链。**边界**：不改变作者一次性写回审批、保护区、蓝图/伏笔、预算门禁；语义复验仍是作者显式触发的付费动作；P0E/P0F 只是视图层级拆分，不动数据库与时态语义。**费用**：全部离线检查零计费（模型输出在测试里是注入的）。
 - **验收证据**：`artifacts/v124/env-report.md`、`docs/v1.2.4-review-workspace.md`、`.p1-baseline/test-1024-chapter-fixtures.mjs`、`.p1-baseline/test-1025-finalize.mjs`
-- **本阶段认领的文件**（20 个）：
+- **本阶段认领的文件**（21 个）：
   - `.p1-baseline/browser-acceptance-v124.mjs`
   - `.p1-baseline/test-1024-chapter-fixtures.mjs`
   - `.p1-baseline/test-1025-finalize.mjs`
@@ -1607,6 +1607,7 @@
   - `public/app.js`
   - `public/index.html`
   - `public/review-workspace.js`
+  - `public/revision-archive.js`
   - `public/revision-finalize.js`
   - `public/revision-semantic-verifier.js`
   - `public/styles.css`
@@ -1655,7 +1656,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**780** 个文件
+- 真实改动集：**781** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

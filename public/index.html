@@ -98,8 +98,19 @@
   <!-- v1.2.4 审稿工作区（P0E）：纯函数（统计行/问题导航/差异块/证据定位/可用操作）。
        没有它时 app.js 会退回旧的差异弹窗，不会因为少一个模块就把结果显示成"已修好"。 -->
   <script src="/review-workspace.js"></script>
+  <!-- v1.2.4（Q-15）运行记录：刷新后能"恢复上次修稿"，且底稿变了就作废。
+       ⚠️ 漏了这一个 script 标签时，恢复入口会**永远不出现**（模块为 null）。
+       2026-10-18 实测就是漏了：离线测试自己手动加载模块，于是绿着，真页面里没有。 -->
+  <script src="/revision-run-store.js"></script>
+  <!-- 2026-10-18 作者要求：修稿存档（审稿前原文 / 未复验候选 / 已复验候选），反悔走历史版本恢复。 -->
+  <script src="/revision-archive.js"></script>
   <!-- v1.2.4 时态引擎设置页（P0F）：分组卡与紧凑角色行；缺了它仍能显示旧的堆叠布局。 -->
   <script src="/temporal-settings.js"></script>
+  <!-- v1.2.4 P2：质量趋势 / 作品级质量规则档案 / 修复效果统计（纯函数）。
+       同样曾被漏在页面之外：模块缺失时界面只会"什么都不显示"，不会报错。 -->
+  <script src="/quality-trend.js"></script>
+  <script src="/quality-profile.js"></script>
+  <script src="/quality-insights.js"></script>
   <script src="/long-text.js"></script>
   <script src="/app.js"></script>
 </body>
