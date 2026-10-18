@@ -80,17 +80,25 @@ jobs:
             }, null, 1));
           "
 
-      - name: 离线清单（55 项，零计费）
+      - name: 离线清单（零计费）
         shell: bash
         run: node scripts/ci-offline-checks.mjs
 
-      - name: NSDSH 套件（真实断言，不是形状检查）
+      - name: NSDSH 套件（真实断言，不是形状检查；缺上游/阶段报告时显式 SKIP）
         shell: bash
         run: node scripts/run-nsdsh-tests.mjs
 
-      - name: 阶段门禁 S18（离线）
+      # 阶段门禁与交付验收依赖 .nsdsh/reports（作者本机跑各阶段产生的原始报告）。
+      # 干净 checkout 上没有这些产物（测试可能建出空目录，所以按**文件**判断，不按目录）；
+      # CI 不伪造报告，也不把"缺产物"伪装成通过——显式打印 SKIP。
+      - name: 阶段门禁 S18（离线；需要本机阶段报告）
         shell: bash
-        run: node scripts/nsdsh/check-stage.mjs S18 --offline
+        run: |
+          if [ -f .nsdsh/reports/S18.json ]; then
+            node scripts/nsdsh/check-stage.mjs S18 --offline
+          else
+            echo "SKIP：本机没有 .nsdsh/reports/S18.json（阶段报告是作者本机验收产物，CI 不伪造）。"
+          fi
 
       - name: 阶段台账 + UTF-8
         shell: bash
@@ -98,9 +106,14 @@ jobs:
           node .p1-baseline/verify-phase-map.mjs
           node .p1-baseline/check-utf8.mjs
 
-      - name: 交付验收
+      - name: 交付验收（需要本机阶段报告）
         shell: bash
-        run: node scripts/nsdsh/verify-delivery.mjs
+        run: |
+          if [ -f .nsdsh/reports/S18.json ]; then
+            node scripts/nsdsh/verify-delivery.mjs
+          else
+            echo "SKIP：本机没有 .nsdsh/reports/S18.json（交付验收依赖各阶段报告，CI 不伪造）。"
+          fi
 
   # ── 2. 锁定上游 + 完整构建 B（重前置；拿不到就失败，不跳过）──────────────────
   runtime-build:
@@ -159,6 +172,12 @@ jobs:
       - name: 真实 SDK 子进程矩阵（12 场景，零计费）
         shell: bash
         run: node scripts/nsdsh/verify-sdk-real.mjs
+
+      # 上游已 clone + 构建：此时 sdk / distribution 分组的前置成立，跑完整 NSDSH 套件。
+      # 离线 job 里这些套件会因为缺前置被显式 SKIP，覆盖由本步骤补上。
+      - name: NSDSH 套件（上游已构建后的完整覆盖）
+        shell: bash
+        run: node scripts/run-nsdsh-tests.mjs
 
   # ── 3. 裁剪发行物 + 冷环境 + B/C（默认不跑，需显式勾选或发行前手动触发）────────
   distribution:

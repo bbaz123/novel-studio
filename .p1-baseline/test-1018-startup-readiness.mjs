@@ -180,6 +180,12 @@ console.log('【G. P13 真实迁移失败：非零退出 + 打印 migration id�
 }
 
 console.log('【E. P06 启动脚本】');
+if (process.platform !== 'win32') {
+  // P06 验证的是 start-novel-studio.cmd（cmd.exe / curl / timeout / start）。这些命令在
+  // Linux/macOS 上不存在，硬跑只会得到"spawn ENOENT"式的假失败；Windows CI job 仍然会执行
+  // 这一组，因此覆盖没有丢失。这里显式打印 SKIP，不把"没跑"混进通过数。
+  console.log('  – SKIP（非 Windows）：P06 用例执行 .cmd 启动脚本，仅在 Windows 上运行；Windows CI job 覆盖');
+} else
 {
   const bad = await runCmd({ PORT: 'abc', NOVELSTUDIO_SCRIPT_SILENT: '1', NOVELSTUDIO_NO_BROWSER: '1', NOVELSTUDIO_NO_START: '1' }, 20000);
   ok('E 非法端口脚本非零退出', bad.code === 1, `code=${bad.code}`);

@@ -14,6 +14,7 @@
  *
  * 用法：node scripts/run-nsdsh-tests.mjs [--only <子串>]
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseTestCounts, runCommand } from './nsdsh/lib/gate.mjs';
@@ -103,6 +104,45 @@ export const NSDSH_TESTS = [
   'tests/nsdsh/delivery-report.test.mjs',
 ];
 
+// ── 前置条件分组（2026-10-18，CI 首跑暴露）────────────────────────────────────
+// 为什么需要：这些套件依赖"作者本机才有的东西"——兄弟目录里已构建的上游 SDK、
+// 或本机 .nsdsh/reports 阶段报告。干净 checkout / GitHub runner 上两者都不存在，
+// 硬跑会以"缺文件"失败，看起来像产品回归，实则不是。
+// 处置：显式 SKIP 并打印原因（不把"没跑"记成通过）；需要真实覆盖时，在带前置的
+// job（nsdsh-runtime-matrix 的 runtime-build）里跑同一命令。
+const SIBLING_UPSTREAM = path.resolve(REPO, '..', 'deepseek-harness');
+const UPSTREAM_BUILD_ENTRY = path.join(SIBLING_UPSTREAM, 'apps', 'cli', 'lib', 'bin.js');
+const STAGE_REPORT_DIR = path.join(REPO, '.nsdsh', 'reports');
+const suiteNameOf = (rel) => rel.replace(/^tests\/nsdsh\//, '').replace(/\.test\.mjs$/, '');
+/** 需要"兄弟目录上游源码"（distribution 分组按 manifest 的目录路径解析）。 */
+const NEEDS_UPSTREAM = new Set(['distribution-artifact', 'distribution-closure']);
+/** 需要"已构建的上游 SDK 入口"（apps/cli/lib/bin.js），只有 runtime-build job 才具备。 */
+const NEEDS_UPSTREAM_BUILD = new Set([
+  'sdk-launch', 'sdk-adapter', 'sdk-lifecycle', 'sdk-cancel', 'session-scope',
+  'runtime-pool', 'runtime-equivalence',
+]);
+/** 需要本机阶段报告（.nsdsh/reports），属于作者本机验收产物，CI 不伪造。 */
+const NEEDS_STAGE_REPORTS = new Set(['migration-drill', 'delivery-report']);
+/** 各套件依赖的具体阶段报告（空目录不算"有报告"——测试自己会建出空目录）。 */
+const REQUIRED_STAGE_REPORT = {
+  'migration-drill': 'S16.json',
+  'delivery-report': 'S18.json',
+};
+
+function skipReasonFor(name) {
+  if (NEEDS_UPSTREAM_BUILD.has(name) && !fs.existsSync(UPSTREAM_BUILD_ENTRY)) {
+    return `缺少已构建的上游 SDK 入口（${UPSTREAM_BUILD_ENTRY}）`;
+  }
+  if (NEEDS_UPSTREAM.has(name) && !fs.existsSync(SIBLING_UPSTREAM)) {
+    return `缺少兄弟目录上游（${SIBLING_UPSTREAM}）`;
+  }
+  if (NEEDS_STAGE_REPORTS.has(name)) {
+    const required = path.join(STAGE_REPORT_DIR, REQUIRED_STAGE_REPORT[name]);
+    if (!fs.existsSync(required)) return `缺少本机阶段报告（${required}）`;
+  }
+  return '';
+}
+
 /**
  * 同进程执行一个套件：动态 import（带 cache-busting 查询串，避免第二次 import 拿到缓存），
  * 捕获 console、读 `process.exitCode`。与 `test-narrative-repair.mjs` 的实现保持一致，
@@ -162,6 +202,12 @@ if (!list.length) {
 const results = [];
 let inProcessFallback = false;
 for (const rel of list) {
+  const skipReason = skipReasonFor(suiteNameOf(rel));
+  if (skipReason) {
+    results.push({ rel, ok: true, skipped: true, ms: 0, counts: { passed: null, failed: null, total: null }, transport: 'skip' });
+    console.log(`– SKIP ${rel}（${skipReason}；该套件在带前置的 job 中运行）`);
+    continue;
+  }
   const t0 = Date.now();
   const argv = [process.execPath, rel];
   let r = runCommand(argv, { cwd: REPO });
@@ -188,24 +234,30 @@ for (const rel of list) {
 }
 
 const bad = results.filter((r) => !r.ok);
+const skipped = results.filter((r) => r.skipped);
+const ran = results.filter((r) => !r.skipped);
 const assertionsPassed = results.reduce((n, r) => n + (r.counts.passed || 0), 0);
 const assertionsFailed = results.reduce((n, r) => n + (r.counts.failed || 0), 0);
 const totalAssertions = results.reduce((n, r) => n + (r.counts.total || 0), 0);
 // 断言总数为 0 —— 三个套件全都"跑过了但什么都没断言"——不能算通过：那和空清单是同一类问题。
-const zeroAssertions = totalAssertions === 0;
+// 但如果**每个**被选中的套件都因缺少前置被显式 SKIP，那不是"空跑"，而是"本机没有前置"；
+// 打印清楚并放行（前置 job 会真的跑它们）。
+const zeroAssertions = totalAssertions === 0 && ran.length > 0;
 
 // 汇总行刻意用**全角逗号**而不是 `通过 N / 未通过 M`：
 //   ① runCommand 的 zeroTestGuard 读数走 parseTestCounts，两种写法都认，语义不变；
 //   ② 标准写法在本文件里早就被**子套件自己**打印过（isolation.test.mjs 的 `通过 11 / 未通过 0`），
 //      而解析取的是**第一处**匹配 —— 那样顶层报告里会出现"跑了 11 条"这种来自孙子进程的读数，
 //      与"本命令的断言总数"是两码事。换成逗号写法后，这条汇总不再与子套件冲突。
-console.log(`\n合计：套件通过 ${results.length - bad.length}，套件未通过 ${bad.length}（共 ${results.length} 个套件）`);
+console.log(`\n合计：套件通过 ${ran.length - bad.length}，套件 SKIP ${skipped.length}，套件未通过 ${bad.length}（共 ${results.length} 个套件）`);
 console.log(`合计：通过 ${assertionsPassed}，未通过 ${assertionsFailed}（断言总数 ${totalAssertions} 条，零计费）`);
 // 机器标记：check-stage 的 zeroTestGuard 优先采信这一行（见其 readTestCounts）。
 // 为什么需要它：本命令的输出里**还包含子套件自己**打印的 `通过 N / 未通过 M`，
 // 而那个解析只会取第一处匹配 —— 于是顶层报告会写出子套件的读数而不是本命令的断言总数。
 // 有了这一行，顶层数字就是"本命令真正跑了多少条断言"，不含歧义。
-console.log(`NSDSH-SUMMARY: suites=${results.length} suitesFailed=${bad.length} passed=${assertionsPassed} failed=${assertionsFailed} total=${totalAssertions}`);
+console.log(`NSDSH-SUMMARY: suites=${results.length} suitesFailed=${bad.length} skipped=${skipped.length} passed=${assertionsPassed} failed=${assertionsFailed} total=${totalAssertions}`);
 if (bad.length) console.log('未通过套件：' + bad.map((b) => b.rel).join('; '));
+if (skipped.length) console.log('跳过套件（缺少前置，非产品回归；带前置的 job 会运行）：' + skipped.map((b) => b.rel).join('; '));
 if (zeroAssertions) console.log('✗ 三个套件合计断言数为 0：无法证明测过任何东西，不判通过。');
+if (skipped.length && ran.length === 0) console.log('（所选套件全部因缺少前置而 SKIP：没有可断言的结果，但也不是失败。）');
 process.exitCode = (bad.length || zeroAssertions) ? 1 : 0;
