@@ -17,7 +17,7 @@
  * 前置：需要一个在跑的 Novel Studio（默认 http://127.0.0.1:3799，可用 --base 覆盖）。
  * 退出码是唯一判据；打印出的数字就是本轮证据。
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,6 +38,18 @@ const check = (name, cond, detail = '') => {
   if (!cond) failures += 1;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** 结束整个浏览器进程树。
+ *  为什么不能只 child.kill()：Windows 上 Chromium 的 launcher 被杀后，renderer/GPU 子进程会继续存活；
+ *  实测一次验收遗留 25 个 msedge 进程，随后同机的其他检查开始出现 spawn EPERM（句柄/进程耗尽）。
+ *  验收脚本必须自己清干净。 */
+function killTree(child) {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    else child.kill('SIGKILL');
+  } catch (_) { try { child.kill(); } catch (__) { /* 已退出 */ } }
+}
+
 
 async function httpJson(url, method = 'GET') {
   const res = await fetch(url, { method });
@@ -387,7 +399,7 @@ async function main() {
 
     ws.close();
   } finally {
-    try { child.kill(); } catch (_) { /* 已退出 */ }
+    killTree(child);
     await sleep(300);
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) { /* 句柄可能未释放，留给系统清理 */ }
   }
