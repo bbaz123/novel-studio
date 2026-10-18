@@ -983,9 +983,25 @@
    * 在整章与分片下同时成立，且不放松任何约束：定位到之后仍要满足下方既有的
    * `p.original === text.slice(start, end)` 逐字校验。
    */
+  /**
+   * 授权表读数统一口径（v1.2.1 质量闭环 v2）。
+   *
+   * v1 的键是 `authorized`，v2 的键是 `authorized_targets`（方案 §6.2 第 5 条）。
+   * 两个键**指向同一张表**；这里只决定读哪一个，不做合并/兜底猜测 ——
+   * 若两个键同时存在且内容不同，说明调用方把两套许可混在一起了，此时以 `authorized` 为准
+   * （历史键优先，保持旧行为），而不是"取并集"把权限放大。
+   */
+  function authorizationTable(authorization) {
+    if (!authorization || typeof authorization !== 'object') return {};
+    const a = authorization.authorized;
+    if (a && typeof a === 'object' && !Array.isArray(a)) return a;
+    const t = authorization.authorized_targets;
+    return (t && typeof t === 'object' && !Array.isArray(t)) ? t : {};
+  }
+
   function resolveAuthorizedRange(authorization, p, text, spans) {
-    if (!authorization || !authorization.authorized || !p.span_id) return null;
-    const table = authorization.authorized;
+    if (!authorization || !p.span_id) return null;
+    const table = authorizationTable(authorization);
     const want = String(p.original == null ? '' : p.original);
     // ⚠️ `op === 'insert'` 时 original 按定义就是空串，**不能**在这里提前返回 null ——
     //    否则插入永远走不到下面那条"授权插入点"分支（本函数的第一个实现就是这么错的：
@@ -1196,8 +1212,7 @@
       // 只有 Host 计划事先登记的跨度/逐字原文才放行；**同章但没授权的跨度同样拒绝**。
       // 旧实现只判 issue_ids ⊆ 已选 → 模型挑一个已选 issue 就能改全章任意一处（K2）。
       if (opts.authorization) {
-        const table = (opts.authorization.authorized && typeof opts.authorization.authorized === 'object')
-          ? opts.authorization.authorized : {};
+        const table = authorizationTable(opts.authorization);
         const resolved = { span_id: String(spanObj.span_id || ''), start, end, original: p.original, op: p.op };
         const missing = p.issue_ids.filter((id) => !(Array.isArray(table[id]) ? table[id] : []).some((e) => authorizationEntryMatches(e, resolved)));
         if (missing.length) {
@@ -1895,6 +1910,8 @@
     staleCheck,
     createRetryBudget,
     runRevisionPipeline,
+    // v1.2.1 质量闭环：v2 授权表键（authorized_targets）与 v1（authorized）读同一张表。
+    authorizationTable,
     // §4 修后核验：单独导出，便于离线断言直接喂 (issues, coverage, revisedText) 而不必经整条管线。
     issueCoverageCandidates,
     // 2026-03-17（v118 0317 §4 · V118-12）：修后结论闸单独导出 ——

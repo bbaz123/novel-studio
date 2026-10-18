@@ -18,6 +18,7 @@
  *  - novel_style_contract 读取当前写作红线清单（风格契约）
  *  - novel_event_add      关键剧情/伏笔/状态变化写入事件账本（支持伏笔状态与回收、去重）
  *  - novel_memory_update  长期记忆增量/压缩提交（带版本快照，可回滚）
+ *  - novel_revision_status 读取某章最近一次修稿的闭环状态（只读：补丁数/语义通过数/未解决原因）
  *  - novel_chapter_save   把成稿写回章节正文（旧稿自动存历史版本，返回红线扫描）
  *
  * 身份：当本进程由 novel-studio 的 /api/harness/run 启动时，环境变量
@@ -1152,6 +1153,50 @@ export function apply(ctx, config) {
       const bind = r.binding_json && r.binding_json !== '{}' ? `｜绑定 ${String(r.binding_json).slice(0, 120)}` : ''
       return `  · ${r.id}｜${r.op}${r.chapter_id ? `｜章节 #${r.chapter_id}` : ''}｜有效至 ${r.expires_at}${bind}`
     })].join('\n')
+  })
+
+  register('novel_revision_status', [
+    '读取某一章**最近一次修稿**的闭环状态（只读）：选了哪几条、应用了几个补丁、语义验收通过几条、卡在哪里。',
+    '为什么需要它：修稿结果里有三种完全不同的"完成"——补丁已应用、问题经语义验收确实解决、作者批准写回入库。',
+    '本工具只报告事实，不把"补丁已应用"读成"问题已解决"；候选稿未入库时明确写 AWAITING_AUTHOR_COMMIT。',
+    '⚠ 只读：不触发复修、不改正文、不创建审批。要真正写回正文，仍走作者一次性审批（novel_approvals）。',
+  ].join('\n'), {
+    work_id: { type: 'string', description: '作品 id（可选，缺省用环境身份）' },
+    chapter_id: { type: 'string', description: '章节 id（可选，缺省用环境身份 NOVELSTUDIO_CHAPTER_ID）' },
+  }, async (args) => {
+    const chapterId = envId(args, 'chapter_id')
+    if (chapterId === undefined) throw new Error('缺少 chapter_id（可在界面确认本章 id，或由任务启动器注入 NOVELSTUDIO_CHAPTER_ID）')
+    const data = await jfetch(`/api/novel/revision/closure/status?chapter_id=${encodeURIComponent(chapterId)}`)
+    const c = data && data.closure ? data.closure : null
+    if (!c) return `章节 #${chapterId} 没有闭环状态（服务端未返回 closure 字段）：不能据此判断已修好。`
+    const head = [
+      `章节 #${chapterId} 修稿闭环（只读｜模式 ${c.enabled || 'unknown'}｜契约 v${c.contract_version || '?'}）`,
+      c.selection_id ? `最近一次选择记录：#${c.selection_id}（${c.selection && c.selection.created_at ? c.selection.created_at : '时间未知'}）` : '最近一次选择记录：无（还没发起过修稿）',
+    ]
+    const sel = c.selection || null
+    if (sel && Array.isArray(sel.selected_issue_ids) && sel.selected_issue_ids.length) {
+      head.push(`勾选问题：${sel.selected_issue_ids.join('、')}`)
+    }
+    const r = c.receipt
+    if (!r) {
+      head.push('闭环回执：无 —— 说明这一章尚未修稿，或本轮没有写入回执；**不能**当作"已修好"。')
+      return head.join('\n')
+    }
+    const m = r.metrics || {}
+    const lines = [
+      ...head,
+      `候选稿状态：${r.status || 'UNKNOWN'}（${r.persisted === true ? '作者已批准写回' : '未入库：候选稿 ≠ 已入库定稿'}）`,
+      `计数：勾选 ${m.selection_count ?? '?'}｜准确定位 ${m.plan_located_count ?? '?'}｜应用补丁 ${m.patch_applied_count ?? '?'} 个｜门禁通过 ${m.gate_passed_count ?? '?'}｜语义通过 ${m.semantic_verified_count ?? '?'}｜未解决 ${m.unresolved_count ?? '?'}`,
+    ]
+    const issues = Array.isArray(r.issues) ? r.issues : []
+    if (issues.length) {
+      lines.push('逐条状态：')
+      for (const i of issues) {
+        lines.push(`  · #${i.issue_id}｜${i.final_status}${i.semantic_status ? `（语义 ${i.semantic_status}）` : ''}${i.reason_code ? `｜原因 ${i.reason_code}` : ''}${i.repair_hint ? `｜下一步 ${i.repair_hint}` : ''}`)
+      }
+    }
+    if (r.verdict && r.verdict.reason) lines.push(`结论：${r.verdict.reason}`)
+    return lines.join('\n')
   })
 
   register('novel_snapshot', [

@@ -934,6 +934,7 @@ globalThis.__probe = {
   parseRevisionPatchesDetailed, revisionPatchEngine, revisionSnapshotFor, revisionSpanCatalogue,
   showRevisionUnresolved, refineByFullRewrite, revisionCoverageHtml, showRevisionDispositions,
   revisionPlanEngine, revisionPlanFor, revisionAuthorizationFor, issueStableId, revisionRetryBudgetFor, revisionRetryBudgetKey, revisionSpanCatalogue, showReviewReport, revisionPreference, setRevisionPreference,
+  revisionFindingsFor, revisionHasStructuredEvidence, revisionSemanticFor, revisionClosureFor, revisionResultToast, revisionClosureHtml,
   reportConsistencyHtml,
   revisionComparisonHtml, showRevisionComparison,
   patchSafetyEngine, patchSafetyOptions, patchSafetyGate, patchSafetyVerify, patchSafetyNotesHtml,
@@ -980,6 +981,11 @@ try {
   // E05：编辑计划模块必须在 revision-patch.js 之后（它复用那边的 buildSpans 口径）。
   const revisionPlanSrc = fs.readFileSync(path.join(repoRoot, 'public', 'revision-plan.js'), 'utf8');
   new vm.Script(revisionPlanSrc, { filename: 'revision-plan.js' }).runInContext(ctx, { timeout: 10000 });
+  // v1.2.1 质量闭环：与 index.html 同序（findings → 语义验收 → 闭环状态），先于 app.js。
+  for (const name of ['revision-findings.js', 'revision-semantic-verifier.js', 'revision-closure.js']) {
+    const code = fs.readFileSync(path.join(repoRoot, 'public', name), 'utf8');
+    new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
+  }
   const longTextSrc = fs.readFileSync(path.join(repoRoot, 'public', 'long-text.js'), 'utf8');
   new vm.Script(longTextSrc, { filename: 'long-text.js' }).runInContext(ctx, { timeout: 10000 });
   new vm.Script(src + probeSrc, { filename: 'app.js' }).runInContext(ctx, { timeout: 20000 });
@@ -3167,10 +3173,14 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
     P.showReviewDiff('第一段。\n\n第二段。', '第一段改。\n\n第二段。', { applied: 2, notes: ['anchor 未找到：某某段'] });
     P.showReviewDiff('甲段。', '乙段。', { checklist: 3, applied: 2 });
     sandbox.openModal = realOpenModal;
-    check('107a 只知"改好几处"时标题不借用"按 N 条清单"口径',
-      opened[0].title.includes('实际改好 2 处') && !opened[0].title.includes('清单'), opened[0].title);
-    check('107b 正常流程同时给出清单条数与实际改好处数',
-      opened[1].title.includes('按 3 条清单修改') && opened[1].title.includes('实际改好 2 处'), opened[1].title);
+    // v1.2.1（质量闭环 P0-8）：标题里的数字是**补丁数**，不是"已修好条数"。
+    // 断言随之升级为"既说清补丁数、又不得出现'改好/已修好'这类结论词"。
+    check('107a 只知"改好几处"时标题不借用"按 N 条清单"口径，且不把补丁数说成已修好',
+      opened[0].title.includes('应用 2 个局部补丁') && !opened[0].title.includes('清单')
+      && !/改好|已修好/.test(opened[0].title), opened[0].title);
+    check('107b 正常流程同时给出清单条数与实际应用的补丁数（并明确不是"改好 N 处"）',
+      opened[1].title.includes('按 3 条清单修改') && opened[1].title.includes('应用 2 个局部补丁')
+      && !/改好|已修好/.test(opened[1].title), opened[1].title);
     check('107c 未定位提示不再泄漏 Markdown 字面量（**）', !opened[0].body.includes('**'));
     check('107d 未定位条数与正文一致（不再出现标题/正文互斥）',
       opened[0].body.includes('有 1 条改动没能自动定位'), '');
@@ -6475,6 +6485,87 @@ P.traceStopStream();
     sandbox.document.querySelectorAll = saved116.qsa;
     containers['#modal-root'].innerHTML = saved116.modal;
   }
+}
+
+// ==================== v1.2.1 质量闭环：P0-1/P0-3/P0-6/P0-8 的界面接线 ====================
+// 这一节验的是"模块真的接进了 app.js"，而不是"模块自身逻辑对不对"（后者由
+// .p1-baseline/test-1019-* 分套件覆盖）。两边都过才算接线可用。
+{
+  check('QC-0 质量闭环三模块随页面加载（UMD，先于 app.js）',
+    !!sandbox.NovelRevisionFindings && !!sandbox.NovelRevisionSemanticVerifier && !!sandbox.NovelRevisionClosure
+    && sandbox.NovelRevisionFindings.CONTRACT_VERSION === 2,
+    JSON.stringify({
+      findings: !!(sandbox.NovelRevisionFindings), verifier: !!(sandbox.NovelRevisionSemanticVerifier), closure: !!(sandbox.NovelRevisionClosure),
+    }));
+
+  const prompt = P.buildAIReviewPrompt('正文');
+  check('QC-1 审稿提示词索取 findings/evidence/role/acceptance，并保留旧 issues 兼容',
+    prompt.includes('"findings"') && prompt.includes('"evidence"') && prompt.includes('candidate_edit')
+    && prompt.includes('reference') && prompt.includes('acceptance') && prompt.includes('"issues"')
+    && /逐字/.test(prompt),
+    prompt.slice(prompt.indexOf('findings 规则'), prompt.indexOf('findings 规则') + 60));
+
+  const body = '岳宸炎把检测单折过两折。\n\n王磊把单子拍在桌上。\n\n检测单也在同一个口袋里，折过一折。';
+  const snap = P.revisionSnapshotFor(body, 1);
+  const findings = [{
+    id: 'R-1', title: '折数矛盾', explanation: '开头两折、章尾一折',
+    evidence: [
+      { quote: '折过两折', role: 'reference' },
+      { quote: '折过一折', role: 'candidate_edit' },
+    ],
+    acceptance: { rule: '折数与动作链一致', preserve: ['检测单'] },
+  }];
+  const plan = P.revisionPlanFor(body, [], { snapshot: snap, chapterId: 1, issueIds: ['R-1'], findings, planV2: true });
+  check('QC-2 结构化 findings → v2 计划：只给 candidate_edit 发可写热点，reference 留作只读证据',
+    !!plan && plan.schema_version === 2 && plan.hotspots.length === 1
+    && plan.hotspots[0].original === '折过一折'
+    && plan.issue_evidence['R-1'].references.length === 1,
+    plan ? JSON.stringify({ schema: plan.schema_version, hotspots: plan.hotspots.map((h) => h.original) }) : 'null');
+
+  const auth = P.revisionAuthorizationFor(plan);
+  check('QC-3 授权表走 v2：authorized_targets 与 authorized 指向同一张表，scope_complete=true',
+    auth.authorized === auth.authorized_targets && auth.scope_complete === true && auth.authorized_span_count === 1,
+    JSON.stringify({ keys: Object.keys(auth), complete: auth.scope_complete }));
+
+  const cov = [{ issue_id: 'R-1', status: 'patched' }];
+  const htmlAwait = P.revisionCoverageHtml(cov, {
+    semanticByIssue: { 'R-1': { issue_id: 'R-1', final_status: 'AWAITING_SEMANTIC', semantic_status: 'not_run', reason: '语义核验未运行' } },
+  });
+  check('QC-4 语义未运行 → 覆盖表显示"待语义复核/待语义复验"，不出现肯定性"已解决"标签',
+    htmlAwait.includes('待语义') && !htmlAwait.includes('结论：已解决') && !htmlAwait.includes('逐条验收：已解决'),
+    htmlAwait.slice(0, 200));
+  const htmlPass = P.revisionCoverageHtml(cov, {
+    semanticByIssue: { 'R-1': { issue_id: 'R-1', final_status: 'ISSUE_VERIFIED', semantic_status: 'pass', reason: '语义层判定通过' } },
+  });
+  check('QC-5 只有语义层明确通过时才显示"已解决"',
+    htmlPass.includes('已解决') && htmlPass.includes('逐条验收：已解决'), htmlPass.slice(0, 160));
+
+  const toastNoSem = P.revisionResultToast(2, { applied: [{}, {}] }, null);
+  check('QC-6 没有语义结论时 toast 说"局部补丁 + 未复验"，并明确不能当作已修好',
+    /局部补丁/.test(toastNoSem) && /未做复验|未复验/.test(toastNoSem)
+    && !/已按清单改好/.test(toastNoSem) && /不能当作/.test(toastNoSem),
+    toastNoSem);
+  const toastSem = P.revisionResultToast(2, { applied: [{}, {}] }, { summary: { total: 2, verified: 1, semantic_not_run: 1 } });
+  check('QC-7 有语义结论时分别给出"独立核验通过 / 待处理"计数',
+    /独立核验通过 1 项/.test(toastSem) && /待处理 1 项/.test(toastSem), toastSem);
+
+  const opened = [];
+  const realOpen = sandbox.openModal;
+  sandbox.openModal = (o) => { opened.push({ title: String(o.title || ''), body: String(o.body || ''), footer: String(o.footer || '') }); };
+  P.showReviewDiff('旧。', '新。', {
+    applied: 1,
+    coverage: [{ issue_id: 'R-1', status: 'patched' }],
+    semantic: { summary: { total: 1, verified: 0, awaiting_semantic: 1 }, issues: [{ issue_id: 'R-1', final_status: 'AWAITING_SEMANTIC', semantic_status: 'not_run', reason: '语义核验未运行' }] },
+    closure: { text: '审稿确认：1 条\n候选稿状态：PARTIAL_VERIFIED（不宣称全部修好）' },
+  });
+  sandbox.openModal = realOpen;
+  check('QC-8 语义待复验时差异预览给出"独立语义复验"按钮（作者显式触发付费）',
+    opened[0].footer.includes('diff-semantic-verify'), opened[0].footer);
+  check('QC-9 闭环报告渲染进差异预览（真实计数 + 候选/入库分离）',
+    opened[0].body.includes('质量闭环') && opened[0].body.includes('审稿确认：1 条')
+    && opened[0].body.includes('PARTIAL_VERIFIED'), opened[0].body.slice(0, 120));
+  check('QC-10 本轮没有"已按清单改好"这类把补丁数当修复数的文案',
+    !/已按清单改好|已全部修好/.test(opened[0].title + opened[0].body), opened[0].title);
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

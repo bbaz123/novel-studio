@@ -505,16 +505,18 @@ await suite('nsdsh/regression-findings', [
   // ────────────────────────────────────────────────────────────────────────────
   // F11 通用文件工具来自 bundle / preset，不在插件自己的工具清单里（→ S09）
   // ────────────────────────────────────────────────────────────────────────────
-  ['F11 [静态] 插件只注册 26 个 novel_*；通用 fs 工具来自 bundle 补丁与 GUI preset（F11→S09）', () => {
+  ['F11 [静态] 插件只注册 novel_* 工具（27 个，含 v1.2.1 只读 novel_revision_status）；通用 fs 工具来自 bundle 补丁与 GUI preset（F11→S09）', () => {
     const generic = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh'];
 
     // ① 插件自己的工具清单（plugin.json）与真实注册点（novel-tools.mjs）都只有 novel_*。
+    // 数量是**表征现状**：新增只读工具会让它变，但两份清单必须始终一致，且不得掺入通用文件工具。
     const pluginTools = JSON.parse(readRepo('harness-plugins/novel-writing/plugin.json')).tools.map((t) => String(t.name));
-    assert.equal(pluginTools.length, 26, `插件声明 ${pluginTools.length} 个工具（应为 26 个 novel_*）`);
+    assert.equal(pluginTools.length, 27, `插件声明 ${pluginTools.length} 个工具（应为 27 个 novel_*）`);
     assert.deepEqual(pluginTools.filter((n) => !n.startsWith('novel_')), [], '插件不得注册非 novel_* 工具');
     assert.deepEqual(pluginTools.filter((n) => generic.includes(n)), [], 'F11：插件的工具清单里没有通用文件工具');
     const registered = [...readRepo('harness-plugins/novel-writing/novel-tools.mjs').matchAll(/register\('([a-z_]+)'/g)].map((m) => m[1]);
-    assert.equal(registered.length, 26, `novel-tools.mjs 实际注册 ${registered.length} 个工具`);
+    assert.equal(registered.length, pluginTools.length, `novel-tools.mjs 实际注册 ${registered.length} 个工具，与 plugin.json 不一致`);
+    assert.equal(registered.length, 27, `novel-tools.mjs 实际注册 ${registered.length} 个工具`);
     assert.deepEqual(registered.filter((n) => !n.startsWith('novel_')), []);
     assert.deepEqual(registered.filter((n) => generic.includes(n)), []);
 

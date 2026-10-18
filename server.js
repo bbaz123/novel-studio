@@ -119,10 +119,23 @@ const PORT = (() => {
   return n;
 })();
 
+// ── 修稿质量闭环（v1.2.1 P0-7/P0-9）──────────────────────────────────────────
+// 三种模式：
+//   off         —— 关闭新路径：不接收回执、状态接口如实返回 enabled:'off'
+//   diagnostics —— 默认：允许回执与只读状态查询，但**不开放**自动二次复修
+//   full        —— 允许自动二次复修（仍需作者一次性写回审批，本端点不碰正文）
+// 为什么默认不是 full：自动多轮复修会产生真实费用，且"修不修得动"需要作者在场判断；
+// 先把"每条问题到底怎么了"变成可读的事实，再决定是否让它自动跑。
+const REVISION_CLOSURE_MODE = (() => {
+  const raw = String(process.env.NOVELSTUDIO_REVISION_CLOSURE || '').trim().toLowerCase();
+  return ['off', 'diagnostics', 'full'].includes(raw) ? raw : 'diagnostics';
+})();
+// 回执只是元数据，但仍要有上限：避免把整章正文/日志塞进选择记录。
+const MAX_CLOSURE_JSON = 64 * 1024;
+
 // P07：健康（进程活着）/ 就绪（可提供完整服务）分离。未就绪时写请求一律 503，
 // 避免"看起来在运行"的半初始化服务把数据写进未迁移的库。
-const readinessState = {
-  ready: false,
+const readinessState = {  ready: false,
   reason: 'initializing',
   started_at: new Date().toISOString(),
   checks: { database: false, dispatcher: false, projections: false },
@@ -417,6 +430,8 @@ const AUTHOR_ONLY_WRITES = [
   { resource: 'novel', label: '章节蓝图删除', method: 'DELETE', seg2: 'chapter_blueprints' },
   { resource: 'novel', label: '审稿提示关闭', method: 'POST', seg2: 'review', seg3: 'dismiss' },
   { resource: 'novel', label: '审稿确认清单', method: 'PUT', seg2: 'review', seg3: 'checklist' },
+  // v1.2.1 质量闭环：回执是作者侧观测数据（不属于模型可写的决策类），仍按作者通道限制。
+  { resource: 'novel', label: '修稿闭环回执', method: 'POST', seg2: 'revision', seg3: 'closure-receipt' },
   { resource: 'novel', label: '生成稿关闭', method: 'POST', seg2: 'draft', seg3: 'dismiss' },
   { resource: 'story_memory', label: '长期记忆回滚', method: 'POST', seg2: 'rollback' },
 ];
@@ -4226,10 +4241,12 @@ function mergeMemoryDraft(prevSummary, deltaEventsText) {
  */
 function saveRevisionSelection(workId, chapterId, payload = {}) {
   const ids = Array.isArray(payload.selectedIssueIds) ? payload.selectedIssueIds.map((x) => String(x)) : [];
+  const closureJson = payload.closure && typeof payload.closure === 'object'
+    ? JSON.stringify(payload.closure).slice(0, MAX_CLOSURE_JSON) : '';
   const info = prepare(`
     INSERT INTO revision_selections
-      (work_id, chapter_id, review_id, snapshot_id, base_hash, selection_hash, plan_hash, selected_issue_ids_json, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (work_id, chapter_id, review_id, snapshot_id, base_hash, selection_hash, plan_hash, selected_issue_ids_json, source, closure_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     Number(workId) || 0, Number(chapterId) || 0,
     Number(payload.reviewId) || null,
@@ -4239,6 +4256,7 @@ function saveRevisionSelection(workId, chapterId, payload = {}) {
     asString(payload.planHash, '').slice(0, 200),
     JSON.stringify(ids).slice(0, 20000),
     asString(payload.source, 'ui').slice(0, 40),
+    closureJson,
   );
   // 每章只保留最近 20 次选择记录（与审稿保留 10 份同一思路：可复核，但不成垃圾场）。
   prepare(`
@@ -4254,12 +4272,44 @@ function latestRevisionSelection(chapterId) {
   if (!row) return null;
   let ids = [];
   try { const parsed = JSON.parse(row.selected_issue_ids_json || '[]'); ids = Array.isArray(parsed) ? parsed.map((x) => String(x)) : []; } catch (_) { ids = []; }
+  const closure = parseClosureJson(row.closure_json);
   return {
     id: row.id, work_id: row.work_id, chapter_id: row.chapter_id, review_id: row.review_id || null,
     snapshot_id: row.snapshot_id || '', base_hash: row.base_hash || '',
     selection_hash: row.selection_hash || '', plan_hash: row.plan_hash || '',
     selected_issue_ids: ids, source: row.source || '', created_at: row.created_at || '',
+    closure,
   };
+}
+
+/**
+ * 回执解析：只接受对象；坏 JSON 如实返回 null（不抛错、也不假装"没有回执"是"已通过"）。
+ * 为什么单独抽出来：`latestRevisionSelection` 与状态接口都要读它，两处各写一遍必然漂移。
+ */
+function parseClosureJson(raw) {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch (_) { return null; }
+}
+
+/**
+ * 修稿闭环回执（v1.2.1 P0-7）：只把 closure 摘要**附加到本章最近一次选择记录**。
+ *
+ * 边界（刻意写死）：
+ *   · 不改勾选集合、不改章节正文、不新增选择记录 —— 回执是"这一轮修稿的事实"，不是新授权；
+ *   · 没有选择记录时如实 404：回执不能凭空创建一次修稿；
+ *   · 只更新最新一行，历史记录保持原样（可复核、不被覆盖）。
+ */
+function saveRevisionClosureReceipt(workId, chapterId, closureJson) {
+  const row = prepare('SELECT id, work_id FROM revision_selections WHERE chapter_id = ? ORDER BY id DESC LIMIT 1')
+    .get(Number(chapterId) || 0);
+  if (!row) return null;
+  if (Number(workId) && Number(workId) !== Number(row.work_id)) return null;
+  prepare('UPDATE revision_selections SET closure_json = ? WHERE id = ?')
+    .run(String(closureJson || '').slice(0, MAX_CLOSURE_JSON), row.id);
+  return { id: row.id, work_id: row.work_id };
 }
 
 function saveReview(workId, chapterId, report, extra = {}) {
@@ -9098,8 +9148,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         }
         // 当前状态条件更新（P01 第 5 步）：同一伏笔的相邻请求不得互相覆盖。
         // 值没变时（重复提交同一结果）视为幂等，不报错——界面重复点按不应变成冲突。
-        const info = prepare('UPDATE story_events SET foreshadow_status = ? WHERE id = ? AND COALESCE(foreshadow_status, \'open\') = ?')
-          .run(status, id, String(row.foreshadow_status || 'open'));
+        //
+        // ⚠️ 2026-10-18（插件冒烟实测）：`story_events.foreshadow_status` 的**存储默认值是空串**，
+        //    而空串在业务语义里就是 open（见 db.js 的列注释与 ai/story-state/foreshadow.mjs）。
+        //    旧写法 `COALESCE(foreshadow_status,'open')` 只把 NULL 当 open，于是"新建且没显式写状态"
+        //    的伏笔第一次更新必然 0 行 → 被误判成并发冲突（409），把一次合法操作说成冲突。
+        //    现按**存储语义**归一：'' 与 'open' 是同一个当前状态；SQL 里用 CASE 显式表达，
+        //    不依赖 COALESCE 对空串的默认行为。
+        const currentStatus = String(row.foreshadow_status == null ? '' : row.foreshadow_status).trim() || 'open';
+        const info = prepare(`UPDATE story_events SET foreshadow_status = ?
+          WHERE id = ?
+            AND (CASE WHEN COALESCE(foreshadow_status, '') IN ('', 'open') THEN 'open' ELSE foreshadow_status END) = ?`)
+          .run(status, id, currentStatus);
         if (Number(info.changes) !== 1) {
           const nowRow = prepare('SELECT foreshadow_status, resolves_event_id FROM story_events WHERE id = ?').get(id);
           const same = String(nowRow?.foreshadow_status || 'open') === status
@@ -9388,6 +9448,49 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
     const sel = latestRevisionSelection(chapterId);
     return sendJSON(res, 200, { ok: true, selection: sel });
+  }
+  // ── v1.2.1 质量闭环：回执（只附加到最近一次选择记录，不能改正文/勾选）──────
+  if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'closure-receipt' && method === 'POST') {
+    if (REVISION_CLOSURE_MODE === 'off') {
+      return sendError(res, 409, '修稿闭环回执已关闭（NOVELSTUDIO_REVISION_CLOSURE=off）');
+    }
+    const body = await readBody(req);
+    const chapterId = Number(body.chapter_id);
+    const chapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
+    const closure = body.closure;
+    if (!closure || typeof closure !== 'object' || Array.isArray(closure)) return sendError(res, 400, 'closure 必须是对象');
+    const json = JSON.stringify(closure);
+    if (json.length > MAX_CLOSURE_JSON) {
+      return sendError(res, 413, `closure 过大（>${MAX_CLOSURE_JSON} 字节）：只上报摘要，不要塞正文/日志`);
+    }
+    const saved = saveRevisionClosureReceipt(chapter.work_id, chapterId, json);
+    if (!saved) return sendError(res, 404, '这一章还没有修稿选择记录：回执不能凭空创建一次修稿');
+    return sendJSON(res, 200, { ok: true, selection_id: saved.id, closure_version: Number(closure.closure_version) || null, mode: REVISION_CLOSURE_MODE });
+  }
+  // ── v1.2.1 质量闭环：只读状态（DSH/插件/界面读"这次到底修好了几条"）────────
+  // 只读是硬边界：不触发复修、不写库、不调用模型，也不返回作者未提交的正文。
+  if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'closure' && segments[4] === 'status' && method === 'GET') {
+    const chapterId = Number(query.chapter_id);
+    if (!chapterId) return sendError(res, 400, '缺少 chapter_id');
+    const chapter = prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId);
+    if (!chapter) return sendError(res, 404, '章节不存在');
+    const sel = latestRevisionSelection(chapterId);
+    return sendJSON(res, 200, {
+      ok: true,
+      closure: {
+        enabled: REVISION_CLOSURE_MODE,
+        contract_version: 2,
+        chapter_id: chapterId,
+        work_id: chapter.work_id,
+        selection_id: sel ? sel.id : null,
+        selection: sel,
+        receipt: sel ? sel.closure : null,
+        read_only: true,
+        generated_at: new Date().toISOString(),
+      },
+    });
   }
   // E06：模型诊断 / 人工复判 / 结构指标 三类证据的**对照数据**（只读；比例由界面按样本量守卫决定是否显示）。
   if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'comparison' && method === 'GET') {

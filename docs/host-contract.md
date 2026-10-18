@@ -176,14 +176,14 @@
 
 | 项 | 内容 |
 |---|---|
-| **输入** | 插件清单 `harness-plugins/novel-writing/plugin.json`：`tools`（26 个）、`engineEndpoints`（75 条）、`dshPlugin.contract`（exports / registersToolsVia）、`identityEnv`、`proposeModeEnv` |
+| **输入** | 插件清单 `harness-plugins/novel-writing/plugin.json`：`tools`（27 个）、`engineEndpoints`（76 条）、`dshPlugin.contract`（exports / registersToolsVia）、`identityEnv`、`proposeModeEnv` |
 | **输出** | dsh 侧工具注册（`ctx.tools.register`）+ 对宿主的 HTTP 调用；插件日志经 `POST /api/logs`（layer=`plugin`） |
 | **状态** | 插件进程是 dsh headless；无宿主侧长驻状态 |
 | **错误码** | 与所调端点一致（见各契约）；插件自身的失败必须上报日志而不是静默 |
 | **retryable** | 见 §9（按 HTTP 状态码分类） |
 | **兼容策略** | 工具名与端点映射冻结；**新增**工具允许（必须同步 fixture 与文档） |
 | **版本** | 1.12.0（插件面：工具 26、端点 75；1.12.0 给 `novel_write_pipeline` 增加可选 `direction` / `direction_source` 参数（仅用于检索与审计），并给两条 context 端点增加 `direction` / `direction_source` / `library_recall_phase` / `request_id` 可选参数与 `retrieval_stats` / `retrieval_plan` additive 响应字段——工具数与端点数**不变**；1.11.0 新增门控上下文层 `library`（默认关闭：关闭时该层不存在、不进 excluded、不计入下限）与资料库端点（`GET /api/novel/library/status|search|doc` 只读，模型侧可用；`PUT /api/novel/library/enabled`、`POST /api/novel/library/import|import/confirm`、`DELETE /api/novel/library/doc/:id` 为作者动作，模型侧一律 403）与模型工具 `novel_library`；资料不是本书事实，条目 canon 记 reference、层标题与条目标注一律写明「参考资料」。1.10.0 新增 `GET /api/import/guard` 与导入后重建的五条端点（`POST /api/import/rebuild/plan|record|confirm|cancel`、`GET /api/import/rebuild/status`），其中 **confirm 是作者动作**（模型侧 403）——模型可以规划批次、记录自己的抽取结果，不能把候选确认为正式状态；导入安全判据由 `ai/import/guard.mjs` 单点执行，TXT / Markdown / EPUB 三种既有格式全部保留；同一轮把请求体上限提到 36MB 并在超限时先排空请求体再回 413。1.9.0 新增 `novel_branch` 与沙盘/候选端点；1.4.0 起新增的 `POST /api/novel/adopt`、投影查看/重试/重放/重建/审计端点，1.6.0 的 `PUT /api/novel/editing`，以及 1.7.0 的 `POST/PUT/DELETE /api/novel/style/samples`、`POST /api/novel/style/profile`、`PUT/DELETE /api/novel/author_intent` 均为**作者界面专用**，模型侧调用返回 403；`GET /api/novel/editing*`、`POST /api/novel/editing/scan`、`GET /api/novel/style/*`、`GET /api/novel/author_intent`、`GET /api/novel/state/disclosure`、`GET /api/novel/library/status|search|doc` 只读，模型侧可用；1.9.0 的沙盘开 / 候选提交 / 列表 / 单条 / 比较端点模型侧可用——**采纳、丢弃、取消、重开是作者动作，模型侧一律 403**） |
-| **不变条件** | ① 1.0.0 的 15 个 `novel_*` 工具名与语义不变，1.1.0 新增 8 个（合计 23；1.3.0 新增 `novel_approvals`、1.9.0 新增 `novel_branch`、1.11.0 新增 `novel_library` 后现为 26）；② 端点面 = fixture `plugin_adapter.endpoints`（75 条）；③ 每个端点在 `server.js` 里真的存在（契约测试逐条核对） |
+| **不变条件** | ① 1.0.0 的 15 个 `novel_*` 工具名与语义不变，1.1.0 新增 8 个（合计 23；1.3.0 新增 `novel_approvals`、1.9.0 新增 `novel_branch`、1.11.0 新增 `novel_library`、v1.2.1 新增只读 `novel_revision_status` 后现为 27）；② 端点面 = fixture `plugin_adapter.endpoints`（76 条）；③ 每个端点在 `server.js` 里真的存在（契约测试逐条核对） |
 | **可观测字段** | 插件请求可带 `X-Trace-Op` / `X-Trace-Title`，日志 `layer=plugin` |
 | **不可绕过** | 绕过 context budget / 直写全局 settings / 自建 task-trace-recovery / 直写 DB / 绕开策略表调 `/api/ai/*` |
 
@@ -214,12 +214,13 @@
 | `novel_state_commit` | 审核/应用/驳回提案（应用走单事务，可回滚） |
 | `novel_snapshot` | 打快照 / 回滚（回滚不删行：新增标 superseded、改过的改回取值） |
 | `novel_approvals` | 列出作者创建的一次性审批（只读）：模型侧写入必须引用作者审批，不能自行创建 |
+| `novel_revision_status` | 读取某章最近一次修稿的闭环状态（只读）：勾选/定位/补丁/门禁/语义通过/未解决计数与逐条原因码；不触发复修、不改正文，候选稿未入库时明确标注 |
 | `novel_write_pipeline` | 编排层：预检 → 写作 → 校验 → 提案（**不自己生成正文**） |
 | `novel_branch` | 剧情分支沙盘：提候选（open/submit）/ 列表 / 单条视图 / 九维比较；候选是提案、带依赖基线 hash 与来源；**采纳/丢弃/取消不在工具面内**（作者动作，模型侧 403） |
 | `novel_library` | 查共享资料库（跨作品写作参考资料）：search 按关键词/分类检索、read 按 id 读回原文窗口；资料不是本书事实，引用须标注「参考资料」 |
 
 （上表里的工具名同时出现在 fixture 的 `plugin_adapter.tools`；工具名与端点映射由 `verify-plugin-tools.mjs` 与契约测试双重核对。）
-**插件可以使用的接口**（白名单，75 条端点逐条列出；第 26 条起是 1.1.0–1.11.0 新增的确定性故事状态、披露派生视图、审批、编辑规则、作者意图、剧情分支沙盘、导入重建与共享资料库端点；其中沙盘的采纳/丢弃/取消/重开、`POST /api/import/rebuild/confirm` 与资料库的导入/删除/开关仅作者界面可用）
+**插件可以使用的接口**（白名单，76 条端点逐条列出；第 26 条起是 1.1.0–1.11.0 新增的确定性故事状态、披露派生视图、审批、编辑规则、作者意图、剧情分支沙盘、导入重建与共享资料库端点；其中沙盘的采纳/丢弃/取消/重开、`POST /api/import/rebuild/confirm` 与资料库的导入/删除/开关仅作者界面可用；v1.2.1 追加一条只读修稿闭环端点：`GET /api/novel/revision/closure/status`（回执由作者界面写入，不在模型工具白名单里））
 
 ```
 GET /api/novel/ping
@@ -237,6 +238,7 @@ PUT /api/novel/chapter_blueprint
 PUT /api/novel/review
 GET /api/novel/review?chapter_id=
 PUT /api/novel/review/checklist
+GET /api/novel/revision/closure/status?chapter_id=
 GET /api/novel/empty_chapters?work_id=
 POST /api/novel/chapter_save
 GET /api/novel/proposals?work_id=

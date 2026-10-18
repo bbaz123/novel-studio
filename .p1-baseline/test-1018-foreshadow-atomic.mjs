@@ -64,6 +64,21 @@ try {
   ok('A 状态已 resolved', f1After?.foreshadow_status === 'resolved', JSON.stringify(f1After));
   ok('A 关联已写入', Number(f1After?.resolves_event_id) === Number(e1.id), JSON.stringify({ resolves: f1After?.resolves_event_id }));
 
+  // A2（2026-10-18 插件冒烟实测补的回归）：`foreshadow_status` 的**存储默认值是空串**，
+  // 而空串在业务语义里就是 open。旧 CAS 判据只把 NULL 当 open，于是"新建且没显式写状态"的伏笔
+  // 第一次更新必然 0 行 → 409（把合法操作说成并发冲突）。这里用**不传 foreshadow_status** 的
+  // 建法复现真实默认值，断言第一次更新必须成功。
+  const fDefault = await addEvent(workA, { kind: 'foreshadow', summary: 'A 伏笔（默认空串状态）' });
+  const defaultRow = (await eventsOf(workA)).find((r) => r.id === fDefault.id);
+  ok('A2 新建伏笔未显式写状态时落库为空串（真实默认值）',
+    String(defaultRow?.foreshadow_status || '') === '' || defaultRow?.foreshadow_status === 'open',
+    JSON.stringify({ status: defaultRow?.foreshadow_status }));
+  const firstUpdate = await j(`/api/novel/foreshadows/${fDefault.id}/status`, { method: 'POST', body: { status: 'resolved' } });
+  ok('A2 空串状态按 open 归一：第一次更新 200（不再误判 409 并发冲突）',
+    firstUpdate.status === 200, `实际 ${firstUpdate.status} ${JSON.stringify(firstUpdate.data).slice(0, 120)}`);
+  const defaultAfter = (await eventsOf(workA)).find((r) => r.id === fDefault.id);
+  ok('A2 更新后状态确为 resolved', defaultAfter?.foreshadow_status === 'resolved', JSON.stringify(defaultAfter));
+
   console.log('【B. 非法目标：三类状态均不变】');
   const f2 = await addEvent(workA, { kind: 'foreshadow', summary: 'A 伏笔 2', foreshadow_status: 'open' });
   const eB = await addEvent(workB, { kind: 'event', summary: 'B 事件' });

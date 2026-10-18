@@ -25,6 +25,29 @@
 回归套件 9 个分套件全过；DSH 验证门 technicalAcceptance=verified。详见
 [docs/v1.2.0-1018-fix-report.md](v1.2.0-1018-fix-report.md)。
 
+### 🧩 同版本追加（2026-10-18 · **v1.2.1 审稿质量闭环**：finding.v2 / 多热点授权 / 逐条语义验收）
+
+**主题**：把"审稿发现问题却只改了一部分、界面却说已改好"这条链路补成可复核的事实链。
+
+- **审稿契约**：`buildAIReviewPrompt` 新增 `findings[]`（稳定 id / 类型 / 严重度 / 逐字证据 /
+  `acceptance.rule`+`preserve`），`issues` 保留给旧界面；`public/revision-findings.js` 做逐字校验与
+  原因码（缺证据 / 引文歧义 / 跨位置证据不足）。
+- **多热点局部授权**：`buildRevisionPlanV2` 让一条问题拥有多处**只读证据**与多处**逐一授权**的编辑目标，
+  同一问题的目标原子应用；只读证据（开头原句/词条）永不进入授权表。
+- **逐条验收**：`public/revision-semantic-verifier.js` 先跑确定性检查（证据按角色变化、必须保留项、
+  授权外补丁、无 diff 的"已改"），再由作者显式触发的语义复验给逐条结论；`semantic:not_run` 永不判 resolved。
+- **闭环状态**：`public/revision-closure.js` 把勾选/定位/补丁/门禁/语义通过/未解决分开计数，
+  明确 `VERIFIED_CANDIDATE`（候选稿）与 `PERSISTED_VERIFIED`（作者批准入库）是两个终态；预算用整数分、
+  未知费用不放行。
+- **只读回执与工具**：`POST /api/novel/revision/closure-receipt`（只附加到最近一次选择记录，不改正文）
+  + `GET /api/novel/revision/closure/status`（只读）；DSH 插件新增只读工具 `novel_revision_status`。
+- **默认关闭自动复修**：`NOVELSTUDIO_REVISION_CLOSURE=off|diagnostics|full`，默认 `diagnostics`
+  （允许回执/状态，不自动二次复修、不自动写回）。
+
+**验证**：`node .p1-baseline/test-1019-revision-closure.mjs` → 5 套件全过，R-01…R-30 中 26 条有断言归属、
+4 条显式 SKIP（DSH 双插件/分段路径，理由写进输出）；`frontend-test.mjs` 全过（新增 QC-0…QC-10 接线断言）；
+`test-narrative-repair` 17 套件零回归。详见 [docs/v1.2.1-revision-closure.md](v1.2.1-revision-closure.md)。
+
 ### 🛠️ 最近更新（2026-10-16 · **v1.2.0** 实验版：NSDSH 重构 S00–S03 落地——隔离底座、行为表征、四用例抽取与四个时态缺陷修复）
 
 **这就是当前版本**。本版是《Novel Studio × DSH 架构优化》分阶段改造（S00–S18）的**前四个阶段**，

@@ -418,6 +418,9 @@ round — lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent releases on 
 - **v1.2.1** — security & correctness patch (P01–P16): authorisation boundaries and write atomicity,
   origin/body entry hardening, startup readiness, analysis fencing, AI response caps, trace redaction,
   input validation and search recall. See `docs/v1.2.0-1018-fix-report.md`.
+  Same version, review-quality closure: machine-readable findings with verbatim evidence, multi-hotspot
+  authorised repair, per-issue semantic verification, and an explicit "patch applied ≠ issue solved ≠
+  committed" state model (`docs/v1.2.1-revision-closure.md`).
 - **v1.2.0** — review-fact attribution; a vanished quote no longer counts as a solved problem;
   fail-closed authorisation on the review → localised-revision chain.
 - **v1.1.9** — unapproved *institution* and *temporal-causality* candidates, plus a post-revision

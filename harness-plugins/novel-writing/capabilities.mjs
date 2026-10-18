@@ -52,6 +52,8 @@ export const TOOL_CAPABILITIES = Object.freeze({
   novel_events: CAPABILITY.READ_ONLY,
   novel_state: CAPABILITY.READ_ONLY,
   novel_approvals: CAPABILITY.READ_ONLY,        // 只列出作者已创建的审批；不得代作者创建
+  // v1.2.1 质量闭环：只读"这一章修稿到底修好了几条"；不触发复修、不改正文、不需要审批。
+  novel_revision_status: CAPABILITY.READ_ONLY,
   novel_library: CAPABILITY.READ_ONLY,
   novel_memory_read: CAPABILITY.READ_ONLY,
   novel_style_contract: CAPABILITY.READ_ONLY,

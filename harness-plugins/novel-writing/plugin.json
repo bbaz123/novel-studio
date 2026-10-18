@@ -115,6 +115,10 @@
       "description": "列出作者为当前作品创建的一次性审批（只读）：模型侧写入必须先由作者在界面确认生成审批，再把 approval id 传给对应工具。"
     },
     {
+      "name": "novel_revision_status",
+      "description": "读取某章最近一次修稿的闭环状态（只读）：勾选条数 / 准确定位 / 应用补丁数 / 门禁通过 / 语义验收通过 / 未解决条数，以及每条的原因码与下一步。不触发复修、不改正文；候选稿未入库时明确标注。"
+    },
+    {
       "name": "novel_write_pipeline",
       "description": "写作编排层（推荐主入口）：一次调用完成状态读取 → 写前预检 → 唯一上下文 → 写作简报；正文仍由模型创作。"
     },
@@ -143,6 +147,7 @@
     "PUT /api/novel/review",
     "GET /api/novel/review?chapter_id=",
     "PUT /api/novel/review/checklist",
+    "GET /api/novel/revision/closure/status?chapter_id=",
     "GET /api/novel/empty_chapters?work_id=",
     "POST /api/novel/chapter_save",
     "GET /api/novel/proposals?work_id=",

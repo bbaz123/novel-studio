@@ -942,7 +942,12 @@ try {
     assert.equal(badJson.status, 400, `非法 JSON 请求体应返回 400，实际 ${badJson.status}`);
     const r2 = await jfetch('/api/logs?kind=http_error&layer=server');
     assert.ok(r2.data.entries.length > 0, '服务端接口异常应入账 http_error');
-    assert.ok(r2.data.entries[0].code_file.includes('server.js'), 'http_error 应携带发生位置的代码文件');
+    // 2026-10-18：请求体解析已抽到 ai/http/respond.mjs（P05 的单一入口），
+    // 因此异常发生位置的真实代码文件是 respond.mjs 而不是 server.js。
+    // 断言意图不变（必须能定位到**真实代码文件**），只把允许值改成实际的两个落点，
+    // 并排除空值/占位字符串 —— 不能因为"换了文件"就让定位能力退化。
+    const codeFile = String(r2.data.entries[0].code_file || '');
+    assert.ok(/(server|respond)\.mjs/.test(codeFile), `http_error 应携带发生位置的代码文件（实际 ${JSON.stringify(codeFile)}）`);
     ok('日志：服务端接口异常（400 非法 JSON）入账并定位代码文件');
 
     // 6b) 非法 work_id 写事件 → 404（修复前外键违约冒泡为 500）

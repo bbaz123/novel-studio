@@ -158,6 +158,23 @@
   };
 
   /**
+   * 一条问题的**候选编辑片段**（按优先级）：结构化 evidence 引用 > 显式 quote > 描述里的引号提及。
+   *
+   * 为什么要抽成函数：v1 与 v2 必须用**同一份**候选生成逻辑，否则两条路径的"能改哪一句"
+   * 会悄悄漂移 —— 同一条证据在旧路径定位成功、新路径定位失败，作者看到的就是时灵时不灵。
+   * v2 的差别只在"哪条候选是**只读引用**、哪条才是可申请编辑的目标"，不在片段怎么来。
+   */
+  function targetCandidates(finding) {
+    const f = finding || {};
+    const described = String(f.text != null ? f.text : (f.explanation || ''));
+    return [
+      ...(Array.isArray(f.evidence) ? f.evidence.map((e) => String((e && e.quote) || '')).filter(Boolean) : []),
+      String(f.quote || ''),
+    ].filter(Boolean).map((frag) => ({ frag, widen: false }))
+      .concat(extractQuotedFragments(described).map((frag) => ({ frag, widen: true })));
+  }
+
+  /**
    * 把已选问题编译成受约束的局部编辑计划。
    *
    * @param {object} input
@@ -198,11 +215,7 @@
       // ⚠️ 2026-10-10（作者授权）：**来源决定授权口径**（见 locateFragment 的说明）——
       //   结构化引用 / 显式 quote 是"作者已指定逐字目标"，保持片段精度；
       //   问题描述里的「」只是**提及**（引号外的标点不在引用里），命中时放宽到所在整句。
-      const candidates = [
-        ...(Array.isArray(f.evidence) ? f.evidence.map((e) => String((e && e.quote) || '')).filter(Boolean) : []),
-        String(f.quote || ''),
-      ].filter(Boolean).map((frag) => ({ frag, widen: false }))
-        .concat(extractQuotedFragments(f.text).map((frag) => ({ frag, widen: true })));
+      const candidates = targetCandidates(f);
       let hit = null;
       let usedFragment = '';
       let ambiguous = null;
@@ -349,6 +362,269 @@
   }
 
   /**
+   * v2 计划：一条问题可以有多处**可编辑目标**，并保留任意多处**只读证据**（方案 §5.2/§6.2）。
+   *
+   * 与 v1 的差别只在"授权结构"，不在"授权纪律"：
+   *   · 只读证据（role=reference）**永不**变成可写跨度 —— 开头"折过两折"可以被读来对比，
+   *     但模型不能顺手把它改掉；能改的只有 role=candidate_edit 且逐一授权的目标；
+   *   · 同一问题的多个目标共用一个原子组（`issue:<id>`）：只要其中一条没过门禁，
+   *     整个问题不进候选 —— 不允许"改了一半就宣称已处理"；
+   *   · 定位仍然要求**唯一**：歧义/找不到就如实报，绝不猜第一处，也绝不退回整章。
+   *
+   * 兼容：没有显式 role 的结构化 evidence（旧审稿只存 span_id+quote）按 v1 口径
+   * 全部视为可申请编辑的锚点；没有任何结构化证据时沿用 v1 的"引号片段"候选。
+   *
+   * @param {object} input 与 buildRevisionPlan 同形，额外支持：
+   *   · `hostAuthorization.allows(issueId, start, end, original)` —— 作者已批准范围（可选；
+   *     缺省表示"按作者勾选 + 计划定位授权"，与 v1 一致；一旦提供就逐条强制）。
+   * @returns {object} plan（schema_version:2；含 hotspots / issue_evidence / groups / coverage）
+   */
+  function buildRevisionPlanV2(input = {}) {
+    const snapshot = input.snapshot || {};
+    const text = String(snapshot.body_text == null ? '' : snapshot.body_text);
+    const engine = engineOf(input.engine);
+    const findings = Array.isArray(input.findings) ? input.findings.filter(Boolean) : [];
+    const allowCondense = input.allowCondense === true;
+    const invariants = {
+      must_keep: Array.isArray(input.invariants && input.invariants.must_keep) ? input.invariants.must_keep.map(String).filter(Boolean) : [],
+      do_not_add: Array.isArray(input.invariants && input.invariants.do_not_add) ? input.invariants.do_not_add.map(String).filter(Boolean) : [],
+    };
+    const protectedList = Array.isArray(input.protectedSpans) ? input.protectedSpans.map(String).filter(Boolean) : [];
+    const contextChars = Number(input.contextChars) > 0 ? Number(input.contextChars) : 0;
+    const hostAuth = input.hostAuthorization && typeof input.hostAuthorization === 'object' ? input.hostAuthorization : null;
+
+    const spans = engine && typeof engine.buildSpans === 'function'
+      ? engine.buildSpans(text, { sentences: true, chapter_id: snapshot.chapter_id })
+      : [];
+
+    const hotspots = [];
+    const coverage = [];
+    const unlocated = [];
+    const issueEvidence = {};
+    const groups = [];
+
+    for (const f of findings) {
+      const id = String(f.id == null ? '' : f.id) || `#${coverage.length + 1}`;
+      const wanted = String(f.suggested_action || '').trim();
+      const op = PLAN_OPS.includes(wanted) ? wanted : 'replace';
+      const structured = Array.isArray(f.evidence) ? f.evidence.filter((e) => e && String(e.quote || '').trim()) : [];
+      const explicitRoles = structured.some((e) => e.role === 'candidate_edit' || e.role === 'reference');
+      const references = [];
+      const referenceIssues = [];
+      for (const e of structured) {
+        if (explicitRoles && e.role === 'candidate_edit') continue;
+        const quote = String(e.quote || '').trim();
+        const located = locateFragment(text, quote, spans, { span_id: e.span_id || '' });
+        if (located && located.ambiguous) {
+          referenceIssues.push({ code: 'AMBIGUOUS_ANCHOR', quote: clip(quote, 40), occurrences: located.count, reason: `只读证据「${clip(quote, 20)}」出现 ${located.count} 处：无法确定对比的是哪一处` });
+          references.push({ quote, role: 'reference', ambiguous: true, occurrences: located.count });
+          continue;
+        }
+        if (!located) {
+          referenceIssues.push({ code: 'QUOTE_NOT_FOUND', quote: clip(quote, 40), reason: '只读证据原文不在当前底稿里' });
+          references.push({ quote, role: 'reference', located: false });
+          continue;
+        }
+        references.push({
+          quote, role: 'reference', span_id: located.span_id,
+          start: located.start, end: located.end, paragraph_index: located.paragraph_index,
+          occurrences: 1, unique: true,
+        });
+      }
+      const targetRequests = [];
+      if (explicitRoles) {
+        for (const e of structured) {
+          if (e.role !== 'candidate_edit') continue;
+          targetRequests.push({ frag: String(e.quote || '').trim(), span_id: e.span_id || '', widen: false, declared: true });
+        }
+      } else if (structured.length) {
+        // 旧结构化证据没有 role：按 v1 口径全部作为可申请编辑的锚点（兼容，不新增权限）。
+        for (const e of structured) {
+          targetRequests.push({ frag: String(e.quote || '').trim(), span_id: e.span_id || '', widen: false, declared: true });
+        }
+      } else {
+        for (const cand of targetCandidates(f)) targetRequests.push({ frag: cand.frag, span_id: '', widen: cand.widen === true, declared: false });
+      }
+
+      const locatedTargets = [];
+      let ambiguous = null;
+      if (targetRequests.length && targetRequests.every((t) => t.declared)) {
+        for (const t of targetRequests) {
+          const found = locateFragment(text, t.frag, spans, { span_id: t.span_id || '', widen: t.widen === true });
+          if (found && found.ambiguous) { ambiguous = found; break; }
+          if (!found) { ambiguous = ambiguous || { missing: true, fragment: t.frag }; break; }
+          locatedTargets.push({ ...found, fragment: t.frag });
+        }
+      } else {
+        // 回退候选：按优先级找**第一个**能唯一定位的片段（与 v1 完全同口径）。
+        for (const t of targetRequests) {
+          const found = locateFragment(text, t.frag, spans, { span_id: t.span_id || '', widen: t.widen === true });
+          if (found && found.ambiguous) { if (!ambiguous) ambiguous = found; continue; }
+          if (found) { locatedTargets.push({ ...found, fragment: t.frag }); break; }
+        }
+      }
+      if (!locatedTargets.length) {
+        if (ambiguous && ambiguous.ambiguous) {
+          coverage.push({
+            issue_id: id, status: 'ambiguous_anchor',
+            reason: `引用「${clip(ambiguous.fragment, 24)}」在正文里出现 ${ambiguous.count} 处：定位歧义，`
+              + '只有 Host 给出唯一 span/上下文标识才能改（本模块不猜第一处）',
+          });
+          unlocated.push({ issue_id: id, text: clip(f.explanation || f.text, 80), ambiguous: true, occurrences: ambiguous.count });
+        } else {
+          coverage.push({
+            issue_id: id, status: 'needs_scope',
+            reason: ambiguous && ambiguous.missing
+              ? `声明的编辑目标「${clip(ambiguous.fragment, 24)}」不在当前底稿里：不套用旧跨度，也不改用猜测位置`
+              : '问题里没有可逐字定位的原文引用：要么请作者指出原句，要么由 Host 显式扩大授权范围（本模块不自动放宽）',
+          });
+          unlocated.push({ issue_id: id, text: clip(f.explanation || f.text, 80) });
+        }
+        issueEvidence[id] = { references, reference_issues: referenceIssues, acceptance: f.acceptance || { rule: '', preserve: [] }, target_count: 0, reference_count: references.length };
+        continue;
+      }
+
+      const accepted = [];
+      let blocked = null;
+      for (const loc of locatedTargets) {
+        const original = text.slice(loc.start, loc.end);
+        if (protectedList.some((p) => (p.length >= 4 ? original.includes(p) || p.includes(original) : p === loc.span_id))) {
+          blocked = { status: 'refused', reason: `目标落在受保护范围内（${clip(original, 20)}）：不得作为改动对象` };
+          break;
+        }
+        if (wanted === 'condense' && !allowCondense) {
+          blocked = { status: 'refused', reason: '「允许对已选问题局部压缩」开关未打开：condense 不参与本次计划（可在审稿清单弹窗里勾选后重来）' };
+          break;
+        }
+        if (wanted === 'condense' && !loc.exact && !f.merged_span_approved) {
+          blocked = { status: 'refused', reason: 'condense 需要 Host 显式批准的连续跨度（merged_span_approved）；句内压缩请用 replace' };
+          break;
+        }
+        if (hostAuth && typeof hostAuth.allows === 'function') {
+          let ok = false;
+          try { ok = hostAuth.allows(id, loc.start, loc.end, original) === true; } catch (_) { ok = false; }
+          if (!ok) {
+            blocked = { status: 'authorization_missing', reason: `这一处（${clip(original, 20)}）不在作者已批准的精确范围内：需要补充该跨度的授权` };
+            break;
+          }
+        }
+        accepted.push({ loc, original });
+      }
+      if (blocked) {
+        coverage.push({ issue_id: id, status: blocked.status, reason: blocked.reason, target_count: locatedTargets.length });
+        unlocated.push({ issue_id: id, text: clip(f.explanation || f.text, 80) });
+        issueEvidence[id] = { references, reference_issues: referenceIssues, acceptance: f.acceptance || { rule: '', preserve: [] }, target_count: 0, reference_count: references.length };
+        continue;
+      }
+
+      const groupId = `issue:${id}`;
+      const issueHotspots = [];
+      for (const { loc, original } of accepted) {
+        const para = spans.find((sp) => sp.kind === 'paragraph' && sp.paragraph_index === loc.paragraph_index) || null;
+        const readOnlyBefore = para ? clip(text.slice(para.start, loc.start), contextChars ? Math.ceil(contextChars / 2) : 120) : '';
+        const readOnlyAfter = para ? clip(text.slice(loc.end, para.end), contextChars ? Math.ceil(contextChars / 2) : 120) : '';
+        const hotspot = {
+          issue_id: id,
+          role: 'target',
+          op,
+          span: { start: loc.start, end: loc.end, span_id: loc.span_id, exact: loc.exact, widened_to: loc.widened_to || null },
+          original,
+          paragraph_index: loc.paragraph_index,
+          read_only: { before: readOnlyBefore, after: readOnlyAfter },
+          must_keep: invariants.must_keep.slice(),
+          do_not_add: invariants.do_not_add.slice(),
+          group_id: groupId,
+          source_fragment: clip(loc.fragment, 60),
+        };
+        hotspots.push(hotspot);
+        issueHotspots.push(hotspot);
+      }
+      groups.push({
+        group_id: groupId,
+        issue_ids: [id],
+        atomic: true,
+        shared_context: issueHotspots.length > 1,
+        context_span: {
+          start: Math.min(...issueHotspots.map((h) => h.span.start)),
+          end: Math.max(...issueHotspots.map((h) => h.span.end)),
+        },
+        note: issueHotspots.length > 1
+          ? '同一问题的多处目标原子应用：任一处失败则整个问题不进本次候选'
+          : '同组补丁原子应用：其中一条失败则该组不进入本次候选',
+      });
+      issueEvidence[id] = {
+        references,
+        reference_issues: referenceIssues,
+        acceptance: f.acceptance || { rule: '', preserve: [] },
+        target_count: issueHotspots.length,
+        reference_count: references.length,
+        evidence_source: explicitRoles ? 'structured' : (structured.length ? 'structured_no_roles' : 'quoted_mention'),
+      };
+      coverage.push({
+        issue_id: id,
+        status: 'planned',
+        op,
+        group_id: groupId,
+        target_count: issueHotspots.length,
+        reference_count: references.length,
+        reference_incomplete: referenceIssues.length > 0,
+        span_id: issueHotspots[0].span.span_id,
+        spans: issueHotspots.map((h) => ({ span_id: h.span.span_id, start: h.span.start, end: h.span.end })),
+      });
+    }
+
+    const planChars = hotspots.reduce((n, h) => n + h.original.length + h.read_only.before.length + h.read_only.after.length + 80, 0)
+      + (invariants.must_keep.join('').length + invariants.do_not_add.join('').length);
+    const overBudget = contextChars > 0 && planChars > contextChars;
+    const needsWidening = overBudget
+      ? {
+        reason: `计划所需的上下文 ${planChars} 字 > 本次预算 ${contextChars} 字：需要**显式扩大授权**或分片，不能自动扩大跨度、也不能截断正文`,
+        needed_chars: planChars,
+        budget_chars: contextChars,
+        candidate_ranges: groups.map((g) => ({
+          group_id: g.group_id,
+          issue_ids: g.issue_ids,
+          span: g.context_span,
+          chars: g.context_span.end - g.context_span.start,
+        })),
+      }
+      : null;
+
+    const selectionHash = sha16(findings.map((f) => String(f.id == null ? '' : f.id)).sort().join('|'));
+    const scopeIncomplete = unlocated.length > 0
+      || coverage.some((c) => ['needs_scope', 'ambiguous_anchor', 'authorization_missing'].includes(c.status));
+    const plan = {
+      schema_version: 2,
+      plan_version: VERSION,
+      snapshot_id: String(snapshot.snapshot_id || ''),
+      base_hash: String(snapshot.body_hash || ''),
+      chapter_id: snapshot.chapter_id == null ? '' : String(snapshot.chapter_id),
+      hotspots,
+      groups,
+      invariants,
+      protected_spans: protectedList,
+      coverage,
+      // 只读证据按 issue 归位：界面/提示词/验收器都读这一份，避免三处各解释一遍"哪些只是证据"。
+      issue_evidence: issueEvidence,
+      unlocated_hotspots: unlocated,
+      needs_explicit_widening: needsWidening,
+      dry_run: true,
+      writes_to_disk: false,
+      selection_hash: selectionHash,
+      scope_incomplete: scopeIncomplete,
+      coverage_complete: coverage.every((c) => c.status !== 'dropped'),
+    };
+    plan.plan_hash = sha16(JSON.stringify({
+      schema: 2,
+      snapshot: plan.snapshot_id, base: plan.base_hash, sel: selectionHash,
+      hotspots: hotspots.map((h) => `${h.issue_id}:${h.span.start}-${h.span.end}:${h.op}:${h.group_id}`),
+      invariants,
+      scope_incomplete: scopeIncomplete ? 1 : 0,
+    }));
+    return plan;
+  }
+
+  /**
    * 把计划编译成 **Host 授权表**（E01-B）——给协议执行器强制执行的许可清单，而不是写在提示词里的希望。
    *
    * 为什么必须有它：`planPatchApplication` 只检查"issue 属于已选"，无法回答
@@ -412,6 +688,53 @@
     };
   }
 
+  /**
+   * v2 授权表：`authorized_targets[issue_id][]`（方案 §6.2 第 5 条）。
+   *
+   * 为什么同时保留 `authorized`：执行器（revision-patch.js）与历史页面缓存读的是 `authorized`。
+   * 两份键指向**同一张表**（不是复制出两套许可），所以不会出现"一个键说能改、另一个说不能改"。
+   */
+  function planAuthorizationV2(plan) {
+    const p = plan && typeof plan === 'object' ? plan : {};
+    const hotspots = Array.isArray(p.hotspots) ? p.hotspots : [];
+    const table = {};
+    for (const h of hotspots) {
+      const key = String(h.issue_id);
+      const entry = {
+        span_id: h.span && h.span.span_id ? String(h.span.span_id) : '',
+        start: h.span ? Number(h.span.start) : NaN,
+        end: h.span ? Number(h.span.end) : NaN,
+        text: String(h.original == null ? '' : h.original),
+        paragraph_index: h.paragraph_index == null ? null : Number(h.paragraph_index),
+        allowed_ops: ['replace', 'delete'],
+        ops: ['replace', 'delete'],
+        group_id: String(h.group_id || ''),
+      };
+      if (!table[key]) table[key] = [];
+      table[key].push(entry);
+    }
+    const incomplete = p.scope_incomplete === true
+      || (Array.isArray(p.unlocated_hotspots) && p.unlocated_hotspots.length > 0)
+      || (Array.isArray(p.coverage) && p.coverage.some((c) => ['needs_scope', 'ambiguous_anchor', 'authorization_missing'].includes(c.status)));
+    const references = p.issue_evidence && typeof p.issue_evidence === 'object' ? p.issue_evidence : {};
+    return {
+      schema_version: 2,
+      plan_hash: String(p.plan_hash || ''),
+      selection_hash: String(p.selection_hash || ''),
+      snapshot_id: String(p.snapshot_id || ''),
+      base_hash: String(p.base_hash || ''),
+      authorized: table,
+      authorized_targets: table,
+      authorized_span_count: hotspots.length,
+      target_count: hotspots.length,
+      issue_count: Object.keys(table).length,
+      references,
+      protected: [],
+      context_only: [],
+      scope_complete: hotspots.length > 0 && !incomplete,
+    };
+  }
+
   /** 作者改了勾选 → 旧计划（以及由它产出的候选）一律作废（§7 E05 通过条件）。 */
   function isPlanStale(plan, { selectionHash, snapshotId } = {}) {
     if (!plan) return { stale: true, reason: '没有计划' };
@@ -430,6 +753,23 @@
     const hotspots = Array.isArray(p.hotspots) ? p.hotspots : [];
     const lines = [];
     lines.push('【本次授权范围（只有下面这些跨度允许改，其余一个字都不许动）】');
+    // 只读证据单独成块（v2）：同一问题的对比证据（开头"两折"、词条原文等）可以读，
+    // 但如果和"可改跨度"混在一起，模型会顺手把它也改了 —— 那正是越权。
+    const evidenceMap = p.issue_evidence && typeof p.issue_evidence === 'object' ? p.issue_evidence : {};
+    const refLines = [];
+    for (const [issueId, ev] of Object.entries(evidenceMap)) {
+      const refs = Array.isArray(ev && ev.references) ? ev.references.filter((r) => r && r.quote) : [];
+      if (!refs.length && !(ev && ev.acceptance && ev.acceptance.rule)) continue;
+      refLines.push(`- issue ${issueId} 的只读证据（只能用来对比；禁止修改、禁止出现在输出里）：`);
+      for (const r of refs) refLines.push(`  · ${r.quote}${r.ambiguous ? '（位置不唯一，仅作参考）' : (r.located === false ? '（当前底稿里找不到，不得据此改别处）' : '')}`);
+      if (ev && ev.acceptance && ev.acceptance.rule) refLines.push(`  成功判据：${ev.acceptance.rule}`);
+      if (ev && ev.acceptance && Array.isArray(ev.acceptance.preserve) && ev.acceptance.preserve.length) {
+        refLines.push(`  必须保留：${ev.acceptance.preserve.join('；')}`);
+      }
+    }
+    if (refLines.length) {
+      lines.push('', '【只读证据（不是授权跨度）】', ...refLines);
+    }
     if (!hotspots.length) {
       lines.push('（没有可定位的热点：请在 dispositions 里逐条说明为什么无法定位，不要改动任何文字）');
     } else {
@@ -548,8 +888,11 @@
     VERSION,
     PLAN_OPS,
     buildRevisionPlan,
+    // v2（v1.2.1 质量闭环）：多只读证据 + 多授权目标 + 原子问题组。
+    buildRevisionPlanV2,
     buildRevisionPatchPromptFromPlan,
     planAuthorization,
+    planAuthorizationV2,
     isPlanStale,
     planCoverageTable,
     candidateWithoutIssue,
@@ -557,6 +900,7 @@
     revisionSampleGuard,
     // 导出给离线测试单独验（"引号抽取对不对"这类缺陷只走整条链路会被掩盖）。
     extractQuotedFragments,
+    targetCandidates,
     locateFragment,
     sha16,
   };

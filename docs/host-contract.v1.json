@@ -731,6 +731,7 @@
       "novel_state_commit",
       "novel_snapshot",
       "novel_approvals",
+      "novel_revision_status",
       "novel_write_pipeline",
       "novel_branch",
       "novel_library"
@@ -751,6 +752,7 @@
       "PUT /api/novel/review",
       "GET /api/novel/review?chapter_id=",
       "PUT /api/novel/review/checklist",
+      "GET /api/novel/revision/closure/status?chapter_id=",
       "GET /api/novel/empty_chapters?work_id=",
       "POST /api/novel/chapter_save",
       "GET /api/novel/proposals?work_id=",

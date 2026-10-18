@@ -1375,6 +1375,11 @@ const MIGRATIONS = [
   // 两个附加列默认空串 → 存量行为不变；worker_token/lease_expires_at 由 worker 在认领时写入。
   `ALTER TABLE projection_outbox ADD COLUMN worker_token TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE projection_outbox ADD COLUMN lease_expires_at TEXT NOT NULL DEFAULT ''`,
+  // ── v1.2.1 质量闭环（P0-7）：把"这一轮修稿每条问题怎么了"附加到选择记录 ──────
+  // 为什么是附加列而不是新表：选择记录本来就是"这一次修稿的输入快照"，回执是它的**结果**；
+  // 同一行的输入/输出放在一起，才不会出现"选择记录说选了 5 条、回执说处理了 3 条"对不上号。
+  // 默认空串 → 旧记录/旧代码行为不变；只是多一列可读的观测数据，不参与任何权限判定。
+  `ALTER TABLE revision_selections ADD COLUMN closure_json TEXT NOT NULL DEFAULT ''`,
 ];
 // ── D4（S06 已修）：迁移必须**有账本**且**事务化** ──────────────────────────────
 // 病灶：旧循环逐条 `try { db.exec(sql) } catch {}` ——

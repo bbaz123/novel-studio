@@ -1766,6 +1766,53 @@ export const PHASES = [
       + 'P14 只测量不改（结论见 docs/v1.2.0-p16-p14-decisions.md）；P17 按方案为 P3 非阻塞，本轮不做。'
       + '**费用**：全部检查零计费。',
   },
+  {
+    id: 'V13',
+    title: 'v1.2.1 审稿质量闭环：finding.v2 / 多热点授权 / 逐条语义验收 / 闭环状态与只读回执',
+    files: [
+      // 新模块（纯函数，浏览器与 Node 共用）
+      'public/revision-findings.js',
+      'public/revision-semantic-verifier.js',
+      'public/revision-closure.js',
+      // 回归套件（分套件 + 总入口）
+      '.p1-baseline/test-1019-findings.mjs',
+      '.p1-baseline/test-1019-plan-multi.mjs',
+      '.p1-baseline/test-1019-semantic.mjs',
+      '.p1-baseline/test-1019-closure.mjs',
+      '.p1-baseline/test-1019-receipt-http.mjs',
+      '.p1-baseline/test-1019-revision-closure.mjs',
+      // 输入方案（用户附件，原样保留）
+      'Novel_Studio_v1.2.1_审稿修稿质量闭环与DSH联动改造方案 (1).md',
+      // 交付文档
+      'docs/v1.2.1-revision-closure.md',
+      // 业务接线（与既有阶段共用，只能整体回滚）
+      'public/app.js',
+      'public/index.html',
+      'public/revision-plan.js',
+      'public/revision-patch.js',
+      'frontend-test.mjs',
+      'server.js',
+      'db.js',
+      'harness-plugins/novel-writing/novel-tools.mjs',
+      'harness-plugins/novel-writing/capabilities.mjs',
+      'harness-plugins/novel-writing/plugin.json',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+    ],
+    evidence: [
+      'docs/v1.2.1-revision-closure.md',
+      '.p1-baseline/test-1019-revision-closure.mjs',
+      '.p1-baseline/test-1019-receipt-http.mjs',
+    ],
+    // shared 是推导结果：app.js / server.js / db.js / 插件工具 / ci 清单 / 阶段映射自身都被既有阶段共用。
+    rollback: 'shared',
+    note: '**目的**：把"审稿发现问题 → 精确授权 → 局部修稿 → 逐条验收 → 定向复修 → 候选确认 → 作者写回"'
+      + '闭成可复核的事实链，并明确三种"完成"（补丁已应用 / 问题经语义验收解决 / 作者批准入库）。'
+      + '**边界**：自动二次复修与自动写回仍默认关闭（NOVELSTUDIO_REVISION_CLOSURE=diagnostics）；'
+      + '分段修稿仍走 v1 单热点计划（R-30 显式 SKIP）；DSH 自动方案插件侧的触发/双插件联调不在本仓库（R-24/25/26 SKIP）。'
+      + '**费用**：全部离线检查零计费；语义复验只在作者点按钮时发生一次付费调用。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

@@ -151,6 +151,9 @@ export const CHECKS = [
   { name: '前端执行验证（vm + DOM 桩）', cmd: ['frontend-test.mjs'], why: '界面契约' },
   // v1.2.0（2026-10-18）P01–P16 修复的回归总入口：每项修复一个分套件，任一失败即非零退出。
   { name: 'v1.2.0 修复回归（P01–P16：权限边界/原子性/入口安全/启动就绪/outbox/fencing/AI 隐私/输入校验，零计费）', cmd: ['.p1-baseline/test-1018-hardening.mjs'], why: '方案 §P01–P16 的验收断言必须可离线复现：失败请求零副作用、未授权模型操作 0 次成功、旧 attempt 不覆盖新结果、追踪不落正文' },
+  // v1.2.1（2026-10-18）审稿质量闭环：finding.v2 / 多热点授权 / 逐条语义验收 / 闭环状态 / 回执与插件只读工具。
+  // R-01…R-30 的覆盖表在总入口里：26 条有断言归属 + 4 条显式 SKIP（理由写进输出；skipped 不算 passed）。
+  { name: 'v1.2.1 审稿质量闭环回归（R-01–R-30：finding.v2/多热点/语义验收/闭环/回执，零计费）', cmd: ['.p1-baseline/test-1019-revision-closure.mjs'], why: '补丁数 ≠ 修复数、候选稿 ≠ 已入库：每条 R 项必须有断言归属或显式 SKIP；"语义未运行"不得判 resolved' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。
   // ⚠️ 在 DSH 受限文件沙箱里，本套件内部再起子进程时会撞上"禁止管道 stdio"，
