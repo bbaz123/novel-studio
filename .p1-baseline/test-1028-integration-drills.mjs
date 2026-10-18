@@ -47,6 +47,10 @@ async function startStudio(dataDir) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
+  let spawnError = null;
+  // 受限沙箱会禁止子进程（node:internal/child_process throw ErrnoException spawn / EPERM）。
+  // 那不是产品缺陷：如实记 ENV_BLOCKED，绝不因此删除或弱化用例。
+  child.on('error', (e) => { spawnError = e; });
   child.stdout.on('data', (c) => { log += c; });
   child.stderr.on('data', (c) => { log += c; });
   const base = `http://127.0.0.1:${port}`;
@@ -66,7 +70,7 @@ async function startStudio(dataDir) {
     try { if ((await fetch(`${base}/api/works`)).status === 200) { up = true; break; } } catch { /* wait */ }
     await new Promise((r) => setTimeout(r, 150));
   }
-  return { base, child, log, j, up, port };
+  return { base, child, log, j, up, port, spawnError };
 }
 
 async function stop(s) {
@@ -81,7 +85,18 @@ const MAIN_DIR = mkdtempSync(join(tmpdir(), 'novel-1028-main-'));
 let studio = null;
 try {
   studio = await startStudio(MAIN_DIR);
-  ok('A1 隔离实例启动（临时数据目录，不碰作者 data/）', studio.up === true, studio.log.slice(-200));
+  if (studio.up !== true) {
+    const envBlocked = /EPERM|spawn|EACCES/.test(String((studio.spawnError && studio.spawnError.message) || '') + studio.log);
+    if (envBlocked) {
+      skip('A1 隔离实例启动', 'ENV_BLOCKED：当前环境禁止子进程（spawn EPERM）。集成演练需真子进程，不在此环境虚报通过。');
+      skip('D-02/D-03 DSH 外层联调', 'ENV_BLOCKED：同上（需要真实隔离实例）');
+      skip('Q-14 真实写回回读', 'ENV_BLOCKED：同上');
+    } else {
+      ok('A1 隔离实例启动（临时数据目录，不碰作者 data/）', false, studio.log.slice(-200));
+    }
+  } else {
+    ok('A1 隔离实例启动（临时数据目录，不碰作者 data/）', true, studio.log.slice(-160));
+  }
 
   if (studio.up) {
     // ── 造一本书 + 一章，并写入一次真实修稿选择 ─────────────────────────────
