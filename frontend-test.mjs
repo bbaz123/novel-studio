@@ -962,6 +962,11 @@ globalThis.__probe = {
   chapterTitleOfId, refreshChapterStatePanel, setChapterPanelView, chapterPanelHtml, chapterStateListHtml, confirmChapterProposals, jumpToEvidence,
   impactSectionHtml, impactAnalyze, loadImpactRuns, loadImpactRun, repairSectionHtml, repairStart, repairAction, repairPreview, loadRepairRuns, loadRepairRun, stopRepairPoll, AI_BOARD_TABS,
   renderStoryStatePage, loadTemporalEngine, loadBackfill, renderTemporalEngineCard, renderBackfillCard, temporalToggle, backfillStepRun, backfillConfirmRun, backfillBootstrapPlan, backfillBootstrapDecide, backfillPromptText, BACKFILL_STATE_LABEL,
+  // v1.2.4：时态引擎设置独立视图 + 审稿工作区 + 统一终验出口
+  renderTemporalSettingsPage, revisionFinalizeFor, revisionFeatureEnabled, setRevisionFeature, reviewWorkspaceEnabled, temporalSettingsViewEnabled,
+  presentRevisionResult, openReviewWorkspace, renderReviewWorkspace, reviewWorkspaceBack, reviewWorkspaceSelect, reviewWorkspaceMove,
+  reviewWorkspaceSetFilter, reviewWorkspaceSetMode, reviewWorkspaceToggleDrawer, reviewWorkspaceExportPending, reviewWorkspaceContext, reviewWorkspaceModule,
+  revisionClosureStripHtml, primePendingReviewDiff, runRevisionSemanticVerify, canonConflictIdsFrom, downloadTextFile, revisionReceiptPayload, revisionResultToast,
   loadLibrary, renderLibrary, renderLibraryDocCard, libraryDocRow, libraryHitRow, libraryPlanHtml, libraryImportResultHtml, libraryStatusChip, librarySkipLabel, LIBRARY_SKIP_LABEL,
   libraryRefresh, librarySearchRun, librarySetCategory, libraryViewDoc, libraryToggleEnabled, libraryPreviewImport, libraryConfirmImport, libraryMarkMissing, libraryDeleteDoc, libraryRenderSafely, handleAction,
   longTextEngine, longTextLimits, longTextPlanFor, longTextRunTask, longTextStatusHtml, longTextContextBlock,
@@ -985,6 +990,11 @@ try {
   new vm.Script(revisionPlanSrc, { filename: 'revision-plan.js' }).runInContext(ctx, { timeout: 10000 });
   // v1.2.1 质量闭环：与 index.html 同序（findings → 语义验收 → 闭环状态），先于 app.js。
   for (const name of ['revision-findings.js', 'revision-semantic-verifier.js', 'revision-closure.js']) {
+    const code = fs.readFileSync(path.join(repoRoot, 'public', name), 'utf8');
+    new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
+  }
+  // v1.2.4：统一终验出口 + 审稿工作区 + 时态设置页（与 index.html 同序，仍先于 app.js）。
+  for (const name of ['revision-finalize.js', 'review-workspace.js', 'temporal-settings.js']) {
     const code = fs.readFileSync(path.join(repoRoot, 'public', name), 'utf8');
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
@@ -5529,14 +5539,17 @@ P.traceStopStream();
   const tabChecks = [
     { key: 'rules', must: ['/api/novel/editing'] },
     { key: 'style', must: ['/api/novel/style/samples', '/api/novel/style/profile', '/api/novel/author_intent'] },
-    { key: 'story-state', must: ['/api/novel/story_state', '/api/novel/state/disclosure', '/api/novel/state/impact', '/api/novel/state/repair'] },
+    // v1.2.4（P0F）：故事状态页**不再**连带读时态引擎/影响/重建/回填 —— 它们都在独立设置页。
+    // 这条断言因此从"必须读到"改成"必须读不到（+ 独立页必须读到）"，见下面的 T6-3b。
+    { key: 'story-state', must: ['/api/novel/story_state', '/api/novel/state/disclosure'] },
     { key: 'branch', must: ['/api/novel/branch/sandboxes'] },
     { key: 'rebuild', must: ['/api/import/rebuild/status'] }
   ];
   const otherPages = {
     rules: ['/api/novel/style/', '/api/novel/story_state', '/api/novel/branch/', '/api/import/rebuild/status'],
     style: ['/api/novel/editing', '/api/novel/story_state', '/api/novel/branch/', '/api/import/rebuild/status'],
-    'story-state': ['/api/novel/editing', '/api/novel/style/', '/api/novel/branch/', '/api/import/rebuild/status'],
+    'story-state': ['/api/novel/editing', '/api/novel/style/', '/api/novel/branch/', '/api/import/rebuild/status',
+      '/api/novel/state/temporal', '/api/novel/state/backfill', '/api/novel/state/impact', '/api/novel/state/repair'],
     branch: ['/api/novel/editing', '/api/novel/style/', '/api/novel/story_state', '/api/import/rebuild/status'],
     rebuild: ['/api/novel/editing', '/api/novel/style/', '/api/novel/story_state', '/api/novel/branch/']
   };
@@ -5558,6 +5571,36 @@ P.traceStopStream();
     if (t.key === 'rebuild') check('T6-2 导入后重建页独立渲染（有真实内容，不是空壳）', pageHtml.length > 200);
   }
   check('T6-3 五组独立页面各自只发自己的请求（切一页不连带读取其余四页）', isolationOk, isolationDetail.join(' | '));
+
+  // T6-3b（v1.2.4 P0F）：时态引擎设置独立成页后，它读自己的数据，但绝不连带读别页。
+  {
+    resetTemporalCaches();
+    const before = requests.length;
+    P.goView('temporal-settings');
+    await P.render();
+    await new Promise((r) => setTimeout(r, 40));
+    const urls = requests.slice(before).map((r) => r.url);
+    const must = ['/api/novel/state/temporal', '/api/novel/state/backfill', '/api/novel/state/impact', '/api/novel/state/repair'];
+    const miss = must.filter((m) => !urls.some((u) => u.includes(m)));
+    const leaked = ['/api/novel/editing', '/api/novel/style/', '/api/novel/branch/', '/api/import/rebuild/status']
+      .filter((m) => urls.some((u) => u.includes(m)));
+    const html = String(containers['#content'].innerHTML);
+    check('T6-3b 时态引擎设置是独立视图：读 temporal/backfill/impact/repair，且不连带读编辑规则/样文/沙盘/导入重建',
+      miss.length === 0 && leaked.length === 0
+        && html.includes('时态引擎设置') && html.includes('ts-group')
+        && html.includes('data-action="go-view" data-view="ai-board"'),
+      `miss=${miss.join(',') || '-'};leak=${leaked.join(',') || '-'}`);
+    // 故事状态页只留摘要 + 入口，长列表不再堆在同一页（第二张报障截图的成因）。
+    P.goView('story-state');
+    await P.render();
+    const stateHtml = String(containers['#board-content'].innerHTML);
+    check('T6-3c 故事状态页只保留摘要与「⚙ 时态引擎设置」入口，不再堆时态/影响/重建/回填长列表',
+      stateHtml.includes('时态引擎设置') && stateHtml.includes('st-summary-line')
+        && !stateHtml.includes('时态状态引擎（迁移与开关）')
+        && !stateHtml.includes('存量重建（逐章按叙事顺序）')
+        && !stateHtml.includes('id="impact-section"') && !stateHtml.includes('id="repair-section"'),
+      stateHtml.slice(0, 120));
+  }
 
   // (1b) 旧路由键 st 仍是兼容别名，且不再连带加载五组
   resetTemporalCaches();
@@ -5663,9 +5706,10 @@ P.traceStopStream();
   // (3) 影响分析（只分析、只标记；隐性因果，不是角色名搜索）
   P.state.currentChapterId = 7;
   resetTemporalCaches();
-  P.goView('story-state');
+  // v1.2.4（P0F）：影响分析与逐章重建已迁入「时态引擎设置」独立页。
+  P.goView('temporal-settings');
   await P.render();
-  const statePage1 = String(containers['#board-content'].innerHTML);
+  const statePage1 = String(containers['#content'].innerHTML);
   check('T6-12 影响区展示后端报告：需要复核 / 保留原文 / 隐性因果证据（前提 + 原文引文 + 资源依赖）',
     statePage1.includes('需要复核') && statePage1.includes('保留原文')
       && statePage1.includes('前提：王师傅仍然活着') && statePage1.includes('他还在等王师傅回信')
@@ -5709,7 +5753,7 @@ P.traceStopStream();
   await P.repairPreview(0);
   check('T6-17 候选预览读只读 /novel/state/revision（不是本地编造），并与当前正文逐段 diff',
     requests.some((r) => r.method === 'GET' && r.url.includes('/api/novel/state/revision') && r.url.includes('revision_id=rev-cand-1'))
-      && String(containers['#board-content'].innerHTML).includes('新的正文第一段'));
+      && String(containers['#content'].innerHTML).includes('新的正文第一段'));
   temporalStub.approvals.length = 0;
   await P.repairAction('apply');
   check('T6-18 应用候选：签发 repair_run_apply 一次性审批 → POST /repair/apply（带 approval_id，正文切换由服务端原子完成）',
@@ -5766,10 +5810,10 @@ P.traceStopStream();
 
   // (1) 打开页面：引擎卡 + 存量重建卡都读真实后端字段
   const before7 = requests.length;
-  P.goView('story-state');
+  P.goView('temporal-settings');
   await P.render();
   await new Promise((r) => setTimeout(r, 40));
-  const t7page = String(containers['#board-content'].innerHTML);
+  const t7page = String(containers['#content'].innerHTML);
   const t7urls = requests.slice(before7).map((r) => r.url);
   check('T7-1 故事状态页渲染引擎卡与存量重建卡（真实迁移 / 预算 / 逐章状态字段，不是占位文案）',
     t7page.includes('时态状态引擎（迁移与开关）') && t7page.includes('旧作品默认不启用')
@@ -5788,7 +5832,7 @@ P.traceStopStream();
 
   // (2) 首次启用：只带一个 flag；enable_scope 展示预算与待重建范围
   await P.temporalToggle('temporal_enabled', true);
-  const afterEnableHtml = String(containers['#board-content'].innerHTML);
+  const afterEnableHtml = String(containers['#content'].innerHTML);
   check('T7-3 首次启用只 PUT temporal_enabled=true（不连带开启其它开关），并展示服务端 enable_scope（待重建 2 章 / 预计 2 次调用）',
     temporalStub.temporalPuts.length === 1 && temporalStub.temporalPuts[0].temporal_enabled === true && temporalStub.temporalPuts[0].work_id === 1
       && temporalStub.temporalPuts[0].auto_analysis_enabled === undefined && temporalStub.temporalPuts[0].repair_enabled === undefined
@@ -5808,7 +5852,7 @@ P.traceStopStream();
   // (4) 迁移门禁：缺表时禁止开启（按钮禁用 + 明确警示）
   temporalStub.temporalBroken = true; P.state.temporalEngine = null;
   await P.render();
-  const brokenHtml = String(containers['#board-content'].innerHTML);
+  const brokenHtml = String(containers['#content'].innerHTML);
   check('T7-5 迁移缺表/缺索引时禁止开启（按钮禁用 + 明确警示，不吞错误继续跑）',
     brokenHtml.includes('缺失：story_commits') && brokenHtml.includes('迁移未完成前不允许开启')
       && /data-flag="temporal_enabled"[^>]*disabled/.test(brokenHtml));
@@ -5818,7 +5862,7 @@ P.traceStopStream();
   temporalStub.stepPosts.length = 0;
   const beforeStep = requests.length;
   await P.backfillStepRun(8);
-  const stepHtml = String(containers['#board-content'].innerHTML);
+  const stepHtml = String(containers['#content'].innerHTML);
   check('T7-6 「冻结并生成抽取请求」真实 POST step（无 result、不调用模型），界面给出「复制抽取请求」与「记录本机结果」入口',
     temporalStub.stepPosts.length === 1 && temporalStub.stepPosts[0].chapter_id === 8 && temporalStub.stepPosts[0].result === undefined
       && stepHtml.includes('已生成抽取请求（未调用模型）') && stepHtml.includes('复制抽取请求')
@@ -5838,7 +5882,7 @@ P.traceStopStream();
   await P.backfillStepRun(8, { record: true });
   check('T7-7 「记录本机结果」走本机管线（生产等价 runPipelineStage）：解析 JSON 后 POST step（带 result）→ 候选 pending_confirm，未写正式状态',
     temporalStub.stepPosts.length === 1 && !!temporalStub.stepPosts[0].result && t7ranPrompt.includes('状态记账员')
-      && String(containers['#board-content'].innerHTML).includes('候选已登记（未写正式状态）')
+      && String(containers['#content'].innerHTML).includes('候选已登记（未写正式状态）')
       && !requests.slice(beforeRecord).some((r) => r.method === 'POST' && r.url.includes('/novel/state/proposal-groups')),
     t7ranPrompt.slice(0, 80));
   P.state.backfillRunner = null;
@@ -5857,7 +5901,7 @@ P.traceStopStream();
   temporalStub.backfill = temporalStub.backfillDefault();
   P.state.backfill = null;
   await P.backfillBootstrapPlan();
-  const bootHtml = String(containers['#board-content'].innerHTML);
+  const bootHtml = String(containers['#content'].innerHTML);
   check('T7-9 「扫描旧字段建立候选」真实 POST bootstrap/plan；候选列表显示来源与值，并提供 开篇/拒绝/转章节 三种决定',
     temporalStub.bootstrapPosts.some((x) => x.action === 'plan')
       && bootHtml.includes('开篇设定候选（旧字段扫描）') && bootHtml.includes('王师傅')
@@ -5879,7 +5923,7 @@ P.traceStopStream();
   temporalStub.temporalFail = true; P.state.temporalEngine = null;
   await P.render();
   check('T7-10 引擎接口失败时显示读取失败与原因（不冒充"未开启"，也不显示推测内容）',
-    String(containers['#board-content'].innerHTML).includes('读取失败：temporal boom'));
+    String(containers['#content'].innerHTML).includes('读取失败：temporal boom'));
   temporalStub.temporalFail = false; P.state.temporalEngine = null;
 
   // (10) 章末面板空态指向本页开关（跨页闭环）
@@ -6642,6 +6686,247 @@ P.traceStopStream();
       && /\.chapter-state-panel\s*\{[^}]*max-height:\s*28vh[^}]*overflow-y:\s*auto/.test(css),
       'editor min-height / chapter-state max-height');
   }
+}
+
+// ==================== v1.2.4：一次完整修稿链路的真实代码路径 ====================
+// 这一节验的是**真实操作链**（方案 §17 第 3 点 / §14.4）：
+//   审稿发现 8 项 → 全部勾选 → 点修稿 → 局部补丁 → 安全门禁 → 逐项语义复验
+//   → 失败项定向复修 → 显示实际通过数量 → 作者确认合并。
+// 模型是**注入的**（零计费），但走的是产品里那条完整路径：refineByChecklist 的
+// plan/authorization/patch/门禁/终审/工作区渲染/合并，一个环节都没有被替换掉。
+{
+  const saved = {
+    workId: P.state.workId, loadedWorkId: P.state.loadedWorkId, work: P.state.work,
+    chapters: P.state.chapters, currentChapterId: P.state.currentChapterId, view: P.state.view,
+    pendingReview: P.state.pendingReview, pendingReviewDiff: P.state.pendingReviewDiff,
+    pendingRevisionClosure: P.state.pendingRevisionClosure, view_reviewWorkspace: P.state.reviewWorkspace,
+    harness: sandbox.runHarnessJob, api: sandbox.api, toast: sandbox.toast,
+    qsa: sandbox.document.querySelectorAll,
+    localStorage: null,
+  };
+  const BASE = [
+    '九月上午，闷得人后背发潮。他抬手擦了擦手心的汗。',
+    '登记处摆着三块石板，每一块前面都排着队。',
+    '他掏出手机，10:41，没有新消息。',
+    '母亲的消息是 10:23 发的。',
+    '母亲这个点刚交完班。晚上十点出门，早上八点半回来。',
+    'B 级的家长在旁边鼓掌。',
+    'A 级的家长也在旁边鼓掌。',
+    '检测大厅里亮着灯，上午的太阳照得人发暖。',
+    '回执单在手里，热敏纸上的字迹正在变淡。',
+  ].join('\n\n');
+  const FINDINGS = [
+    { id: 'B01', title: '手汗重复', evidence: [{ quote: '他抬手擦了擦手心的汗', role: 'candidate_edit' }], acceptance: { rule: '按功能保留' } },
+    { id: 'B02', title: '时间戳冲突', evidence: [{ quote: '10:23 发的', role: 'candidate_edit' }], acceptance: { rule: '消息在两次查看之间到达' } },
+    { id: 'B03', title: '母亲行程矛盾', evidence: [{ quote: '母亲这个点刚交完班', role: 'candidate_edit' }], acceptance: { rule: '行程自洽' } },
+    { id: 'B04', title: '群众反应模式化', evidence: [{ quote: 'A 级的家长也在旁边鼓掌', role: 'candidate_edit' }], acceptance: { rule: '保留对照功能' } },
+    { id: 'B05', title: '石板数量与队伍不符', evidence: [{ quote: '登记处摆着三块石板', role: 'candidate_edit' }], acceptance: { rule: '空间一致' } },
+    { id: 'B06', title: '光照重复', evidence: [{ quote: '上午的太阳照得人发暖', role: 'candidate_edit' }], acceptance: { rule: '纯布景重复删减' } },
+    { id: 'B07', title: '缺纪年锚点', evidence: [{ quote: '3751年全民觉醒日', role: 'reference' }], acceptance: { rule: '纪年必须落地', must_contain: ['3751'] } },
+    { id: 'B08', title: '篇幅不足', evidence: [], acceptance: { rule: '硬目标', min_chars: 4000 } },
+  ];
+  const IDS = FINDINGS.map((f) => f.id);
+
+  // 8 项勾选：DOM 读勾选的那条路要能取到 8 个勾选元素（桩环境没有真实 checkbox）
+  sandbox.document.querySelectorAll = (sel) => (String(sel).includes('data-review-issue')
+    ? IDS.map((_, i) => ({ dataset: { reviewIssue: String(i) } }))
+    : saved.qsa.call(sandbox.document, sel));
+
+  // 预编译计划：补丁里的 span_id 必须与 Host 授权表一致（模型在真实提示词里看得到这些 id）。
+  const snap = P.revisionSnapshotFor(BASE, 41);
+  const plan = P.revisionPlanFor(BASE, IDS.map((id) => id), { snapshot: snap, chapterId: 41, issueIds: IDS, findings: FINDINGS, planV2: true });
+  const hotspotOf = (id) => (plan && Array.isArray(plan.hotspots) ? plan.hotspots.find((h) => String(h.issue_id) === String(id)) : null);
+  const patchFor = (id, replacement) => {
+    const h = hotspotOf(id);
+    if (!h) return null;
+    return { patch_id: `p-${id}`, group_id: `g-${id}`, issue_ids: [id], span_id: h.span.span_id, op: 'replace', original: h.original, replacement };
+  };
+  const plannedPatches = [
+    patchFor('B01', '他把登记条从窗口递进去。'),
+    patchFor('B02', '母亲的消息是刚发的。'),
+    patchFor('B04', '人群里的掌声稀稀拉拉。'),
+    patchFor('B05', '登记处摆着一块石板，石板前只排着一队。'),
+    patchFor('B06', '检测大厅里亮着灯。'),
+  ].filter(Boolean);
+
+  const harnessCalls = [];
+  sandbox.runHarnessJob = async (body) => {
+    const prompt = String((body && body.prompt) || '');
+    const kind = String((body && body.kind) || '');
+    harnessCalls.push({ kind, stage: body && body.stage });
+    if (kind === 'revision' || prompt.includes('【本次授权范围】')) {
+      // 第一次修稿给 5 个补丁；B03/B07/B08 保持原样（真实场景里"没改到"就是这样）
+      return {
+        job_id: 'job-rev-1',
+        output: JSON.stringify({
+          schema_version: 2, snapshot_id: snap.snapshot_id, base_hash: snap.body_hash,
+          patches: plannedPatches,
+          dispositions: IDS.map((id) => (plannedPatches.some((p) => p.issue_ids.includes(id)) ? { issue_id: id, status: 'patched' } : { issue_id: id, status: 'keep', reason: '证据不足，未改' })),
+        }),
+      };
+    }
+    if (kind === 'revision_auto_repair') {
+      // 定向复修：这一轮模型什么也没改（因此复修轮次有界、不会无限重试）
+      return { job_id: 'job-repair-1', output: JSON.stringify({ schema_version: 2, snapshot_id: snap.snapshot_id, base_hash: snap.body_hash, patches: [], dispositions: IDS.map((id) => ({ issue_id: id, status: 'keep', reason: '无法在已授权跨度内改好' })) }) };
+    }
+    if (kind === 'revision_semantic_verify') {
+      return {
+        job_id: 'job-sem-1',
+        output: JSON.stringify({
+          issues: FINDINGS.map((f) => (['B03', 'B07', 'B08'].includes(f.id)
+            ? { issue_id: f.id, verdict: 'fail', reason: '修后仍违反成功判据', repair_hint: '只在该问题已授权范围内改' }
+            : { issue_id: f.id, verdict: 'pass', reason: '逐条核对通过', checks: [{ criterion: '对照证据', passed: true, evidence: ['候选已满足成功判据'] }] })),
+        }),
+      };
+    }
+    return { job_id: 'job-other', output: '' };
+  };
+
+  const receipts = [];
+  const adopts = [];
+  sandbox.api = async (url, opts = {}) => {
+    const u = String(url);
+    const bodyOf = (o) => (typeof o.body === 'string' ? JSON.parse(o.body || '{}') : (o.body || {}));
+    if (u.includes('/novel/revision/closure-receipt')) { receipts.push(bodyOf(opts)); return { ok: true }; }
+    if (u.includes('/novel/adopt')) { adopts.push(bodyOf(opts)); return { adopt: { chapter_updated_at: 'v-after-merge', legacy: { events: 0, memories: 0 } } }; }
+    if (u.includes('/novel/revision/selection')) return { ok: true, id: 1 };
+    if (u.includes('/chapters/')) return { id: 41, content: '<p>' + BASE + '</p>' };
+    return { ok: true };
+  };
+  const toasts = [];
+  sandbox.toast = (m) => { toasts.push(String(m)); };
+
+  P.state.workId = 1; P.state.loadedWorkId = 1;
+  P.state.work = { id: 1, title: 'v1.2.4 端到端' };
+  P.state.chapters = [{ id: 41, title: '第一章', content: '<p>' + BASE + '</p>' }];
+  P.state.currentChapterId = 41;
+  P.state.editorPendingByChapter = new Map();
+  P.state.pendingReviewDiff = null;
+  P.state.pendingRevisionClosure = null;
+  P.state.pendingReview = {
+    info: { article: BASE, chapterId: 41, baseChapterFingerprint: P.textFingerprint ? P.textFingerprint(BASE) : 'fp' },
+    review: { review_id: 9001, issues: FINDINGS.map((f) => ({ id: f.id, text: f.title })), findings: FINDINGS },
+  };
+  // 工作区默认开着（v1.2.4 交付的就是它）；这里显式打开，避免受本机 localStorage 影响。
+  P.setRevisionFeature('review_workspace_v124', true);
+  containers['#content'].innerHTML = '';
+  containers['#modal-root'].innerHTML = '';
+
+  let e2eErr = '';
+  try { await P.refineByChecklist(); } catch (e) { e2eErr = e && e.message ? e.message : String(e); }
+  // presentRevisionResult 里的工作区重绘是异步的：等它把 DOM 画出来再断言（否则测的是空容器）
+  await new Promise((r) => setTimeout(r, 30));
+  const ctx = P.state.pendingRevisionClosure;
+  const fin = ctx && ctx.finalized;
+  check('QC-21 修稿走到统一终审出口（单请求路径也在跑 revision-finalize），且 8 项都有结论',
+    !e2eErr && !!fin && Array.isArray(fin.rows) && fin.rows.length === 8,
+    e2eErr || JSON.stringify({ rows: fin && fin.rows.map((r) => `${r.issue_id}:${r.final_status}`) }));
+  check('QC-22 补丁真的应用了 5 个，但"应用了几个补丁"不等于"修好了几条"',
+    fin && fin.summary.patch_applied === 5 && fin.summary.verified === 0 && fin.status === 'AWAITING_SEMANTIC',
+    JSON.stringify(fin && fin.summary));
+  check('QC-23 语义未跑时，客观没消除的项已被确定性层判失败（B03/B07/B08）',
+    fin && ['B03', 'B07', 'B08'].every((id) => fin.rows.find((r) => r.issue_id === id).final_status === 'UNRESOLVED'),
+    JSON.stringify(fin && fin.rows.filter((r) => ['B03', 'B07', 'B08'].includes(r.issue_id)).map((r) => [r.issue_id, r.reason_code])));
+  check('QC-24 结果进了独立审稿工作区（一级视图），不再是"更大的弹窗"',
+    P.state.view === 'review' && String(containers['#content'].innerHTML).includes('审稿工作区'),
+    String(containers['#content'].innerHTML).slice(0, 80));
+  check('QC-25 工作区顶部一行统计：已选 8 / 已应用 5 补丁 / 待复验 3，且**不出现**"已验证 N"',
+    /已选 8/.test(String(containers['#content'].innerHTML))
+      && /已应用 5 补丁/.test(String(containers['#content'].innerHTML))
+      && !/已验证 [1-9]/.test(String(containers['#content'].innerHTML)),
+    String(containers['#content'].innerHTML).match(/已选[^<]*/));
+  check('QC-26 底栏在"未跑语义"时只给语义复验入口，不给合并',
+    String(containers['#content'].innerHTML).includes('diff-semantic-verify')
+      && !String(containers['#content'].innerHTML).includes('data-action="diff-merge"'),
+    '');
+
+  // ── 语义复验（付费动作由作者显式触发；这里等价于点了那个按钮）──────────────
+  e2eErr = '';
+  try { await P.runRevisionSemanticVerify(); } catch (e) { e2eErr = e && e.message ? e.message : String(e); }
+  await new Promise((r) => setTimeout(r, 30));
+  const fin2 = P.state.pendingRevisionClosure.finalized;
+  check('QC-27 逐项语义复验后：5 项通过、3 项未通过，状态是"部分完成"而不是"完成"',
+    !e2eErr && fin2 && fin2.summary.verified === 5 && fin2.summary.unresolved === 3
+      && fin2.status === 'PARTIAL_CANDIDATE',
+    e2eErr || JSON.stringify(fin2 && fin2.summary));
+  const afterHtml = String(containers['#content'].innerHTML);
+  check('QC-28 界面明确显示"5 通过、3 待处理"，不存在任何"已全部修好"的肯定性文案',
+    /已验证 5/.test(afterHtml) && /未通过 3/.test(afterHtml)
+      // 注意：底部说明里有一句"不能宣称「全部修好」"——那是否定句，必须允许；
+      // 这里禁的是**肯定性**宣称。
+      && !/已全部修好|8\s*项全(部)?解决|已按清单改好|全部通过/.test(afterHtml),
+    afterHtml.match(/已选[^<]*/));
+  check('QC-29 底栏的合并按钮明写剩余未通过数（部分合并必须让人看见风险）',
+    /data-action="diff-merge"/.test(afterHtml) && /仍有 3 条未通过/.test(afterHtml), '');
+  check('QC-30 闭环回执按 v3 写入：带 run 记录、覆盖完备性与逐项原因码（8 条）',
+    receipts.length >= 1 && receipts[receipts.length - 1].closure.closure_version === 3
+      && Array.isArray(receipts[receipts.length - 1].closure.issues)
+      && receipts[receipts.length - 1].closure.issues.length === 8
+      && !!receipts[receipts.length - 1].closure.run,
+    JSON.stringify({ receipts: receipts.length, v: receipts[0] && receipts[0].closure.closure_version }));
+  check('QC-31 定向复修被真实调用过（有界：模型不改就停止，不无限重试）',
+    harnessCalls.some((c) => c.kind === 'revision_auto_repair'),
+    JSON.stringify(harnessCalls.map((c) => c.kind)));
+
+  // ── 作者确认合并：仍然走原子采纳，且写进去的是**候选稿** ────────────────
+  e2eErr = '';
+  try { await P.mergeReviewDiff(); } catch (e) { e2eErr = e && e.message ? e.message : String(e); }
+  check('QC-32 作者点合并 → POST /novel/adopt，内容就是候选稿（不是原文、不是模型原文）',
+    adopts.length === 1
+      && String(adopts[0].content || '').includes('登记处摆着一块石板')
+      && String(adopts[0].content || '').includes('母亲这个点刚交完班')
+      && !String(adopts[0].content || '').includes('三块石板'),
+    JSON.stringify({ adopts: adopts.length, chars: String(adopts[0] && adopts[0].content || '').length, err: e2eErr }));
+
+  // 清理
+  sandbox.document.querySelectorAll = saved.qsa;
+  sandbox.runHarnessJob = saved.harness;
+  sandbox.api = saved.api;
+  sandbox.toast = saved.toast;
+  P.state.pendingReview = saved.pendingReview;
+  P.state.pendingReviewDiff = saved.pendingReviewDiff;
+  P.state.pendingRevisionClosure = saved.pendingRevisionClosure;
+  P.state.reviewWorkspace = saved.view_reviewWorkspace;
+  P.state.workId = saved.workId; P.state.loadedWorkId = saved.loadedWorkId; P.state.work = saved.work;
+  P.state.chapters = saved.chapters; P.state.currentChapterId = saved.currentChapterId;
+  P.state.view = saved.view;
+  P.setRevisionFeature('review_workspace_v124', true);
+}
+
+// ==================== v1.2.4：界面结构与版本安全的结构断言 ====================
+{
+  const css = fs.readFileSync(path.join(repoRoot, 'public', 'styles.css'), 'utf8');
+  check('QC-33 审稿工作区是"顶部一行 + 三栏 + 底栏"的独立视图，右侧详情是**覆盖式**（不挤压正文）',
+    /\.review-ws\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/.test(css)
+      && /\.rw-drawer\s*\{[^}]*position:\s*absolute/.test(css)
+      && /\.rw-body\s*\{[^}]*min-height:\s*0/.test(css)
+      && /\.rw-foot\s*\{[^}]*min-height:\s*52px/.test(css),
+    'review-ws / rw-drawer / rw-body / rw-foot');
+  // 只看 v1.2.4 **新增**的那一段：整站早就用 transform:scale 做按钮按下与动画，
+  // 用全文件匹配会把"新增样式引入缩放"和"既有按钮反馈"混为一谈。
+  const v124Css = css.slice(css.indexOf('v1.2.4 审稿工作区（P0E）'));
+  check('QC-34 时态设置页分组用原生 details，且新增样式里没有 zoom / transform:scale 压内容',
+    /\.ts-group\s*\{/.test(v124Css) && /\.ts-group-summary\s*\{/.test(v124Css)
+      && !/zoom\s*:/.test(v124Css) && !/transform:\s*scale\(/.test(v124Css),
+    'ts-group / no-zoom（仅新增段）');
+  check('QC-35 写作台布局没有被审稿/时态视图改动（列宽与编辑器高度仍是原来那一套）',
+    /\.writing-layout\s*\{[^}]*height:\s*calc\(100vh - 104px\)/.test(css)
+      && /\.editor-content\s*\{[^}]*min-height:\s*46vh/.test(css),
+    'writing-layout / editor-content');
+
+  // 版本安全：只允许增量（v1.2.3 → v1.2.4），不得把既有能力改回去。
+  const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  check('QC-36 版本声明是 1.2.4（从 1.2.3 增量升级，不回退）', pkg.version === '1.2.4', String(pkg.version));
+  const appSrc = fs.readFileSync(path.join(repoRoot, 'public', 'app.js'), 'utf8');
+  const keep = [
+    ['自动二次复修上限 2 轮', /REVISION_AUTO_REPAIR_MAX_ROUNDS\s*=\s*2/],
+    ['作者一次性写回审批仍在（合并走 /novel/adopt）', /api\('\/novel\/adopt'/],
+    ['底稿恢复链仍在', /function revisionArticleForRepair/],
+    ['分段修稿仍走同一授权表', /singleRunByCaller:\s*true/],
+    ['时态开关仍走原 API', /novel\/state\/temporal/],
+  ];
+  const missing = keep.filter(([, re]) => !re.test(appSrc)).map(([k]) => k);
+  check('QC-37 既有能力没有被"升级"顺手改回去（逐项在源码里仍成立）', missing.length === 0, JSON.stringify(missing));
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

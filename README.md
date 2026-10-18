@@ -7,7 +7,7 @@
 Writing software + an AI writing assistant for **long-form fiction and Chinese web novels (网文写作)** — with a **foreshadowing tracker, character-state checks and a story bible** wired into every draft.
 
 [![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.2.1-blue)](https://github.com/bbaz123/novel-studio/releases)
+[![Version](https://img.shields.io/badge/version-1.2.4-blue)](https://github.com/bbaz123/novel-studio/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >= 22.13](https://img.shields.io/badge/node-%E2%89%A5%2022.13-3c873a?logo=node.js&logoColor=white)](https://nodejs.org)
 [![npm dependencies: 0](https://img.shields.io/badge/npm%20dependencies-0-brightgreen)](package.json)
@@ -20,7 +20,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.2.3** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page; release notes live in [Releases](https://github.com/bbaz123/novel-studio/releases).
+> 📌 Version **v1.2.4** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page; release notes live in [Releases](https://github.com/bbaz123/novel-studio/releases).
 
 <details>
 <summary><b>Contents</b></summary>
@@ -415,6 +415,10 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 Full per-version history — including the verification numbers and the capability boundaries of each
 round — lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent releases on this branch:
 
+- **v1.2.4** — one final gate for both repair paths (single-shot and segmented), per-issue semantic
+  coverage that never counts an unverified item as passing, a dedicated review workspace that leaves the
+  writing desk unsqueezed, and a separate temporal-engine settings view. See
+  `docs/v1.2.4-review-workspace.md`.
 - **v1.2.3** — UI fixes: the model/human/structure comparison now stacks above the review report
   (closing it returns to the report), revision recovers the reviewed text as its base when the live
   article is missing, and the writing area keeps a minimum height while the chapter-state panel scrolls.

@@ -111,12 +111,13 @@
       const after = countOf(revisedText, quote);
       if (e.role === 'candidate_edit') {
         if (!before) { needContext.push({ criterion: 'editable_anchor_present_before', quote: clip(quote, 30) }); continue; }
+        // hard：这是**字面事实**——锚点原文还在候选里，就是没改。模型说"改了"不能覆盖它。
         pushCheck(checks, `可编辑锚点已消失：${clip(quote, 24)}`, after === 0,
-          [`修前出现 ${before} 次 → 修后 ${after} 次`], { role: 'candidate_edit', quote });
+          [`修前出现 ${before} 次 → 修后 ${after} 次`], { role: 'candidate_edit', quote, code: 'ANCHOR_NOT_EDITED', hard: true });
       } else {
         if (!before) { needContext.push({ criterion: 'reference_present_before', quote: clip(quote, 30) }); continue; }
         pushCheck(checks, `只读证据仍完整：${clip(quote, 24)}`, after > 0,
-          [`只读证据在修前 ${before} 次、修后 ${after} 次（对比基准不能被改掉）`], { role: 'reference', quote });
+          [`只读证据在修前 ${before} 次、修后 ${after} 次（对比基准不能被改掉）`], { role: 'reference', quote, code: 'REFERENCE_LOST', hard: true });
       }
     }
 
@@ -132,7 +133,26 @@
       if (!before) continue;
       const after = countOf(revisedText, keep);
       pushCheck(checks, `必须保留项仍在：${clip(keep, 24)}`, after > 0,
-        [`修前 ${before} 次 → 修后 ${after} 次`], { preserve: keep });
+        [`修前 ${before} 次 → 修后 ${after} 次`], { preserve: keep, code: 'PRESERVE_LOST', hard: true });
+    }
+
+    // ②b 必须**出现**的字面（v1.2.4）：纪年锚点、回执编号这类"缺了就说明没修"的硬约束
+    //    （方案 §5.2 的 `world_time_anchor` / §2.2 的 B07）。
+    //    为什么必须有这一层：这类问题的证据在**修前**天然不存在（正是"漏了"），
+    //    只靠"旧引文消失"的判据永远判不出通过/不通过 —— 模型说 pass 就会假通过。
+    const mustContain = (finding.acceptance && Array.isArray(finding.acceptance.must_contain)
+      ? finding.acceptance.must_contain : []).map(textOf).map((s) => s.trim()).filter(Boolean);
+    for (const needle of mustContain) {
+      pushCheck(checks, `硬约束字面必须出现：${clip(needle, 24)}`, countOf(revisedText, needle) > 0,
+        [`候选里出现 ${countOf(revisedText, needle)} 次（修前 ${countOf(baseText, needle)} 次）`], { code: 'REQUIRED_TEXT_MISSING', needle, hard: true });
+    }
+    // ②c 篇幅硬目标（v1.2.4）：HARD 目标不够字数就是没达成（方案 §5.2 的 `target_length` / B08）。
+    //    SOFT 目标由作者签收，不在这里硬判 —— 因此只有显式声明 min_chars 才算硬约束。
+    const minChars = Number(finding.acceptance && finding.acceptance.min_chars);
+    if (Number.isFinite(minChars) && minChars > 0) {
+      const plain = (s) => textOf(s).replace(/\s+/g, '').length;
+      pushCheck(checks, `篇幅硬目标：不少于 ${minChars} 字`, plain(revisedText) >= minChars,
+        [`候选 ${plain(revisedText)} 字 / 目标 ${minChars} 字`], { code: 'TARGET_LENGTH_MISSED', hard: true });
     }
 
     // ③ 声称已改但没有实际 diff（R-17）：覆盖表说 patched，却没有任何补丁落在本 issue 上。
@@ -140,10 +160,10 @@
     const status = textOf(coverage && coverage.status) || '';
     if (status === 'patched' || status === 'partially_resolved') {
       pushCheck(checks, '声称已处理的条目必须有实际补丁（无 diff 不算已改）',
-        issuePatches.length > 0, [`applied=${issuePatches.length}`], { code: 'NO_DIFF' });
+        issuePatches.length > 0, [`applied=${issuePatches.length}`], { code: 'NO_DIFF', hard: true });
     }
     if (status === 'unaccounted') {
-      pushCheck(checks, '覆盖表必须回答每一条已选问题', false, ['unaccounted：模型没有给出处置'], { code: 'UNACCOUNTED' });
+      pushCheck(checks, '覆盖表必须回答每一条已选问题', false, ['unaccounted：模型没有给出处置'], { code: 'UNACCOUNTED', hard: true });
     }
 
     // ④ 授权边界：补丁跨度必须落在该 issue 的热点内（多热点各自狭窄授权，不是整段放开）。
@@ -156,7 +176,7 @@
         for (const p of issuePatches) {
           const inside = hotspots.some((h) => Number(p.start) >= h.start && Number(p.end) <= h.end);
           pushCheck(checks, `补丁落在授权热点内：${clip(p.original, 20)}`, inside,
-            [`补丁 ${p.start}-${p.end} vs 热点 ${hotspots.map((h) => `${h.start}-${h.end}`).join(',')}`], { code: 'OUT_OF_SCOPE' });
+            [`补丁 ${p.start}-${p.end} vs 热点 ${hotspots.map((h) => `${h.start}-${h.end}`).join(',')}`], { code: 'OUT_OF_SCOPE', hard: true });
         }
       }
     }
@@ -164,7 +184,7 @@
     // ⑤ 底稿版本：调用方给了当前哈希时才判（没给就不假装核验过）。
     if (input.currentBaseHash != null && plan && plan.base_hash) {
       pushCheck(checks, '底稿与计划快照一致', String(input.currentBaseHash) === String(plan.base_hash),
-        [String(input.currentBaseHash), String(plan.base_hash)], { code: 'BASE_STALE' });
+        [String(input.currentBaseHash), String(plan.base_hash)], { code: 'BASE_STALE', hard: true });
     }
 
     // ⑥ 词条版本（v1.2.2 P1-1）：引用版本 ≠ 当前版本时，不得按旧口径判冲突。
@@ -240,12 +260,24 @@
       });
     }
     const deterministicFailed = d.failed.length > 0;
+    // **硬事实**与**软判断**要分开（v1.2.4 §2.3 的"强/弱验收"）：
+    //   · 硬事实（锚点原句还在 / 必须保留的被删 / 该出现的字面没出现 / 字数硬目标没到 /
+    //     声称改了却没有 diff / 越过授权 / 底稿变了）是**字面事实**，模型说"我改了"不能覆盖它；
+    //   · 软判断（模板句是否仍有伤害、篇幅是否可接受）与语义结论冲突时，仍然交人复核。
+    // 旧实现把两类都当"冲突 → 待复核"，于是"该出现的 3751 没出现"也能被一句 pass 变成
+    // AWAITING_SEMANTIC（既不算失败也不算通过），作者永远看不到"这一项确定没做到"。
+    const hardFailed = d.failed.filter((c) => c && c.hard === true);
     const semanticFailed = sem.status === 'fail';
     const semanticPassed = sem.status === 'pass';
     let verdict;
     let reasonCode;
     let reason;
-    if (deterministicFailed && semanticPassed) {
+    if (hardFailed.length) {
+      verdict = VERDICT.FAIL;
+      reasonCode = hardFailed[0].code || 'DETERMINISTIC_FAILED';
+      reason = `确定性硬检查未通过：${hardFailed.map((c) => c.criterion).slice(0, 3).join('；')}`
+        + (semanticPassed ? '（语义层判通过，但这是字面事实，不能覆盖）' : '');
+    } else if (deterministicFailed && semanticPassed) {
       // 两层冲突：不选"看起来更好"的那一层，交人复核（方案 §5.4）。
       verdict = VERDICT.NEED_CONTEXT;
       reasonCode = 'LAYER_CONFLICT';
@@ -270,10 +302,12 @@
         ? `语义核验未运行，且确定性层缺少可比对证据（${d.needContext.map((x) => x.criterion).join('；')}）：不得判为已解决`
         : '语义核验未运行：确定性层只能证明"字符变了"，不能证明"问题解决了"';
     }
-    if (input.canonConflict === true && verdict !== VERDICT.PASS) {
+    // 蓝图/词条冲突是**结论性**的：不能因为模型说"我按审稿意见改了"就当成通过。
+    // 统一收敛成 need_context + 单一原因码，避免出现"final_status=CANON_CONFLICT 但 reason_code=ISSUE_VERIFIED"这种自相矛盾的行。
+    if (input.canonConflict === true) {
       verdict = VERDICT.NEED_CONTEXT;
       reasonCode = 'CANON_CONFLICT';
-      reason = `审稿建议与固定蓝图/词条冲突：${reason}`;
+      reason = `审稿建议与固定蓝图/词条冲突，需作者裁决：${reason}`;
     }
     let finalStatus;
     if (input.canonConflict === true) finalStatus = FINAL.CANON_CONFLICT;
@@ -313,12 +347,24 @@
     const semanticByIssue = input.semanticByIssue && typeof input.semanticByIssue === 'object' ? input.semanticByIssue : {};
     const canonIds = new Set((Array.isArray(input.canonConflictIds) ? input.canonConflictIds : []).map(String));
 
-    const rebuilt = reconstruct(baseText, applied);
+    // 分段路径的补丁是按**片内偏移**校准的（全局偏移不存在），全章重建必须由
+    // 调用方（revision-finalize）用"逐片重建 + 合并拼接"证明后注入；这里不自己猜。
+    const proof = input.reconstructProof && typeof input.reconstructProof === 'object' ? input.reconstructProof : null;
+    const rebuilt = proof
+      ? { ok: proof.ok === true, code: String(proof.code || 'SEGMENT_PROOF'), text: null }
+      : reconstruct(baseText, applied);
     const global = [];
     global.push({
-      criterion: '候选稿可以由已记录补丁逐字重建（不存在无记录的改动）',
-      passed: rebuilt.ok && rebuilt.text === revisedText,
-      evidence: [rebuilt.ok ? '补丁重建成功' : `补丁重建失败：${rebuilt.code}`, `diff=${revisedText === baseText ? 'none' : 'yes'}`],
+      criterion: proof
+        ? '候选稿可由各片补丁逐字重建并完整拼接（分段证明）'
+        : '候选稿可以由已记录补丁逐字重建（不存在无记录的改动）',
+      passed: proof ? rebuilt.ok : (rebuilt.ok && rebuilt.text === revisedText),
+      evidence: [
+        proof
+          ? (rebuilt.ok ? '分段重建与拼接证明通过' : `分段证明失败：${rebuilt.code}`)
+          : (rebuilt.ok ? '补丁重建成功' : `补丁重建失败：${rebuilt.code}`),
+        `diff=${revisedText === baseText ? 'none' : 'yes'}`,
+      ],
     });
     const globalFailed = global.some((c) => !c.passed);
 

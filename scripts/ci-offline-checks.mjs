@@ -160,6 +160,10 @@ export const CHECKS = [
   { name: 'v1.2.2 P1-2 道具状态链（章级迁移 + 逐字证据 + 验收，零计费）', cmd: ['.p1-baseline/test-1022-prop-chain.mjs'], why: '状态迁移必须有正文证据；状态不符/证据丢失不得判通过' },
   { name: 'v1.2.2 P1-3 伏笔自动登记（deferred → 待确认候选，零计费）', cmd: ['.p1-baseline/test-1023-foreshadow-autoregister.mjs'], why: '只登记 pending 候选，不写事件账本；幂等去重与上限' },
   { name: 'v1.2.2 R-24/25/26 外部插件真实联调（拉起工坊 + 双插件 + C 账本隔离，零计费）', cmd: ['.p1-baseline/test-1020-dsh-real-integration.mjs'], why: '外部插件行为不在本仓库，缺前置时显式 SKIP；有前置时必须真跑（真实 Cordis 上下文）' },
+  // v1.2.4（2026-10-18）：两轮真实章稿夹具 + 统一终验出口 / 语义覆盖 / 审稿工作区 / 时态设置页。
+  // 顺序刻意是"先有失败样本，再有新判据"：夹具先证明旧缺陷能被识别，终验器再证明能被拦住。
+  { name: 'v1.2.4 两轮真实章稿夹具（A01–A08 / B01–B08：旧缺陷必须能被识别，零计费）', cmd: ['.p1-baseline/test-1024-chapter-fixtures.mjs'], why: '"修了一个句子就说这一项修好了"必须被测试抓住：证据未消除/该出现的字面缺失/必须保留被删 → 模型说 pass 也不通过' },
+  { name: 'v1.2.4 统一终验出口（单段↔分段等价 / 语义覆盖完备 / 审稿工作区 / 时态设置，零计费）', cmd: ['.p1-baseline/test-1025-finalize.mjs'], why: '两条修稿路径必须同一套判据；未跑语义不得计入通过；分段合并无证明不得 VERIFIED_CANDIDATE' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。
   // ⚠️ 在 DSH 受限文件沙箱里，本套件内部再起子进程时会撞上"禁止管道 stdio"，

@@ -115,18 +115,37 @@ const coverage = (status = 'patched') => ({ issue_id: 'R-0001', status });
 
 // ── 两层冲突：确定性 fail 不得被语义 pass 覆盖 ──────────────────────────────
 {
-  // 模型只改了句子里的无关部分，"折过一折"仍原样存在 → 确定性 fail；语义层却自报通过。
+  // ⚠️ v1.2.4 起确定性检查分成两类（方案 §2.3「强/弱验收」）：
+  //    · 硬事实（锚点原句还在 / 必须保留被删 / 该出现的字面缺失 / 字数硬目标没到 / 无 diff / 越权 / 底稿变了）
+  //      → 模型说 pass 也不能覆盖，直接 UNRESOLVED（Y-01b 钉这一条）；
+  //    · 软判断（词条版本对不上这类"需要人看才算数"的判据）
+  //      → 与语义 pass 冲突时仍是 LAYER_CONFLICT / need_context（Y-01 钉这一条）。
+  //    旧版把两类都当软冲突，于是"该出现的 3751 没出现"也能被一句 pass 变成"待复核"——
+  //    既不算失败也不算通过，作者永远看不到"这一项确定没做到"。
+  const softConflict = SV.verifyIssue({
+    finding, baseText: BODY, revisedText: revised, applied: [goodPatch], plan,
+    coverage: coverage('patched'), invariants: { must_keep: [] },
+    semantic: { status: 'pass', reason: '模型自报已修好' },
+    entryVersions: { [String(finding.id)]: { entry_id: 9, referenced_version: 2, current_version: 3 } },
+  });
+  check('Y-01 软判断 fail + 语义 pass → need_context（LAYER_CONFLICT，不择一看运气）',
+    softConflict.verdict === 'need_context' && softConflict.reason_code === 'LAYER_CONFLICT',
+    JSON.stringify(softConflict.reason_code));
+
+  // 硬事实：可编辑锚点原句仍在候选里（"折过一折"没被改掉），语义层却自报通过。
   const partial = applyPatches([patchFor('R-0001', '同一个口袋里', '口袋深处')]);
   const conflict = SV.verifyIssue({
     finding, baseText: BODY, revisedText: partial, applied: [patchFor('R-0001', '同一个口袋里', '口袋深处')], plan,
     coverage: coverage('patched'), invariants: { must_keep: [] },
     semantic: { status: 'pass', reason: '模型自报已修好' },
   });
-  check('Y-01 确定性 fail + 语义 pass → need_context（LAYER_CONFLICT，不择一看运气）',
-    conflict.verdict === 'need_context' && conflict.reason_code === 'LAYER_CONFLICT',
-    JSON.stringify(conflict.reason_code));
+  check('Y-01b 硬事实 fail（锚点原句还在）+ 语义 pass → UNRESOLVED（字面事实不被一句话覆盖）',
+    conflict.verdict === 'fail' && conflict.final_status === 'UNRESOLVED'
+      && conflict.reason_code === 'ANCHOR_NOT_EDITED',
+    JSON.stringify({ code: conflict.reason_code, final: conflict.final_status }));
   check('Y-02 冲突时 final_status 不是 ISSUE_VERIFIED',
-    conflict.final_status !== 'ISSUE_VERIFIED', conflict.final_status);
+    conflict.final_status !== 'ISSUE_VERIFIED' && softConflict.final_status !== 'ISSUE_VERIFIED',
+    JSON.stringify([conflict.final_status, softConflict.final_status]));
 }
 
 // ── R-07 / R-13 / 证据角色 ─────────────────────────────────────────────────
@@ -156,9 +175,11 @@ const coverage = (status = 'patched') => ({ issue_id: 'R-0001', status });
     semantic: { status: 'pass', reason: '模型自报' },
     invariants: { must_keep: ['把袖口往上拢了拢'] },
   });
-  check('R-13b 把"必须保留"的动作一起删掉 → 确定性 fail（语义 pass 也被冲突挡住）',
-    destroyed.verdict === 'need_context' && destroyed.checks.some((c) => c.code === undefined && !c.passed && /必须保留/.test(c.criterion)),
-    JSON.stringify(destroyed.checks.filter((c) => !c.passed).map((c) => c.criterion)));
+  check('R-13b 把"必须保留"的动作一起删掉 → 硬事实失败 PRESERVE_LOST（语义 pass 也挡不住）',
+    destroyed.verdict === 'fail' && destroyed.final_status === 'UNRESOLVED'
+      && destroyed.reason_code === 'PRESERVE_LOST'
+      && destroyed.checks.some((c) => !c.passed && /必须保留/.test(c.criterion)),
+    JSON.stringify({ code: destroyed.reason_code, failed: destroyed.checks.filter((c) => !c.passed).map((c) => c.criterion) }));
 }
 
 // ── R-07：字段/角色错配由语义层判失败（确定性层不装懂语义）─────────────────

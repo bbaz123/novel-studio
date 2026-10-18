@@ -1147,6 +1147,8 @@ function setActiveNav() {
     let active = v === state.view;
     if (v === 'settings' && (state.view === 'settings' || SETTINGS_VIEWS.includes(state.view))) active = true;
     if (v === 'ai-board' && (state.view === 'ai-board' || AI_VIEWS.includes(state.view))) active = true;
+    // 时态引擎设置是从「故事状态与工具」里进去的子视图：导航高亮留在父级，别让作者以为走丢了。
+    if (v === 'ai-board' && state.view === 'temporal-settings') active = true;
     if (v === 'ai-create' && !state.workId && (state.view === 'ai-create' || state.view === 'ai')) active = true;
     b.classList.toggle('active', active);
   });
@@ -1228,6 +1230,10 @@ async function renderView() {
       case 'ai-board':
         return renderAIBoard(content, state.aiTab);
       case 'writing': return renderWriting(content);
+      // v1.2.4（P0E）：审稿是**一级视图**，不是写作台里的嵌套弹窗。
+      case 'review': return renderReviewWorkspace(content);
+      // v1.2.4（P0F）：时态引擎设置独立成页（迁移/重建/回填不再堆在故事状态页底部）。
+      case 'temporal-settings': return renderTemporalSettingsPage(content);
       case 'overview': return renderOverview(content);
       case 'library': return renderLibrary(content);
       case 'works': return renderWorks();
@@ -3199,6 +3205,29 @@ async function renderOutline(content) {
 }
 
 // ---------- writing view ----------
+/**
+ * 写作台里那一行"修稿验收"状态（v1.2.4 方案 §8.2 视图 A）。
+ *
+ * 只给**一行**短状态 + 一个入口：编辑器上方**不再**永久堆"8 项进度 + 图表 + 问题全文"。
+ * 没有候选、或候选属于别的章时返回空串 —— 不显示比显示错的强。
+ */
+function revisionClosureStripHtml(chapterId) {
+  const ctx = state.pendingRevisionClosure;
+  if (!ctx || !ctx.finalized) return '';
+  if (Number(ctx.chapterId) !== Number(chapterId)) return '';
+  const RW = reviewWorkspaceModule();
+  if (!RW) return '';
+  const rows = Array.isArray(ctx.finalized.rows) ? ctx.finalized.rows : [];
+  const c = RW.countsOf(rows);
+  const stage = RW.stageOf(ctx.finalized.status);
+  const pending = c.pending + c.unresolved + c.partial + c.canon;
+  const tail = ctx.finalized.status === 'VERIFIED_CANDIDATE'
+    ? '候选已验证 · 尚未合并'
+    : (pending ? `${pending} 项待处理` : '');
+  return `<span class="rcs-item tone-${esc(stage.tone)}">修稿验收 · 已验证 ${c.verified}/${c.selected}${tail ? ` · ${esc(tail)}` : ''}</span>
+    <button class="btn small secondary" data-action="review-open" title="打开独立审稿工作区：左问题导航 / 中间大面积对照 / 右侧详情按需展开">查看</button>`;
+}
+
 async function renderWriting(content) {
   const chapters = state.chapters;
   const volumes = state.volumes;
@@ -3281,6 +3310,7 @@ async function renderWriting(content) {
           <input id="editor-title" value="${esc(current.title)}" placeholder="章节/场景标题">
         </div>
         <div id="chapter-recovery">${recoveryBarHtml(current)}</div>
+        <div id="revision-closure-strip" class="revision-closure-strip">${revisionClosureStripHtml(current.id)}</div>
         <div id="editor-content" class="editor-content" contenteditable="true" data-chapter-id="${current.id}">${sanitizeEditorHtml(editorDraftHtmlFor(current))}</div>
         <div class="editor-status" id="editor-status"><span>已加载</span> · <span id="editor-count">${wordCount(current.content)}</span> 字</div>
         <div id="chapter-state-panel" class="chapter-state-panel" data-chapter-id="${current.id}" data-boundary="after"><div class="muted">正在读取本章状态…</div></div>
@@ -5737,11 +5767,11 @@ function renderStoryStateCard() {
           <b style="font-size:13px">各角色掌握</b>
           <div class="muted" style="font-size:12px">写某个角色的行动理由时只能用「已知」里的条目；「未定义」既不算知道也不算不知道。POV 护栏：作者真相与读者披露都不构成角色可行动知识。</div>
           ${chars.map((c) => `
-            <div class="st-character-item">
-              <div class="row"><b>${esc(c.name)}</b><span class="muted" style="font-size:12px">可行动 ${c.actionable_ids.length} 条｜已知 ${c.known.length}｜显式不知道 ${c.unknown.length}｜怀疑 ${c.suspected.length}｜误信 ${c.false_beliefs.length}｜未定义 ${c.undetermined.count}</span></div>
+            <details class="st-character-item st-character-compact">
+              <summary class="row"><b>${esc(c.name)}</b><span class="muted" style="font-size:12px">可行动 ${c.actionable_ids.length} 条｜已知 ${c.known.length}｜显式不知道 ${c.unknown.length}｜怀疑 ${c.suspected.length}｜误信 ${c.false_beliefs.length}｜未定义 ${c.undetermined.count}</span>${(c.suspected.length || c.false_beliefs.length) ? '<span class="chip">有缺陷知识</span>' : ''}</summary>
               ${c.known.length ? `<div class="muted" style="font-size:12px">已知：${c.known.slice(0, 6).map((k) => esc(k.label || k.fact_key)).join('；')}</div>` : ''}
               ${c.undetermined.count ? `<div class="muted" style="font-size:12px">未定义（不得当成已知）：${c.undetermined.sample.slice(0, 4).map((x) => esc(x)).join('；')}</div>` : ''}
-            </div>`).join('') || '<div class="muted">该作品还没有角色。</div>'}
+            </details>`).join('') || '<div class="muted">该作品还没有角色。</div>'}
         </div>
       ` : '<div class="muted mt-8">先在「正文写作」里选一个章节，才能按"当前章"判断读者已披露与角色掌握。</div>'}
     </div>`;
@@ -6914,13 +6944,54 @@ async function renderAuthorStylePage(content) {
 
 async function renderStoryStatePage(content) {
   await loadStoryState();
-  await Promise.all([loadImpactRuns(), loadRepairRuns(), loadTemporalEngine(), loadBackfill()]);
-  content.innerHTML = aiSubPageHead('🧭 故事状态与读者披露', 'disclosure', '时间轴 / 知识视图 / 审批 / 影响与逐章重建；可按章前 / 章后查询')
-    + renderStoryStateCard()
-    + renderTemporalEngineCard()
-    + `<div id="impact-section">${impactSectionHtml()}</div>`
-    + `<div id="repair-section">${repairSectionHtml()}</div>`
-    + renderBackfillCard();
+  // v1.2.4（P0F）：本页**只**保留故事状态摘要与入口。
+  // 旧实现在这里依次挂上时态引擎卡 + 影响分析 + 逐章重建 + 存量回填，于是打开一页要滚好几屏
+  // （第二张报障截图就是这样）。那四块全部搬进「⚙ 时态引擎设置」独立视图；
+  // 后端接口、权限、迁移与预算门禁一个字都没改，这里只是视图层级。
+  const TS = (typeof globalThis !== 'undefined' && globalThis.NovelTemporalSettings) || null;
+  const o = (state.storyState && state.storyState.overview) || {};
+  content.innerHTML = aiSubPageHead('🧭 故事状态与读者披露', 'disclosure', '时间轴 / 知识视图 / 审批；时态引擎的开关、迁移与重建在独立设置页')
+    + `<div class="row mb-8" style="align-items:center;gap:8px">
+        ${TS ? TS.storyStateSummaryHtml(o) : ''}
+        <div class="grow"></div>
+        ${TS ? TS.entryButtonHtml() : ''}
+      </div>`
+    + renderStoryStateCard();
+}
+
+/**
+ * 时态引擎设置（v1.2.4 P0F 的独立视图）：分组卡 + 默认只展开一组。
+ * 复用**原有**的 renderTemporalEngineCard / impactSectionHtml / repairSectionHtml / renderBackfillCard，
+ * 因此开关、迁移、重建、回填的行为与权限与拆分前逐字节一致。
+ */
+async function renderTemporalSettingsPage(content) {
+  await Promise.all([loadTemporalEngine(), loadImpactRuns(), loadRepairRuns(), loadBackfill()]);
+  const TS = (typeof globalThis !== 'undefined' && globalThis.NovelTemporalSettings) || null;
+  const e = state.temporalEngine;
+  const bits = [];
+  if (e === null) bits.push('服务端不提供时态引擎接口（可能需要重启）');
+  else if (e.interface_error) bits.push('时态状态读取失败（可刷新重试）');
+  else {
+    bits.push(`表与索引${e.schema_ok === true ? '齐备' : '缺失'}`);
+    const cfg = e.config || {};
+    bits.push(cfg.enabled ? '引擎已开启' : '引擎未开启');
+    bits.push(`自动分析${cfg.auto_analysis ? '开' : '关'}`);
+    const trust = e.trust || null;
+    if (trust) bits.push(`可信前缀：截至第 ${Number(trust.trusted_through) >= 0 ? Number(trust.trusted_through) + 1 : '（未建立）'} 章`);
+  }
+  const statusText = bits.join('｜');
+  const bodies = {
+    runtime: renderTemporalEngineCard(),
+    rebuild: `<div id="impact-section">${impactSectionHtml()}</div><div id="repair-section">${repairSectionHtml()}</div>`,
+    migrate: renderBackfillCard(),
+  };
+  content.innerHTML = (TS
+    ? TS.headHtml({ statusText })
+    : aiSubPageHead('⚙ 时态引擎设置', 'temporal_engine', statusText)
+      + '<div class="row mb-8"><button class="btn small secondary" data-action="go-view" data-view="ai-board">‹ 返回故事状态</button></div>')
+    + (TS
+      ? TS.groupsHtml(bodies, 'runtime')
+      : `${bodies.runtime}<div id="impact-section">${impactSectionHtml()}</div><div id="repair-section">${repairSectionHtml()}</div>${bodies.migrate}`);
 }
 
 async function renderBranchPage(content) {
@@ -9637,6 +9708,15 @@ function longTextKindMeta(kind, opts) {
           });
           if (!patched || !patched.ok) throw new Error('补丁未能定位到本片段落（该片将标为失败并可续跑）');
           const blocked = patched.blocked || [];
+          // v1.2.4 P0C：片内重建证明（片内偏移 -> 片输出）。整章级别的重建证明由
+          // revision-finalize 用"逐片证明 + 合并拼接"完成；这里先把**片内**这一段钉住，
+          // 免得"补丁列表与输出对不上"（Q-12 的成因）一路滑到最终验收才被发现。
+          const SV = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionSemanticVerifier) || null;
+          let reconstructOk = true;
+          if (SV && typeof SV.reconstruct === 'function') {
+            const rebuilt = SV.reconstruct(base, patched.applied || []);
+            reconstructOk = !!(rebuilt && rebuilt.ok && rebuilt.text === patched.text);
+          }
           return {
             output: patched.text,
             extra: {
@@ -9645,8 +9725,20 @@ function longTextKindMeta(kind, opts) {
               noop: !!patched.noop,
               blocked: blocked.length,
               // extra 会随分段结果落 localStorage：只带前 5 条、只带展示所需字段。
-              blockedList: blocked.slice(0, 5).map((b) => ({ code: b.code, reason: b.reason, anchor: String(b.anchor || '').slice(0, 40) })),
+              blockedList: blocked.slice(0, 5).map((b) => ({
+                code: b.code, reason: b.reason, anchor: String(b.anchor || '').slice(0, 40),
+                issue_ids: (Array.isArray(b.issue_ids) ? b.issue_ids : []).slice(0, 4).map(String),
+              })),
               findings: (patched.findings || []).slice(0, 5),
+              // v1.2.4：最终验收要按 issue 记账，因此必须把"这一片改了哪几条"带出来。
+              // 只带编号与处置，不带正文——正文已经在这一片的 output 里。
+              appliedIssueIds: [...new Set((patched.applied || []).flatMap((p) => (Array.isArray(p.issue_ids) ? p.issue_ids : [])).map(String))],
+              coverage: (Array.isArray(patched.coverage) ? patched.coverage : []).map((c) => ({
+                issue_id: String(c.issue_id == null ? '' : c.issue_id),
+                status: String(c.status || ''),
+                reason: String(c.reason || '').slice(0, 80),
+              })).slice(0, 40),
+              reconstruct_ok: reconstructOk,
             },
           };
         }
@@ -11109,6 +11201,10 @@ function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText 
       + 'role=reference 是只读对比证据（例如开头原句 / 词条原文 / 蓝图），role=candidate_edit 才是本轮可以改的目标；'
       + '一条问题涉及两处以上文字时（跨位置矛盾、前后不一致），把两处都写进 evidence，不要只给一处；'
       + 'acceptance.rule 写"修完能怎么客观检查"，preserve 写"不能被这次修改弄丢的东西"。',
+    // v1.2.4：两类"漏了就永远判不出"的硬约束必须显式声明，否则验收器只能靠模型自述（会假通过）。
+    'acceptance 另有两个**可选**硬约束字段（能给就给，不要硬凑）：'
+      + 'acceptance.must_contain：修后正文里必须出现的字面（如纪年锚点 "3751"、单号 "0731"、系统台词的关键半句）；'
+      + 'acceptance.min_chars：蓝图规定的**硬性**字数下限（只是"建议篇幅/软目标"时不要写，留给作者签收）。',
     'issues 与 findings 同序对应（旧界面只读 issues）；拿不到逐字引文时宁可少报一条 finding，也不要编造引文。',
     'issues 覆盖：剧情逻辑/与既有设定冲突/人物言行一致/AI 腔与模板句/节奏与钩子/篇幅；strengths 1-3 条。',
     'deferred 是“待后续核验”通道：疑似伏笔、未知等级、暂未解释的异常、可能故意留下的缺口，写进 deferred，不要写进 issues；判不出“是伏笔还是假神秘”时也放这里，不要擅自判成问题、更不要建议删除。deferred 不会进入修稿清单。',
@@ -11614,14 +11710,16 @@ async function refineByChecklist() {
         });
         return;
       }
-      const unresolvedNotes = (revisionRun.results || [])
-        .filter((r) => r.extra && r.extra.unresolved)
+      const segResults = Array.isArray(revisionRun.results) ? revisionRun.results : [];
+      const segPlans = Array.isArray(revisionRun.plan && revisionRun.plan.segments) ? revisionRun.plan.segments : [];
+      const unresolvedNotes = segResults
+        .filter((r) => r && r.extra && r.extra.unresolved)
         .map((r) => `${r.segment_id}：${r.extra.unresolved} 处未能定位`);
-      const appliedCount = (revisionRun.results || []).reduce((n, r) => n + ((r.extra && r.extra.applied) || 0), 0);
-      // 安全门禁的分片结论：被拦下的补丁**不在** merged 里，这里把它们收集起来交给差异预览。
-      const blockedAll = (revisionRun.results || []).flatMap((r) => (r.extra && Array.isArray(r.extra.blockedList) ? r.extra.blockedList : []));
-      const blockedCount = (revisionRun.results || []).reduce((n, r) => n + ((r.extra && r.extra.blocked) || 0), 0);
-      const findingsAll = (revisionRun.results || []).flatMap((r) => (r.extra && Array.isArray(r.extra.findings) ? r.extra.findings : []));
+      const appliedCount = segResults.reduce((n, r) => n + ((r && r.extra && r.extra.applied) || 0), 0);
+      // 安全门禁的分片结论：被拦下的补丁**不在** merged 里，这里把它们收集起来交给最终验收。
+      const blockedAll = segResults.flatMap((r) => (r && r.extra && Array.isArray(r.extra.blockedList) ? r.extra.blockedList : []));
+      const blockedCount = segResults.reduce((n, r) => n + ((r && r.extra && r.extra.blocked) || 0), 0);
+      const findingsAll = segResults.flatMap((r) => (r && r.extra && Array.isArray(r.extra.findings) ? r.extra.findings : []));
       if (appliedCount === 0 && !unresolvedNotes.length) {
         toast(blockedCount
           ? `本次有 ${blockedCount} 处改动被安全门禁拦下（未自动应用），正文保持原样`
@@ -11629,17 +11727,93 @@ async function refineByChecklist() {
         longTextClearRun();
         return;
       }
-      showReviewDiff(info.article, revisionRun.merged, {
+      // ── v1.2.4 P0C：分段路径**不再自己聚合完就弹预览**，而是换算成同一份候选结构后走唯一出口 ──
+      // 1) 逐片证明：片必须 done，且片内补丁能逐字重建出该片输出（在 parse 阶段算好放进 extra）。
+      const segments = segPlans.map((seg) => {
+        const r = segResults.find((x) => x && x.segment_id === seg.segment_id) || null;
+        const extra = (r && r.extra) || {};
+        return {
+          segment_id: seg.segment_id,
+          ordinal: seg.ordinal,
+          status: r ? String(r.status || 'pending') : 'pending',
+          base_chars: Number(seg.target && seg.target.chars) || 0,
+          base_hash: String((seg.target && seg.target.hash) || ''),
+          output_hash: String((r && r.output_hash) || ''),
+          proof_ok: !!(r && r.status === 'done' && extra.reconstruct_ok !== false),
+          issue_ids: Array.isArray(extra.appliedIssueIds) ? extra.appliedIssueIds.map(String) : [],
+          patch_count: Number(extra.applied) || 0,
+        };
+      });
+      // 2) 合并保真：合并正文必须逐字等于"各片输出的 trim 以空行拼接"，否则说明有片没参与合并（Q-12）。
+      const mergedOk = typeof revisionRun.merged === 'string'
+        && revisionRun.merged === segPlans
+          .map((seg) => segResults.find((x) => x && x.segment_id === seg.segment_id))
+          .filter((r) => r && r.status === 'done')
+          .map((r) => String(r.output == null ? '' : r.output).trim())
+          .join('\n\n');
+      const segmentCoverage = segResults.flatMap((r) => (r && r.extra && Array.isArray(r.extra.coverage) ? r.extra.coverage : []));
+      // 3) 逐条补丁记账：分段没有整章偏移，按"片 + issue"记（重建证明在片内做）。
+      const segApplied = [];
+      for (const r of segResults) {
+        const ids = (r && r.extra && Array.isArray(r.extra.appliedIssueIds)) ? r.extra.appliedIssueIds : [];
+        for (const id of ids) {
+          segApplied.push({
+            issue_ids: [String(id)], segment_id: String(r.segment_id),
+            span_id: '', op: 'replace', original: '', replacement: '',
+          });
+        }
+      }
+      const segPatched = {
+        text: String(revisionRun.merged),
+        applied: segApplied,
+        blocked: blockedAll,
+        unresolved: unresolvedNotes.map((reason) => ({ reason, anchor: '' })),
+        findings: findingsAll,
+        coverage: [],
+        safety_available: true,
+        verified: false,
+      };
+      const finalized = revisionFinalizeFor({
+        mode: 'segmented', article: info.article, patched: segPatched,
+        segmentCoverage, segments, mergeComplete: mergedOk,
+        plan: revisionPlan, findings: revisionPlanFindings, selectedIssueIds,
+        snapshot: revisionSnapshot, chapterId: revisionChapterId, reviewId,
+        invariants: { must_keep: [] }, protectedSpans: extraProtected,
+      });
+      const semantic = finalized ? finalized.semantic : null;
+      const closure = finalized ? finalized.closure : null;
+      const diffArgs = {
+        oldText: info.article,
+        newText: String(revisionRun.merged),
         baseFingerprint: info.baseChapterFingerprint || null,
         checklist: confirmed.length,
         applied: appliedCount,
         notes: unresolvedNotes,
         chapterId: revisionChapterId,
         blocked: blockedAll,
-        findings: findingsAll
-      });
-      toast(`整章分 ${revisionRun.plan.segments.length} 片改稿：应用 ${appliedCount} 个局部补丁（语义未复验，不能当作已修好）${unresolvedNotes.length ? `；${unresolvedNotes.length} 片有未能定位的问题` : ''}`,
-        unresolvedNotes.length ? 'error' : 'success');
+        findings: findingsAll,
+        coverage: segPatched.coverage,
+        patches: segApplied,
+        semantic,
+        closure,
+        finalize: finalized,
+        selectedIssueIds: selectedIssueIds.slice(),
+        notice: `整章分 ${segPlans.length} 片改稿：语义层尚未运行，任何一条都还不能算"已修好"`,
+      };
+      state.pendingRevisionClosure = {
+        article: info.article, review, plan: revisionPlan, findings: revisionPlanFindings,
+        patched: segPatched, chapterId: revisionChapterId, selectedIssueIds, diffArgs, snapshot: revisionSnapshot,
+        semantic, closure, finalized, autoRepair: null, semanticRuns: 0,
+        reviewId, mode: 'segmented',
+        // 复验后要重算同一个出口，否则分段候选会被当成单请求候选重算（结论会不一致）。
+        segments, segmentCoverage, mergeComplete: mergedOk,
+        authorization, protected_spans: extraProtected,
+      };
+      await postRevisionClosureReceipt(revisionChapterId, closure, semantic, finalized);
+      presentRevisionResult(diffArgs);
+      toast(revisionResultToast(confirmed.length, segPatched, semantic)
+        + (unresolvedNotes.length ? `；${unresolvedNotes.length} 片有未能定位的问题` : ''),
+        (finalized && finalized.status === 'VERIFIED_CANDIDATE') ? 'success' : 'error');
       longTextClearRun();
       return;
     }
@@ -11720,32 +11894,43 @@ async function refineByChecklist() {
       }
       // 全部被安全门禁拦下：正文原样保留，并且**不回退整章重写**（那是一次付费且无门禁的整章覆盖）。
       if (patched.allBlocked) toast('这一版修稿的高风险改动全部被安全门禁拦下（未改动正文），原因见差异预览', 'error');
-      // v1.2.1 质量闭环（P0-6/P0-8）：先算**免费**的确定性验收与闭环指标，再展示。
-      // 语义层此时尚未运行 → 覆盖表会如实显示"待语义复核"，不会把补丁数说成已修好。
-      let semantic = revisionSemanticFor({
-        article: info.article, patched, plan: revisionPlan, findings: revisionPlanFindings,
+      // v1.2.4（P0C/P0D）：**单请求与分段共用同一个最终验收出口** `revisionFinalizeFor()`。
+      // 语义层此时尚未运行 → 每一条都只能停在 AWAITING_SEMANTIC，补丁数不会被说成已修好。
+      let finalPatched = patched;
+      let autoRepair = null;
+      let finalized = revisionFinalizeFor({
+        mode: 'single', article: info.article, patched,
+        plan: revisionPlan, findings: revisionPlanFindings, selectedIssueIds,
+        snapshot: revisionSnapshot, chapterId: revisionChapterId, reviewId,
         invariants: { must_keep: [] }, protectedSpans: extraProtected,
-        currentBaseHash: revisionSnapshot.body_hash,
       });
       // v1.2.2 自动二次复修：只有**确定性验收已经判失败**的条目才会触发；
       // 全部"待语义复核"时不会乱跑（那会变成没目标也付费）。最终候选仍等作者批准。
-      let finalPatched = patched;
-      let autoRepair = null;
-      if (revisionAutoRepairEnabled() && semantic && semantic.summary && Number(semantic.summary.unresolved) > 0) {
+      if (revisionAutoRepairEnabled() && finalized && finalized.summary && Number(finalized.summary.unresolved) > 0) {
         autoRepair = await runRevisionAutoRepair({
-          article: info.article, patched, semantic, plan: revisionPlan, findings: revisionPlanFindings,
+          article: info.article, patched, semantic: finalized.semantic, plan: revisionPlan, findings: revisionPlanFindings,
           authorization, snapshot: revisionSnapshot, chapterId: revisionChapterId,
           selectedIssueIds, review, jobBase, applyOpts,
           invariants: { must_keep: [] }, protectedSpans: extraProtected,
         });
         if (autoRepair && autoRepair.rounds.some((r) => r.status === 'applied')) {
           finalPatched = autoRepair.patched;
-          semantic = autoRepair.semantic;
+          // 复修之后必须**重新走同一个出口**：新的候选 hash 变了，上一轮的 PASS 不能沿用（§4.4）。
+          finalized = revisionFinalizeFor({
+            mode: 'single', article: info.article, patched: finalPatched,
+            plan: revisionPlan, findings: revisionPlanFindings, selectedIssueIds,
+            snapshot: revisionSnapshot, chapterId: revisionChapterId, reviewId,
+            invariants: { must_keep: [] }, protectedSpans: extraProtected,
+          });
         }
       }
-      const closure = revisionClosureFor({ patched: finalPatched, semantic, selectedIssueIds });
+      const semantic = finalized ? finalized.semantic : null;
+      const closure = finalized ? finalized.closure : null;
       const autoNotice = revisionAutoRepairNotice(autoRepair);
       const diffArgs = {
+        // v1.2.4：审稿工作区要能在弹窗之外重画同一份对照，因此把两端正文一起固化在这里。
+        oldText: info.article,
+        newText: finalPatched.text,
         baseFingerprint: info.baseChapterFingerprint || null,
         checklist: confirmed.length,
         applied: finalPatched.applied.length,
@@ -11771,21 +11956,25 @@ async function refineByChecklist() {
         },
         semantic,
         closure,
+        // v1.2.4：最终验收结果（阶段 / 逐条行 / 下一步）——界面统计只读它，不自己算。
+        finalize: finalized,
+        selectedIssueIds: selectedIssueIds.slice(),
         notice: autoNotice,
       };
       // 语义复验按钮要能拿回这一轮的候选与授权（弹窗关掉后 DOM 就没了，必须在这里固化）。
       state.pendingRevisionClosure = {
         article: info.article, review, plan: revisionPlan, findings: revisionPlanFindings,
         patched: finalPatched, chapterId: revisionChapterId, selectedIssueIds, diffArgs, snapshot: revisionSnapshot,
-        semantic, closure, autoRepair, semanticRuns: 0,
+        semantic, closure, finalized, autoRepair, semanticRuns: 0,
+        reviewId, mode: 'single',
         authorization, protected_spans: extraProtected,
       };
-      await postRevisionClosureReceipt(revisionChapterId, closure, semantic);
-      showReviewDiff(info.article, finalPatched.text, diffArgs);
+      await postRevisionClosureReceipt(revisionChapterId, closure, semantic, finalized);
+      presentRevisionResult(diffArgs);
       markJobApplied(refinedData && refinedData.job_id);
       if (!finalPatched.allBlocked) {
         const summary = semantic && semantic.summary ? semantic.summary : null;
-        const allVerified = summary && summary.total > 0 && summary.verified === summary.total;
+        const allVerified = !!(finalized && finalized.status === 'VERIFIED_CANDIDATE') || (summary && summary.total > 0 && summary.verified === summary.total);
         toast(revisionResultToast(confirmed.length, finalPatched, semantic) + (autoNotice ? `；${autoNotice}` : ''), allVerified ? 'success' : 'error');
       }
       return;
@@ -12115,6 +12304,36 @@ function setRevisionBudgetCents(cents) {
 }
 
 /**
+ * v1.2.4 界面灰度开关（方案 §16.1）。
+ *
+ * 为什么默认**开**：v1.2.4 交付的界面本身就是这两个视图（独立审稿工作区 / 时态引擎设置页）。
+ * 方案 §16.1 的"默认关闭"是**线上灰度发布**顺序（先隔离作品、先只读验收），
+ * 那是发布节奏而不是产品默认值；这里交付的是本机版本，默认关掉等于交付了看不见的功能。
+ * 开关仍然保留，作为**回滚路径**：`localStorage['ns_review_workspace_v124']='0'`
+ * 立刻回到旧的审稿差异弹窗，`ns_temporal_settings_view_v124='0'` 回到旧的堆叠页。
+ * 关键点：两个开关彼此独立，且关掉**都不删候选、不改变作者已确认正文、不动时态数据**。
+ */
+const REVISION_FLAGS = {
+  review_workspace_v124: 'ns_review_workspace_v124',
+  temporal_settings_view_v124: 'ns_temporal_settings_view_v124',
+};
+function revisionFeatureEnabled(name) {
+  const key = REVISION_FLAGS[name];
+  if (!key) return false;
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? true : v === '1';
+  } catch (_) { return true; }
+}
+function setRevisionFeature(name, on) {
+  const key = REVISION_FLAGS[name];
+  if (!key) return;
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch (_) { /* 存不下只影响本次 */ }
+}
+function reviewWorkspaceEnabled() { return revisionFeatureEnabled('review_workspace_v124'); }
+function temporalSettingsViewEnabled() { return revisionFeatureEnabled('temporal_settings_view_v124'); }
+
+/**
  * 修稿重试预算（E05-B / §6.6）：**同一个"授权热点 + 这一份稿"跨刷新共用同一份额度**。
  *
  * 为什么必须落到本机存储：旧实现每次进 `refineByChecklist` 都新建一个
@@ -12206,7 +12425,10 @@ function revisionFindingsFor(issues, issueIds, review, bodyText) {
   const byId = new Map(structured.map((f, i) => [String(f && f.id != null ? f.id : i + 1), f]));
   return ids.map((id, i) => {
     const f = byId.get(id);
-    if (f && Array.isArray(f.evidence) && f.evidence.length) return { ...f, id };
+    // ⚠️ v1.2.4：结构化条目**存在但没有 evidence**（例如"缺纪年锚点""篇幅不足"这类
+    //   证据天然不在正文里的问题）时，必须保留它的 acceptance —— 否则
+    //   `must_contain` / `min_chars` 会在进入验收器之前就被丢掉，硬约束退化成"模型说什么就是什么"。
+    if (f) return { ...f, id, evidence: Array.isArray(f.evidence) ? f.evidence : [] };
     const issue = (issues || [])[i];
     const text = typeof issue === 'string' ? issue : String((issue && (issue.text || issue.title)) || '');
     return { id, text, explanation: text, type: 'other', severity: 'medium', evidence: [], acceptance: { rule: '', preserve: [] }, legacy: true };
@@ -12291,6 +12513,48 @@ function revisionClosureFor({ patched, semantic, selectedIssueIds } = {}) {
       safetyPassed,
       persisted: false,
       verdict,
+    });
+  } catch (_) { return null; }
+}
+
+/**
+ * 统一最终验收（v1.2.4 P0C/P0D）：单请求与分段**唯一**出口。
+ *
+ * 为什么必须在 app.js 里再包一层：`revision-finalize` 是纯函数模块（UMD，Node 测试直接调用），
+ * 它不认识 `state`、不读 localStorage、不发请求。这里只负责把"当前这次修稿的上下文"
+ * 翻译成它的入参，并把结果原样带回去 —— 不做任何"看起来更好"的二次修饰。
+ */
+function revisionFinalizeFor(opts = {}) {
+  const FZ = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionFinalize) || null;
+  if (!FZ) return null;
+  const patched = opts.patched || null;
+  try {
+    return FZ.finalizeRevisionCandidate({
+      mode: opts.mode === 'segmented' ? 'segmented' : 'single',
+      originalText: opts.article,
+      candidateText: patched ? patched.text : (opts.candidateText || ''),
+      selectedIssueIds: opts.selectedIssueIds,
+      applied: patched && Array.isArray(patched.applied) ? patched.applied : [],
+      blocked: patched && Array.isArray(patched.blocked) ? patched.blocked : [],
+      coverage: patched && Array.isArray(patched.coverage) ? patched.coverage : (opts.coverage || []),
+      segmentCoverage: opts.segmentCoverage || [],
+      segments: opts.segments || null,
+      mergeComplete: opts.mergeComplete === true,
+      findings: opts.findings || [],
+      plan: opts.plan || null,
+      invariants: opts.invariants || { must_keep: [] },
+      protectedSpans: opts.protectedSpans || [],
+      currentBaseHash: opts.snapshot ? opts.snapshot.body_hash : undefined,
+      semanticByIssue: opts.semanticByIssue || {},
+      canonConflictIds: opts.canonConflictIds || [],
+      safetyAvailable: patched ? patched.safety_available !== false : true,
+      safetyVerified: patched ? patched.verified === true : false,
+      revisionRunId: opts.revisionRunId,
+      workId: state.workId || (state.work && state.work.id) || '',
+      chapterId: opts.chapterId,
+      reviewId: opts.reviewId,
+      persisted: opts.persisted === true,
+      baseMatches: opts.baseMatches,
     });
   } catch (_) { return null; }
 }
@@ -12447,12 +12711,28 @@ async function runRevisionAutoRepair({ article, patched, semantic, plan, finding
   return { patched: current, semantic: sem, rounds, spent_cents: spent };
 }
 
-/** 回执载荷：只带"这一轮修稿的事实"，不带正文、不带模型原文（服务端还有 64KB 上限）。 */
-function revisionReceiptPayload(closure, semantic) {
+/**
+ * 回执载荷：只带"这一轮修稿的事实"，不带正文、不带模型原文（服务端还有 64KB 上限）。
+ *
+ * v1.2.4（P0C/P0D）：从 v2 升到 v3 —— 现在带**运行记录**（run_id / mode / 覆盖完备性 /
+ * 阶段 / 逐条计数），因为"这次到底修好了几条"必须能从库里的回执复核，
+ * 而不是只活在关掉的弹窗里。仍不写正文、不写提示词、不写审批凭据。
+ */
+function revisionReceiptPayload(closure, semantic, finalized) {
   const batch = semantic && Array.isArray(semantic.issues) ? semantic.issues : [];
+  const FZ = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionFinalize) || null;
+  const run = finalized && FZ ? FZ.runRecordOf(finalized, { lastUpdate: new Date().toISOString() }) : null;
   return {
-    closure_version: 2,
+    closure_version: 3,
     status: closure ? closure.verdict.status : 'NOT_RUN',
+    // stage 与 status 是两件事：status 是闭环结论，stage 是"现在该谁动"（作者 / 系统 / 门禁）。
+    stage: finalized ? String(finalized.status || '') : '',
+    semantic_coverage_complete: !!(finalized && finalized.coverage && finalized.coverage.complete),
+    required_unresolved_ids: Array.isArray(closure && closure.required_unresolved_ids) ? closure.required_unresolved_ids : [],
+    awaiting_semantic_ids: Array.isArray(closure && closure.awaiting_semantic_ids) ? closure.awaiting_semantic_ids : [],
+    next_action: finalized && finalized.next_action
+      ? { code: finalized.next_action.code, label: String(finalized.next_action.label || '').slice(0, 120) }
+      : null,
     metrics: closure ? closure.metrics : null,
     issues: batch.map((i) => ({
       issue_id: String(i.issue_id || ''),
@@ -12461,7 +12741,10 @@ function revisionReceiptPayload(closure, semantic) {
       reason_code: String(i.reason_code || ''),
       reason: String(i.reason || '').slice(0, 160),
       repair_hint: String(i.repair_hint || '').slice(0, 120),
+      patch_count: Number(i.patch_count) || 0,
+      evidence_count: Number(i.evidence_count) || 0,
     })),
+    run,
     verdict: closure ? closure.verdict : null,
     persisted: false,
   };
@@ -12471,7 +12754,7 @@ function revisionReceiptPayload(closure, semantic) {
  * 写入闭环回执（失败不阻断修稿：回执只是"可复核"，不是候选稿能否展示的前提）。
  * 但会在控制台留一条 warn —— "没写进去"与"写进去了"必须可区分。
  */
-async function postRevisionClosureReceipt(chapterId, closure, semantic) {
+async function postRevisionClosureReceipt(chapterId, closure, semantic, finalized) {
   if (!closure) return;
   try {
     await api('/novel/revision/closure-receipt', {
@@ -12479,7 +12762,7 @@ async function postRevisionClosureReceipt(chapterId, closure, semantic) {
       body: {
         work_id: Number(state.workId || (state.work && state.work.id)) || 0,
         chapter_id: Number(chapterId) || 0,
-        closure: revisionReceiptPayload(closure, semantic),
+        closure: revisionReceiptPayload(closure, semantic, finalized),
       },
     });
   } catch (e) {
@@ -13132,8 +13415,16 @@ function tryApplyRevisionOutput(output, baseArticle, safetyOpts, ctx = {}) {
       allBlocked: !!run.allBlocked,
       text: run.text,
       applied: (run.applied || []).map((a) => ({
+        // 兼容字段：界面「撤销这一处」与 reasonOf 读的是 issue / anchor / revised。
         issue: Number((a.issue_ids || [])[0]) || 0,
         anchor: a.original, revised: a.replacement,
+        // ⚠️ 协议字段必须**原样保留**（v1.2.4 修复）：逐条验收器与闭环状态是按
+        //   `issue_ids` / `original` / `replacement` 记账的。旧实现只留 `issue`（且用
+        //   `Number(issue_ids[0])`，非数字编号如 "B03" 直接变 0），并且把 original/replacement
+        //   改名成 anchor/revised —— 于是「候选能否由补丁逐字重建」必然判 BASE_STALE、
+        //   每条 issue 的 patch_count 恒为 0（"应用了 5 个补丁"被读成"一条也没改"）。
+        issue_ids: Array.isArray(a.issue_ids) ? a.issue_ids.map(String) : [],
+        original: a.original, replacement: a.replacement,
         span_id: a.span_id, op: a.op,
         // ⚠️ 位置必须一起带出来：E06 的「撤销这一处」要按原稿位置重建候选，
         //    没有 start/end 时它只能拒绝（"缺少位置信息"）—— 那等于撤销功能不可用。
@@ -13142,6 +13433,7 @@ function tryApplyRevisionOutput(output, baseArticle, safetyOpts, ctx = {}) {
       // 未完成项一律可见（span 未命中 / 同组失败 / 被门禁拦下）。
       unresolved: (run.unresolved || []).map((u) => ({
         issue: Number((u.issue_ids || [])[0]) || Number(u.issue_id) || 0,
+        issue_ids: Array.isArray(u.issue_ids) ? u.issue_ids.map(String) : [],
         anchor: u.anchor || '', reason: u.reason || '', status: u.status || '', code: u.code || '',
       })),
       blocked: (run.blocked || []).map((b) => ({ ...b, anchor: b.anchor || '' })),
@@ -13186,11 +13478,28 @@ function textFingerprint(text) {
   return `fnv1a:${h.toString(16)}:${s.length}`;
 }
 
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], notice = '', chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [], coverage = [], issueCoverage = [], patches = [], verification = null, targetWords = null, semantic = null, closure = null } = {}) {
-  // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
-  // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
+/** 纯文本下载（导出待处理清单用）：不经过服务端，不把正文带出界面。 */
+function downloadTextFile(name, text) {
+  const blob = new Blob([String(text == null ? '' : text)], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = String(name || 'export.txt').replace(/[\\/:*?"<>|]/g, '_');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+/**
+ * 把"这份候选属于哪一章、要写什么、幂等键是什么"固化进 `state.pendingReviewDiff`。
+ *
+ * 为什么抽出来（v1.2.4 P0E）：审稿工作区与旧差异弹窗是**同一份候选**的两个呈现，
+ * 两条路径都必须先把合并所需的东西固化好；否则"在工作区里点合并"会找不到 pendingReviewDiff，
+ * 作者看到的就是一个点了没反应的按钮。
+ */
+function primePendingReviewDiff(oldText, newText, { chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, patches = [], coverage = [], verification = null } = {}) {
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
-  // R03：整次采纳要用到的两样东西，都在**弹窗打开时**固化：
+  // R03：整次采纳要用到的两样东西，都在**预览打开时**固化：
   //   · proposalRefs / proposalIds —— 结果弹窗里勾选的入账提案（弹窗关掉后 DOM 就没了）。
   //     refs 带来源类型（event:/memory:）是权威形式；只有裸 id 的旧调用点按"事件优先"补 refs
   //     （与服务端对裸 id 的解析顺序一致）。
@@ -13225,6 +13534,14 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
   };
   // 勾选集合已转存进 pendingReviewDiff（本次差异预览的一部分）；清掉暂存，避免串到下一次操作。
   state.pendingProposalSelection = null;
+  return state.pendingReviewDiff;
+}
+
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], notice = '', chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [], coverage = [], issueCoverage = [], patches = [], verification = null, targetWords = null, semantic = null, closure = null, finalize = null } = {}) {
+  // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
+  // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
+  const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
+  primePendingReviewDiff(oldText, newText, { chapterId: targetChapterId, proposalIds, proposalRefs, baseFingerprint, patches, coverage, verification });
   const viewingOther = Boolean(targetChapterId) && Number(state.currentChapterId) !== targetChapterId;
   // E03（§7.1）：篇幅口径与缺口必须**在同一处**如实呈现 —— 改动条数不能证明篇幅问题已解决。
   // 这里只说"这次授权改了多少字、离目标还差多少"，**不**因此扩大任何修改范围（越权面不在这里放开）。
@@ -13367,11 +13684,38 @@ async function runRevisionSemanticVerify() {
     }
     const closure = revisionClosureFor({ patched: finalPatched, semantic: finalSemantic, selectedIssueIds: ctx.selectedIssueIds });
     const autoNotice = revisionAutoRepairNotice(autoRepair);
-    state.pendingRevisionClosure = { ...ctx, patched: finalPatched, semantic: finalSemantic, closure, autoRepair, semanticRuns: Number(ctx.semanticRuns) + 1 };
-    await postRevisionClosureReceipt(ctx.chapterId, closure, finalSemantic);
+    // v1.2.4 P0C：复验后**重新走同一个出口**，这样 stage / 覆盖完备性 / 下一步都由统一逻辑给出，
+    // 而不是这一处再手写一套"看起来修好了"的判断。
+    const semanticByIssue = {};
+    for (const i of ((finalSemantic && finalSemantic.issues) || [])) {
+      semanticByIssue[String(i.issue_id)] = {
+        status: String(i.semantic_status || 'not_run'),
+        reason: String(i.reason || ''),
+        repair_hint: String(i.repair_hint || ''),
+        confidence: String(i.confidence || 'medium'),
+        checks: Array.isArray(i.checks) ? i.checks : [],
+      };
+    }
+    const finalized = revisionFinalizeFor({
+      mode: ctx.mode === 'segmented' ? 'segmented' : 'single',
+      article: ctx.article, patched: finalPatched, plan: ctx.plan, findings: ctx.findings,
+      selectedIssueIds: ctx.selectedIssueIds, snapshot: ctx.snapshot, chapterId: ctx.chapterId, reviewId: ctx.reviewId,
+      invariants: { must_keep: [] }, protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
+      segments: Array.isArray(ctx.segments) ? ctx.segments : null,
+      segmentCoverage: Array.isArray(ctx.segmentCoverage) ? ctx.segmentCoverage : [],
+      mergeComplete: ctx.mergeComplete === true,
+      semanticByIssue,
+      canonConflictIds: canonConflictIdsFrom((finalSemantic && finalSemantic.issues) || []),
+    });
+    state.pendingRevisionClosure = {
+      ...ctx, patched: finalPatched, semantic: finalSemantic, closure: (finalized && finalized.closure) || closure,
+      finalized: finalized || null, autoRepair, semanticRuns: Number(ctx.semanticRuns) + 1,
+    };
+    await postRevisionClosureReceipt(ctx.chapterId, (finalized && finalized.closure) || closure, finalSemantic, finalized);
     const s = (finalSemantic && finalSemantic.summary) || { verified: 0, total: 0 };
-    showReviewDiff(ctx.article, finalPatched.text, {
-      ...ctx.diffArgs, semantic: finalSemantic, closure,
+    presentRevisionResult({
+      ...ctx.diffArgs, oldText: ctx.article, newText: finalPatched.text,
+      semantic: finalSemantic, closure: (finalized && finalized.closure) || closure, finalize: finalized || null,
       notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}（结论见下方覆盖表）${autoNotice ? `；${autoNotice}` : ''}`,
     });
   } catch (e) {
@@ -13379,6 +13723,286 @@ async function runRevisionSemanticVerify() {
   }
 }
 
+/** 从逐条结论里挑出 CANON_CONFLICT 的编号（供给下一步终审，避免冲突被"漏掉"）。 */
+function canonConflictIdsFrom(issues) {
+  return (Array.isArray(issues) ? issues : [])
+    .filter((i) => i && i.final_status === 'CANON_CONFLICT')
+    .map((i) => String(i.issue_id));
+}
+
+
+// ---------- v1.2.4 独立审稿工作区（视图 B） ----------
+// 为什么是一级视图而不是"更大的弹窗"（方案 §8.1 / P0E）：
+//   弹窗只能盖住写作台，作者审稿时仍然需要足够宽的对照；把 8 项进度、问题全文、差异全文
+//   塞进一个滚动弹窗，等于把"现在哪几条没过"埋进长文里。工作区占用主内容区：
+//   顶部一行状态、左侧窄问题导航、中间大面积对照、右侧详情**默认关闭**（打开是覆盖式抽屉，
+//   不向左挤小正文）、底部只放当前状态真的能执行的按钮。
+//
+// 判据全部来自 `revision-finalize` 的结果与 `review-workspace` 的纯函数；
+// 这里只做 DOM 拼装，不自己算"修好了几条"。
+
+function reviewWorkspaceModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelRevisionWorkspace) || null;
+}
+
+/** 工作区模型：没有候选就返回 null（界面据此回到写作台，而不是画一个空壳）。 */
+function reviewWorkspaceContext() {
+  const ctx = state.pendingRevisionClosure;
+  if (!ctx) return null;
+  const RW = reviewWorkspaceModule();
+  if (!RW) return null;
+  const d = ctx.diffArgs || {};
+  const rows = ctx.finalized && Array.isArray(ctx.finalized.rows) ? ctx.finalized.rows : [];
+  return {
+    rows,
+    issueRows: RW.issueRowsOf({ rows }),
+    chapterTitle: chapterTitleOf(Number(ctx.chapterId) || Number(state.currentChapterId) || 0) || '本章',
+    oldText: String(d.oldText != null ? d.oldText : (ctx.article || '')),
+    newText: String(d.newText != null ? d.newText : ((ctx.patched && ctx.patched.text) || '')),
+    finalize: ctx.finalized || null,
+    stage: ctx.finalized ? String(ctx.finalized.status || 'AWAITING_SEMANTIC') : 'AWAITING_SEMANTIC',
+    checklist: Number(d.checklist) || rows.length,
+    patchedCount: Array.isArray(ctx.patched && ctx.patched.applied) ? ctx.patched.applied.length : 0,
+    semanticRuns: Number(ctx.semanticRuns) || 0,
+    findings: Array.isArray(ctx.findings) ? ctx.findings : [],
+    notice: String(d.notice || ''),
+    blocked: Array.isArray(d.blocked) ? d.blocked : [],
+    closure: (ctx.finalized && ctx.finalized.closure) || ctx.closure || null,
+  };
+}
+
+function reviewWorkspaceState() {
+  if (!state.reviewWorkspace || typeof state.reviewWorkspace !== 'object') {
+    state.reviewWorkspace = { activeId: null, filter: 'all', mode: 'diff', drawer: false };
+  }
+  return state.reviewWorkspace;
+}
+
+/**
+ * 结果出口：新界面开着 → 进工作区；关掉 → 回到旧的差异弹窗（回滚路径）。
+ * 两条路共用同一份 `diffArgs`，所以"工作区里能看到的"和"弹窗里能看到的"不会漂移。
+ */
+function presentRevisionResult(diffArgs) {
+  if (!diffArgs) return false;
+  if (reviewWorkspaceEnabled() && openReviewWorkspace(diffArgs)) return true;
+  showReviewDiff(diffArgs.oldText, diffArgs.newText, diffArgs);
+  return false;
+}
+
+function openReviewWorkspace(diffArgs) {
+  if (!reviewWorkspaceEnabled()) return false;
+  if (!state.pendingRevisionClosure) return false;
+  if (!reviewWorkspaceModule()) return false;
+  // 合并要用到的 pendingReviewDiff 必须在这里也固化一次（两条呈现路径共用同一份候选）。
+  primePendingReviewDiff(diffArgs.oldText, diffArgs.newText, {
+    chapterId: diffArgs.chapterId, proposalIds: diffArgs.proposalIds, proposalRefs: diffArgs.proposalRefs,
+    baseFingerprint: diffArgs.baseFingerprint, patches: diffArgs.patches, coverage: diffArgs.coverage,
+    verification: diffArgs.verification,
+  });
+  state.reviewWorkspace = {
+    activeId: null, filter: 'all', mode: 'diff', drawer: false,
+    // 返回写作台时恢复作者原来的列数/章节/滚动位置（方案 §8.2 / §9.2）。
+    saved: {
+      layout: state.editorLayout,
+      chapterId: state.currentChapterId,
+      // 审稿时把侧栏收起：差异是这一屏的主角（方案 §8.2 视图 B）。返回时原样还原。
+      sidebarCollapsed: state.sidebarCollapsed,
+      scroll: (typeof document !== 'undefined' && document.getElementById('content'))
+        ? Number(document.getElementById('content').scrollTop) || 0 : 0,
+    },
+  };
+  state.sidebarCollapsed = true;
+  goView('review');
+  render().catch(() => { /* 渲染失败不吞掉候选：作者还能再点开 */ });
+  return true;
+}
+
+function reviewWorkspaceRowHtml(row, activeId) {
+  const active = String(row.issue_id) === String(activeId);
+  return `<button class="rw-issue ${active ? 'active' : ''}" data-action="review-select" data-id="${esc(row.issue_id)}" aria-pressed="${active ? 'true' : 'false'}">
+  <span class="rw-issue-id">#${esc(row.ordinal)}</span>
+  <span class="rw-issue-title">${esc(row.title)}</span>
+  <span class="rw-issue-status tone-${esc(row.tone)}">${esc(row.status_text)}</span>
+</button>`;
+}
+
+function reviewBlockHtml(block) {
+  if (block.kind === 'same') return `<div class="rw-block same" id="rw-block-${block.index}">${esc(block.after)}</div>`;
+  if (block.kind === 'del') return `<div class="rw-block del" id="rw-block-${block.index}"><span class="rw-block-tag">删除</span>${esc(block.before)}</div>`;
+  if (block.kind === 'add') return `<div class="rw-block add" id="rw-block-${block.index}"><span class="rw-block-tag">新增</span>${esc(block.after)}</div>`;
+  return `<div class="rw-block change" id="rw-block-${block.index}">
+  <div class="rw-col"><span class="rw-block-tag">修前</span>${esc(block.before)}</div>
+  <div class="rw-col"><span class="rw-block-tag">修后</span>${esc(block.after)}</div>
+</div>`;
+}
+
+function reviewEvidenceHtml(RW, model, row) {
+  if (!row) return '<div class="muted">左侧选一条问题，这里显示它的逐字证据与验收理由。</div>';
+  const finding = (model.findings || []).find((f) => String(f && f.id) === String(row.issue_id))
+    || (model.finalize && model.finalize.findings || []).find((f) => String(f && f.id) === String(row.issue_id))
+    || null;
+  const ev = finding ? RW.evidenceOf(finding, model.oldText, model.newText) : [];
+  const checks = Array.isArray(row.checks) ? row.checks : [];
+  return `<div class="rw-detail-head"><b>#${esc(row.issue_id)} ${esc(row.title)}</b>
+    <span class="rw-issue-status tone-${esc(RW.statusOf(row.final_status).tone)}">${esc(RW.statusOf(row.final_status).text)}</span></div>
+  <div class="muted">${esc(row.reason || '（没有验收理由）')}${row.reason_code ? ` · ${esc(row.reason_code)}` : ''}</div>
+  ${row.repair_hint ? `<div class="muted">下一步：${esc(row.repair_hint)}</div>` : ''}
+  ${ev.length ? `<div class="ref-group-title">逐字证据（${ev.length}）</div>${ev.map((e) => `
+    <div class="rw-evidence ${e.before.found ? '' : 'missing'}">
+      <div class="muted" style="font-size:12px">证据 ${e.index}｜${e.editable ? '可编辑锚点' : '只读引用'}｜${esc(e.quote).slice(0, 80)}</div>
+      ${e.before.found
+        ? `<div class="rw-ev-before">${esc(e.before.body)}</div>`
+        : `<div class="redline-scan warn">证据不足：${esc(e.before.reason || '引文不在修前正文里')}</div>`}
+      ${e.after.found
+        ? `<div class="rw-ev-after">${esc(e.after.body)}</div>`
+        : `<div class="muted" style="font-size:12px">${e.editable ? '候选里已不再出现（这是"可编辑锚点已消失"）' : '候选里也没有这条引文（只读证据丢了，需要复核）'}</div>`}
+      ${e.before.ambiguous ? '<div class="muted" style="font-size:12px">⚠️ 这条引文在正文里出现多次：界面不默认第一处</div>' : ''}
+    </div>`).join('')}` : '<div class="muted">这条问题没有逐字证据（旧格式审稿）：不能据此判定"已解决"。</div>'}
+  ${checks.length ? `<div class="ref-group-title">检查项（${checks.length}）</div>${checks.slice(0, 12).map((c) => `
+    <div class="rw-check ${c && c.passed ? 'ok' : 'bad'}">${c && c.passed ? '✓' : '✗'} ${esc(String((c && c.criterion) || ''))}${c && Array.isArray(c.evidence) && c.evidence.length ? `<span class="muted" style="font-size:12px">（${esc(String(c.evidence[0]).slice(0, 80))}）</span>` : ''}</div>`).join('')}` : ''}`;
+}
+
+function renderReviewWorkspace(content) {
+  const RW = reviewWorkspaceModule();
+  const model = reviewWorkspaceContext();
+  if (!RW || !model) {
+    toast('没有可显示的修稿结果：请先在审稿报告里勾选问题并修稿', 'error');
+    goView('writing');
+    return renderWriting(content);
+  }
+  const ws = reviewWorkspaceState();
+  const issueRows = model.issueRows;
+  if (!ws.activeId && issueRows.length) ws.activeId = issueRows[0].issue_id;
+  const visibleIssues = RW.filterRows(issueRows, ws.filter);
+  const activeRow = issueRows.find((r) => String(r.issue_id) === String(ws.activeId)) || null;
+  const counts = RW.countsOf(model.rows);
+  const stage = RW.stageOf(model.stage);
+  const summary = RW.summaryLine({ chapterTitle: model.chapterTitle, rows: model.rows, patchedCount: model.patchedCount });
+  const blocks = RW.diffBlocks(model.oldText, model.newText);
+  const shown = RW.visibleBlocks(blocks, ws.mode);
+  const diffInfo = RW.diffSummary(blocks);
+  const actions = RW.actionsOf({ stage: model.stage, rows: model.rows, semanticRuns: model.semanticRuns });
+  const blocker = RW.blockerText({ stage: model.stage, rows: model.rows, reason: (model.finalize && model.finalize.reasons || []).join('；') });
+  const actionBtn = (a) => {
+    const map = {
+      'semantic-verify': 'diff-semantic-verify', merge: 'diff-merge', 'merge-partial': 'diff-merge',
+      export: 'review-export-pending', back: 'review-back',
+    };
+    const action = map[a.action] || 'review-back';
+    return `<button class="btn small ${a.primary ? '' : 'secondary'}" data-action="${action}"${a.disabled ? ' disabled' : ''} title="${esc(a.note || '')}">${esc(a.label)}</button>`;
+  };
+  content.innerHTML = `
+  <div class="review-ws" data-stage="${esc(model.stage)}">
+    <header class="rw-head">
+      <button class="btn small secondary" data-action="review-back" title="返回写作台（Esc）：候选会保留，不会写库">‹ 返回写作台</button>
+      <div class="rw-title">${esc(model.chapterTitle)} · 审稿工作区</div>
+      <div class="rw-summary" aria-live="polite">${esc(summary)}</div>
+      <span class="rw-stage tone-${esc(stage.tone)}">${esc(stage.text)}</span>
+    </header>
+    <div class="rw-body">
+      <aside class="rw-nav" aria-label="问题导航">
+        <div class="rw-filters">
+          ${RW.FILTERS.map((f) => `<button class="rw-filter ${ws.filter === f.id ? 'active' : ''}" data-action="review-filter" data-filter="${f.id}">${esc(f.label)}</button>`).join('')}
+        </div>
+        <div class="rw-issues">
+          ${visibleIssues.length ? visibleIssues.map((r) => reviewWorkspaceRowHtml(r, ws.activeId)).join('') : '<div class="muted" style="padding:8px">这个筛选下没有问题</div>'}
+        </div>
+        <div class="rw-nav-foot muted">↑/↓ 切换问题 · Esc 关闭详情</div>
+      </aside>
+      <section class="rw-main">
+        <div class="rw-main-head">
+          <div class="rw-modes">
+            ${RW.MODES.map((m) => `<button class="rw-mode ${ws.mode === m.id ? 'active' : ''}" data-action="review-mode" data-mode="${m.id}">${esc(m.label)}</button>`).join('')}
+          </div>
+          <span class="muted" style="font-size:12px">${diffInfo.changed} / ${diffInfo.total} 段有改动</span>
+          <div class="grow"></div>
+          <button class="btn small ${ws.drawer ? '' : 'secondary'}" data-action="review-drawer" aria-pressed="${ws.drawer ? 'true' : 'false'}">详情</button>
+        </div>
+        <div class="rw-diff" role="region" aria-label="修稿对照">
+          ${shown.length ? shown.map(reviewBlockHtml).join('') : '<div class="muted">候选与原文没有段落级差异。</div>'}
+        </div>
+        <div class="rw-issue-detail">${reviewEvidenceHtml(RW, model, activeRow)}</div>
+      </section>
+      ${ws.drawer ? `<aside class="rw-drawer" aria-label="验收详情">
+        <div class="rw-drawer-head"><b>验收详情</b><button class="btn small secondary" data-action="review-drawer">关闭</button></div>
+        <div class="muted" style="font-size:12px">已选 ${counts.selected}｜已验证 ${counts.verified}｜未通过 ${counts.unresolved}｜待复验 ${counts.pending}${counts.canon ? `｜蓝图冲突 ${counts.canon}` : ''}</div>
+        ${model.finalize && model.finalize.next_action ? `<div class="muted">下一步：${esc(model.finalize.next_action.label)}</div>` : ''}
+        ${model.closure && model.closure.text ? `<pre class="muted rw-closure">${esc(model.closure.text)}</pre>` : ''}
+        ${model.blocked.length ? `<div class="redline-scan warn">安全门禁拦下 ${model.blocked.length} 处：${model.blocked.slice(0, 4).map((b) => esc(String(b.code || b.reason || ''))).join('；')}</div>` : ''}
+        <div class="muted" style="font-size:12px">费用：语义复验是显式付费动作；工作区不会自己发起模型调用。</div>
+      </aside>` : ''}
+    </div>
+    <footer class="rw-foot">
+      <div class="rw-blocker ${blocker ? 'warn' : 'ok'}">${esc(blocker || '（无阻塞）')}</div>
+      <div class="grow"></div>
+      <div class="rw-actions">${actions.map(actionBtn).join('')}</div>
+    </footer>
+  </div>`;
+}
+
+/** 返回写作台：恢复列数/章节/滚动位置；**不删候选、不写库、不调用模型**。 */
+async function reviewWorkspaceBack() {
+  const ws = reviewWorkspaceState();
+  const saved = ws.saved || {};
+  if (saved.layout) state.editorLayout = saved.layout;
+  if (saved.chapterId) state.currentChapterId = saved.chapterId;
+  // 侧栏是"作者自己的折叠偏好"，不能因为进了一次审稿就被改成折叠。
+  if (typeof saved.sidebarCollapsed === 'boolean') {
+    state.sidebarCollapsed = saved.sidebarCollapsed;
+    try { localStorage.setItem('ns_sidebar_collapsed', saved.sidebarCollapsed ? '1' : '0'); } catch (_) { /* 存不下只影响本次 */ }
+  }
+  goView('writing');
+  await render();
+  const el = document.getElementById('content');
+  if (el && saved.scroll) el.scrollTop = Number(saved.scroll) || 0;
+}
+
+function reviewWorkspaceSelect(id) {
+  const ws = reviewWorkspaceState();
+  ws.activeId = String(id == null ? '' : id);
+  // 切问题**只读**：不调用模型、不计费、不动候选。
+  render().catch(() => {});
+}
+
+function reviewWorkspaceMove(delta) {
+  const model = reviewWorkspaceContext();
+  const RW = reviewWorkspaceModule();
+  if (!model || !RW) return;
+  const ws = reviewWorkspaceState();
+  const next = RW.stepIssue(model.issueRows, ws.activeId, delta);
+  if (next) reviewWorkspaceSelect(next.issue_id);
+}
+
+function reviewWorkspaceSetFilter(filter) {
+  const ws = reviewWorkspaceState();
+  ws.filter = String(filter || 'all');
+  render().catch(() => {});
+}
+
+function reviewWorkspaceSetMode(mode) {
+  const ws = reviewWorkspaceState();
+  ws.mode = String(mode || 'diff');
+  render().catch(() => {});
+}
+
+function reviewWorkspaceToggleDrawer() {
+  const ws = reviewWorkspaceState();
+  ws.drawer = !ws.drawer;
+  render().catch(() => {});
+}
+
+/** 导出待处理清单（纯文本下载；不含正文、不含提示词）。 */
+function reviewWorkspaceExportPending() {
+  const RW = reviewWorkspaceModule();
+  const model = reviewWorkspaceContext();
+  if (!RW || !model) return;
+  const text = RW.pendingChecklistText({
+    summaryLine: RW.summaryLine({ chapterTitle: model.chapterTitle, rows: model.rows, patchedCount: model.patchedCount }),
+    rows: model.rows,
+  });
+  downloadTextFile(`revision-pending-${model.chapterTitle}.txt`, text);
+  toast('待处理清单已导出（只含编号/原因/理由，不含正文）', 'success');
+}
 
 async function mergeReviewDiff() {
   const pending = state.pendingReviewDiff;
@@ -16980,6 +17604,33 @@ async function handleAction(action, actionEl, e) {
         await runRevisionSemanticVerify();
         break;
 
+      // ── v1.2.4 P0E：独立审稿工作区的交互 ────────────────────────────────────
+      // 切问题/切筛选/切视图/开关抽屉都**只读**：不调用模型、不计费、不改候选。
+      case 'review-open': {
+        const ctx = state.pendingRevisionClosure;
+        if (!ctx || !ctx.diffArgs) { toast('没有可显示的修稿结果：请先发起修稿', 'error'); break; }
+        if (!openReviewWorkspace(ctx.diffArgs)) showReviewDiff(ctx.diffArgs.oldText, ctx.diffArgs.newText, ctx.diffArgs);
+        break;
+      }
+      case 'review-back':
+        await reviewWorkspaceBack();
+        break;
+      case 'review-select':
+        reviewWorkspaceSelect(actionEl.dataset.id);
+        break;
+      case 'review-filter':
+        reviewWorkspaceSetFilter(actionEl.dataset.filter);
+        break;
+      case 'review-mode':
+        reviewWorkspaceSetMode(actionEl.dataset.mode);
+        break;
+      case 'review-drawer':
+        reviewWorkspaceToggleDrawer();
+        break;
+      case 'review-export-pending':
+        reviewWorkspaceExportPending();
+        break;
+
       // E06：单独撤销一处（按问题 ID）。用原稿 + 其余补丁重建候选，并在同一个预览里刷新；
       // 任何一条缺位置信息或与原稿不一致时**拒绝重建**（不部分应用，避免"撤销一处、改坏另一处"）。
       case 'diff-drop-issue': {
@@ -18754,6 +19405,30 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && target) {
       e.preventDefault();
       executePaletteItem((state.commandPalette.visibleItems || [])[state.commandPalette.active]);
+      return;
+    }
+  }
+  // v1.2.4（P0E / §8.8）：审稿工作区的键盘操作。
+  // 只在工作区里生效，且必须在**没有输入法组合**时（中文候选确认的 ↑/↓/Enter 不能变成切问题）。
+  if (state.view === 'review' && !imeActive && !$('#modal-root').innerHTML && !state.commandPalette.open) {
+    const ws = reviewWorkspaceState();
+    if (e.key === 'Escape') {
+      // 第一次 Esc 关详情抽屉，再按一次才回写作台（有未确认写回时给非阻塞提示，不拦）。
+      e.preventDefault();
+      if (ws.drawer) { ws.drawer = false; render().catch(() => {}); return; }
+      if (state.pendingReviewDiff) toast('候选仍保留着（没有写回正文）；可以在修稿结果里重新打开', 'success');
+      reviewWorkspaceBack().catch(() => {});
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      reviewWorkspaceMove(e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const el = $('.rw-issue.active');
+      if (el) el.focus();
       return;
     }
   }

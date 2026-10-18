@@ -5,6 +5,37 @@
 
 ---
 
+### 🛠️ 最近更新（2026-10-18 · **v1.2.4**：统一终验 + 独立审稿工作区 + 时态设置独立页）
+
+**增量升级**（基线 v1.2.3，不回退任何既有能力）。对应 `Novel_Studio_v1.2.4_完整优化升级实施方案.md`。
+
+- **P0C 统一终验出口**：新增 `public/revision-finalize.js`。单请求与分段修稿**都**经过
+  `finalizeRevisionCandidate()`：候选归一 → 全章重建校验（分段用"逐片证明 + 合并拼接"）→ 逐条终审
+  → 语义覆盖完备性 → 闭环状态。分段路径不再"聚合完补丁数就弹预览"。
+- **P0D 语义覆盖完备**：新增 `semanticCoverageComplete()`；`not_run` **不是** verdict（既不算通过，
+  也不送定向复修）。8 项全选 ⇒ 8 行结论；`PATCH_APPLIED ≠ ISSUE_VERIFIED ≠ PERSISTED_VERIFIED`。
+- **验收器分级**：`revision-semantic-verifier.js` 把确定性检查拆成**硬事实**（锚点原句还在 / 只读证据
+  丢失 / 必须保留被删 / 该出现的字面缺失 / 字数硬目标未达 / 声称改了却无 diff / 越权 / 底稿变了）与
+  **软判断**。硬事实不因模型一句 `pass` 而变成"待复核"；软判断冲突仍交人复核。
+  新增 `acceptance.must_contain` 与 `acceptance.min_chars` 两个可选硬约束（审稿提示词同步索取）。
+- **P0E 独立审稿工作区**：新增 `public/review-workspace.js` 与一级视图 `state.view='review'`。
+  顶部一行真实统计、左侧问题导航、中间大面积对照（差异/相关段落/全文）、右侧详情**覆盖式抽屉**（默认关闭）、
+  底部只放当前状态能执行的按钮。写作台里只留**一行**「修稿验收 · 已验证 N/M [查看]」。
+  旧差异弹窗保留为回滚路径（`localStorage['ns_review_workspace_v124']='0'`）。
+- **P0F 时态引擎设置独立页**：新增 `public/temporal-settings.js` 与视图 `temporal-settings`。
+  故事状态页只保留一行摘要 + 「⚙ 时态引擎设置」入口；引擎开关/影响分析/逐章重建/迁移回填/校验分组展示，
+  默认只展开一组；角色列表改 `<details>` 紧凑行。后端接口、迁移、权限与预算门禁一个字没改。
+- **P0B 两轮真实稿夹具**：`.p1-baseline/test-1024-chapter-fixtures.mjs`（A01–A08 / B01–B08）。
+  钉住"修了一个句子就说这一项修好了"必须被抓住：B03/B06/B07 等即便模型自称已修好也不通过。
+- **P0G 发布与验收**：`package.json`/README/CHANGELOG 统一 1.2.4；README 版本徽章从 1.2.1 更正为 1.2.4
+  （公开页面读到的旧版本号来源之一）；新增真实 Chromium 布局验收脚本。
+
+**验证**：`ci-offline-checks` 63/63（新增 2 套）、`test-1024` 26/26、`test-1025` 43/43、
+`frontend-test` ALL PASS（新增 QC-21…QC-37，含一条 8 项全选的端到端修稿链路）、
+真实 Edge/Chromium 布局验收 13/13、阶段映射与 UTF-8 通过。详见 `docs/v1.2.4-review-workspace.md`。
+
+---
+
 ### 🛠️ 最近更新（2026-10-18 · **v1.2.3** 补丁版：界面修复——对照叠加、底稿恢复、写作区高度）
 
 - **对照视图叠加**：「模型/人工/结构对照」以 `stack:true` 打开；关闭后回到审稿报告，不再把报告顶掉

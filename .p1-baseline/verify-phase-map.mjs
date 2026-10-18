@@ -1856,6 +1856,51 @@ export const PHASES = [
       + '不自动写正文（写回仍需作者一次性审批）；词条/道具/伏笔自动登记都是追加式或待确认候选，不静默改正典。'
       + '**费用**：全部离线检查零计费；R-24/25/26 验证实际花费 ¥0。',
   },
+  {
+    id: 'V15',
+    title: 'v1.2.4 审稿工作区与统一终验：两轮真实稿夹具 / 单段分段同一出口 / 语义覆盖完备 / 时态设置独立',
+    files: [
+      // 三个新模块（纯函数，浏览器与 Node 共用）
+      'public/revision-finalize.js',
+      'public/review-workspace.js',
+      'public/temporal-settings.js',
+      // 回归套件：夹具先行（先能识别旧缺陷），再验终审出口与界面判据
+      '.p1-baseline/test-1024-chapter-fixtures.mjs',
+      '.p1-baseline/test-1025-finalize.mjs',
+      // 真实浏览器布局验收（需要活实例 + 本机 Edge；CI 离线清单里不跑）
+      '.p1-baseline/browser-acceptance-v124.mjs',
+      // 输入方案（用户附件，原样保留）
+      'Novel_Studio_v1.2.4_完整优化升级实施方案.md',
+      // 交付证据与文档
+      'artifacts/v124/env-report.md',
+      'docs/v1.2.4-review-workspace.md',
+      // 业务接线（与既有阶段共用，只能整体回滚）
+      'public/app.js',
+      'public/index.html',
+      'public/styles.css',
+      'public/revision-semantic-verifier.js',
+      'frontend-test.mjs',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+      // 版本与说明
+      'package.json',
+      'docs/CHANGELOG.md',
+      'README.md',
+    ],
+    evidence: [
+      'artifacts/v124/env-report.md',
+      'docs/v1.2.4-review-workspace.md',
+      '.p1-baseline/test-1024-chapter-fixtures.mjs',
+      '.p1-baseline/test-1025-finalize.mjs',
+    ],
+    rollback: 'shared',
+    note: '**目的**：把"8 项全选 → 每项有可定位的编辑任务 → 精确安全修稿 → 逐项复验 → 失败项定向复修'
+      + ' → 明确阻塞原因 → 在不挤压写作台的独立空间展示"落成可复核的事实链。'
+      + '**边界**：不改变作者一次性写回审批、保护区、蓝图/伏笔、预算门禁；语义复验仍是作者显式触发的付费动作；'
+      + 'P0E/P0F 只是视图层级拆分，不动数据库与时态语义。'
+      + '**费用**：全部离线检查零计费（模型输出在测试里是注入的）。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */
