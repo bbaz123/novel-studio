@@ -283,6 +283,36 @@
     if (!safetyAvailable) blockers.push('SAFETY_UNAVAILABLE');
     if (!proof.ok) blockers.push(proof.code);
 
+    // ── ①b 分段跨边界联合证据（v1.2.4 P1）：先算出来，才能逐条传进验收器──────────────────────────────────
+    // 一条问题的可编辑锚点可能分散在多个片里。**只改到其中一片不能证明这一项解决了**：
+    // 之前我们只按"整章重建 + 逐条终审"间接发现它（锚点原句还在 → ANCHOR_NOT_EDITED），
+    // 但没有任何地方**记录**"这条问题的证据跨了哪几片、哪一片没被处理"。
+    // 现在把它算出来挂到行上并写进运行记录：界面能说清，回执能复核。
+    const crossSegment = {};
+    if (mode === 'segmented') {
+      const segs = Array.isArray(input.segments) ? input.segments : [];
+      for (const seg of segs) {
+        const sid = textOf(seg && seg.segment_id);
+        const ids = Array.isArray(seg && seg.evidence_editable_issue_ids) ? seg.evidence_editable_issue_ids.map(String) : [];
+        for (const id of ids) {
+          if (!crossSegment[id]) crossSegment[id] = { evidence_segments: [], patched_segments: [], untouched_segments: [] };
+          if (!crossSegment[id].evidence_segments.includes(sid)) crossSegment[id].evidence_segments.push(sid);
+        }
+      }
+      for (const p of applied) {
+        const sid = textOf(p && p.segment_id);
+        if (!sid) continue;
+        for (const id of idsOfPatch(p)) {
+          if (!crossSegment[id]) crossSegment[id] = { evidence_segments: [], patched_segments: [], untouched_segments: [] };
+          if (!crossSegment[id].patched_segments.includes(sid)) crossSegment[id].patched_segments.push(sid);
+        }
+      }
+      for (const info of Object.values(crossSegment)) {
+        info.split = info.evidence_segments.length >= 2;
+        info.untouched_segments = info.evidence_segments.filter((s) => !info.patched_segments.includes(s));
+      }
+    }
+
     // ── ① 逐条终审（verifier 不可用时不做"尽力而为"的猜测）─────────────────────
     let verified = null;
     let verifyError = '';
@@ -306,6 +336,7 @@
           propChainsByIssue: input.propChainsByIssue || null,
           // 分段：合并证明由本模块给（逐片重建 + 合并拼接），verifier 不再自己拼全局偏移。
           reconstructProof: mode === 'segmented' ? { ok: proof.ok, code: proof.code } : null,
+          crossSegmentByIssue: crossSegment,
         });
       } catch (e) {
         verifyError = textOf(e && e.message) || 'verifier error';
@@ -359,36 +390,9 @@
 
     const coverageState = semanticCoverageComplete(selected, rows.map((r) => ({ issue_id: r.issue_id, verdict: coverageVerdictOf(r) })));
 
-    // ── ③b 分段跨边界联合证据（v1.2.4 P1）──────────────────────────────────
-    // 一条问题的可编辑锚点可能分散在多个片里。**只改到其中一片不能证明这一项解决了**：
-    // 之前我们只按"整章重建 + 逐条终审"间接发现它（锚点原句还在 → ANCHOR_NOT_EDITED），
-    // 但没有任何地方**记录**"这条问题的证据跨了哪几片、哪一片没被处理"。
-    // 现在把它算出来挂到行上并写进运行记录：界面能说清，回执能复核。
-    const crossSegment = {};
-    if (mode === 'segmented') {
-      const segs = Array.isArray(input.segments) ? input.segments : [];
-      for (const seg of segs) {
-        const sid = textOf(seg && seg.segment_id);
-        const ids = Array.isArray(seg && seg.evidence_editable_issue_ids) ? seg.evidence_editable_issue_ids.map(String) : [];
-        for (const id of ids) {
-          if (!crossSegment[id]) crossSegment[id] = { evidence_segments: [], patched_segments: [], untouched_segments: [] };
-          if (!crossSegment[id].evidence_segments.includes(sid)) crossSegment[id].evidence_segments.push(sid);
-        }
-      }
-      for (const p of applied) {
-        const sid = textOf(p && p.segment_id);
-        if (!sid) continue;
-        for (const id of idsOfPatch(p)) {
-          if (!crossSegment[id]) crossSegment[id] = { evidence_segments: [], patched_segments: [], untouched_segments: [] };
-          if (!crossSegment[id].patched_segments.includes(sid)) crossSegment[id].patched_segments.push(sid);
-        }
-      }
-      for (const info of Object.values(crossSegment)) {
-        info.split = info.evidence_segments.length >= 2;
-        info.untouched_segments = info.evidence_segments.filter((s) => !info.patched_segments.includes(s));
-      }
-    }
     rows = rows.map((r) => ({ ...r, cross_segment: crossSegment[r.issue_id] || null }));
+
+
     const summary = summaryOf(rows, coverageState);
     const allVerified = rows.length > 0 && summary.verified === rows.length;
     const persisted = input.persisted === true;

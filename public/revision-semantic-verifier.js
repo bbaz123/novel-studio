@@ -170,6 +170,16 @@
       }
     }
 
+    // ②e 分段跨边界联合证据（v1.2.4 P1）：同一 issue 的可编辑锚点分布在多片、而其中一片没被处理。
+    //     这是**软**检查：锚点原文若真还在，硬检查必然已经失败；这里额外把它变成可读的原因码，
+    //     让语义层与作者看到"哪一片没被处理"，而不是只有一句 ANCHOR_NOT_EDITED。
+    const crossSegment = input.crossSegment && typeof input.crossSegment === 'object' ? input.crossSegment : null;
+    if (crossSegment && crossSegment.split === true && Array.isArray(crossSegment.untouched_segments) && crossSegment.untouched_segments.length) {
+      pushCheck(checks, `可编辑锚点跨 ${crossSegment.evidence_segments.length} 片，仍有片未处理：${crossSegment.untouched_segments.join('、')}`, false,
+        [JSON.stringify({ evidence: crossSegment.evidence_segments, patched: crossSegment.patched_segments, untouched: crossSegment.untouched_segments })],
+        { code: 'EVIDENCE_SPLIT_UNTOUCHED', hard: false });
+    }
+
     // ③ 声称已改但没有实际 diff（R-17）：覆盖表说 patched，却没有任何补丁落在本 issue 上。
     const coverage = input.coverage && typeof input.coverage === 'object' ? input.coverage : null;
     const status = textOf(coverage && coverage.status) || '';
@@ -401,6 +411,7 @@
         propChains: input.propChainsByIssue && typeof input.propChainsByIssue === 'object'
           ? { [id]: input.propChainsByIssue[id] } : undefined,
         currentBaseHash: input.currentBaseHash,
+        crossSegment: input.crossSegmentByIssue && typeof input.crossSegmentByIssue === 'object' ? input.crossSegmentByIssue[id] : null,
       });
       if (globalFailed) {
         return {

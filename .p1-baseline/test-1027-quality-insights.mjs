@@ -223,6 +223,10 @@ const FZ = globalThis.NovelRevisionFinalize;
       && row.cross_segment.untouched_segments.includes('seg-1'),
     JSON.stringify(row && row.cross_segment));
 
+  check('XS-01b 只改到一片时给出可读原因码 EVIDENCE_SPLIT_UNTOUCHED（软检查，不单靠锚点还在）',
+    row && row.checks.some((c) => c.code === 'EVIDENCE_SPLIT_UNTOUCHED' && !c.passed && c.hard === false),
+    JSON.stringify(row && row.checks.filter((c) => !c.passed).map((c) => c.code)));
+
   const rec = FZ.runRecordOf(seg, {});
   check('XS-02 运行记录带上证据跨片情况（回执可复核"哪一片没被处理"）',
     rec.issues[0].evidence_segments && rec.issues[0].evidence_segments.length === 2
