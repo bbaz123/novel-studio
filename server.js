@@ -9441,6 +9441,11 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       baseHash: asString(body.base_hash, ''),
       snapshotId: asString(body.snapshot_id, ''),
     });
+    // 2026-10-18（报障）：把"AI 审稿时实际看到的那篇正文"随报告存下。修稿流程中断/刷新后，
+    // 前端可以拿它继续修稿，而不是因为"当前章节正文取不到"就报"没有正文"。
+    // 只存正文快照（优先调用方传入，退回本章当前纯文本），不存模型原始输出。
+    const baseText = asString(body.base_text, '') || asString(report && report.base_text, '') || chapterText;
+    if (baseText) structured.base_text = baseText.slice(0, 400000);
     // 有原文兜底时不再拒绝：报告解析失败也必须留下可回看的证据。
     if (!asString(structured.summary, '').trim() && !asArray(structured.issues).length && !rawText.trim()) {
       return sendError(res, 400, '审稿报告不能为空');
@@ -9678,6 +9683,10 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       if (!chapter) return sendError(res, 404, '章节不存在');
       const parsed = parseReviewText(output);
       const report = parsed || { summary: '', issues: [], strengths: [] };
+      // 2026-10-18：回填路径也存底稿快照（用本章当前纯文本；正文为空时留空，不编造）。
+      // 这样"接回进度"后即使前端 info.article 丢了，修稿仍能拿到当时那篇正文。
+      const fallbackText = htmlToPlain(chapter.content || '');
+      if (fallbackText && !report.base_text) report.base_text = fallbackText.slice(0, 400000);
       const reviewId = saveReview(chapter.work_id, chapterId, report, {
         rawText: parsed ? '' : output.slice(0, 200000),
         status: parsed ? 'parsed' : 'raw'

@@ -20,7 +20,7 @@ Writing software + an AI writing assistant for **long-form fiction and Chinese w
 
 </div>
 
-> 📌 Version **v1.2.2** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page; release notes live in [Releases](https://github.com/bbaz123/novel-studio/releases).
+> 📌 Version **v1.2.3** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page; release notes live in [Releases](https://github.com/bbaz123/novel-studio/releases).
 
 <details>
 <summary><b>Contents</b></summary>
@@ -415,6 +415,9 @@ Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 Full per-version history — including the verification numbers and the capability boundaries of each
 round — lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent releases on this branch:
 
+- **v1.2.3** — UI fixes: the model/human/structure comparison now stacks above the review report
+  (closing it returns to the report), revision recovers the reviewed text as its base when the live
+  article is missing, and the writing area keeps a minimum height while the chapter-state panel scrolls.
 - **v1.2.2** — automatic second repair round (capped at 2, cost-gated, still ends at the author's
   approve-to-write step), P1 quality primitives (versioned world entries, prop-state chain with verbatim
   evidence, deferred→pending foreshadow registration) and the DSH `writing/` quality coordinator.

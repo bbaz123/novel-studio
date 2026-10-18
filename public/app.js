@@ -724,9 +724,21 @@ function enhanceModalGenFill() {
  * 仍要"点外面就关"的弹窗（纯信息/预览类）显式传 `protectedBackdrop: false` ——
  * 关闭判定见全局 click 处理器里的 data-modal-backdrop 分支。
  */
-function openModal({ title, body, footer = '', large = false, protectedBackdrop = true } = {}) {
+function openModal({ title, body, footer = '', large = false, protectedBackdrop = true, stack = false } = {}) {
   const root = $('#modal-root');
+  if (!Array.isArray(state.modalStack)) state.modalStack = [];
+  const opts = { title, body, footer, large, protectedBackdrop };
+  // 叠加弹窗（2026-10-18 报障）：点「模型/人工/结构对照」不能再把审稿报告顶掉。
+  // 只有显式 stack:true 的调用才入栈；其余弹窗仍是"替换"语义（避免旧弹窗在关闭后突然复活）。
+  if (stack && root && root.innerHTML.trim() && state.currentModal) state.modalStack.push(state.currentModal);
+  state.currentModal = opts;
   state.modalReturnFocus = document.activeElement;
+  paintModal(opts);
+}
+
+/** 把一份弹窗描述画到 #modal-root（openModal 与"关闭叠加层后恢复上一层"共用同一条渲染路径）。 */
+function paintModal({ title, body, footer = '', large = false, protectedBackdrop = true } = {}) {
+  const root = $('#modal-root');
   root.innerHTML = `
     <div class="modal-backdrop" data-modal-backdrop>
       <div class="modal ${large ? 'large' : ''}">
@@ -809,6 +821,14 @@ function closeModal() {
   state.modalProtected = false;
   const returnFocus = state.modalReturnFocus;
   state.modalReturnFocus = null;
+  // 叠加弹窗：关掉"对照视图"要回到它下面的审稿报告，而不是把整块清空。
+  const previous = Array.isArray(state.modalStack) && state.modalStack.length ? state.modalStack.pop() : null;
+  if (previous) {
+    state.currentModal = previous;
+    paintModal(previous);
+    return;
+  }
+  state.currentModal = null;
   $('#modal-root').innerHTML = '';
   if (returnFocus && typeof returnFocus.focus === 'function' && document.contains(returnFocus)) returnFocus.focus();
 }
@@ -5044,6 +5064,25 @@ async function revisionBaseArticle(chapterId) {
   // 闸门只能二选一：要么永远拦住空章（2026-10-06 报障的形状），要么把读失败当"正文没变"放行。
   if (!row) throw new Error('读不到这一章的正文');
   return row.content ? editorPlainText(row.content) : '';
+}
+
+/**
+ * 修稿底稿的取值顺序（2026-10-18 报障：流程中断后 info.article 丢失 → 误报"没有正文"）。
+ *   ① 调用方带的正文（正常路径）；
+ *   ② **AI 审稿时实际看到的那篇正文**（report.base_text，最贴近"AI 之前看的那篇"）；
+ *   ③ 当前章节正文（刷新/接回后 info.article 为空时最常见）；
+ * 三者都没有才返回空，由调用方如实拒绝——绝不把空串当底稿发付费请求。
+ */
+async function revisionArticleForRepair({ info, review, chapterId } = {}) {
+  const direct = String((info && info.article) || '');
+  if (direct.trim()) return { text: direct, source: 'info' };
+  const reviewed = String((review && review.base_text) || '');
+  if (reviewed.trim()) return { text: reviewed, source: 'review_base_text' };
+  try {
+    const current = await revisionBaseArticle(chapterId);
+    if (String(current || '').trim()) return { text: String(current), source: 'chapter' };
+  } catch (_) { /* 读不到就继续如实拒绝 */ }
+  return { text: '', source: 'none' };
 }
 
 // 章节标题查询（差异预览与提示文案用）。查不到时退回 `#id`，绝不显示 undefined。
@@ -11228,11 +11267,14 @@ async function runArticleReview(info) {
         return;
       }
       const mergedReport = reviewRun.report;
+      // 2026-10-18：把"AI 审稿时实际看到的那篇正文"随报告存下 —— 修稿流程中断后
+      // 仍能拿这份底稿修稿（否则只能报"没有正文"）。
+      mergedReport.base_text = String(info.article || '').slice(0, 400000);
       if (reviewChapterId) {
         try {
           const saved = await api('/novel/review', {
             method: 'PUT',
-            body: { chapter_id: reviewChapterId, report: mergedReport, raw_text: '', status: 'parsed' }
+            body: { chapter_id: reviewChapterId, report: mergedReport, base_text: mergedReport.base_text, raw_text: '', status: 'parsed' }
           });
           mergedReport.review_id = saved.review_id;
         } catch (_) { /* 保存失败不阻塞审稿流程 */ }
@@ -11256,6 +11298,8 @@ async function runArticleReview(info) {
     }
     const parsedOK = !!report;
     if (!report) report = { summary: '', issues: [], strengths: [] };
+    // 同上：带底稿快照，供中断后的修稿使用（只存正文，不存模型输出）。
+    report.base_text = String(info.article || '').slice(0, 400000);
     if (reviewChapterId) {
       try {
         // 解析成功存结构化报告；解析失败把原文一起存下（状态 raw），保证几分钟的等待一定有产物可回看。
@@ -11264,6 +11308,7 @@ async function runArticleReview(info) {
           body: {
             chapter_id: reviewChapterId,
             report,
+            base_text: report.base_text,
             raw_text: parsedOK ? '' : rawOutput.slice(0, 200000),
             status: parsedOK ? 'parsed' : 'raw'
           }
@@ -11450,10 +11495,23 @@ async function refineByChecklist() {
   // ⚠️ 底稿为空同样不能发起调用（第四轮改动引入的新可能：'接回进度/查看上次审稿'这条路上，
   // 取目标章正文失败会让 info.article 为空）。空底稿的修稿是"必花钱、必无用"——
   // 模型拿不到待修正文，anchor 一条也命中不了，只会白等几分钟。
-  if (!String(info && info.article || '').trim()) {
+  // 2026-10-18（报障修复）：**先尝试恢复底稿**，只有三处都取不到才拒绝：
+  // info.article → 审稿报告里的 base_text（AI 当时看的那篇）→ 本章当前正文。
+  const articleForRepair = await revisionArticleForRepair({
+    info, review, chapterId: Number(info && info.chapterId) || Number(state.currentChapterId) || null,
+  });
+  if (!articleForRepair.text.trim()) {
     closeModal();
     toast('没有拿到这一章的正文，未发起修稿：请切到该章确认正文已保存后重试', 'error');
     return;
+  }
+  if (articleForRepair.source !== 'info') {
+    // 记住来源：本次修稿的计划/快照/提示词都用这一份底稿，避免后续又回到空串。
+    info.article = articleForRepair.text;
+    reportClientLog({
+      level: 'info', kind: 'revision_base_fallback',
+      message: `[修稿] 底稿为空，已改用${articleForRepair.source === 'review_base_text' ? '审稿时的正文快照' : '当前章节正文'}继续`,
+    });
   }
   // ⚠️ 协议模块缺失时**在付费调用之前**就停下（2026-10-09 审查修复）：
   // 新提示词只索取 span 级补丁，而它必须由 public/revision-patch.js 校验与执行。
@@ -12963,7 +13021,8 @@ async function showRevisionComparison(chapterId) {
   if (!cid) { toast('先切到一章再看对照', 'error'); return; }
   try {
     const data = await api(`/novel/revision/comparison?chapter_id=${encodeURIComponent(cid)}`);
-    openModal({ title: '📊 对照视图（只读）', body: revisionComparisonHtml(data) });
+    // stack:true —— 对照视图叠加在审稿报告上；关闭后回到报告（作者不能因为"看对照"丢掉勾选）。
+    openModal({ title: '📊 对照视图（只读）', body: revisionComparisonHtml(data), stack: true });
   } catch (e) {
     toast('取对照数据失败：' + e.message, 'error');
   }

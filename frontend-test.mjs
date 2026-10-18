@@ -936,6 +936,7 @@ globalThis.__probe = {
   revisionPlanEngine, revisionPlanFor, revisionAuthorizationFor, issueStableId, revisionRetryBudgetFor, revisionRetryBudgetKey, revisionSpanCatalogue, showReviewReport, revisionPreference, setRevisionPreference,
   revisionFindingsFor, revisionHasStructuredEvidence, revisionSemanticFor, revisionClosureFor, revisionResultToast, revisionClosureHtml,
   revisionAutoRepairEnabled, revisionAutoRepairNotice, runRevisionAutoRepair, revisionPlanForIssues, mergeRepairPatches, mergeRepairCoverage,
+  revisionArticleForRepair,
   reportConsistencyHtml,
   revisionComparisonHtml, showRevisionComparison,
   patchSafetyEngine, patchSafetyOptions, patchSafetyGate, patchSafetyVerify, patchSafetyNotesHtml,
@@ -6609,6 +6610,38 @@ P.traceStopStream();
     && covMerged.find((c) => c.issue_id === 'R-2').status === 'patched'
     && P.mergeRepairCoverage([{ issue_id: 'R-1', status: 'blocked' }], [], ['R-1'])[0].status === 'unaccounted',
     JSON.stringify(covMerged));
+
+  // 2026-10-18 报障：对照视图不得顶掉审稿报告；关闭对照后回到报告。
+  {
+    const root = sandbox.document.getElementById('modal-root');
+    P.openModal({ title: '审稿报告', body: 'report-body' });
+    P.openModal({ title: '对照视图', body: 'cmp-body', stack: true });
+    const top = root.innerHTML;
+    P.closeModal();
+    const afterClose = root.innerHTML;
+    P.closeModal();
+    check('QC-18 对照视图叠加在审稿报告上，关闭后回到报告（不再整块清空）',
+      top.includes('对照视图') && afterClose.includes('审稿报告') && afterClose.includes('report-body')
+      && root.innerHTML.trim() === '',
+      JSON.stringify({ top: top.slice(0, 40), after: afterClose.slice(0, 40) }));
+
+    // 2026-10-18 报障：底稿丢失时先恢复（审稿快照 → 当前章节正文），不要直接报"没有正文"。
+    const fromReview = await P.revisionArticleForRepair({ info: { article: '' }, review: { base_text: 'AI 看过的正文' }, chapterId: 123 });
+    const savedApi = sandbox.api;
+    sandbox.api = async (p) => (String(p).includes('/chapters/123') ? { content: '<p>当前章节正文。</p>' } : {});
+    const fromChapter = await P.revisionArticleForRepair({ info: { article: '' }, review: {}, chapterId: 123 });
+    sandbox.api = savedApi;
+    check('QC-19 底稿为空时按"审稿快照 → 当前正文"恢复，只有都取不到才拒绝',
+      fromReview.source === 'review_base_text' && fromReview.text === 'AI 看过的正文'
+      && fromChapter.source === 'chapter' && fromChapter.text.includes('当前章节正文'),
+      JSON.stringify({ fromReview, fromChapter }));
+
+    const css = fs.readFileSync(path.join(repoRoot, 'public', 'styles.css'), 'utf8');
+    check('QC-20 正文书写区有高度下限、章末状态面板限高滚动（不再挤掉写作区）',
+      /\.editor-content\s*\{[^}]*min-height:\s*46vh/.test(css)
+      && /\.chapter-state-panel\s*\{[^}]*max-height:\s*28vh[^}]*overflow-y:\s*auto/.test(css),
+      'editor min-height / chapter-state max-height');
+  }
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

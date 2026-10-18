@@ -596,7 +596,7 @@ textarea { resize: vertical; }
 }
 .panel-outline { width: 260px; flex-shrink: 0; }
 .panel-reference { width: 310px; flex-shrink: 0; display: flex; flex-direction: column; }
-.panel-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-card); }
+.panel-editor { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-card); }
 .writing-layout.single .panel-outline, .writing-layout.single .panel-reference { display: none; }
 .writing-layout.two .panel-reference { display: none; }
 
@@ -616,7 +616,10 @@ textarea { resize: vertical; }
 .editor-meta input { flex: 1; font-size: 19px; font-weight: 700; background: transparent; border-color: transparent; }
 .editor-meta input:focus { background: var(--bg-input); border-color: var(--primary); }
 .editor-content {
-  flex: 1;
+  flex: 1 1 auto;
+  /* 2026-10-18（报障）：章末状态面板变长时，正文书写区曾被压到只剩几行。
+     给正文一个**高度下限**，状态面板自己滚动，不再挤掉写作区。 */
+  min-height: 46vh;
   overflow-y: auto;
   padding: 24px 30px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--text) 2%, transparent), transparent 20%), var(--bg-card);
@@ -656,6 +659,10 @@ textarea { resize: vertical; }
   border-top: 1px solid var(--border);
   padding: 10px 12px 14px;
   font-size: 13px;
+  /* 面板再长也不许挤占正文：自身限高并滚动。 */
+  flex: 0 0 auto;
+  max-height: 28vh;
+  overflow-y: auto;
 }
 .chapter-state-panel .chip { margin-right: 6px; }
 

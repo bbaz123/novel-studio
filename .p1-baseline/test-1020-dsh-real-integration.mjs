@@ -90,6 +90,17 @@ try {
       body: { chapter_id: chapter.data.id, closure: { closure_version: 2, status: 'NOT_RUN', issues: [] } },
     });
     ok('A3 无选择记录时回执被 404 拒绝（不会凭空创建修稿）', receipt.status === 404, String(receipt.status));
+    // 2026-10-18 报障：审稿底稿快照要随报告持久化，修稿中断后能拿它继续修。
+    const saved = await j('/api/novel/review', {
+      method: 'PUT',
+      body: { chapter_id: chapter.data.id, report: { summary: '总评', issues: [] }, base_text: 'AI 看过的正文快照' },
+    });
+    const reread = await j(`/api/novel/review?chapter_id=${chapter.data.id}`);
+    ok('A4 审稿底稿快照随报告持久化并可读回（中断后修稿的兜底底稿）',
+      saved.status === 201 && reread.status === 200
+      && reread.data.review && reread.data.review.report
+      && reread.data.review.report.base_text === 'AI 看过的正文快照',
+      JSON.stringify(reread.data.review && reread.data.review.report).slice(0, 200));
   }
 
   console.log('【B. R-24：内部消息不得触发自动方案（真实插件 + 行为探针）】');
