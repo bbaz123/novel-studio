@@ -23,8 +23,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : null, function (root) {
   'use strict';
 
-  const VERSION = '1.0.0';
-  const VERDICT = { PASS: 'pass', FAIL: 'fail', NEED_CONTEXT: 'need_context' };
+  const VERSION = '1.1.0';
+  // 方案 §7.2：逐项结论必须是 PASS / PARTIAL / FAIL / UNVERIFIED / BLOCKED 这五类之一。
+  // 旧实现只有 pass/fail/need_context，于是模型说"只修好一部分"时会被归一成 not_run，
+  // 系统就把"部分修复"记成"待复验"——这一项既没有结论，也不会进入定向复修队列。
+  // 这里把 PARTIAL 提升为**一等结论**；UNVERIFIED / BLOCKED 仍归到 need_context
+  // （它们同样不携带"已通过"，但原因码不同，界面与回执要能区分）。
+  const VERDICT = { PASS: 'pass', PARTIAL: 'partial', FAIL: 'fail', NEED_CONTEXT: 'need_context' };
+  const SEMANTIC_STATUSES = ['pass', 'partial', 'fail', 'need_context', 'unverified', 'blocked'];
   const FINAL = {
     ISSUE_VERIFIED: 'ISSUE_VERIFIED',
     PARTIAL: 'PARTIAL',
@@ -247,21 +253,31 @@
 
   /** 语义层结果归一化：接受字符串、`{status}` 或 `{verdict}`，其余一律 not_run（不猜通过）。 */
   function normalizeSemantic(raw) {
-    const base = { status: 'not_run', checks: [], reason: '', repair_hint: '', confidence: 'medium' };
+    const base = { status: 'not_run', checks: [], reason: '', reason_code: '', repair_hint: '', confidence: 'medium', remaining_evidence: [] };
     if (raw == null) return base;
-    if (typeof raw === 'string') {
-      const s = raw.toLowerCase();
-      return { ...base, status: s === 'pass' || s === 'passed' || s === 'ok' ? 'pass' : (s === 'fail' || s === 'failed' ? 'fail' : 'not_run') };
-    }
+    const mapStatus = (s) => {
+      const v = textOf(s).toLowerCase();
+      if (v === 'pass' || v === 'passed' || v === 'ok') return 'pass';
+      if (v === 'partial' || v === 'partially_fixed' || v === 'partly' || v === 'partially_resolved') return 'partial';
+      if (v === 'fail' || v === 'failed') return 'fail';
+      if (v === 'unverified' || v === 'unknown') return 'unverified';
+      if (v === 'blocked') return 'blocked';
+      if (v === 'need_context' || v === 'needs_context') return 'need_context';
+      return 'not_run';
+    };
+    if (typeof raw === 'string') return { ...base, status: mapStatus(raw) };
     if (typeof raw !== 'object') return base;
-    const s = textOf(raw.status != null ? raw.status : raw.verdict).toLowerCase();
-    const status = s === 'pass' || s === 'passed' || s === 'ok' ? 'pass' : (s === 'fail' || s === 'failed' ? 'fail' : 'not_run');
+    const status = mapStatus(raw.status != null ? raw.status : raw.verdict);
+    // 原因码只接受稳定枚举形状（大写+下划线），自由文本一律不写入原因码字段。
+    const reasonCode = /^[A-Z][A-Z0-9_]{2,60}$/.test(textOf(raw.reason_code || raw.reasonCode)) ? textOf(raw.reason_code || raw.reasonCode) : '';
     return {
       status,
       checks: Array.isArray(raw.checks) ? raw.checks : [],
       reason: textOf(raw.reason),
+      reason_code: reasonCode,
       repair_hint: textOf(raw.repair_hint),
       confidence: ['high', 'medium', 'low'].includes(textOf(raw.confidence)) ? textOf(raw.confidence) : 'medium',
+      remaining_evidence: (Array.isArray(raw.remaining_evidence) ? raw.remaining_evidence : []).map(textOf).filter(Boolean),
     };
   }
 
@@ -284,16 +300,41 @@
         layer: 'semantic',
       });
     }
+    const finding = input.finding || {};
+    const baseText = textOf(input.baseText);
+    const revisedText = textOf(input.revisedText);
+    const applied = Array.isArray(input.applied) ? input.applied : [];
+    const id = String(finding.id == null ? '' : finding.id);
+    const issuePatches = applied.filter((p) => (Array.isArray(p.issue_ids) ? p.issue_ids : []).map(String).includes(id));
+    // 方案 §7.1：「完全未修改」与「改动了但问题仍存在」必须能分开。
+    // 旧实现只有补丁条数；补丁存在但 before === after（或根本没命中）时读起来像"改过"。
+    const changedPatch = (p) => {
+      const op = textOf(p && p.op) || 'replace';
+      const before = textOf(p && p.original);
+      const after = op === 'delete' ? '' : textOf(p && p.replacement);
+      return before !== after;
+    };
+    const actualChange = issuePatches.some(changedPatch);
+    const evidenceRows = (Array.isArray(finding.evidence) ? finding.evidence : []).map((e, i) => ({
+      id: textOf(e && (e.id || e.span_id)) || `E${i + 1}`,
+      role: textOf(e && e.role) || 'reference',
+      quote: textOf(e && e.quote).trim(),
+    }));
+    const remainingEvidenceAll = [
+      ...evidenceRows
+        .filter((e) => e.quote && countOf(revisedText, e.quote) > 0)
+        .map((e) => ({ evidence_id: e.id, role: e.role, quote: clip(e.quote, 40) })),
+      ...sem.remaining_evidence.map((q) => ({ evidence_id: '', role: 'semantic', quote: clip(q, 40) })),
+    ];
     const deterministicFailed = d.failed.length > 0;
     // **硬事实**与**软判断**要分开（v1.2.4 §2.3 的"强/弱验收"）：
     //   · 硬事实（锚点原句还在 / 必须保留的被删 / 该出现的字面没出现 / 字数硬目标没到 /
     //     声称改了却没有 diff / 越过授权 / 底稿变了）是**字面事实**，模型说"我改了"不能覆盖它；
     //   · 软判断（模板句是否仍有伤害、篇幅是否可接受）与语义结论冲突时，仍然交人复核。
-    // 旧实现把两类都当"冲突 → 待复核"，于是"该出现的 3751 没出现"也能被一句 pass 变成
-    // AWAITING_SEMANTIC（既不算失败也不算通过），作者永远看不到"这一项确定没做到"。
     const hardFailed = d.failed.filter((c) => c && c.hard === true);
     const semanticFailed = sem.status === 'fail';
     const semanticPassed = sem.status === 'pass';
+    const semanticPartial = sem.status === 'partial';
     let verdict;
     let reasonCode;
     let reason;
@@ -302,11 +343,14 @@
       reasonCode = hardFailed[0].code || 'DETERMINISTIC_FAILED';
       reason = `确定性硬检查未通过：${hardFailed.map((c) => c.criterion).slice(0, 3).join('；')}`
         + (semanticPassed ? '（语义层判通过，但这是字面事实，不能覆盖）' : '');
-    } else if (deterministicFailed && semanticPassed) {
+    } else if (deterministicFailed && (semanticPassed || semanticPartial)) {
       // 两层冲突：不选"看起来更好"的那一层，交人复核（方案 §5.4）。
-      verdict = VERDICT.NEED_CONTEXT;
-      reasonCode = 'LAYER_CONFLICT';
-      reason = `确定性层未通过（${d.failed.map((c) => c.criterion).slice(0, 2).join('；')}），语义层却判通过：结论冲突，按待复核处理`;
+      // 语义说"部分修复"时，确定性软失败也在说"没全好"，两者方向一致但都不能算 PASS。
+      verdict = semanticPartial ? VERDICT.PARTIAL : VERDICT.NEED_CONTEXT;
+      reasonCode = semanticPartial ? (sem.reason_code || 'SEMANTIC_PARTIAL') : 'LAYER_CONFLICT';
+      reason = semanticPartial
+        ? `确定性层仍有未通过项（${d.failed.map((c) => c.criterion).slice(0, 2).join('；')}），语义层判部分修复`
+        : `确定性层未通过（${d.failed.map((c) => c.criterion).slice(0, 2).join('；')}），语义层却判通过：结论冲突，按待复核处理`;
     } else if (deterministicFailed) {
       verdict = VERDICT.FAIL;
       const first = d.failed[0];
@@ -314,18 +358,25 @@
       reason = `确定性检查未通过：${d.failed.map((c) => c.criterion).slice(0, 3).join('；')}`;
     } else if (semanticFailed) {
       verdict = VERDICT.FAIL;
-      reasonCode = 'SEMANTIC_FAILED';
+      reasonCode = sem.reason_code || 'SEMANTIC_FAILED';
       reason = sem.reason || '语义核验判定未通过';
+    } else if (semanticPartial) {
+      // 「只解决局部」必须是一个**结论**，而不是"没跑"：它保留未解决子条件，
+      // 进入定向复修队列，并在界面显示"部分完成"，绝不显示为已通过。
+      verdict = VERDICT.PARTIAL;
+      reasonCode = sem.reason_code || 'SEMANTIC_PARTIAL';
+      reason = sem.reason || '语义核验判定：只解决了部分验收条件（未解决项保留在证据里）';
     } else if (semanticPassed) {
       verdict = VERDICT.PASS;
       reasonCode = 'ISSUE_VERIFIED';
       reason = sem.reason || '确定性检查与语义核验均通过';
     } else {
       verdict = VERDICT.NEED_CONTEXT;
-      reasonCode = 'SEMANTIC_NOT_RUN';
+      reasonCode = sem.reason_code
+        || (sem.status === 'unverified' ? 'SEMANTIC_UNVERIFIED' : (sem.status === 'blocked' ? 'SEMANTIC_BLOCKED' : 'SEMANTIC_NOT_RUN'));
       reason = d.needContext.length
-        ? `语义核验未运行，且确定性层缺少可比对证据（${d.needContext.map((x) => x.criterion).join('；')}）：不得判为已解决`
-        : '语义核验未运行：确定性层只能证明"字符变了"，不能证明"问题解决了"';
+        ? `语义核验不可用（${sem.status}），且确定性层缺少可比对证据（${d.needContext.map((x) => x.criterion).join('；')}）：不得判为已解决`
+        : '语义核验未运行或无法判定：确定性层只能证明"字符变了"，不能证明"问题解决了"';
     }
     // 蓝图/词条冲突是**结论性**的：不能因为模型说"我按审稿意见改了"就当成通过。
     // 统一收敛成 need_context + 单一原因码，避免出现"final_status=CANON_CONFLICT 但 reason_code=ISSUE_VERIFIED"这种自相矛盾的行。
@@ -337,10 +388,11 @@
     let finalStatus;
     if (input.canonConflict === true) finalStatus = FINAL.CANON_CONFLICT;
     else if (verdict === VERDICT.PASS) finalStatus = FINAL.ISSUE_VERIFIED;
+    else if (verdict === VERDICT.PARTIAL) finalStatus = FINAL.PARTIAL;
     else if (verdict === VERDICT.FAIL) finalStatus = FINAL.UNRESOLVED;
     else finalStatus = FINAL.AWAITING_SEMANTIC;
     return {
-      issue_id: String(input.finding && input.finding.id == null ? '' : (input.finding && input.finding.id)),
+      issue_id: id,
       verdict,
       final_status: finalStatus,
       reason_code: reasonCode,
@@ -348,10 +400,19 @@
       checks,
       semantic_status: sem.status,
       confidence: sem.confidence || 'medium',
-      repair_hint: sem.repair_hint || (verdict === VERDICT.FAIL
+      // §7.1/§7.3：机器可读的"到底动没动"与"剩余证据"，供工作区与回执复核。
+      actual_change: actualChange,
+      patch_ids: issuePatches.map((p, i) => textOf(p.patch_id || p.span_id) || `P${i + 1}`),
+      evidence_ids: evidenceRows.map((e) => e.id),
+      // PASS 时只保留语义层显式列出的"剩余证据"（通常为空）；只读引用天然会留在候选里，
+      // 把它们全列成"剩余证据"会让通过项看起来像还有未解决矛盾。
+      remaining_evidence: verdict === VERDICT.PASS
+        ? sem.remaining_evidence.map((q) => ({ evidence_id: '', role: 'semantic', quote: clip(q, 40) }))
+        : remainingEvidenceAll,
+      repair_hint: sem.repair_hint || (verdict === VERDICT.FAIL || verdict === VERDICT.PARTIAL
         ? '只在仍获准的热点内重写补丁；需要新增跨度时先回到授权界面，不得扩大改写范围'
         : ''),
-      targeted_repair: verdict === VERDICT.FAIL && sem.status === 'fail',
+      targeted_repair: (verdict === VERDICT.FAIL && sem.status === 'fail') || (verdict === VERDICT.PARTIAL && sem.status === 'partial'),
     };
   }
 
@@ -438,10 +499,12 @@
     const summary = {
       total: issues.length,
       verified: issues.filter((i) => i.verdict === VERDICT.PASS).length,
+      partial: issues.filter((i) => i.verdict === VERDICT.PARTIAL).length,
       unresolved: issues.filter((i) => i.verdict === VERDICT.FAIL).length,
       awaiting_semantic: issues.filter((i) => i.verdict === VERDICT.NEED_CONTEXT).length,
       canon_conflict: issues.filter((i) => i.final_status === FINAL.CANON_CONFLICT).length,
       semantic_not_run: issues.filter((i) => i.semantic_status === 'not_run').length,
+      semantic_unverified: issues.filter((i) => ['unverified', 'blocked'].includes(i.semantic_status)).length,
       deterministic_failed: issues.filter((i) => i.reason_code === 'DETERMINISTIC_FAILED').length,
       diff_ok: !globalFailed,
     };
@@ -453,7 +516,8 @@
     const list = Array.isArray(issues) ? issues : [];
     if (!list.length) return 'NOT_RUN';
     if (list.some((i) => i.final_status === FINAL.CANON_CONFLICT)) return 'CANON_CONFLICT';
-    if (list.some((i) => i.verdict === VERDICT.FAIL)) return 'PARTIAL_OR_FAILED';
+    // PARTIAL 是"有结论，但不是通过"：既不进 NEEDS_REVIEW，也绝不能进 VERIFIED_CANDIDATE。
+    if (list.some((i) => i.verdict === VERDICT.FAIL || i.verdict === VERDICT.PARTIAL)) return 'PARTIAL_OR_FAILED';
     if (list.some((i) => i.verdict === VERDICT.NEED_CONTEXT)) return 'NEEDS_REVIEW';
     return 'VERIFIED_CANDIDATE';
   }
@@ -462,6 +526,7 @@
     VERSION,
     VERDICT,
     FINAL,
+    SEMANTIC_STATUSES,
     COVERAGE_REASON,
     reconstruct,
     deterministicChecks,

@@ -1727,6 +1727,17 @@ mark.search-hit {
   min-height: 0;
 }
 .rw-main-head { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+/* 四阶段导航（方案 §4.1）：只表达"现在在哪一步"，不是成功指示器。 */
+.rw-stages { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; padding: 2px 2px 0; }
+.rw-stage-item { color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 1px 10px; white-space: nowrap; }
+.rw-stage-item.done { color: #3fb950; border-color: color-mix(in srgb, #3fb950 50%, var(--border)); }
+.rw-stage-item.active { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.rw-stage-sep { color: var(--text-dim); }
+.rw-main-head .rw-nav-toggle { display: none; }
+.rw-nav-head { display: none; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border-bottom: 1px solid var(--border); }
+.rw-active-line { flex: 0 0 auto; font-size: 12px; padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; font-size: 13px; }
+.input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 .rw-modes { display: flex; gap: 4px; }
 .rw-mode {
   background: transparent; border: 1px solid var(--border); color: var(--text-dim);
@@ -1846,16 +1857,35 @@ mark.search-hit {
   .rw-progress-track > i { animation-duration: 3.2s; }
 }
 
-/* 窄屏：侧栏变抽屉式按钮、差异退单栏（方案 §8.3 的 <1000px 列） */
-@media (max-width: 999px) {
-  .rw-nav { flex-basis: 180px; min-width: 150px; }
+/* 800–1279px：问题导航退为覆盖式抽屉（方案 §3.4），差异区拿满宽度 */
+@media (max-width: 1279px) {
+  .rw-main-head .rw-nav-toggle { display: inline-flex; }
+  .rw-nav {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: 86vw;
+    min-width: 0;
+    z-index: 6;
+    transform: translateX(-110%);
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform .18s ease, visibility 0s linear .18s;
+    box-shadow: 8px 0 24px rgba(0, 0, 0, .28);
+  }
+  .rw-nav.open { transform: none; visibility: visible; pointer-events: auto; transition: transform .18s ease, visibility 0s; }
+  .rw-nav-head { display: flex; }
   .rw-block.change { grid-template-columns: 1fr; }
-  .rw-head .rw-summary { display: none; }
+  /* 窄屏保住唯一一句真实统计（可省略），只隐藏标题；不能隐藏“尚未复验/部分完成”。 */
+  .rw-head .rw-title { display: none; }
 }
-@media (max-width: 720px) {
-  .rw-body { flex-direction: column; }
-  .rw-nav { flex: 0 0 auto; max-height: 30vh; min-width: 0; }
+/* <800px：单栏差异，导航与抽屉都覆盖；不做常驻第四列 */
+@media (max-width: 799px) {
+  .rw-nav { width: 100%; max-width: 100%; }
   .rw-drawer { width: 100%; max-width: 100%; }
+  .rw-main-head { flex-wrap: wrap; }
 }
 
 /* 视图 C：时态引擎设置页 */

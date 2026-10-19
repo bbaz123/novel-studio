@@ -1,0 +1,112 @@
+✓ 装配器单元测试（边界与溢出分支）（92ms）
+✓ 上下文清单/完整性/溯源（含阴性对照）（99ms）
+✓ 记忆压缩提示词输入（含阴性对照）（83ms）
+✓ 记忆压缩零损失护栏（86ms）
+✓ 模型自压缩的零损失护栏（91ms）
+✓ 确定性连续性预检（真值表 + 阴性对照）（88ms）
+✓ 每任务独立默认模型（吞吐回到 2 的前提）（84ms）
+✓ 常驻热备池（协议 + 池策略，注入假 dsh）（461ms）
+✓ dsh 启动路径（预构建优先 + 防陈旧）（92ms）
+✓ 编辑距离离线测试（91ms）
+✓ 召回缺口不得静默（82ms）
+✓ 同步闸门（在途同步 vs 移除的竞态）（251ms）
+✓ 上下文缓存按外部状态失效（143ms）
+✓ 模型档位·强度补偿·长任务超时（85ms）
+✓ 模型切换互斥语义（252ms）
+✗ 闸门断言离线阴性对照（3212ms）
+    └ · 预检报出问题并 exit 1  — exit=null
+✓ harness 子进程环境契约（隔离实例不得回落 3737）（100ms）
+✓ 查回路径静态核对（每层声明 + 工具真实存在）（78ms）
+✓ 层规格常量单点核对（89ms）
+✓ AI 全分支核对（0 处绕过策略）（112ms）
+✓ 命名任务的作业接线（静态）（87ms）
+✓ 自动压缩开关（默认关闭，"不打开不花钱"）（77ms）
+✓ 插件工具面与版本一致（88ms）
+✓ 模型侧写入边界（非法 action / 组合 / 未知字段，含阴性对照）（312ms）
+✗ 作者审批执行边界（HTTP 隔离实例：单次消费/过期/撤销/基线/跨书/事务原子）（98ms）
+    └ 审批边界隔离测试（端口 14328，数据目录 C:\Users\a1941\AppData\Local\Temp\dsh-0EJYHR\novel-approval-FXAgxH）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 整次采纳原子边界（HTTP 隔离实例：单事务/幂等键/回滚/outbox 恢复）（100ms）
+    └ 整次采纳隔离测试（端口 8006，数据目录 C:\Users\a1941\AppData\Local\Temp\dsh-0EJYHR\novel-adopt-oJ02dX）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ OV 召回来源边界（HTTP 隔离实例 + 本地 OV stub：跨书/未来章/候选/rebuild 范围证明）（124ms）
+    └ 召回边界隔离测试（服务端口 8007，OV stub 9007，数据目录 C:\Users\a1941\AppData\Local\Temp\dsh-0EJYHR\novel-ov-boundary-vp68Yp）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 运行时上下文贡献记录（隔离实例 + OV stub：结构可审计/来源感知去重/默认行为不变）（127ms）
+    └ 贡献记录隔离测试（端口 11208，OV stub 12208，数据目录 C:\Users\a1941\AppData\Local\Temp\dsh-0EJYHR\novel-contrib-0Idodz）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 编辑规则（隔离实例：规则进请求/关闭不进/题材门控/模型侧只读/确定性扫描）（118ms）
+    └ ✓ E15 同一编号被反复调出 → detail-recall（首次写足、之后只留关键连接）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✓ 叙事结构判据（真实两版正文：正例 / 负例 / 静默姿态）（86ms）
+✓ 修稿安全门禁事实锁（正例 / 负例 / 门禁姿态）（84ms）
+✓ 第四批确定性判据（作者真实两版正文）（86ms）
+✓ 长正文分段（计划/覆盖清单/断点续跑/越界拒绝，零计费）（84ms）
+✗ 作者样文/文风档案/三级意图（隔离实例：上限/过期/证据预算/冲突呈现/模型侧只读/不进事实）（99ms）
+    └ ✓ B7 档案过期时组合层不用旧数字，但样文原文仍可作为风格证据
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 披露派生视图（隔离实例：分层/角色知识边界/时点/回滚/指纹，零计费）（102ms）
+    └ ✓ A15 口径随视图返回（时间语义 / 窗口包含关系 / 未定义 / POV 四条都在）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 剧情分支沙盘（隔离实例：候选形状/差异判据/知识边界/采纳只写蓝图/stale 复核/取消恢复，零计费）（102ms）
+    └ ✓ A23 知识边界：basis_keys 通道同样受约束（引用角色误信的条目 → 违规，不得当依据）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 导入安全隔离（隔离实例：TXT/MD/EPUB 基线不倒退 + 路径穿越/symlink/压缩炸弹/编码/上限安全失败 + 零半导入 + 传输层 413 可见，零计费）（129ms）
+    └ ✓ A10 判据口径机器可读（编码 / 路径 / symlink / 压缩比 / 不联网 / 零临时目录 / 原子写入）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 导入后重建（隔离实例：分批规划/批次基线/断点续跑或重试/候选不落正式状态/确认按批原子/只读 SQLite 阴性对照，零计费）（117ms）
+    └ ✓ A11 判据口径机器可读 + 候选可重复生成（dedup_key 稳定）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ 共享资料库导入链（隔离实例 + OV stub：扫描/计划/开关/dry-run→confirm/幂等/查回/删除/总闸关闭，零计费）（150ms）
+    └ ✓ P9 计划能区分 update（sha 变）与 skip（未变）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✓ 检索计划（离线单测：确定性/有界/白名单拒绝/分批先汇总后装配/失败隔离/缓存键含索引 schema 版本/两类计数分开，零计费）（111ms）
+✗ 方向驱动检索集成（隔离实例 + OV stub：A–F 全链路：默认零召回 / defer 不查 / 方向单次召回 / 索引版本驱动缓存失效 / 计划不改装配 / 两组计数分离，零计费）（118ms）
+    └ ✓ C0.6 request_id 清理控制字符并按码点截断（64 码点、不撕裂代理对）
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✓ 资料索引单测（离线：候选最相关优先 / 截断在排序之后 / 上限有界 / 词法分数方向 / sha 增量与跳过 / 重建幂等 / 空查询状态码，零计费）（1199ms）
+✗ 迁移幂等与损坏库（空库建表 73 张 / 重复启动不漂移不丢行 / 旧库只读指纹 / 损坏库响亮失败不篡改原文件，零计费）（81ms）
+    └ 【A. 空库首启（从零建库）】
+    └ stderr: node:internal/child_process:1160 |     result.error = new ErrnoException(result.error, 'spawnSync ' + options.file); |                    ^
+✓ Host Contract 契约测试（代码↔契约 / 文档↔契约 / 边界 / 旧库兼容）（113ms）
+✗ 时态故事状态重构总入口（离线：reducer/原子归约/章序/历史隔离/完整性/保存接线（自托管隔离实例 + 本机假模型）/未启用零写入，零计费）（83ms）
+    └ 未通过：tests/temporal/01-pure.test.mjs; tests/temporal/02-history.test.mjs; tests/temporal/03-integrity.test.mjs; tests/temporal/05-save-pipeline.test.mjs; tests/temporal/06-http-save-entries.test.mjs; t
+✓ 叙事性专项修复总入口（离线：补丁协议 v2 的 P/E02/R 类 + 冻结样本 + 2026-10-09 审查回归，零计费）（194ms）
+✓ 编码检查判据自检（含阴性对照）（78ms）
+✓ 日志差集归因判据自检（333ms）
+✓ 花钱总闸归属判据自检（本地假端点自证 / 未归属判红）（82ms）
+✗ 回滚矩阵工具自检（87ms）
+    └ ✗ 工具区分不出来，矩阵结果不可信（先修工具）。
+✓ P6 切换器离线测试（85ms）
+✗ 全量快照工具离线测试（114ms）
+    └ · 对照2：副本哈希不符时判为损坏、退出码 1（真损坏不会被"工作区恰好没改"掩盖）  — exit=-1 out=
+✓ 前端执行验证（vm + DOM 桩）（8280ms）
+✗ v1.2.0 修复回归（P01–P16：权限边界/原子性/入口安全/启动就绪/outbox/fencing/AI 隐私/输入校验，零计费）（1573ms）
+    └ 未通过：P03 权限矩阵 + P02 记忆回滚边界; P01 伏笔状态/回收/审批同事务; P04 Origin/Host + P05 请求体解析中止; P13 迁移 fail-fast + P07 就绪 + P06 启动脚本; P12 投影 outbox 租约与恢复; P09 AI 限额 + P10 追踪脱敏; P11 输入校验 + P15 检索完整性; P16 provider 边界 + 重定
+✗ v1.2.1 审稿质量闭环回归（R-01–R-30：finding.v2/多热点/语义验收/闭环/回执，零计费）（507ms）
+    └ 未通过：P0-7/P0-9 回执 + 只读状态 + 插件工具（服务端边界）
+✗ v1.2.2 P1-1 词条版本化（追加式版本 + 回滚 + 版本验收，零计费）（96ms）
+    └ 
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ v1.2.2 P1-2 道具状态链（章级迁移 + 逐字证据 + 验收，零计费）（95ms）
+    └ 
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ v1.2.2 P1-3 伏笔自动登记（deferred → 待确认候选，零计费）（98ms）
+    └ 【B. 真实实例：审稿落库时自动登记】
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✗ v1.2.2 R-24/25/26 外部插件真实联调（拉起工坊 + 双插件 + C 账本隔离，零计费）（99ms）
+    └ 
+    └ stderr: node:internal/child_process:458 |     throw new ErrnoException(err, 'spawn'); |           ^
+✓ v1.2.4 两轮真实章稿夹具（A01–A08 / B01–B08：旧缺陷必须能被识别，零计费）（86ms）
+✓ v1.2.4 统一终验出口（单段↔分段等价 / 语义覆盖完备 / 审稿工作区 / 时态设置，零计费）（91ms）
+✓ v1.2.4 P1 时间线 / 词条强弱 / 运行记录可恢复（零计费）（86ms）
+✓ v1.2.4 P2 质量趋势 / 规则档案 / 效果统计 / 跨边界证据（零计费）（87ms）
+✓ v1.2.5 I01–I08 修稿闭环（RT 矩阵：漏修/部分修复/全量重验/追踪脱敏，零计费）（93ms）
+✗ v1.2.4 DSH 联调 / 真实写回 / 备份恢复演练（隔离实例，零计费）（105ms）
+    └ [test-1028 DSH 联调 / 真实写回 / 备份恢复演练] 未通过 2 条
+✓ 工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）（105ms）
+✗ NSDSH 阶段门禁（隔离夹具/阶段运行器/备份演练，零计费）（28171ms）
+    └ 未通过套件：tests/nsdsh/dsh-vendor-provenance.test.mjs; tests/nsdsh/migration-drill.test.mjs; tests/nsdsh/bridge-retirement.test.mjs
+
+合计：通过 42 / 未通过 25（共 67 条，零计费）
+未通过：闸门断言离线阴性对照; 作者审批执行边界（HTTP 隔离实例：单次消费/过期/撤销/基线/跨书/事务原子）; 整次采纳原子边界（HTTP 隔离实例：单事务/幂等键/回滚/outbox 恢复）; OV 召回来源边界（HTTP 隔离实例 + 本地 OV stub：跨书/未来章/候选/rebuild 范围证明）; 运行时上下文贡献记录（隔离实例 + OV stub：结构可审计/来源感知去重/默认行为不变）; 编辑规则（隔离实例：规则进请求/关闭不进/题材门控/模型侧只读/确定性扫描）; 作者样文/文风档案/三级意图（隔离实例：上限/过期/证据预算/冲突呈现/模型侧只读/不进事实）; 披露派生视图（隔离实例：分层/角色知识边界/时点/回滚/指纹，零计费）; 剧情分支沙盘（隔离实例：候选形状/差异判据/知识边界/采纳只写蓝图/stale 复核/取消恢复，零计费）; 导入安全隔离（隔离实例：TXT/MD/EPUB 基线不倒退 + 路径穿越/symlink/压缩炸弹/编码/上限安全失败 + 零半导入 + 传输层 413 可见，零计费）; 导入后重建（隔离实例：分批规划/批次基线/断点续跑或重试/候选不落正式状态/确认按批原子/只读 SQLite 阴性对照，零计费）; 共享资料库导入链（隔离实例 + OV stub：扫描/计划/开关/dry-run→confirm/幂等/查回/删除/总闸关闭，零计费）; 方向驱动检索集成（隔离实例 + OV stub：A–F 全链路：默认零召回 / defer 不查 / 方向单次召回 / 索引版本驱动缓存失效 / 计划不改装配 / 两组计数分离，零计费）; 迁移幂等与损坏库（空库建表 73 张 / 重复启动不漂移不丢行 / 旧库只读指纹 / 损坏库响亮失败不篡改原文件，零计费）; 时态故事状态重构总入口（离线：reducer/原子归约/章序/历史隔离/完整性/保存接线（自托管隔离实例 + 本机假模型）/未启用零写入，零计费）; 回滚矩阵工具自检; 全量快照工具离线测试; v1.2.0 修复回归（P01–P16：权限边界/原子性/入口安全/启动就绪/outbox/fencing/AI 隐私/输入校验，零计费）; v1.2.1 审稿质量闭环回归（R-01–R-30：finding.v2/多热点/语义验收/闭环/回执，零计费）; v1.2.2 P1-1 词条版本化（追加式版本 + 回滚 + 版本验收，零计费）; v1.2.2 P1-2 道具状态链（章级迁移 + 逐字证据 + 验收，零计费）; v1.2.2 P1-3 伏笔自动登记（deferred → 待确认候选，零计费）; v1.2.2 R-24/25/26 外部插件真实联调（拉起工坊 + 双插件 + C 账本隔离，零计费）; v1.2.4 DSH 联调 / 真实写回 / 备份恢复演练（隔离实例，零计费）; NSDSH 阶段门禁（隔离夹具/阶段运行器/备份演练，零计费）

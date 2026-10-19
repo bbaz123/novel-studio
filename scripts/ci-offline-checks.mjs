@@ -167,6 +167,13 @@ export const CHECKS = [
   // v1.2.4 补全轮：P1 三项（时间线/词条强弱/运行记录）+ P2 四项（趋势/档案/效果统计/模板）+ 跨边界证据。
   { name: 'v1.2.4 P1 时间线 / 词条强弱 / 运行记录可恢复（零计费）', cmd: ['.p1-baseline/test-1026-timeline-canon-store.mjs'], why: '时序矛盾必须结构化判定；词条 hard/soft 分开；刷新不复活失效授权、也不赠送复验额度' },
   { name: 'v1.2.4 P2 质量趋势 / 规则档案 / 效果统计 / 跨边界证据（零计费）', cmd: ['.p1-baseline/test-1027-quality-insights.mjs'], why: '样本不足不给趋势；档案只补缺省且不削弱门禁；统计不把未跑语义计入分母' },
+  // v1.2.5（2026-10-18）：用作者这次的 I01–I08 样本钉住"审稿发现问题但修稿未完成"的判定口径。
+  // 与 test-1024 的分工：A/B 夹具证明旧缺陷能被识别；本套件证明**这一次的 6/1/1** 与
+  // I03（完全漏修）/ I04（跨段部分修复）必须分别落到 FAIL 与 PARTIAL，且分母恒为已选数。
+  { name: 'v1.2.5 I01–I08 修稿闭环（RT 矩阵：漏修/部分修复/全量重验/追踪脱敏，零计费）', cmd: ['.p1-baseline/test-1029-i03-i04-closure.mjs'], why: 'I03 原文未改必须 FAIL、I04 只改一句不得 PASS；复修不得冲掉先前 PASS；勾选 8 条分母不得变 7' },
+  // v1.3.0 UI 方案：单行入口四态 / 四阶段 / 三维状态 / 摘要恒等式 / 未复验≠PASS。
+  // 真实浏览器多宽度验收另由 .p1-baseline/browser-acceptance-v130.mjs 承担（需要活实例，不在离线清单）。
+  { name: 'v1.3.0 UI 闭环纯函数（入口四态/四阶段/三维/摘要恒等式，零计费）', cmd: ['.p1-baseline/test-1030-ui-closure.mjs'], why: '补丁已应用≠问题解决；未语义复验不得显示完成；N=P+F+U+B 必须闭合' },
   { name: 'v1.2.4 DSH 联调 / 真实写回 / 备份恢复演练（隔离实例，零计费）', cmd: ['.p1-baseline/test-1028-integration-drills.mjs'], why: '外层只读消费 v3 回执；作者合并不变量守恒；备份能直接当数据目录启动' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。

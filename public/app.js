@@ -1091,6 +1091,8 @@ async function loadWorkData(force = false) {
   if (!state.workId) return;
   if (!force && state.loadedWorkId === state.workId) return;
   const workId = state.workId;
+  // 切作品时丢掉上一部作品的角色搜索/筛选状态，避免"搜不到"其实是旧查询在过滤新作品。
+  state.storyStateUi = null;
   const [work, volumes, plotlines, chapters, categories, terms, characters, relations, plotlineCharacters, worldEntries, apiConfigs] = await Promise.all([
     api(`/works/${workId}`),
     api(`/volumes?work_id=${workId}`),
@@ -3333,11 +3335,24 @@ function revisionRunStoreModule() {
   return (typeof globalThis !== 'undefined' && globalThis.NovelRevisionRunStore) || null;
 }
 
+function revisionTraceModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelRevisionTrace) || null;
+}
+
+/** 本运行已走完几个"定向复修"轮次（trace 的 round 只用它，不另建口径）。 */
+function revisionRepairRoundOf(ctx) {
+  const rounds = ctx && ctx.autoRepair && Array.isArray(ctx.autoRepair.rounds) ? ctx.autoRepair.rounds : [];
+  return 1 + rounds.filter((r) => r && r.status === 'applied').length;
+}
+
 /** 把这一轮运行落本地（可恢复）；失败只影响"刷新后能否恢复"，不阻断修稿。 */
 function revisionRunStoreSave(ctx, finalized) {
   const S = revisionRunStoreModule();
   if (!S || !ctx || !ctx.patched || !finalized) return { ok: false, reason: 'NO_INPUT' };
   try {
+    const TR = revisionTraceModule();
+    const at = new Date().toISOString();
+    const trace = TR ? TR.buildTraceEvents(finalized, { round: revisionRepairRoundOf(ctx), timestamp: at }) : [];
     const rec = S.serialize({
       runId: finalized.candidate && finalized.candidate.revision_run_id,
       workId: Number(state.workId || (state.work && state.work.id)) || 0,
@@ -3350,7 +3365,8 @@ function revisionRunStoreSave(ctx, finalized) {
       semanticRuns: Number(ctx.semanticRuns) || 0,
       status: finalized.status,
       rows: finalized.rows,
-      at: new Date().toISOString(),
+      trace,
+      at,
     });
     return S.save(localStorage, rec);
   } catch (_) { return { ok: false, reason: 'EXCEPTION' }; }
@@ -3561,14 +3577,19 @@ function revisionClosureStripHtml(chapterId) {
   if (Number(ctx.chapterId) !== Number(chapterId)) return archiveItem;
   if (!RW) return archiveItem;
   const rows = Array.isArray(ctx.finalized.rows) ? ctx.finalized.rows : [];
-  const c = RW.countsOf(rows);
-  const stage = RW.stageOf(ctx.finalized.status);
-  const pending = c.pending + c.unresolved + c.partial + c.canon;
-  const tail = ctx.finalized.status === 'VERIFIED_CANDIDATE'
-    ? '候选已验证 · 尚未合并'
-    : (pending ? `${pending} 项待处理` : '');
-  return `<span class="rcs-item tone-${esc(stage.tone)}">修稿验收 · 已验证 ${c.verified}/${c.selected}${tail ? ` · ${esc(tail)}` : ''}</span>
-    <button class="btn small secondary" data-action="review-open" title="打开独立审稿工作区：左问题导航 / 中间大面积对照 / 右侧详情按需展开">查看</button>
+  // 方案 §3.1：写作台只保留**一行**真实状态；四态文案集中在 review-workspace.entryLineOf()，
+  // 这里只负责把当前运行事实喂进去，不自己另写一套"完成/未完成"的判断。
+  const entry = RW.entryLineOf({
+    rows,
+    selected: rows.length,
+    semanticRuns: Number(ctx.semanticRuns) || 0,
+    patchedCount: Array.isArray(ctx.patched && ctx.patched.applied) ? ctx.patched.applied.length : 0,
+    running: Boolean(state.revisionSemanticRunning),
+    runningRound: (Number(ctx.semanticRuns) || 0) + 1,
+  });
+  if (!entry) return archiveItem;
+  return `<span class="rcs-item tone-${esc(entry.tone)}" data-role="revision-entry">${esc(entry.text)}</span>
+    <button class="btn small secondary" data-action="review-open" title="打开独立审稿工作区：左问题导航 / 中间大面积对照 / 详情按需覆盖">${esc(entry.action)}</button>
     ${archiveItem}`;
 }
 
@@ -6103,6 +6124,75 @@ function disclosureListHtml(title, items, note) {
   </div>`;
 }
 
+function storyStateCharUi() {
+  if (!state.storyStateUi || typeof state.storyStateUi !== 'object') {
+    state.storyStateUi = { q: '', filter: 'all', limit: 80 };
+  }
+  return state.storyStateUi;
+}
+
+function storyStateCharFlags(c) {
+  if ((c.suspected && c.suspected.length) || (c.false_beliefs && c.false_beliefs.length)) return 'defective';
+  if (c.undetermined && Number(c.undetermined.count) > 0) return 'pending';
+  return 'clean';
+}
+
+/** 故事状态页的角色搜索/筛选（方案 §5.2）：固定表头、紧凑行、默认不展开长卡片。 */
+function storyStateCharControlsHtml(chars) {
+  const ui = storyStateCharUi();
+  const count = (f) => chars.filter((c) => f === 'all' || storyStateCharFlags(c) === f).length;
+  const btn = (f, label) => `<button class="rw-filter st-char-filter ${ui.filter === f ? 'active' : ''}" data-action="st-char-filter" data-filter="${f}">${label} ${count(f)}</button>`;
+  return `<div class="row st-char-controls" style="gap:6px;align-items:center;margin:8px 0">
+    <input id="st-char-search" type="search" class="input" style="max-width:280px" placeholder="搜索角色 / 别名 / 已知条目" value="${esc(ui.q)}">
+    ${btn('all', '全部')}${btn('defective', '有缺陷知识')}${btn('pending', '待补事实')}${btn('clean', '无异常')}
+    <span id="st-char-count" class="muted" style="font-size:12px">显示 ${Math.min(ui.limit, chars.length)}/${chars.length}</span>
+    ${chars.length > ui.limit ? '<button class="btn small secondary" data-action="st-char-more" title="每次多显示 80 个角色（不改变数据）">再显示 80</button>' : ''}
+  </div>`;
+}
+
+function storyStateCharRowsHtml(chars) {
+  if (!chars.length) return '<div class="muted">该作品还没有角色。</div>';
+  return chars.map((c, i) => {
+    const flags = storyStateCharFlags(c);
+    const hay = [c.name, ...(Array.isArray(c.aliases) ? c.aliases : []), ...(c.known || []).slice(0, 40).map((k) => k && (k.label || k.fact_key))].join(' ').toLowerCase();
+    return `<details class="st-character-item st-character-compact" data-st-char data-st-flags="${flags}" data-st-search="${esc(hay)}" data-st-index="${i}" ${i >= storyStateCharUi().limit ? 'hidden' : ''}>
+      <summary class="row"><b>${esc(c.name)}</b><span class="muted" style="font-size:12px">可行动 ${c.actionable_ids.length} 条｜已知 ${c.known.length}｜显式不知道 ${c.unknown.length}｜怀疑 ${c.suspected.length}｜误信 ${c.false_beliefs.length}｜未定义 ${c.undetermined.count}</span>${flags === 'defective' ? '<span class="chip">有缺陷知识</span>' : ''}</summary>
+      ${c.known.length ? `<div class="muted" style="font-size:12px">已知：${c.known.slice(0, 6).map((k) => esc(k.label || k.fact_key)).join('；')}</div>` : ''}
+      ${c.undetermined.count ? `<div class="muted" style="font-size:12px">未定义（不得当成已知）：${c.undetermined.sample.slice(0, 4).map((x) => esc(x)).join('；')}</div>` : ''}
+    </details>`;
+  }).join('');
+}
+
+/** 纯 DOM 过滤：不重绘（保住搜索焦点），只切 hidden；匹配为空时说明原因而不是显示"暂无数据即成功"。 */
+function applyStoryStateFilter() {
+  const ui = storyStateCharUi();
+  const q = String(ui.q || '').trim().toLowerCase();
+  const all = Array.from(document.querySelectorAll('[data-st-char]'));
+  let shown = 0;
+  all.forEach((el) => {
+    const okFilter = ui.filter === 'all' || el.dataset.stFlags === ui.filter;
+    const okQuery = !q || String(el.dataset.stSearch || '').includes(q);
+    const within = Number(el.dataset.stIndex) < ui.limit;
+    const visible = okFilter && okQuery && within;
+    el.hidden = !visible;
+    if (visible) shown += 1;
+  });
+  const empty = document.getElementById('st-char-empty');
+  if (empty) empty.hidden = shown > 0 || !all.length;
+  const count = document.getElementById('st-char-count');
+  if (count) count.textContent = `显示 ${shown}/${all.length}${all.length > ui.limit ? '（可用「再显示」扩展）' : ''}`;
+}
+
+async function setStoryStateCharFilter(filter) {
+  const ui = storyStateCharUi();
+  ui.filter = String(filter || 'all');
+  document.querySelectorAll('.st-char-filter').forEach((b) => {
+    b.classList.toggle('active', b.dataset.filter === ui.filter);
+  });
+  applyStoryStateFilter();
+}
+
+
 function renderStoryStateCard() {
   const s = state.storyState;
   if (!s) {
@@ -6131,12 +6221,9 @@ function renderStoryStateCard() {
         <div class="mt-8">
           <b style="font-size:13px">各角色掌握</b>
           <div class="muted" style="font-size:12px">写某个角色的行动理由时只能用「已知」里的条目；「未定义」既不算知道也不算不知道。POV 护栏：作者真相与读者披露都不构成角色可行动知识。</div>
-          ${chars.map((c) => `
-            <details class="st-character-item st-character-compact">
-              <summary class="row"><b>${esc(c.name)}</b><span class="muted" style="font-size:12px">可行动 ${c.actionable_ids.length} 条｜已知 ${c.known.length}｜显式不知道 ${c.unknown.length}｜怀疑 ${c.suspected.length}｜误信 ${c.false_beliefs.length}｜未定义 ${c.undetermined.count}</span>${(c.suspected.length || c.false_beliefs.length) ? '<span class="chip">有缺陷知识</span>' : ''}</summary>
-              ${c.known.length ? `<div class="muted" style="font-size:12px">已知：${c.known.slice(0, 6).map((k) => esc(k.label || k.fact_key)).join('；')}</div>` : ''}
-              ${c.undetermined.count ? `<div class="muted" style="font-size:12px">未定义（不得当成已知）：${c.undetermined.sample.slice(0, 4).map((x) => esc(x)).join('；')}</div>` : ''}
-            </details>`).join('') || '<div class="muted">该作品还没有角色。</div>'}
+          ${storyStateCharControlsHtml(chars)}
+          <div id="st-char-list">${storyStateCharRowsHtml(chars)}</div>
+          <div id="st-char-empty" class="muted" hidden>没有匹配的角色。清空搜索或切换筛选后可继续查看。</div>
         </div>
       ` : '<div class="muted mt-8">先在「正文写作」里选一个章节，才能按"当前章"判断读者已披露与角色掌握。</div>'}
     </div>`;
@@ -7322,6 +7409,7 @@ async function renderStoryStatePage(content) {
         ${TS ? TS.entryButtonHtml() : ''}
       </div>`
     + renderStoryStateCard();
+  applyStoryStateFilter();
 }
 
 /**
@@ -13024,7 +13112,22 @@ function revisionAutoRepairNotice(autoRepair) {
 }
 
 /**
- * 自动二次复修（v1.2.2）：对 `verdict=fail` 的条目做最多 2 轮定向重写。
+ * 复修后的语义合并（v1.2.5）——实现只有一份，住在 `revision-closure`（纯函数、可离线断言）。
+ *
+ * 为什么不能直接用"确定性重验"的结果替换上一轮语义结论：
+ *   `revisionSemanticFor()` 不带 semanticByIssue 时，语义层一律是 `not_run`。
+ *   直接替换会把**已经通过**的 6 条打回 `AWAITING_SEMANTIC`，作者看到的是
+ *   "修了一条，其余全变待验"——这正是"复修把先前结论冲掉"的旧缺陷。
+ * 这里只做委托；判据与原因码在 `NovelRevisionClosure.mergeRepairSemantic`。
+ */
+function mergeRepairSemantic(prior, deterministic, repairIds) {
+  const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  if (!CL || typeof CL.mergeRepairSemantic !== 'function') return prior;
+  return CL.mergeRepairSemantic(prior, deterministic, repairIds);
+}
+
+/**
+ * 自动二次复修（v1.2.2）：对 `verdict=fail/partial` 的条目做最多 2 轮定向重写。
  *
  * 边界（与方案 §5.5 一致）：
  *   · 只在**原勾选集合**内修；新增跨度、保护区、蓝图冲突、底稿变化一律不碰；
@@ -13042,7 +13145,8 @@ async function runRevisionAutoRepair({ article, patched, semantic, plan, finding
   const budget = revisionBudgetCents();
   const rounds = [];
   for (let round = 0; round < REVISION_AUTO_REPAIR_MAX_ROUNDS; round += 1) {
-    const failing = (sem.issues || []).filter((i) => i && i.verdict === 'fail');
+    // PARTIAL 也必须有去处：它是有结论的未通过项，不是"待验"。
+    const failing = (sem.issues || []).filter((i) => i && (i.verdict === 'fail' || i.verdict === 'partial'));
     const failingIds = [...new Set(failing.map((i) => String(i.issue_id)))];
     if (!failingIds.length) break;
     const failingFindings = (findings || []).filter((f) => failingIds.includes(String(f && f.id)));
@@ -13096,16 +13200,24 @@ async function runRevisionAutoRepair({ article, patched, semantic, plan, finding
       safety_blocked: !!current.safety_blocked,
     };
     spent += Number(verdict.estimateCents) || 0;
-    sem = revisionSemanticFor({
+    // 重验覆盖**全部已选问题**（不只本轮改过的）：这是"修 A 不能破坏 B"的唯一证据。
+    const deterministic = revisionSemanticFor({
       article, patched: current, plan, findings,
       invariants: invariants || { must_keep: [] }, protectedSpans, currentBaseHash: snapshot.body_hash,
     });
+    sem = mergeRepairSemantic(sem, deterministic, failingIds);
     rounds.push({
       round: round + 1, status: 'applied', applied: repair.applied.length,
-      estimate_cents: verdict.estimateCents, verified: sem ? sem.summary.verified : 0,
+      estimate_cents: verdict.estimateCents,
+      verified: sem ? sem.summary.verified : 0,
+      partial: sem ? sem.summary.partial : 0,
+      awaiting_semantic: sem ? sem.summary.awaiting_semantic : 0,
       unresolved: sem ? sem.summary.unresolved : null,
     });
-    if (!sem || !sem.summary || !sem.summary.unresolved) break;
+    if (!sem || !sem.summary) break;
+    // 复修过的条目现在是"等重新语义复验"（mergeRepairSemantic 的结果），不是 fail；
+    // 只有确定性层仍硬失败（补丁根本没改掉锚点）才值得再跑一轮。
+    if (!(Number(sem.summary.unresolved) > 0)) break;
   }
   return { patched: current, semantic: sem, rounds, spent_cents: spent };
 }
@@ -13191,12 +13303,14 @@ function buildRevisionSemanticPrompt({ article, revised, findings }) {
   return [
     '你是中文小说的独立复核编辑。下面给出**审稿问题清单**、**修前底稿**与**修后候选稿**。',
     '请逐条判断：修后候选是否真的解决了该问题。只输出 JSON（不要 Markdown 代码块）：',
-    '{"issues":[{"issue_id":"R-0001","verdict":"pass|fail|need_context","reason":"判断依据","repair_hint":"若失败，只在该问题已授权范围内怎么改","confidence":"high|medium|low","checks":[{"criterion":"检查项","passed":true,"evidence":["引用修前/修后的具体文字"]}]}]}',
+    '{"issues":[{"issue_id":"R-0001","verdict":"pass|partial|fail|need_context|unverified|blocked","reason":"判断依据","reason_code":"稳定大写原因码，如 CROSS_SPAN_CONTRADICTION_REMAINS / POV_VIOLATION_STILL_PRESENT","remaining_evidence":["仍未解决的证据原文"],"repair_hint":"若失败/部分，只在该问题已授权范围内怎么改","confidence":"high|medium|low","checks":[{"criterion":"检查项","passed":true,"evidence":["引用修前/修后的具体文字"]}]}]}',
     '纪律：',
     '1. 旧引文消失 ≠ 问题解决。要看的是修后是否仍违反成功判据（例如"开头两折、结尾一折"是否真的自洽）。',
-    '2. 拿不到足够上下文（看不到对比所需的那一处）时写 need_context，不要猜 pass。',
-    '3. 不得建议扩大改写范围、不得建议改世界观/蓝图；repair_hint 只能落在已授权热点内。',
-    '4. 每条必须给证据（引用具体字句），没有证据的结论按 fail/need_context 处理。',
+    '2. 一条问题有**多处证据**时，必须逐处核对：只改其中一处、其余位置仍与判据冲突 → `partial`（不是 pass）。',
+    '3. 有改动但仍有验收条件未满足 → `partial`，并在 remaining_evidence 里写清未解决的证据原文。',
+    '4. 拿不到足够上下文（看不到对比所需的那一处）时写 `need_context` 或 `unverified`，不要猜 pass。',
+    '5. 不得建议扩大改写范围、不得建议改世界观/蓝图；repair_hint 只能落在已授权热点内。',
+    '6. 每条必须给证据（引用具体字句），没有证据的结论按 fail/need_context 处理。',
     '',
     '【问题清单】',
     list || '（无）',
@@ -13227,6 +13341,9 @@ function parseSemanticVerification(raw, issueIds) {
     byIssue[id] = {
       status: String(x.verdict || 'need_context'),
       reason: String(x.reason || ''),
+      // v1.2.5：稳定原因码与"仍未解决的证据"要原样带进裁决器，否则 partial 只剩一句自由文本。
+      reason_code: String(x.reason_code || ''),
+      remaining_evidence: Array.isArray(x.remaining_evidence) ? x.remaining_evidence.map(String) : [],
       repair_hint: String(x.repair_hint || ''),
       confidence: String(x.confidence || 'medium'),
       checks: Array.isArray(x.checks) ? x.checks : [],
@@ -14063,6 +14180,8 @@ async function runRevisionSemanticVerify() {
     let finalPatched = ctx.patched;
     let finalSemantic = semantic;
     let autoRepair = null;
+    // 复修后复验被跳过（费用无法核价/超预算）时的如实说明；为空表示未发生跳过。
+    let recheckNote = '';
     if (revisionAutoRepairEnabled() && semantic && semantic.summary && Number(semantic.summary.unresolved) > 0) {
       autoRepair = await runRevisionAutoRepair({
         article: ctx.article, patched: ctx.patched, semantic, plan: ctx.plan, findings: ctx.findings,
@@ -14074,24 +14193,42 @@ async function runRevisionSemanticVerify() {
       if (autoRepair && autoRepair.rounds.some((r) => r.status === 'applied')) {
         finalPatched = autoRepair.patched;
         finalSemantic = autoRepair.semantic;
-        // 复修后的候选要重新过一次语义层，否则"修完仍失败"只是确定性结论。
-        if (finalSemantic && finalSemantic.summary && Number(finalSemantic.summary.unresolved) > 0) {
+        // 复修后的候选要重新过一次语义层：mergeRepairSemantic 已把复修过的条目置为
+        // "待复验"，这里必须补上那一次独立复验，否则 finalize 只能给出 AWAITING_SEMANTIC。
+        const needRecheck = finalSemantic && finalSemantic.summary
+          && (Number(finalSemantic.summary.unresolved) > 0 || Number(finalSemantic.summary.awaiting_semantic) > 0);
+        if (needRecheck) {
           const recheckPrompt = buildRevisionSemanticPrompt({ article: ctx.article, revised: finalPatched.text, findings: ctx.findings });
-          try {
-            const recheck = await runHarnessJob({
-              ...jobBase, prompt: recheckPrompt, kind: 'revision_semantic_verify', stage: 'AI 修稿语义复验（复修后）',
-            }, 'AI 修稿 · 复修后再次逐条复验…');
-            const parsedAgain = parseSemanticVerification(recheck.output || '', ctx.selectedIssueIds);
-            if (parsedAgain.ok) {
-              finalSemantic = revisionSemanticFor({
-                article: ctx.article, patched: finalPatched, plan: ctx.plan, findings: ctx.findings,
-                semanticByIssue: parsedAgain.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
-                currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
-              });
+          // 费用门禁：复修已经花掉一轮，复验是**又一次付费调用**。
+          // 无法核价或超出剩余预算时明确跳过，候选保持"待复验"——不假装验过、不静默超支。
+          const CL2 = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+          const spentSoFar = Number(autoRepair.spent_cents) || 0;
+          const remainingCents = Math.max(0, revisionBudgetCents() - spentSoFar);
+          const estimateCents = CL2
+            ? CL2.estimateRevisionCostCents({ promptChars: recheckPrompt.length, maxOutputTokens: 2048 })
+            : null;
+          if (estimateCents == null || estimateCents > remainingCents) {
+            recheckNote = `复修后复验未执行：${estimateCents == null ? '费用无法可靠核价' : `预估 ${estimateCents} 分超出剩余 ${remainingCents} 分`}；候选按"待复验"保留`;
+          } else {
+            try {
+              const recheck = await runHarnessJob({
+                ...jobBase, prompt: recheckPrompt, kind: 'revision_semantic_verify', stage: 'AI 修稿语义复验（复修后）',
+              }, 'AI 修稿 · 复修后再次逐条复验…');
+              const parsedAgain = parseSemanticVerification(recheck.output || '', ctx.selectedIssueIds);
+              if (parsedAgain.ok) {
+                finalSemantic = revisionSemanticFor({
+                  article: ctx.article, patched: finalPatched, plan: ctx.plan, findings: ctx.findings,
+                  semanticByIssue: parsedAgain.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
+                  currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
+                });
+              } else {
+                recheckNote = '复修后复验输出不可解析：候选按"待复验"保留';
+              }
+            } catch (e) {
+              if (e && e.cancelled) throw e;
+              // 复验失败不改变候选：如实保留"待复核"，不假装通过。
+              recheckNote = '复修后复验调用失败：候选按"待复验"保留';
             }
-          } catch (e) {
-            if (e && e.cancelled) throw e;
-            // 复验失败不改变候选：如实保留"待复核"，不假装通过。
           }
         }
       }
@@ -14105,6 +14242,10 @@ async function runRevisionSemanticVerify() {
       semanticByIssue[String(i.issue_id)] = {
         status: String(i.semantic_status || 'not_run'),
         reason: String(i.reason || ''),
+        reason_code: String(i.reason_code || ''),
+        remaining_evidence: Array.isArray(i.remaining_evidence)
+          ? i.remaining_evidence.map((e) => String((e && e.quote) || e))
+          : [],
         repair_hint: String(i.repair_hint || ''),
         confidence: String(i.confidence || 'medium'),
         checks: Array.isArray(i.checks) ? i.checks : [],
@@ -14146,7 +14287,7 @@ async function runRevisionSemanticVerify() {
     presentRevisionResult({
       ...ctx.diffArgs, oldText: ctx.article, newText: finalPatched.text,
       semantic: finalSemantic, closure: (finalized && finalized.closure) || closure, finalize: finalized || null,
-      notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}（结论见下方覆盖表）${autoNotice ? `；${autoNotice}` : ''}`,
+      notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}${s.partial ? `（部分修复 ${s.partial}）` : ''}（结论见下方覆盖表）${autoNotice ? `；${autoNotice}` : ''}${recheckNote ? `；${recheckNote}` : ''}`,
     });
   } catch (e) {
     // 失败也要把进度条撤掉并重画：留一张"永远在跑"的界面比报错更糟（作者会以为还在计费）。
@@ -14242,7 +14383,7 @@ function reviewWorkspaceContext() {
 
 function reviewWorkspaceState() {
   if (!state.reviewWorkspace || typeof state.reviewWorkspace !== 'object') {
-    state.reviewWorkspace = { activeId: null, filter: 'all', mode: 'diff', drawer: false };
+    state.reviewWorkspace = { activeId: null, filter: 'all', mode: 'diff', drawer: false, navOpen: false };
   }
   return state.reviewWorkspace;
 }
@@ -14258,7 +14399,7 @@ function presentRevisionResult(diffArgs) {
   return false;
 }
 
-function openReviewWorkspace(diffArgs) {
+function openReviewWorkspace(diffArgs, opts = {}) {
   if (!reviewWorkspaceEnabled()) return false;
   if (!state.pendingRevisionClosure) return false;
   if (!reviewWorkspaceModule()) return false;
@@ -14268,8 +14409,18 @@ function openReviewWorkspace(diffArgs) {
     baseFingerprint: diffArgs.baseFingerprint, patches: diffArgs.patches, coverage: diffArgs.coverage,
     verification: diffArgs.verification,
   });
+  // 同一章的再次进入要恢复上次的 Issue/筛选/差异模式/滚动锚点（方案 §2.1）；
+  // 换章则重置 UI 选择，避免把上一章的 activeId 套到新章。
+  const chapterKey = Number(diffArgs.chapterId) || Number(state.currentChapterId) || 0;
+  const prevWs = state.reviewWorkspace && String(state.reviewWorkspace.chapterId) === String(chapterKey)
+    ? state.reviewWorkspace : null;
   state.reviewWorkspace = {
-    activeId: null, filter: 'all', mode: 'diff', drawer: false,
+    activeId: prevWs ? prevWs.activeId : null,
+    filter: prevWs ? prevWs.filter : 'all',
+    mode: prevWs ? prevWs.mode : 'diff',
+    drawer: false, navOpen: false,
+    chapterId: chapterKey,
+    scrollAnchor: prevWs ? Number(prevWs.scrollAnchor) || 0 : 0,
     // 返回写作台时恢复作者原来的列数/章节/滚动位置（方案 §8.2 / §9.2）。
     saved: {
       layout: state.editorLayout,
@@ -14282,8 +14433,80 @@ function openReviewWorkspace(diffArgs) {
   };
   state.sidebarCollapsed = true;
   goView('review');
-  render().catch(() => { /* 渲染失败不吞掉候选：作者还能再点开 */ });
+  reviewWorkspaceSyncHash(true, opts.fromHistory === true);
+  render().then(() => {
+    const ws = state.reviewWorkspace;
+    const diff = document.querySelector('.rw-diff');
+    if (ws && diff && ws.scrollAnchor) diff.scrollTop = Number(ws.scrollAnchor) || 0;
+  }).catch(() => { /* 渲染失败不吞掉候选：作者还能再点开 */ });
   return true;
+}
+
+/**
+ * 深链接（方案 §2.1）：把当前审稿运行写进 URL hash，供复制/返回。
+ * 只写 UI 地址，**不**发请求、不改候选；刷新后候选若已不在内存，页面会如实提示而不是伪造进度。
+ */
+function reviewWorkspaceSyncHash(open, fromHistory = false) {
+  try {
+    const ctx = state.pendingRevisionClosure;
+    const chapterId = Number(ctx && ctx.chapterId) || Number(state.currentChapterId) || 0;
+    const runId = (ctx && ctx.finalized && ctx.finalized.candidate && ctx.finalized.candidate.revision_run_id) || '';
+    if (open === true && chapterId) {
+      const hash = `#review/${chapterId}${runId ? `/${encodeURIComponent(String(runId))}` : ''}`;
+      const url = `${location.pathname}${location.search}${hash}`;
+      // 用户点“查看”进入 → push 一条，浏览器 Back 才回到写作台；
+      // 恢复/深链接消费不新增历史条目，避免 Back 要按两次。
+      if (fromHistory || String(location.hash || '').startsWith('#review/')) history.replaceState(null, '', url);
+      else history.pushState(null, '', url);
+    } else if (String(location.hash || '').startsWith('#review/')) {
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+    }
+  } catch (_) { /* 地址栏不可写不影响工作区 */ }
+}
+
+/**
+ * 深链接消费（方案 §2.1）：启动/forward 时按 `#review/<chapterId>[/runId]` 尝试恢复上次运行。
+ * 取不到就**清理地址并如实提示**，绝不让地址栏显示一个打不开的“工作区”。
+ */
+async function reviewWorkspaceConsumeHash() {
+  const m = /^#review\/(\d+)/.exec(String(location.hash || ''));
+  if (!m) return false;
+  const chapterId = Number(m[1]);
+  if (!chapterId) return false;
+  if (state.view === 'review' && state.pendingRevisionClosure) return true;
+  if (!Array.isArray(state.chapters) || !state.chapters.some((c) => Number(c.id) === chapterId)) {
+    reviewWorkspaceSyncHash(false);
+    toast('深链接指向的章节不存在或未加载：已清理地址，可从写作台重新进入审稿', 'error');
+    return false;
+  }
+  state.currentChapterId = chapterId;
+  const ok = await reviewWorkspaceRestoreRun();
+  if (!ok) {
+    reviewWorkspaceSyncHash(false);
+    toast('深链接指向的修稿运行已不可恢复（记录不存在或底稿已变）：已清理地址', 'error');
+  }
+  return ok === true;
+}
+
+/** Back/Forward：仅恢复 UI 视图，不发起模型/补丁/合并。 */
+async function reviewWorkspaceOnHistory() {
+  const hasReviewHash = /^#review\/\d+/.test(String(location.hash || ''));
+  if (hasReviewHash) {
+    if (state.view !== 'review') {
+      if (!state.pendingRevisionClosure) {
+        state.pendingRevisionClosure = state.pendingRevisionClosure || null;
+        await reviewWorkspaceConsumeHash();
+        return;
+      }
+      openReviewWorkspace(state.pendingRevisionClosure.diffArgs, { fromHistory: true });
+    }
+    return;
+  }
+  if (state.view === 'review') {
+    // 历史后退回到“没有 review hash”的条目：只切视图，不写库、不删候选。
+    goView('writing');
+    await render();
+  }
 }
 
 function reviewWorkspaceRowHtml(row, activeId) {
@@ -14387,11 +14610,27 @@ function renderReviewWorkspace(content) {
   }
   const ws = reviewWorkspaceState();
   const issueRows = model.issueRows;
-  if (!ws.activeId && issueRows.length) ws.activeId = issueRows[0].issue_id;
+  // 恢复上次选择时，旧 id 可能已不在本轮（换章/新运行）：回退到第一条，避免详情永远空。
+  if ((!ws.activeId || !issueRows.some((r) => String(r.issue_id) === String(ws.activeId))) && issueRows.length) {
+    ws.activeId = issueRows[0].issue_id;
+  }
   const visibleIssues = RW.filterRows(issueRows, ws.filter);
   const activeRow = issueRows.find((r) => String(r.issue_id) === String(ws.activeId)) || null;
-  const counts = RW.countsOf(model.rows);
   const stage = RW.stageOf(model.stage);
+  // 方案 §4.5：摘要恒等式 N = P + F + U + B（四类互斥）；数字来自最新终审行，不自己另算。
+  const formula = RW.summaryFormulaOf(model.rows);
+  // 方案 §4.1：四阶段是流程导航，不是成功指示器。
+  const stages = RW.stagesOf({
+    rows: model.rows, stage: model.stage, patchedCount: model.patchedCount,
+    coverageComplete: Boolean(model.finalize && model.finalize.coverage && model.finalize.coverage.complete),
+  });
+  const candMeta = (model.finalize && model.finalize.candidate) || {};
+  const runMeta = [
+    candMeta.revision_run_id ? `run ${String(candMeta.revision_run_id).slice(0, 28)}` : '',
+    candMeta.original_hash ? `底稿 ${String(candMeta.original_hash).slice(0, 18)}` : '',
+    candMeta.candidate_hash ? `候选 ${String(candMeta.candidate_hash).slice(0, 18)}` : '',
+    `轮次 ${Number(model.semanticRuns) || 0}`,
+  ].filter(Boolean).join(' · ');
   const summary = RW.summaryLine({ chapterTitle: model.chapterTitle, rows: model.rows, patchedCount: model.patchedCount });
   const blocks = RW.diffBlocks(model.oldText, model.newText);
   const shown = RW.visibleBlocks(blocks, ws.mode);
@@ -14435,8 +14674,15 @@ function renderReviewWorkspace(content) {
       <div class="rw-summary" aria-live="polite">${esc(summary)}</div>
       <span class="rw-stage tone-${esc(stage.tone)}">${esc(stage.text)}</span>
     </header>
+    <nav class="rw-stages" aria-label="修稿阶段">
+      ${stages.map((s, i) => `<span class="rw-stage-item ${esc(s.state)}"${s.state === 'active' ? ' aria-current="step"' : ''}>${i + 1}. ${esc(s.label)}</span>`).join('<span class="rw-stage-sep">→</span>')}
+    </nav>
     <div class="rw-body">
-      <aside class="rw-nav" aria-label="问题导航">
+      <aside class="rw-nav ${ws.navOpen ? 'open' : ''}" aria-label="问题导航" aria-hidden="${ws.navOpen ? 'false' : 'true'}">
+        <div class="rw-nav-head">
+          <b>问题导航</b>
+          <button class="btn small secondary" data-action="review-nav" aria-label="关闭问题导航">关闭</button>
+        </div>
         <div class="rw-filters">
           ${RW.FILTERS.map((f) => `<button class="rw-filter ${ws.filter === f.id ? 'active' : ''}" data-action="review-filter" data-filter="${f.id}">${esc(f.label)}</button>`).join('')}
         </div>
@@ -14447,27 +14693,30 @@ function renderReviewWorkspace(content) {
       </aside>
       <section class="rw-main">
         <div class="rw-main-head">
+          <button class="btn small secondary rw-nav-toggle" data-action="review-nav" aria-expanded="${ws.navOpen ? 'true' : 'false'}" title="显示/隐藏问题导航">问题</button>
           <div class="rw-modes">
             ${RW.MODES.map((m) => `<button class="rw-mode ${ws.mode === m.id ? 'active' : ''}" data-action="review-mode" data-mode="${m.id}">${esc(m.label)}</button>`).join('')}
           </div>
           <span class="muted" style="font-size:12px">${diffInfo.changed} / ${diffInfo.total} 段有改动</span>
           <div class="grow"></div>
-          <button class="btn small ${ws.drawer ? '' : 'secondary'}" data-action="review-drawer" aria-pressed="${ws.drawer ? 'true' : 'false'}">详情</button>
+          <button class="btn small ${ws.drawer ? '' : 'secondary'}" data-action="review-drawer" aria-pressed="${ws.drawer ? 'true' : 'false'}" aria-expanded="${ws.drawer ? 'true' : 'false'}">详情</button>
         </div>
         <div class="rw-diff" role="region" aria-label="修稿对照">
           ${shown.length ? shown.map(reviewBlockHtml).join('') : '<div class="muted">候选与原文没有段落级差异。</div>'}
         </div>
-        <div class="rw-issue-detail">${reviewEvidenceHtml(RW, model, activeRow)}</div>
+        ${activeRow ? `<div class="rw-active-line muted">当前 #${esc(activeRow.ordinal)} ${esc(activeRow.title)} · ${esc(activeRow.status_text)} · ${esc(activeRow.dimensions_text)}</div>` : ''}
       </section>
-      ${ws.drawer ? `<aside class="rw-drawer" aria-label="验收详情">
+      ${ws.drawer ? `<aside class="rw-drawer" role="dialog" aria-modal="true" aria-label="验收详情">
         <div class="rw-drawer-head"><b>验收详情</b><button class="btn small secondary" data-action="review-drawer">关闭</button></div>
-        <div class="muted" style="font-size:12px">已选 ${counts.selected}｜已验证 ${counts.verified}｜未通过 ${counts.unresolved}｜待复验 ${counts.pending}${counts.canon ? `｜蓝图冲突 ${counts.canon}` : ''}</div>
+        <div class="muted" style="font-size:12px">摘要：已选 ${formula.total}｜通过 ${formula.pass}｜未通过 ${formula.fail}｜未验证 ${formula.unverified}｜阻塞 ${formula.blocked}${formula.unknown ? `｜未知 ${formula.unknown}` : ''}${formula.balanced ? '' : '（⚠️ 计数不闭合）'}</div>
+        <div class="muted" style="font-size:12px">${esc(runMeta || '当前没有运行标识')}</div>
         ${model.finalize && model.finalize.next_action ? `<div class="muted">下一步：${esc(model.finalize.next_action.label)}</div>` : ''}
         ${model.cost ? `<div class="muted">费用：${esc(RW.costLine(model.cost))}</div>` : ''}
         ${model.archives && model.archives.count ? `<div class="muted">修稿存档：${esc(model.archives.line)}</div>` : ''}
         ${insightText ? `<div class="muted">修复效果：${esc(insightText)}</div>` : ''}
         ${trendText ? `<div class="muted">质量趋势：${esc(trendText)}</div>` : ''}
         <div class="row mt-8"><button class="btn small secondary" data-action="quality-profile-open">🎛 作品级质量规则档案</button></div>
+        <div class="rw-detail-body">${reviewEvidenceHtml(RW, model, activeRow)}</div>
         ${model.closure && model.closure.text ? `<pre class="muted rw-closure">${esc(model.closure.text)}</pre>` : ''}
         ${model.blocked.length ? `<div class="redline-scan warn">安全门禁拦下 ${model.blocked.length} 处：${model.blocked.slice(0, 4).map((b) => esc(String(b.code || b.reason || ''))).join('；')}</div>` : ''}
         <div class="muted" style="font-size:12px">费用：语义复验是显式付费动作；工作区不会自己发起模型调用。</div>
@@ -14485,6 +14734,8 @@ function renderReviewWorkspace(content) {
 /** 返回写作台：恢复列数/章节/滚动位置；**不删候选、不写库、不调用模型**。 */
 async function reviewWorkspaceBack() {
   const ws = reviewWorkspaceState();
+  const diff = document.querySelector('.rw-diff');
+  if (diff) ws.scrollAnchor = Number(diff.scrollTop) || 0;
   const saved = ws.saved || {};
   if (saved.layout) state.editorLayout = saved.layout;
   if (saved.chapterId) state.currentChapterId = saved.chapterId;
@@ -14494,14 +14745,21 @@ async function reviewWorkspaceBack() {
     try { localStorage.setItem('ns_sidebar_collapsed', saved.sidebarCollapsed ? '1' : '0'); } catch (_) { /* 存不下只影响本次 */ }
   }
   goView('writing');
+  reviewWorkspaceSyncHash(false);
   await render();
   const el = document.getElementById('content');
   if (el && saved.scroll) el.scrollTop = Number(saved.scroll) || 0;
 }
 
+function reviewWorkspaceNarrowNav() {
+  return typeof window !== 'undefined' && window.innerWidth <= 1279;
+}
+
 function reviewWorkspaceSelect(id) {
   const ws = reviewWorkspaceState();
   ws.activeId = String(id == null ? '' : id);
+  // 窄屏的导航是覆盖式的：选中问题后必须收起，否则它会一直盖住差异区。
+  if (reviewWorkspaceNarrowNav()) ws.navOpen = false;
   // 切问题**只读**：不调用模型、不计费、不动候选。
   render().catch(() => {});
 }
@@ -14518,6 +14776,7 @@ function reviewWorkspaceMove(delta) {
 function reviewWorkspaceSetFilter(filter) {
   const ws = reviewWorkspaceState();
   ws.filter = String(filter || 'all');
+  if (reviewWorkspaceNarrowNav()) ws.navOpen = false;
   render().catch(() => {});
 }
 
@@ -14530,7 +14789,25 @@ function reviewWorkspaceSetMode(mode) {
 function reviewWorkspaceToggleDrawer() {
   const ws = reviewWorkspaceState();
   ws.drawer = !ws.drawer;
-  render().catch(() => {});
+  // 方案 §10.3：抽屉打开时焦点移入，关闭后回到打开它的控件。
+  render().then(() => {
+    const target = ws.drawer
+      ? document.querySelector('.rw-drawer button')
+      : document.querySelector('[data-action="review-drawer"]');
+    if (target && typeof target.focus === 'function') target.focus();
+  }).catch(() => {});
+}
+
+/** 窄屏问题导航：覆盖式展开/收起（≥1280 常驻，不受影响）。 */
+function reviewWorkspaceToggleNav() {
+  const ws = reviewWorkspaceState();
+  ws.navOpen = !ws.navOpen;
+  render().then(() => {
+    if (!ws.navOpen) {
+      const toggle = document.querySelector('.rw-main-head [data-action="review-nav"]');
+      if (toggle && typeof toggle.focus === 'function') toggle.focus();
+    }
+  }).catch(() => {});
 }
 
 /** 导出待处理清单（纯文本下载；不含正文、不含提示词）。 */
@@ -18197,6 +18474,9 @@ async function handleAction(action, actionEl, e) {
       case 'review-drawer':
         reviewWorkspaceToggleDrawer();
         break;
+      case 'review-nav':
+        reviewWorkspaceToggleNav();
+        break;
       case 'review-export-pending':
         reviewWorkspaceExportPending();
         break;
@@ -19038,6 +19318,17 @@ async function handleAction(action, actionEl, e) {
         await refreshDisclosure();
         break;
 
+      // 角色紧凑列表：只做本地筛选/分页，不发请求、不改角色数据。
+      case 'st-char-filter':
+        setStoryStateCharFilter(actionEl.dataset.filter);
+        break;
+      case 'st-char-more': {
+        const ui = storyStateCharUi();
+        ui.limit = (Number(ui.limit) || 80) + 80;
+        applyStoryStateFilter();
+        break;
+      }
+
       // T6：章末状态面板（三档视图 + 本章提案一次确认）
       case 'panel-view':
         await setChapterPanelView(actionEl.dataset.view);
@@ -19803,6 +20094,11 @@ document.addEventListener('input', (e) => {
     trace.filters.q = e.target.value;
     renderTraceList();
   }
+  if (e.target.id === 'st-char-search') {
+    storyStateCharUi().q = String(e.target.value || '');
+    applyStoryStateFilter();
+    return;
+  }
   if (e.target.id === 'link-term-search') {
     const q = e.target.value.trim().toLowerCase();
     const list = $('#link-term-list');
@@ -20015,7 +20311,23 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       // 第一次 Esc 关详情抽屉，再按一次才回写作台（有未确认写回时给非阻塞提示，不拦）。
       e.preventDefault();
-      if (ws.drawer) { ws.drawer = false; render().catch(() => {}); return; }
+      if (ws.drawer) {
+        ws.drawer = false;
+        render().then(() => {
+          const back = document.querySelector('[data-action="review-drawer"]');
+          if (back && typeof back.focus === 'function') back.focus();
+        }).catch(() => {});
+        return;
+      }
+      if (reviewWorkspaceNarrowNav() && ws.navOpen) {
+        // Esc 的优先序：详情抽屉 → 覆盖式问题导航 → 返回写作台。
+        ws.navOpen = false;
+        render().then(() => {
+          const toggle = document.querySelector('.rw-main-head [data-action="review-nav"]');
+          if (toggle && typeof toggle.focus === 'function') toggle.focus();
+        }).catch(() => {});
+        return;
+      }
       if (state.pendingReviewDiff) toast('候选仍保留着（没有写回正文）；可以在修稿结果里重新打开', 'success');
       reviewWorkspaceBack().catch(() => {});
       return;
@@ -20026,6 +20338,10 @@ document.addEventListener('keydown', (e) => {
       return;
     }
     if (e.key === 'Enter') {
+      // 只有焦点在页面本身时才把 Enter 当成"跳到当前问题"的快捷键。
+      // 按钮/链接/输入框上的 Enter 必须留给浏览器原生激活——旧实现无条件 preventDefault，
+      // 把工作区里包括"运行独立语义复验（付费）"在内的所有按钮都弄成了键盘按不动。
+      if (document.activeElement && document.activeElement !== document.body) return;
       e.preventDefault();
       const el = $('.rw-issue.active');
       if (el) el.focus();
@@ -20072,6 +20388,11 @@ window.addEventListener('resize', () => {
   const backdrop = $('#sidebar-backdrop');
   if (!backdrop) return;
   backdrop.classList.toggle('visible', !state.sidebarCollapsed && window.innerWidth <= 720);
+});
+
+// 深链接/Back/Forward：只恢复 UI 视图；不重新发起模型调用、补丁或合并。
+window.addEventListener('popstate', () => {
+  reviewWorkspaceOnHistory().catch(() => { /* 历史恢复失败不影响当前页 */ });
 });
 
 window.addEventListener('beforeunload', (e) => {
@@ -20151,6 +20472,8 @@ async function init() {
     state.view = ['works', 'ai-create', 'ai', 'thanks', 'library'].includes(homeView) ? homeView : 'works';
   }
   await render();
+  // 深链接：地址里有 #review/<chapterId> 时尝试恢复本地运行记录；取不到会清 hash 并提示。
+  await reviewWorkspaceConsumeHash();
 }
 
 init().catch((e) => toast(e.message, 'error'));

@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "usage": {
+    "prompt_tokens": 270,
+    "completion_tokens": 2968,
+    "total_tokens": 3238,
+    "prompt_tokens_details": {
+      "cached_tokens": 128
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 2823
+    },
+    "prompt_cache_hit_tokens": 128,
+    "prompt_cache_miss_tokens": 142
+  },
+  "reply": "{\"schema_version\":2,\"patches\":[{\"issue_id\":\"I03\",\"op\":\"replace\",\"anchor\":\"她显然准备好了更长的安慰\",\"revised\":\"她嘴唇动了动，像要继续举例\",\"reason\":\"改为可观察的动作与推测，避免直接陈述阿姨未说出口的心理。\"},{\"issue_id\":\"I04\",\"op\":\"replace\",\"anchor\":\"光柱越高，等级越好\",\"revised\":\"光柱越高通常越好；但金红色是特例，颜色够浓就是A级，光势比高度更作数\",\"reason\":\"补充分级例外，使A级金红光柱即便只顶到棚布也可由颜色与光势解释，与现场观测相容。\"}]}"
+}

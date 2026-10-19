@@ -1,0 +1,19 @@
+{
+  "http_status": 200,
+  "duration_ms": 6211,
+  "model": "deepseek-flash",
+  "usage": {
+    "prompt_tokens": 463,
+    "completion_tokens": 1191,
+    "total_tokens": 1654,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 994
+    },
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 463
+  },
+  "reply": "{\"issues\":[{\"issue_id\":\"I03\",\"verdict\":\"pass\",\"reason\":\"修后稿改为可观察动作与直接对话，删除了“她显然准备好了更长的安慰”这类对配角未说出口心理的凭空陈述。\",\"reason_code\":\"REMOVED_UNSPOKEN_PSYCH\",\"remaining_evidence\":[]},{\"issue_id\":\"I04\",\"verdict\":\"partial\",\"reason\":\"已把“光柱越高，等级越好”改为颜色决定等级、亮度顺带，消除了原分级解释与高度矛盾；但“A级金红那种棚顶都压不住”仍暗示金红光柱高度极高，与现场“金红色光柱只顶到棚布”继续冲突。\",\"reason_code\":\"PARTIAL_A_LEVEL_HEIGHT_CONFLICT\",\"remaining_evidence\":[\"A级就不好说了，金红那种，棚顶都压不住\",\"金红色的光柱只顶到了棚布\"]}]}"
+}

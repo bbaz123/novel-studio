@@ -95,6 +95,9 @@
   <!-- v1.2.4 统一终验出口（P0C/P0D）：单请求与分段共用同一套终审 + 语义覆盖完备性。
        必须在 verifier / closure 之后、app.js 之前（它读那两个模块）。 -->
   <script src="/revision-finalize.js"></script>
+  <!-- v1.2.5 结构化追踪（revision-trace.v1）：把每轮/每条问题的状态跃迁落成脱敏事件。
+       缺了它时回执里没有 trace，但终审结论不变（app.js 判空后照常走 finalize）。 -->
+  <script src="/revision-trace.js"></script>
   <!-- v1.2.4 审稿工作区（P0E）：纯函数（统计行/问题导航/差异块/证据定位/可用操作）。
        没有它时 app.js 会退回旧的差异弹窗，不会因为少一个模块就把结果显示成"已修好"。 -->
   <script src="/review-workspace.js"></script>

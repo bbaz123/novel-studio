@@ -81,6 +81,108 @@
     };
   }
 
+  /**
+   * 问题三维状态（方案 §4.2）：授权态 / 操作态 / 验证态。
+   *
+   * 为什么必须分开：旧界面只给一个"已修复/未修复"徽记，读者无法判断这一项到底是
+   * "没被选中"、"选错范围"、"补丁没应用"、"应用了但语义没跑"，还是"跑了但没过"。
+   * 这三类失败的处理方式完全不同（补授权 / 重新定位 / 复验 / 定向复修）。
+   */
+  function dimensionsOf(row) {
+    const r = row && typeof row === 'object' ? row : {};
+    const cov = textOf(r.coverage_status);
+    const authorized = r.authorized === true || ['patched', 'partially_resolved'].includes(cov);
+    const authorization = authorized
+      ? { code: 'AUTHORIZED', text: '已选·已授权' }
+      : (['blocked', 'refused'].includes(cov)
+        ? { code: 'PROTECTED', text: '受保护/被拒' }
+        : (cov === 'keep' || cov === 'deferred'
+          ? { code: 'SELECTED_NO_EDIT', text: '已选·未改' }
+          : { code: 'NEEDS_SCOPE', text: '范围待补' }));
+    const operation = Number(r.patch_count) > 0
+      ? { code: 'PATCH_APPLIED', text: `候选已应用${Number(r.patch_count) > 1 ? `（${Number(r.patch_count)} 处）` : ''}` }
+      : (['blocked', 'refused'].includes(cov)
+        ? { code: 'PATCH_REJECTED', text: '补丁被拒' }
+        : { code: 'NO_PATCH', text: '未产生补丁' });
+    const final = textOf(r.final_status);
+    const sem = textOf(r.semantic_status);
+    let verification;
+    if (final === 'ISSUE_VERIFIED') verification = { code: 'PASS', text: '独立复验通过' };
+    else if (final === 'PARTIAL') verification = { code: 'PARTIAL', text: '部分通过' };
+    else if (final === 'CANON_CONFLICT') verification = { code: 'CANON', text: '蓝图冲突' };
+    else if (sem === 'not_run' || final === 'AWAITING_SEMANTIC') verification = { code: 'NOT_RUN', text: '未语义复验' };
+    else verification = { code: 'FAIL', text: '未通过' };
+    return { authorization, operation, verification };
+  }
+
+  /**
+   * 摘要恒等式（方案 §4.5）：`N = P + F + U + B`，四类互斥。
+   *  - P 独立复验通过；F 未通过（含 PARTIAL）；U 未验证（未跑/证据不足）；B 其他阻塞（蓝图冲突/受阻）。
+   * 任何未知终态一律计入 B，**不得**为了凑等式丢掉条目。
+   */
+  function summaryFormulaOf(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    let p = 0; let f = 0; let u = 0; let b = 0; let unknown = 0;
+    for (const r of list) {
+      const s = textOf(r && r.final_status);
+      if (s === 'ISSUE_VERIFIED') p += 1;
+      else if (s === 'UNRESOLVED' || s === 'PARTIAL') f += 1;
+      else if (s === 'AWAITING_SEMANTIC') u += 1;
+      else if (s === 'CANON_CONFLICT') b += 1;
+      // 未知/空终态单独计数：不能把它悄悄并进 B 来让等式永远成立。
+      else unknown += 1;
+    }
+    return {
+      total: list.length, pass: p, fail: f, unverified: u, blocked: b, unknown,
+      balanced: p + f + u + b + unknown === list.length && unknown === 0,
+      covered: p + f + u + b + unknown,
+    };
+  }
+
+  /**
+   * 四阶段（方案 §4.1）：审稿清单 → 生成修稿 → 逐项验收 → 审阅与合并。
+   * 阶段只表达"现在在哪一步"，不是成功指示器；进入第 4 阶段不等于全部通过。
+   */
+  function stagesOf(input = {}) {
+    const rows = Array.isArray(input.rows) ? input.rows : [];
+    const stage = textOf(input.stage) || 'AWAITING_SEMANTIC';
+    const patched = Number(input.patchedCount) || 0;
+    const selected = rows.length;
+    const allVerified = selected > 0 && rows.every((r) => textOf(r && r.final_status) === 'ISSUE_VERIFIED');
+    const coverageComplete = input.coverageComplete === true;
+    const merged = ['PERSISTED_VERIFIED', 'PERSISTED_UNVERIFIED'].includes(stage);
+    const st = (id, label, state) => ({ id, label, state });
+    return [
+      st('review', '审稿清单', selected > 0 ? 'done' : 'active'),
+      st('generate', '生成修稿', patched > 0 ? 'done' : (selected > 0 ? 'active' : 'pending')),
+      st('verify', '逐项验收', allVerified ? 'done' : (patched > 0 || coverageComplete ? 'active' : 'pending')),
+      st('commit', '审阅与合并', merged ? 'done' : (allVerified ? 'active' : 'pending')),
+    ];
+  }
+
+  /**
+   * 写作台单行入口（方案 §3.1）。四种真实状态各一句话，**绝不**在未复验时写"完成"。
+   * @returns {{tone:string, text:string, action:string}|null} null = 没有相关任务，不显示
+   */
+  function entryLineOf(input = {}) {
+    const rows = Array.isArray(input.rows) ? input.rows : [];
+    const selected = Number(input.selected) || rows.length;
+    if (!selected) return null;
+    const c = countsOf(rows);
+    if (input.running === true) {
+      const round = Math.max(1, Number(input.runningRound) || 1);
+      return { tone: 'wait', text: `审稿与修稿 · 正在复验第 ${round} 轮`, action: '查看' };
+    }
+    if (Number(input.semanticRuns) === 0 && Number(input.patchedCount) > 0) {
+      return { tone: 'wait', text: '修稿已生成 · 尚未语义复验', action: '查看' };
+    }
+    if (c.verified === selected) {
+      return { tone: 'ok', text: '修稿验收 · 已选项全部通过（尚未合并）', action: '查看差异' };
+    }
+    const pending = c.pending + c.unresolved + c.partial + c.canon;
+    return { tone: pending ? 'warn' : 'muted', text: `修稿验收 · ${pending}/${selected} 待处理`, action: '查看' };
+  }
+
   /** 顶部一行（方案 §8.2 / §8.5）：`第一章 · 已选8 · 已验证2 · 待复验6`。 */
   function summaryLine(input = {}) {
     const rows = Array.isArray(input.rows) ? input.rows : [];
@@ -104,6 +206,7 @@
     return rows.map((r, i) => {
       const st = statusOf(r.final_status);
       const id = textOf(r.issue_id);
+      const dims = dimensionsOf(r);
       return {
         index: i + 1,
         issue_id: id,
@@ -115,8 +218,17 @@
         tone: st.tone,
         reason_code: textOf(r.reason_code),
         reason: textOf(r.reason),
+        // 详情抽屉需要的字段必须原样透传：列表投影曾把它们裁掉，导致抽屉里
+        // 「检查项 / 词条归因 / 跨片证据 / 下一步」永远为空。
+        checks: Array.isArray(r.checks) ? r.checks : [],
+        canon: r.canon && typeof r.canon === 'object' ? r.canon : null,
+        cross_segment: r.cross_segment && typeof r.cross_segment === 'object' ? r.cross_segment : null,
+        repair_hint: textOf(r.repair_hint),
         evidence_count: Number(r.evidence_count) || 0,
         patch_count: Number(r.patch_count) || 0,
+        // 三维状态：列表只显示主状态（验证态），详情抽屉展示完整三维。
+        dimensions: dims,
+        dimensions_text: `${dims.authorization.text}｜${dims.operation.text}｜${dims.verification.text}`,
         // "需作者决定"= 蓝图冲突或需要补范围；不是系统能自己修的。
         needs_author: r.final_status === 'CANON_CONFLICT'
           || ['NEEDS_SCOPE', 'AUTHORIZATION_MISSING', 'PROTECTED_SPAN', 'CANON_CONFLICT'].includes(textOf(r.reason_code)),
@@ -467,6 +579,10 @@
     statusOf,
     stageOf,
     countsOf,
+    dimensionsOf,
+    summaryFormulaOf,
+    stagesOf,
+    entryLineOf,
     summaryLine,
     issueRowsOf,
     filterRows,

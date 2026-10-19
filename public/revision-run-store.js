@@ -67,6 +67,8 @@
       semantic_by_issue: input.semanticByIssue && typeof input.semanticByIssue === 'object' ? input.semanticByIssue : {},
       semantic_runs: Number(input.semanticRuns) || 0,
       status: textOf(input.status),
+      // v1.2.5：脱敏事件流（只有 ID/hash/原因码）。上限 512 条，避免极端轮次撑大本地记录。
+      trace: Array.isArray(input.trace) ? input.trace.slice(0, 512) : [],
       rows: rows.map((r) => ({
         issue_id: textOf(r && r.issue_id),
         final_status: textOf(r && r.final_status),
@@ -158,6 +160,7 @@
       semanticRuns: Number(record.semantic_runs) || 0,
       status: textOf(record.status),
       rows: Array.isArray(record.rows) ? record.rows : [],
+      trace: Array.isArray(record.trace) ? record.trace : [],
       at: textOf(record.at),
     };
   }

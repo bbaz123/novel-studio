@@ -5,6 +5,34 @@
 
 ---
 
+### 🛠️ 最近更新（2026-10-18 · **v1.2.5**：审稿→修稿闭环硬化，I01–I08 固定回归）
+
+对应用户随任务提供的《Novel Studio 审稿发现问题但修稿未完成：定向排障与质量闭环解决方案》。
+**没有重写 v1.2.4 的闭环架构**，而是补齐会让"部分修复消失"的四处缺口，并把这一次的 8 条样本
+固化成离线回归。
+
+- **语义层 `partial` 成为一等结论** `public/revision-semantic-verifier.js`：旧实现只有
+  pass/fail/need_context，模型判"部分修复"时会被归一成 `not_run` → 显示"待语义复验"。
+  现在 `partial` → `PARTIAL` + 稳定原因码（如 `CROSS_SPAN_CONTRADICTION_REMAINS`），
+  `unverified`/`blocked` 保留各自原因码且永不当作 PASS。
+- **"完全未修改"与"改了但仍有问题"可机器区分**：终审行新增 `actual_change` / `patch_ids` /
+  `evidence_ids` / `remaining_evidence`；补丁存在但 before=after 不再被读成"改过"。
+- **PARTIAL 进入有界定向复修** `public/revision-closure.js`：`planAutoRepair` 与 `repairTargets`
+  口径统一；硬阻塞（底稿/蓝图/保护区/授权）仍排除。
+- **复修不再冲掉旧结论**（本轮发现的真实缺陷）：复修后用确定性重验结果替换语义结论，会把已 PASS
+  的条目打回待验。新增纯函数 `mergeRepairSemantic`：未改条目保留结论，改过条目明确待复验；
+  复修后复验按"未通过或待复验"触发，并受剩余预算门禁（无法核价/超预算则明确跳过并提示）。
+- **结构化追踪** `public/revision-trace.js`（新）：`revision-trace.v1` 事件带
+  run/issue/round/state/reason_code/evidence_ids/patch_ids/budget_status/timestamp，
+  只写 ID/hash/原因码；运行记录可持久化并回读，刷新后仍能解释"这一项停在哪道关口"。
+- **回归** `.p1-baseline/test-1029-i03-i04-closure.mjs`（28 条，零计费）：I03 原文未改必须
+  `ANCHOR_NOT_EDITED` FAIL（模型谎称 pass 也 FAIL）；I03 只删"显然"不得 PASS；I04 只改
+  "越高→越亮"不得 PASS、跨段矛盾 → `PARTIAL`；6/1/1 分母恒为 8；只收到 7 条时第 8 条
+  `UNACCOUNTED`；复修后先前 6 条 PASS 不被冲掉；单段/分段同义判定；工作区不把局部修复画成通过。
+
+**边界**：作者最终写入审批、保护区、蓝图/伏笔、预算门禁全部不变；语义复验仍是作者显式触发的
+付费动作；本轮全部离线断言零计费。详见 [`docs/v1.2.5-review-quality-loop.md`](v1.2.5-review-quality-loop.md)。
+
 ### 🛠️ 最近更新（2026-10-18 · **v1.2.4 补全轮**：P1 剩余 + P2 四项 + 三项真实环境验收）
 
 同一版本内的补全（v1.2.4 尚未发布，故不另起版本号）。目标是把上一轮明确标注为

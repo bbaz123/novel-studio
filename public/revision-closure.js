@@ -390,7 +390,11 @@
     const allowed = input.allowedIssueIds == null ? null : new Set(uniqueStrings(input.allowedIssueIds));
     const hard = input.hardBlockCodes == null ? AUTO_REPAIR_HARD_BLOCK : new Set(uniqueStrings(input.hardBlockCodes));
     const eligible = issues.filter((i) => {
-      const failed = i && (i.verdict === 'fail' || i.final_status === 'UNRESOLVED');
+      // 「部分修复」是**有结论的未通过项**，必须能进入定向复修；旧实现只认 fail，
+      // 于是模型判 partial 的条目（例如 I04 只改了分级解释、跨段矛盾仍在）永远停在待验，
+      // 既不会被继续修，也不会出现在失败清单里 —— 这正是"1 项部分修复没人管"的来源。
+      const failed = i && (i.verdict === 'fail' || i.verdict === 'partial'
+        || i.final_status === 'UNRESOLVED' || i.final_status === 'PARTIAL');
       if (!failed) return false;
       if (hard.has(textOf(i.reason_code))) return false;
       if (allowed && !allowed.has(String(i.issue_id))) return false;
@@ -418,6 +422,62 @@
     };
   }
 
+  /**
+   * 复修后的语义合并（v1.2.5，纯函数）。
+   *
+   * 为什么必须有这一步：复修后重跑的是**确定性层**（免费、不调模型），它的语义字段
+   * 一律是 `not_run`。直接用它替换上一轮结论，会把已经 PASS 的条目打回 `AWAITING_SEMANTIC`，
+   * 作者看到"修了一条，其余全变待验" —— 这是复修冲掉旧结论的缺陷。
+   *
+   * 规则（fail-closed）：
+   *   · 确定性硬失败 → 用它（FAIL）；语义 PASS 不能覆盖字面事实；
+   *   · 本轮改过的条目 → 语义结论作废，置 AWAITING_SEMANTIC（等重新复验）；
+   *   · 本轮没改的条目 → 保留原结论；把确定性层的失败项附进 checks 供复核（回归可见）。
+   */
+  function mergeRepairSemantic(prior, deterministic, repairIds) {
+    const ids = new Set((Array.isArray(repairIds) ? repairIds : []).map(String));
+    const detById = new Map(((deterministic && Array.isArray(deterministic.issues)) ? deterministic.issues : [])
+      .map((i) => [String(i && i.issue_id), i]));
+    const rows = ((prior && Array.isArray(prior.issues)) ? prior.issues : []).map((prev) => {
+      const id = String(prev && prev.issue_id);
+      const det = detById.get(id);
+      if (!det) return prev;
+      if (det.verdict === 'fail') return det;
+      if (ids.has(id)) {
+        return {
+          ...det,
+          verdict: 'need_context',
+          final_status: 'AWAITING_SEMANTIC',
+          semantic_status: 'not_run',
+          reason_code: 'SEMANTIC_NOT_RUN',
+          reason: '本轮已定向复修：语义结论已作废，必须重新复验后才能下结论（不得沿用旧 pass/partial）',
+        };
+      }
+      return {
+        ...prev,
+        checks: [...(Array.isArray(prev.checks) ? prev.checks : []), ...((det.checks || []).filter((c) => !c.passed))],
+      };
+    });
+    const summary = {
+      total: rows.length,
+      verified: rows.filter((i) => i.verdict === 'pass').length,
+      partial: rows.filter((i) => i.verdict === 'partial').length,
+      unresolved: rows.filter((i) => i.verdict === 'fail').length,
+      awaiting_semantic: rows.filter((i) => i.verdict === 'need_context').length,
+      canon_conflict: rows.filter((i) => i.final_status === 'CANON_CONFLICT').length,
+      semantic_not_run: rows.filter((i) => i.semantic_status === 'not_run').length,
+      diff_ok: !!(deterministic && deterministic.summary && deterministic.summary.diff_ok),
+    };
+    const anyFail = rows.some((i) => i.verdict === 'fail' || i.verdict === 'partial');
+    const anyPending = rows.some((i) => i.verdict === 'need_context');
+    return {
+      ...(deterministic || {}),
+      issues: rows,
+      summary,
+      verdict: anyFail ? 'PARTIAL_OR_FAILED' : (anyPending ? 'NEEDS_REVIEW' : 'VERIFIED_CANDIDATE'),
+    };
+  }
+
   return {
     VERSION,
     STATES,
@@ -434,6 +494,7 @@
     closureVerdict,
     closureReport,
     repairTargets,
+    mergeRepairSemantic,
     createClosureBudget,
     closureIdempotencyKey,
     createSeenKeys,

@@ -1957,6 +1957,84 @@ export const PHASES = [
       + '外层协调器只读，不创建 Goal、不代作者合并。'
       + '**费用**：全部离线/隔离实例检查零计费。',
   },
+  {
+    id: 'V17',
+    title: 'v1.2.5 审稿→修稿质量闭环硬化：I01–I08 固定回归 / PARTIAL 语义结论 / 定向复修 / 脱敏追踪',
+    files: [
+      // 新增纯函数模块（浏览器与 Node 测试共用）
+      'public/revision-trace.js',
+      // 回归套件：作者这次的 8 条样本（I03 完全漏修 / I04 跨段部分修复）
+      '.p1-baseline/test-1029-i03-i04-closure.mjs',
+      // 只读诊断探针：每条"缺口"结论都能复现（不靠阅读印象断言某行是 Bug）
+      '.p1-baseline/probe-v125-gaps.mjs',
+      // 交付证据（基线快照 / 改动前哈希 / 离线清单原始日志）
+      'artifacts/v125/',
+      'docs/v1.2.5-review-quality-loop.md',
+      // 业务接线（与既有阶段共用，只能整体回滚）
+      'public/revision-semantic-verifier.js',
+      'public/revision-closure.js',
+      'public/revision-finalize.js',
+      'public/revision-run-store.js',
+      'public/app.js',
+      'public/index.html',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+      // 版本与说明
+      'package.json',
+      'docs/CHANGELOG.md',
+      'README.md',
+    ],
+    evidence: [
+      '.p1-baseline/test-1029-i03-i04-closure.mjs',
+      '.p1-baseline/probe-v125-gaps.mjs',
+      'artifacts/v125/baseline-report.md',
+      'artifacts/v125/ci-offline-full.txt',
+      'docs/v1.2.5-review-quality-loop.md',
+    ],
+    rollback: 'shared',
+    note: '**目的**：在 v1.2.4 既有闭环上补齐会让"部分修复消失"的缺口——语义层 `partial` 曾落成'
+      + '`AWAITING_SEMANTIC`、复修队列不接纳 PARTIAL、没有结构化追踪、终审行没有 `actual_change`；'
+      + '并用作者这次的 I01–I08 样本把"6 修复 / 1 部分 / 1 未修"钉成离线回归。'
+      + '**边界**：不改变作者一次性写回审批、保护区、蓝图/伏笔与预算门禁；'
+      + '语义复验仍是作者显式触发的付费动作，复修后复验受剩余预算门禁（无法核价/超预算则明确跳过）；'
+      + '追踪只写 ID/hash/原因码，不写正文与提示词。'
+      + '**费用**：全部离线断言零计费（模型输出为注入 fixture）。',
+  },
+  {
+    id: 'V18',
+    title: 'v1.3.0 UI 方案：单行入口四态 / 四阶段与三维状态 / 覆盖式详情 / 角色可搜索列表 / 多宽度浏览器验收',
+    files: [
+      // 纯函数判据与回归
+      '.p1-baseline/test-1030-ui-closure.mjs',
+      // 真实浏览器多宽度 + 截图（需活实例；不在离线清单）
+      '.p1-baseline/browser-acceptance-v130.mjs',
+      // 证据与交付
+      'artifacts/v130/',
+      'docs/v1.3.0-ui-plan.md',
+      // 业务接线（与既有阶段共用，只能整体回滚）
+      'public/app.js',
+      'public/review-workspace.js',
+      'public/styles.css',
+      'scripts/ci-offline-checks.mjs',
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+    ],
+    evidence: [
+      '.p1-baseline/test-1030-ui-closure.mjs',
+      '.p1-baseline/browser-acceptance-v130.mjs',
+      'artifacts/v130/baseline-report.md',
+      'artifacts/v130/screenshots/',
+      'docs/v1.3.0-ui-plan.md',
+    ],
+    rollback: 'shared',
+    note: '**目的**：按 `ui方案.md` 补齐 UI 层缺口——本章状态四态单行入口、四阶段导航、'
+      + '问题三维状态、覆盖式详情（删除常驻内联详情）、摘要恒等式 N=P+F+U+B、'
+      + '角色可搜索/筛选/分页紧凑列表、深链接与返回恢复。'
+      + '**边界**：不改版本号、不升级、不推送 GitHub、不迁移数据库、不写正式正文；'
+      + '审稿工作区的修稿质量真相仍来自 `revision-finalize`/`revision-closure`。'
+      + '**费用**：离线断言与浏览器验收零计费（模型输出为注入 fixture，未调用真实模型）。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

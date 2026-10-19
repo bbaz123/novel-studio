@@ -24,7 +24,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : null, function (root) {
   'use strict';
 
-  const VERSION = '1.2.4';
+  const VERSION = '1.2.5';
   const CANDIDATE_SCHEMA = 'revision-candidate/1.2.4';
   const RUN_SCHEMA = '1.2.4';
 
@@ -371,6 +371,12 @@
         reason: v ? textOf(v.reason) : '没有这一条的验收记录：不得算作已解决',
         repair_hint: v ? textOf(v.repair_hint) : '',
         checks: v && Array.isArray(v.checks) ? v.checks : [],
+        // v1.2.5（方案 §7.1）：机器可读地区分"完全未修改"与"改了但问题仍在"。
+        // actual_change 只看真实 patch 的 before/after，不看模型自述，也不看补丁条数。
+        actual_change: v ? v.actual_change === true : false,
+        patch_ids: v && Array.isArray(v.patch_ids) ? v.patch_ids.map(String) : [],
+        evidence_ids: v && Array.isArray(v.evidence_ids) ? v.evidence_ids.map(String) : [],
+        remaining_evidence: v && Array.isArray(v.remaining_evidence) ? v.remaining_evidence : [],
         // v1.2.4 P1：词条强弱归因（hard=交作者裁决 / soft=只作建议 / unknown=缺权威词条）
         canon: canon ? { strength: textOf(canon.strength), basis: textOf(canon.basis), reason: textOf(canon.reason), entry_id: canon.entry_id == null ? null : canon.entry_id, entry_title: textOf(canon.entry_title) } : null,
       };
@@ -495,7 +501,7 @@
     const r = result || {};
     const rows = Array.isArray(r.rows) ? r.rows : [];
     const cand = r.candidate || {};
-    return {
+    const record = {
       schema_version: RUN_SCHEMA,
       revision_run_id: cand.revision_run_id || '',
       work_id: cand.work_id || '',
@@ -518,6 +524,9 @@
         semantic_status: row.semantic_status || 'not_run',
         final_status: row.final_status || FINAL.AWAITING_SEMANTIC,
         reason_code: String(row.reason_code || ''),
+        actual_change: row.actual_change === true,
+        patch_ids: Array.isArray(row.patch_ids) ? row.patch_ids.map(String) : [],
+        evidence_ids: Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : [],
         // v1.2.4 P1：证据跨片情况（分段运行才有；单段为 null）
         evidence_segments: row.cross_segment ? row.cross_segment.evidence_segments : null,
         untouched_segments: row.cross_segment ? row.cross_segment.untouched_segments : null,
@@ -527,6 +536,21 @@
       verified_candidate_hash: null,
       last_update: extra.lastUpdate || '',
     };
+    // v1.2.5（方案 §4.2 / P1-01）：回执里带**脱敏**事件流，事后能回答"这一项停在哪道关口"。
+    // 模块缺失时字段为空数组，不假装有 trace；终审结论不依赖它。
+    const TR = root && root.NovelRevisionTrace;
+    if (TR && typeof TR.buildTraceEvents === 'function') {
+      try {
+        record.trace = TR.buildTraceEvents(r, {
+          round: Number(extra.round) || 1,
+          timestamp: extra.lastUpdate || '',
+          budgetStatus: extra.budgetStatus,
+        });
+      } catch (_) { record.trace = []; }
+    } else {
+      record.trace = [];
+    }
+    return record;
   }
 
   return {
