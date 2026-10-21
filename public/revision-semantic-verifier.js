@@ -23,7 +23,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : null, function (root) {
   'use strict';
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   // 方案 §7.2：逐项结论必须是 PASS / PARTIAL / FAIL / UNVERIFIED / BLOCKED 这五类之一。
   // 旧实现只有 pass/fail/need_context，于是模型说"只修好一部分"时会被归一成 not_run，
   // 系统就把"部分修复"记成"待复验"——这一项既没有结论，也不会进入定向复修队列。
@@ -86,9 +86,194 @@
     return { ok: true, text: out };
   }
 
+  /**
+   * 锚点被改到什么程度（2026-10-21，Q01/Q03 的"只改半个问题"判据）。
+   *
+   * 为什么不能只问"原句还在不在"：
+   *   · 只删掉原句里的一个分句（Q03 删「颜色越亮…」）时，整句不再逐字出现 → 旧判据会误判 PASS，
+   *     但读者看到的重复解释几乎全在；
+   *   · 一条问题有**两处**互相矛盾的证据（Q01 的「四行字」+「那四个字」）时，只改一处是**进展**，
+   *     既不是"全没动"（FAIL），也不是"已解决"（PASS）。
+   * 判据用**真实补丁跨度覆盖了锚点多少**（不看模型自称、也不看字面相似度 —— 重写时保留的
+   * 专有名词会让相似度虚高）：
+   *   · 锚点原文仍在候选里 → intact（没改）；
+   *   · 原文不在了：补丁覆盖 ≥90% → gone（整段被改写）；0<覆盖<90% → partial（只动了一部分）；
+   *     补丁完全没碰到它 → gone（字面确实消失；无记录改动另有全局 DIFF_MISMATCH 把关）。
+   */
+  function patchCoverageOf(issuePatches, baseText, quote) {
+    const spans = spansOf(baseText, quote);
+    if (!spans.length) return null;
+    const sp = spans[0];
+    const len = sp.end - sp.start;
+    if (len <= 0) return null;
+    let covered = 0;
+    for (const p of (Array.isArray(issuePatches) ? issuePatches : [])) {
+      const start = Math.max(sp.start, Number(p && p.start));
+      const end = Math.min(sp.end, Number(p && p.end));
+      if (Number.isFinite(start) && Number.isFinite(end) && end > start) covered += (end - start);
+    }
+    return Math.min(1, covered / len);
+  }
+
+  function anchorStatus(baseText, revisedText, quote, issuePatches) {
+    const q = textOf(quote).trim();
+    if (!q) return { status: 'empty', coverage: 0 };
+    const present = countOf(revisedText, q) > 0;
+    const coverage = patchCoverageOf(issuePatches, baseText, q);
+    const cov = coverage == null ? 0 : coverage;
+    if (present) return { status: cov > 0.15 ? 'partial' : 'intact', coverage: cov, present: true };
+    return { status: cov > 0 && cov < 0.9 ? 'partial' : 'gone', coverage: cov, present: false };
+  }
+
   function pushCheck(checks, criterion, passed, evidence, extra = {}) {
     checks.push({ criterion, passed: passed === true, evidence: Array.isArray(evidence) ? evidence : (evidence ? [String(evidence)] : []), ...extra });
     return passed === true;
+  }
+
+  /** 某段引文在底本里的**全部**区间（用于判断补丁有没有真的落在证据上）。 */
+  function spansOf(body, quote) {
+    const b = textOf(body);
+    const q = textOf(quote).trim();
+    const out = [];
+    if (!q) return out;
+    for (let at = b.indexOf(q); at >= 0; at = b.indexOf(q, at + 1)) out.push({ start: at, end: at + q.length });
+    return out;
+  }
+
+  /**
+   * 补丁有没有落在证据上（2026-10-21，Q04「改错位置」的确定性判据）。
+   *
+   * 只证明"字符变了"是不够的：把「看了一眼他的表情」删掉，补丁确实非空、`actual_change=true`，
+   * 可它和这条问题的证据（三个发声者的重复劝慰）**没有任何交集**。这种改动必须标成
+   * `UNRELATED_CHANGE`，且**不得**计入已修复 —— 这正是前一轮把"改错地方"读成"已处理"的漏洞。
+   */
+  function overlapsEvidence(patch, baseText, quotes) {
+    const start = Number(patch && patch.start);
+    const end = Number(patch && patch.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    for (const q of quotes) {
+      for (const sp of spansOf(baseText, q)) {
+        // 零宽 insert 落在引文区间内也算命中；replace/delete 与引文区间相交才算。
+        if (start === end) { if (start >= sp.start && start <= sp.end) return true; continue; }
+        if (start < sp.end && end > sp.start) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 结构化子条件求值（`acceptance.conditions`）。
+   *
+   * 为什么不把子条件写成一句自然语言：模型对"改好了吗"的回答会让"改了别处"也算通过。
+   * 这里只求值**能确定性判定**的几种（字面缺失/残留/必要动作标记），其余如实记为 `SKIP`
+   * 留给语义层 —— 不猜、不把 SKIP 当 PASS。
+   * @returns {{results:Array, failed:Array}}
+   */
+  function evalConditions(input = {}) {
+    const finding = input.finding || {};
+    const baseText = textOf(input.baseText);
+    const revisedText = textOf(input.revisedText);
+    const acc = finding.acceptance && typeof finding.acceptance === 'object' ? finding.acceptance : {};
+    const declared = Array.isArray(acc.conditions) ? acc.conditions.filter((c) => c && typeof c === 'object') : [];
+    const results = [];
+    const failed = [];
+    const push = (row) => {
+      results.push(row);
+      if (row.status === 'FAIL') failed.push(row);
+    };
+    // 声明里没有子条件时，`risk_terms` / `must_contain` 仍按各自语义求值（兼容旧报告）。
+    const riskTerms = (Array.isArray(acc.risk_terms) ? acc.risk_terms : []).map(textOf).map((s) => s.trim()).filter(Boolean);
+    if (riskTerms.length) {
+      const hit = riskTerms.filter((t) => countOf(revisedText, t) > 0);
+      push({
+        id: 'risk_terms', kind: 'residual_terms_absent', severity: 'risk',
+        status: hit.length ? 'FAIL' : 'PASS',
+        evidence: hit.length
+          ? [`候选里仍有：${hit.map((t) => clip(t, 16)).join('、')}`]
+          : ['候选里已无风险字面'],
+        code: 'PARTIAL_REFERENCE_AMBIGUITY_REMAINS',
+        note: '命中只形成风险断言：语境可能已经消歧，需语义层确认；但不得据此自动判通过',
+      });
+    }
+    for (const c of declared) {
+      const kind = textOf(c.kind).trim();
+      const id = textOf(c.id).trim() || kind || `cond-${results.length + 1}`;
+      const severity = c.severity === 'risk' ? 'risk' : 'hard';
+      const terms = (Array.isArray(c.terms) ? c.terms : []).map(textOf).map((s) => s.trim()).filter(Boolean);
+      if (kind === 'must_contain') {
+        const missing = terms.filter((t) => countOf(revisedText, t) === 0);
+        push({
+          id, kind, severity, status: missing.length ? 'FAIL' : 'PASS',
+          evidence: missing.length ? [`候选缺少：${missing.map((t) => clip(t, 16)).join('、')}`] : ['必需字面都在候选里'],
+          code: 'REQUIRED_TEXT_MISSING',
+        });
+        continue;
+      }
+      if (kind === 'preserve_terms') {
+        const lost = terms.filter((t) => countOf(baseText, t) > 0 && countOf(revisedText, t) === 0);
+        push({
+          id, kind, severity, status: lost.length ? 'FAIL' : 'PASS',
+          evidence: lost.length ? [`修前有、候选已丢：${lost.map((t) => clip(t, 16)).join('、')}`] : ['保留项都还在'],
+          code: 'PRESERVE_LOST',
+        });
+        continue;
+      }
+      if (kind === 'residual_terms_absent') {
+        const hit = terms.filter((t) => countOf(revisedText, t) > 0);
+        push({
+          id, kind, severity, status: hit.length ? 'FAIL' : 'PASS',
+          evidence: hit.length ? [`候选里仍有：${hit.map((t) => clip(t, 16)).join('、')}`] : ['残留字面已清除'],
+          code: textOf(c.code) || 'PARTIAL_REFERENCE_AMBIGUITY_REMAINS',
+        });
+        continue;
+      }
+      if (kind === 'required_action') {
+        // 主角自己的取舍动作：只在"全章一个字面标记都没有"时判失败（宁可交语义复核，不机械判死）。
+        const markers = terms.length ? terms : (textOf(c.marker) ? [textOf(c.marker)] : []);
+        const present = markers.filter((t) => countOf(revisedText, t) > 0);
+        push({
+          id, kind, severity, status: present.length ? 'PASS' : 'FAIL',
+          evidence: markers.length
+            ? [present.length ? `出现动作标记：${present.map((t) => clip(t, 12)).join('、')}` : `候选里没有任何动作标记（${markers.map((t) => clip(t, 12)).join('、')}）`]
+            : ['没有给出可判定的动作标记：交语义复核'],
+          code: 'REQUIRED_CHARACTER_DECISION_MISSING',
+        });
+        continue;
+      }
+      // 不认识的子条件：如实记为 SKIP，绝不当作 PASS（跳过 ≠ 通过）。
+      push({ id, kind, severity, status: 'SKIP', evidence: [`未实现确定性求值：${kind || '（空 kind）'}`], code: 'CONDITION_NOT_EVALUATED' });
+    }
+    return { results, failed };
+  }
+
+  /**
+   * 外部资料核验门（Q05 形态：角色卡/词条/时态与正文不一致）。
+   *
+   * 为什么必须是**门**而不是一条检查：这类问题的合法终态是"核对过 / 待核对"，
+   * 不是"正文改了什么"。旧实现里它要么被当成普通正文任务派给修稿器（默认允许改章节），
+   * 要么因为"没有可编辑证据"被判成待复核从而消失。两种都不对。
+   * 现在：没有外部核验结论 → 待核验（`EXTERNAL_CONTEXT_REQUIRED`）；有结论 → 如实带出，
+   * 且**仍然不是 PASS**（"经证据判定不适用"不是一次成功的正文补丁）。
+   */
+  function externalContextGate(input = {}) {
+    const finding = input.finding || {};
+    const required = finding.requires_external_context === true;
+    if (!required) return { required: false, resolved: false, code: '', evidence: [] };
+    const ext = input.externalContext && typeof input.externalContext === 'object' ? input.externalContext : null;
+    if (!ext || ext.resolved !== true) {
+      return {
+        required: true, resolved: false, code: 'EXTERNAL_CONTEXT_REQUIRED',
+        verdict: 'not_applicable',
+        evidence: [ext && ext.note ? textOf(ext.note) : '还没有角色卡/词条/时点的只读核对结论：本条不能按正文补丁处理'],
+      };
+    }
+    const verdict = textOf(ext.verdict) || 'not_applicable_with_evidence';
+    return {
+      required: true, resolved: true, code: 'NOT_APPLICABLE_WITH_EVIDENCE',
+      verdict,
+      evidence: [textOf(ext.note) || '已取得外部资料核对结论', textOf(ext.evidence_ref)].filter(Boolean),
+      source: textOf(ext.source),
+    };
   }
 
   /**
@@ -108,8 +293,19 @@
     const id = String(finding.id == null ? '' : finding.id);
     const issuePatches = applied.filter((p) => (Array.isArray(p.issue_ids) ? p.issue_ids : []).map(String).includes(id));
     const ev = Array.isArray(finding.evidence) ? finding.evidence : [];
+    const problemType = textOf(finding.problem_type).toUpperCase();
+
+    /** 锚点原句仍在时，按问题类型给出更准确的原因码（Q03 重复解释 / Q04 重复劝慰功能）。 */
+    const anchorCode = () => {
+      if (problemType === 'REDUNDANCY') return 'REDUNDANT_EXPLANATION_REMAINS';
+      if (problemType === 'MULTI_SPEAKER_FUNCTION') return 'REPETITIVE_CONSOLATION_REMAINS';
+      return 'ANCHOR_NOT_EDITED';
+    };
 
     // ① 证据按角色变化：可编辑锚点应消失；只读引用应保留（它是"对比的另一头"）。
+    //    2026-10-21：改成三档判定 —— 全部未动才是硬 FAIL；只动了其中一处/删了一半是 PARTIAL 级
+    //    未完成条件（硬判 PASS 会让"只改半个问题"混过去，硬判 FAIL 又会把真实进展抹成零）。
+    const anchorRows = [];
     for (const e of ev) {
       const quote = textOf(e && e.quote).trim();
       if (!quote) continue;
@@ -117,14 +313,38 @@
       const after = countOf(revisedText, quote);
       if (e.role === 'candidate_edit') {
         if (!before) { needContext.push({ criterion: 'editable_anchor_present_before', quote: clip(quote, 30) }); continue; }
-        // hard：这是**字面事实**——锚点原文还在候选里，就是没改。模型说"改了"不能覆盖它。
-        pushCheck(checks, `可编辑锚点已消失：${clip(quote, 24)}`, after === 0,
-          [`修前出现 ${before} 次 → 修后 ${after} 次`], { role: 'candidate_edit', quote, code: 'ANCHOR_NOT_EDITED', hard: true });
-      } else {
-        if (!before) { needContext.push({ criterion: 'reference_present_before', quote: clip(quote, 30) }); continue; }
-        pushCheck(checks, `只读证据仍完整：${clip(quote, 24)}`, after > 0,
-          [`只读证据在修前 ${before} 次、修后 ${after} 次（对比基准不能被改掉）`], { role: 'reference', quote, code: 'REFERENCE_LOST', hard: true });
+        anchorRows.push({ quote, before, after, ...anchorStatus(baseText, revisedText, quote, issuePatches) });
+        continue;
       }
+      if (!before) { needContext.push({ criterion: 'reference_present_before', quote: clip(quote, 30) }); continue; }
+      pushCheck(checks, `只读证据仍完整：${clip(quote, 24)}`, after > 0,
+        [`只读证据在修前 ${before} 次、修后 ${after} 次（对比基准不能被改掉）`], { role: 'reference', quote, code: 'REFERENCE_LOST', hard: true });
+    }
+    // 先算整体进度，再决定每处锚点的检查是 hard 还是 soft：
+    //   · 一处都没动（gone/partial 均为 0）→ 这是"没修"，hard FAIL；
+    //   · 有的动了、有的没闭环 → 这是"只修了一半"，soft（结论落到 PARTIAL 级，绝不 PASS）。
+    const anchorsGone = anchorRows.filter((r) => r.status === 'gone').length;
+    const anchorsTouched = anchorRows.filter((r) => r.status !== 'intact').length;
+    const anyProgress = anchorsTouched > 0;
+    for (const r of anchorRows) {
+      if (r.status === 'gone') {
+        pushCheck(checks, `可编辑锚点已消失：${clip(r.quote, 24)}`, true,
+          [`修前出现 ${r.before} 次 → 修后 ${r.after} 次`], { role: 'candidate_edit', quote: r.quote, code: anchorCode(), hard: false });
+        continue;
+      }
+      const intact = r.status === 'intact';
+      pushCheck(checks, intact
+        ? `可编辑锚点已消失：${clip(r.quote, 24)}`
+        : `可编辑锚点只改了一部分：${clip(r.quote, 24)}`,
+      false,
+      [`修前出现 ${r.before} 次 → 修后 ${r.after} 次；补丁覆盖该锚点 ${Math.round((r.coverage || 0) * 100)}%`],
+      { role: 'candidate_edit', quote: r.quote, code: anchorCode(), hard: !anyProgress });
+    }
+    // 多锚点问题的"部分完成"：有一处真改过而整条还没闭环 → 明确记一条未完成条件。
+    if (anchorRows.length > 1 && anyProgress && anchorsGone < anchorRows.length) {
+      pushCheck(checks, '多证据问题必须逐处闭环（只改其中一处不算解决）', false,
+        [`共 ${anchorRows.length} 处可编辑证据，整段改写的只有 ${anchorsGone} 处`],
+        { code: 'INCOMPLETE_CONDITION', hard: false });
     }
 
     // ② 必须保留项（作者/契约给的硬约束 + 蓝图/伏笔）不得因为这次修改而丢失。
@@ -197,6 +417,42 @@
       pushCheck(checks, '覆盖表必须回答每一条已选问题', false, ['unaccounted：模型没有给出处置'], { code: 'UNACCOUNTED', hard: true });
     }
 
+    // ③b 补丁是否落在**本问题的证据**上（Q04「改错位置」）。
+    //     只证明"字符变了"不够：删掉一句与问题无关的动作修饰语，diff 非空、actual_change=true，
+    //     却和三个重复劝慰的证据没有任何交集。那种改动不得计入已修复。
+    //
+    //     ⚠️ 只在**能证明补丁落在哪**的时候判：跨度必须真的等于它声称改的原文
+    //     （`baseText.slice(start,end) === patch.original`）；零宽 insert 与占位偏移（0,0）不参与。
+    //     否则分段路径（补丁按片内偏移校准）与只给占位的调用方会被误判成"改错地方"——
+    //     test-1025 FZ-01 与 test-1026 TL-12 就是这么撞出来的（把改对判成改错）。
+    const editableQuotes = ev.filter((e) => e && e.role === 'candidate_edit')
+      .map((e) => textOf(e.quote).trim()).filter(Boolean);
+    const locatedPatches = issuePatches.filter((p) => {
+      if (!p) return false;
+      const s = Number(p.start);
+      const e = Number(p.end);
+      if (!Number.isFinite(s) || !Number.isFinite(e) || s === e) return false;
+      return baseText.slice(s, e) === textOf(p.original);
+    });
+    if (editableQuotes.length && issuePatches.length && locatedPatches.length === issuePatches.length) {
+      const hit = locatedPatches.filter((p) => overlapsEvidence(p, baseText, editableQuotes));
+      pushCheck(checks, '补丁必须落在本问题的证据上（改动不是无关片段）', hit.length > 0,
+        [`补丁 ${locatedPatches.length} 处，命中证据的 ${hit.length} 处`],
+        { code: 'UNRELATED_CHANGE', hard: true });
+    }
+
+    // ③c 结构化子条件（`acceptance.conditions`）：逐条求值，细粒度落库。
+    const cond = evalConditions({ finding, baseText, revisedText });
+    for (const r of cond.results) {
+      const isFail = r.status === 'FAIL';
+      pushCheck(checks, `子条件 ${r.kind || r.id}：${r.id}`, r.status === 'PASS', r.evidence, {
+        code: r.code || 'CONDITION_FAILED',
+        // 只有"硬子条件未通过"才是字面事实；risk 类子条件失败只形成风险断言（交语义层/作者）。
+        hard: isFail && r.severity === 'hard',
+        condition: { id: r.id, kind: r.kind, severity: r.severity, status: r.status },
+      });
+    }
+
     // ④ 授权边界：补丁跨度必须落在该 issue 的热点内（多热点各自狭窄授权，不是整段放开）。
     const plan = input.plan && typeof input.plan === 'object' ? input.plan : null;
     if (plan) {
@@ -248,7 +504,7 @@
       }
     }
 
-    return { checks, failed: checks.filter((c) => !c.passed), needContext };
+    return { checks, failed: checks.filter((c) => !c.passed), needContext, conditionResults: cond.results };
   }
 
   /** 语义层结果归一化：接受字符串、`{status}` 或 `{verdict}`，其余一律 not_run（不猜通过）。 */
@@ -335,19 +591,35 @@
     const semanticFailed = sem.status === 'fail';
     const semanticPassed = sem.status === 'pass';
     const semanticPartial = sem.status === 'partial';
+    // 外部资料门（Q05）：它**先于**语义结论生效 —— 没核对过角色卡/词条时，语义层说 pass 也不算数。
+    const external = externalContextGate(input);
+    const problemType = textOf(finding.problem_type).toUpperCase();
     let verdict;
     let reasonCode;
     let reason;
-    if (hardFailed.length) {
+    if (external.required) {
+      // 这类问题的合法终态是"待核对 / 经证据判定不适用"，都不是 PASS，也不该被派给正文修稿器。
+      verdict = VERDICT.NEED_CONTEXT;
+      reasonCode = external.resolved ? 'NOT_APPLICABLE_WITH_EVIDENCE' : 'EXTERNAL_CONTEXT_REQUIRED';
+      reason = external.resolved
+        ? `已取得外部资料核对结论（${external.evidence.join('；')}）：这条不按正文补丁计为通过，交由作者裁决`
+        : `这条问题需要外部资料（角色卡/词条/时点）核对后才能判定：${external.evidence.join('；')}`
+          + '。不得往正文生硬补写来凑数字，也不得直接改角色卡数据库';
+    } else if (hardFailed.length) {
       verdict = VERDICT.FAIL;
-      reasonCode = hardFailed[0].code || 'DETERMINISTIC_FAILED';
+      // Q04 形态：既有"锚点没动"又有"改到别处"时，报告真正的原因是**改错了位置**。
+      const unrelated = hardFailed.find((c) => c.code === 'UNRELATED_CHANGE');
+      reasonCode = (unrelated && problemType === 'MULTI_SPEAKER_FUNCTION')
+        ? 'UNRELATED_CHANGE'
+        : (hardFailed[0].code || 'DETERMINISTIC_FAILED');
       reason = `确定性硬检查未通过：${hardFailed.map((c) => c.criterion).slice(0, 3).join('；')}`
         + (semanticPassed ? '（语义层判通过，但这是字面事实，不能覆盖）' : '');
     } else if (deterministicFailed && (semanticPassed || semanticPartial)) {
       // 两层冲突：不选"看起来更好"的那一层，交人复核（方案 §5.4）。
       // 语义说"部分修复"时，确定性软失败也在说"没全好"，两者方向一致但都不能算 PASS。
       verdict = semanticPartial ? VERDICT.PARTIAL : VERDICT.NEED_CONTEXT;
-      reasonCode = semanticPartial ? (sem.reason_code || 'SEMANTIC_PARTIAL') : 'LAYER_CONFLICT';
+      const riskCode = (d.failed.find((c) => c && c.code === 'PARTIAL_REFERENCE_AMBIGUITY_REMAINS') || {}).code;
+      reasonCode = semanticPartial ? (sem.reason_code || riskCode || 'SEMANTIC_PARTIAL') : 'LAYER_CONFLICT';
       reason = semanticPartial
         ? `确定性层仍有未通过项（${d.failed.map((c) => c.criterion).slice(0, 2).join('；')}），语义层判部分修复`
         : `确定性层未通过（${d.failed.map((c) => c.criterion).slice(0, 2).join('；')}），语义层却判通过：结论冲突，按待复核处理`;
@@ -404,15 +676,31 @@
       actual_change: actualChange,
       patch_ids: issuePatches.map((p, i) => textOf(p.patch_id || p.span_id) || `P${i + 1}`),
       evidence_ids: evidenceRows.map((e) => e.id),
+      // 2026-10-21：细粒度子条件结果（PASS/FAIL/SKIP）——"这条问题还差哪一个条件"必须可读，
+      // 不能只剩一句"没通过"。SKIP 不是 PASS。
+      condition_results: (d.conditionResults || []).map((r) => ({
+        id: r.id, kind: r.kind, severity: r.severity, status: r.status,
+        evidence: r.evidence, code: r.code,
+      })),
+      unresolved_conditions: (d.conditionResults || []).filter((r) => r.status === 'FAIL').map((r) => r.id),
+      external_context: external.required
+        ? { required: true, resolved: external.resolved === true, code: external.code, source: external.source || '', evidence: external.evidence }
+        : null,
       // PASS 时只保留语义层显式列出的"剩余证据"（通常为空）；只读引用天然会留在候选里，
       // 把它们全列成"剩余证据"会让通过项看起来像还有未解决矛盾。
       remaining_evidence: verdict === VERDICT.PASS
         ? sem.remaining_evidence.map((q) => ({ evidence_id: '', role: 'semantic', quote: clip(q, 40) }))
         : remainingEvidenceAll,
-      repair_hint: sem.repair_hint || (verdict === VERDICT.FAIL || verdict === VERDICT.PARTIAL
-        ? '只在仍获准的热点内重写补丁；需要新增跨度时先回到授权界面，不得扩大改写范围'
-        : ''),
-      targeted_repair: (verdict === VERDICT.FAIL && sem.status === 'fail') || (verdict === VERDICT.PARTIAL && sem.status === 'partial'),
+      repair_hint: external.required
+        ? (external.resolved
+          ? '外部资料已有结论：把裁定与依据交给作者，不要改正文'
+          : '先只读核对角色卡/词条的时点与含义；需要改卡时向作者要最小权限，不得派给正文修稿器')
+        : (sem.repair_hint || (verdict === VERDICT.FAIL || verdict === VERDICT.PARTIAL
+          ? '只在仍获准的热点内重写补丁；需要新增跨度时先回到授权界面，不得扩大改写范围'
+          : '')),
+      // 外部资料项不进自动复修：它不是"补丁没写好"，是"还缺一份资料核对"。
+      targeted_repair: !external.required
+        && ((verdict === VERDICT.FAIL && sem.status === 'fail') || (verdict === VERDICT.PARTIAL && sem.status === 'partial')),
     };
   }
 
@@ -473,6 +761,9 @@
           ? { [id]: input.propChainsByIssue[id] } : undefined,
         currentBaseHash: input.currentBaseHash,
         crossSegment: input.crossSegmentByIssue && typeof input.crossSegmentByIssue === 'object' ? input.crossSegmentByIssue[id] : null,
+        // Q05：外部资料核对结论按 issue 注入（缺省 = 还没核对，见 externalContextGate）。
+        externalContext: input.externalContextByIssue && typeof input.externalContextByIssue === 'object'
+          ? input.externalContextByIssue[id] : null,
       });
       if (globalFailed) {
         return {
@@ -530,6 +821,9 @@
     COVERAGE_REASON,
     reconstruct,
     deterministicChecks,
+    evalConditions,
+    externalContextGate,
+    overlapsEvidence,
     normalizeSemantic,
     verifyIssue,
     verifyIssues,

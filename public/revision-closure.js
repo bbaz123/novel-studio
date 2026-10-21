@@ -264,7 +264,9 @@
    * 二次复修目标（方案 §5.5）：只挑"失败且仍在原授权范围内"的问题。
    * 硬阻塞（底稿变化/蓝图冲突/保护区）**不**放进复修队列 —— 那些需要人处理。
    */
-  const HARD_BLOCK = new Set(['BASE_STALE', 'CANON_CONFLICT', 'PROTECTED_SPAN', 'AUTHORIZATION_MISSING', 'LAYER_CONFLICT']);
+  const HARD_BLOCK = new Set(['BASE_STALE', 'CANON_CONFLICT', 'PROTECTED_SPAN', 'AUTHORIZATION_MISSING', 'LAYER_CONFLICT',
+    // 2026-10-21：外部资料待核验不是"补丁没写好"，再派一次正文修稿既改不对也越权。
+    'EXTERNAL_CONTEXT_REQUIRED', 'NOT_APPLICABLE_WITH_EVIDENCE', 'NEEDS_AUTHOR_APPROVAL']);
   function repairTargets(input = {}) {
     const issues = Array.isArray(input.issues) ? input.issues : [];
     const allowed = input.allowedIssueIds == null ? null : new Set(uniqueStrings(input.allowedIssueIds));
@@ -273,7 +275,13 @@
     const skipped = [];
     for (const i of issues) {
       if (i.final_status === 'ISSUE_VERIFIED') continue;
-      if (HARD_BLOCK.has(textOf(i.reason_code))) { skipped.push({ issue_id: i.issue_id, reason_code: i.reason_code, why: '需要人处理（底稿/蓝图/保护区/授权）' }); continue; }
+      if (HARD_BLOCK.has(textOf(i.reason_code))) {
+        const why = ['EXTERNAL_CONTEXT_REQUIRED', 'NOT_APPLICABLE_WITH_EVIDENCE', 'NEEDS_AUTHOR_APPROVAL'].includes(textOf(i.reason_code))
+          ? '需外部资料核验/作者裁决（不得改正文来凑）'
+          : '需要人处理（底稿/蓝图/保护区/授权）';
+        skipped.push({ issue_id: i.issue_id, reason_code: i.reason_code, why, repair_hint: textOf(i.repair_hint) });
+        continue;
+      }
       if (allowed && !allowed.has(i.issue_id)) { skipped.push({ issue_id: i.issue_id, reason_code: 'NEEDS_SCOPE', why: '不在本轮已授权范围' }); continue; }
       if (budget && budget.remaining <= 0) { skipped.push({ issue_id: i.issue_id, reason_code: 'BUDGET_BLOCKED', why: '预算已用尽' }); continue; }
       targets.push({ issue_id: i.issue_id, reason_code: i.reason_code || 'SEMANTIC_FAILED', repair_hint: i.repair_hint || '' });
@@ -373,7 +381,9 @@
     return Math.max(1, Math.ceil(cents));
   }
 
-  const AUTO_REPAIR_HARD_BLOCK = new Set(['BASE_STALE', 'CANON_CONFLICT', 'PROTECTED_SPAN', 'AUTHORIZATION_MISSING', 'LAYER_CONFLICT']);
+  const AUTO_REPAIR_HARD_BLOCK = new Set(['BASE_STALE', 'CANON_CONFLICT', 'PROTECTED_SPAN', 'AUTHORIZATION_MISSING', 'LAYER_CONFLICT',
+    // 同上：外部资料项与"需作者裁决"项不得进入自动复修（那会变成拿正文去凑资料）。
+    'EXTERNAL_CONTEXT_REQUIRED', 'NOT_APPLICABLE_WITH_EVIDENCE', 'NEEDS_AUTHOR_APPROVAL']);
 
   /**
    * 自动复修规划（纯函数）：决定"这一轮要不要自动再修、修哪几条、能不能付得起"。
@@ -436,9 +446,19 @@
    */
   function mergeRepairSemantic(prior, deterministic, repairIds) {
     const ids = new Set((Array.isArray(repairIds) ? repairIds : []).map(String));
-    const detById = new Map(((deterministic && Array.isArray(deterministic.issues)) ? deterministic.issues : [])
-      .map((i) => [String(i && i.issue_id), i]));
-    const rows = ((prior && Array.isArray(prior.issues)) ? prior.issues : []).map((prev) => {
+    // 兼容两种上游形状：**验收器**给 `{issues:[...]}`，**统一终验**给 `{rows:[...]}`。
+    // 旧实现只认 `issues`，形状不符时会静默返回一张空清单 —— 那等于把已通过的条目全抹掉。
+    const rowsOf = (x) => {
+      if (!x || typeof x !== 'object') return null;
+      if (Array.isArray(x.issues)) return x.issues;
+      if (Array.isArray(x.rows)) return x.rows;
+      return null;
+    };
+    const priorRows = rowsOf(prior);
+    if (!priorRows) return prior; // 没有可比的上轮结论：原样返回，绝不返回空列表
+    const detRows = rowsOf(deterministic) || [];
+    const detById = new Map(detRows.map((i) => [String(i && i.issue_id), i]));
+    const rows = priorRows.map((prev) => {
       const id = String(prev && prev.issue_id);
       const det = detById.get(id);
       if (!det) return prev;

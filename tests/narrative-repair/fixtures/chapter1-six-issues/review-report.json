@@ -1,0 +1,180 @@
+{
+  "fixture_id": "chapter1-six-issues-review",
+  "note": "六项结构化审稿（形状与 2026-10-21 之后 buildAIReviewPrompt 要求的字段一致）。deferred 三项只登记、不进修稿清单。",
+  "summary": "三档检测靠屏幕文字与检测员台词立住了规矩，但有一处指代含糊、一处分级被反复总结、台下劝慰重复，主角的普通路线选择还没落到动作上。",
+  "strengths": [
+    { "text": "暗黄贴着石面就散这个细节很省，等级差异是用画面给的。" }
+  ],
+  "blueprint": {
+    "chapter_goal": "觉醒日测出 D 级，主角开始盘算普通路线（不进军校、不上战场），章末系统绑定钩子。",
+    "must_keep": ["D级", "暗黄", "高级战斗天赋", "检测完成，宿主符合绑定条件"]
+  },
+  "findings": [
+    {
+      "id": "Q01",
+      "title": "「四行字」与「那四个字」指代不对应",
+      "kind": "wording",
+      "verdict": "confirmed",
+      "suggested_action": "replace",
+      "reading_cost": "读者会停下来数字数，注意力从场面挪到字数上",
+      "type": "style",
+      "severity": "medium",
+      "problem_type": "LOCAL_PHRASE",
+      "requires_external_context": false,
+      "explanation": "p1 写「四行字」，p2 却说「那四个字念得很慢」：被念的「高级战斗天赋」是六字、「A级」是两字，两处数量对不上。",
+      "rationale": "两句话在同一个播报动作里互相拆台，读者会怀疑自己对屏幕内容的记忆。",
+      "counterevidence": "若「那四个字」指的是「江陵三中」这一处四字校名，字数是成立的。",
+      "evidence": [
+        { "quote": "屏幕打出四行字：江陵三中 李拓 A级 高级战斗天赋。", "role": "candidate_edit" },
+        { "quote": "那四个字念得很慢", "role": "candidate_edit" }
+      ],
+      "acceptance": {
+        "rule": "播报动作里不再出现无法对应的数量指代；李拓 A 级与高级战斗天赋仍是明确事实",
+        "preserve": ["高级战斗天赋", "江陵三中"],
+        "must_contain": [],
+        "conditions": [
+          { "id": "q1-ambiguity", "kind": "residual_terms_absent", "terms": ["那四个字", "那几个字", "四行字"], "severity": "risk", "note": "残留含糊指代只作风险断言：语境可能已消歧，交语义层确认" }
+        ],
+        "risk_terms": ["那四个字", "那几个字"]
+      }
+    },
+    {
+      "id": "Q02",
+      "title": "暗黄给了两个比喻",
+      "kind": "wording",
+      "verdict": "confirmed",
+      "suggested_action": "delete",
+      "reading_cost": "同一个颜色被解释两遍，画面反而变糊",
+      "type": "style",
+      "severity": "low",
+      "problem_type": "LOCAL_PHRASE",
+      "requires_external_context": false,
+      "explanation": "p3 一处暗黄用了两个比喻，其中「值班室接触不良的灯」是临时引入，也没和母亲值夜班连上。",
+      "rationale": "家境普通已由家长签字栏与旧楼建立，这里三笔叠在同一件事上。",
+      "counterevidence": "两个比喻若分别承担不同信息（颜色 vs 光源），并存也成立。",
+      "evidence": [
+        { "quote": "也像值班室里那盏接触不良的灯照在墙上的那种黄", "role": "candidate_edit" }
+      ],
+      "acceptance": {
+        "rule": "只保留一个暗黄比喻，暗黄 D 级检测这一事实不变",
+        "preserve": ["很像旧搪瓷盆磕掉漆以后露出来的", "暗黄"],
+        "conditions": [],
+        "risk_terms": []
+      }
+    },
+    {
+      "id": "Q03",
+      "title": "分级规则被 narrator 重复总结",
+      "kind": "narrative",
+      "verdict": "confirmed",
+      "suggested_action": "delete",
+      "reading_cost": "替读者总结已演示过的信息，还挡在李拓 A 级出场之前",
+      "type": "causality",
+      "severity": "medium",
+      "problem_type": "REDUNDANCY",
+      "requires_external_context": false,
+      "explanation": "p4 用分号把「颜色越亮等级越高、暗黄贴石头、青绿冒一截、浅蓝更高」并列复述一遍，而这三条已由屏幕文字与检测员台词演示完整。",
+      "rationale": "蓝图要求读者自己读出这套规矩；这段把演示变成了讲解。",
+      "counterevidence": "若分级规则在本章之后不再出现任何演示，这段可能是唯一说明。",
+      "evidence": [
+        { "quote": "岳宸炎大概看明白了：颜色越亮，等级越高；光的高度也不一样，暗黄只贴着石头，青绿能往上冒一截，浅蓝再高一些。", "role": "candidate_edit" }
+      ],
+      "acceptance": {
+        "rule": "不再对已呈现的等级规则作并列复述；D/C/B/A 的事实仍可由前文证据读出",
+        "preserve": ["江陵三中", "高级战斗天赋"],
+        "conditions": [],
+        "risk_terms": []
+      }
+    },
+    {
+      "id": "Q04",
+      "title": "台下三个发声者重复劝慰",
+      "kind": "narrative",
+      "verdict": "confirmed",
+      "suggested_action": "condense",
+      "reading_cost": "同一功能重复三遍，把真正有差异的帮助挤到后面",
+      "type": "causality",
+      "severity": "high",
+      "problem_type": "MULTI_SPEAKER_FUNCTION",
+      "requires_external_context": false,
+      "explanation": "从下台到出门，陌生人甲劝「也正常」、陌生人乙劝去复检、王磊怀疑「石头是不是坏了」，三处功能相同（都在证明所有人替他可惜）。",
+      "rationale": "重复的是叙事功能，不是某一句动作词。",
+      "counterevidence": "若三处劝慰分别引出后续不同线索，重复就有功能。",
+      "evidence": [
+        { "quote": "“兄弟，也正常，D级一大半人呢。真不是事。”", "role": "candidate_edit", "functional_group": "consolation" },
+        { "quote": "“你要不去复检一下吧？我表舅去年第一次也是暗的，第二次亮了青，真的。”", "role": "candidate_edit", "functional_group": "consolation" },
+        { "quote": "我靠，这石头是不是坏了", "role": "reference", "functional_group": "wang-distinct" },
+        { "quote": "我帮你问特招办", "role": "reference" }
+      ],
+      "acceptance": {
+        "rule": "台下重复劝慰收敛，王磊的不服气与李拓的实务帮助两个不同功能都保留",
+        "preserve": ["我靠，这石头是不是坏了", "我帮你问特招办", "以后带你"],
+        "conditions": [],
+        "risk_terms": []
+      }
+    },
+    {
+      "id": "Q05",
+      "title": "王磊角色卡「四次A级」与正文不一致",
+      "kind": "fact",
+      "verdict": "hypothesis",
+      "suggested_action": "defer",
+      "reading_cost": "卡片与正文若不一致，后续章节会拿一个本章没有呈现的状态当基准",
+      "type": "canon",
+      "severity": "medium",
+      "problem_type": "EXTERNAL_CARD",
+      "requires_external_context": true,
+      "explanation": "角色卡写王磊「从早上到现在把A级念了四遍」，正文里他只说过一次 A 级，其余都在说 D 级。",
+      "rationale": "这是跨角色卡与时间窗口的计数问题，不是本章正文能单独判定的事实矛盾。",
+      "counterevidence": "卡片统计的可能是画外的早上到现在，正文没有展示四次并不构成矛盾。",
+      "evidence": [
+        { "quote": "我靠，这石头是不是坏了", "role": "reference" }
+      ],
+      "acceptance": {
+        "rule": "先只读核对角色卡的有效时点与含义，再决定是否有正文任务；不得往正文生硬塞三次 A 级对白",
+        "preserve": [],
+        "conditions": [],
+        "risk_terms": []
+      }
+    },
+    {
+      "id": "Q06",
+      "title": "普通路线选择没有落到动作",
+      "kind": "narrative",
+      "verdict": "confirmed",
+      "suggested_action": "replace",
+      "reading_cost": "读者看不出他已经做了选择，「比所有人都平静」少了可见的由头",
+      "type": "causality",
+      "severity": "medium",
+      "problem_type": "MISSING_CHARACTER_ACTION",
+      "requires_external_context": false,
+      "explanation": "王磊说「D级也能考大学，普通大学……」，岳宸炎只反复「我知道」就转去吃饭；全章没有主角自己的具体取舍。",
+      "rationale": "旁人提到普通大学不等于主角做了决定。",
+      "counterevidence": "若下一章开头立刻展开他的选择，本章留白也可以。",
+      "evidence": [
+        { "quote": "我帮你问特招办", "role": "reference" }
+      ],
+      "acceptance": {
+        "rule": "主角出现属于自己的具体取舍或准备动作，而不是只有旁人安慰",
+        "preserve": ["检测完成，宿主符合绑定条件"],
+        "conditions": [
+          { "id": "q6-action", "kind": "required_action", "terms": ["备忘录", "记下", "报名", "填了", "决定", "选了"], "severity": "hard", "note": "全章一个动作标记都没有 → 不足以判通过" }
+        ],
+        "risk_terms": []
+      }
+    }
+  ],
+  "issues": [
+    "位置：李拓下台后。屏幕信息写作「四行字」，这里说「那四个字」，两处数字需要按内容对齐其一。",
+    "位置：岳宸炎上台测出暗黄那一段。暗黄色给了两个比喻，其中「值班室接触不良的灯」是临时引入。",
+    "位置：第一排三人测完之后。用分号把等级规则并列复述一遍，挡在李拓上台之前。",
+    "位置：岳宸炎下台到出门之间。三个发声者功能相同，都在证明所有人替他可惜。",
+    "位置：王磊的人设与他对白。角色卡写他念了四遍 A 级，正文只有一次。",
+    "位置：章尾折登记表之前。蓝图要求开始盘算普通路线，正文看不出他已做选择。"
+  ],
+  "deferred": [
+    { "text": "章末系统绑定宣告/预告", "type": "possible_foreshadowing", "recheck_within_chapters": 3 },
+    { "text": "林清雪 SS 异象与直播画面留白", "type": "possible_foreshadowing", "recheck_within_chapters": 5 },
+    { "text": "家长签字空白的线索回收", "type": "possible_foreshadowing", "recheck_within_chapters": 5 }
+  ]
+}

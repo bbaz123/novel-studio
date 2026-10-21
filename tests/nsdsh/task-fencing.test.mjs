@@ -195,4 +195,74 @@ await suiteAsync('nsdsh/task-fencing', [
     assert.equal(plan.length, 1);
     assert.equal(plan[0].action, 'requeue', 'R4：第二轮未发送 → 可安全重跑');
   }],
+
+  // ── R5（2026-10-21，作者日志实测）：唯一索引冲突不得把整轮调度打崩 ─────────
+  // 现场日志：`派发失败 / 分析任务失败：UNIQUE constraint failed:
+  // story_analysis_tasks.chapter_id, story_analysis_tasks.kind`，每 10 秒一次。
+  // 触发条件是本文件 R1 那个**正确模型**本身：运行中 A + 新保存的 queued B，
+  // 然后 A 需要 rearm → 也回 queued → 撞 `idx_story_analysis_tasks_one_queued`。
+  ['R5-01 A 运行中又保存了 B 之后，rearm(A) 不得抛 UNIQUE：让位给 B，A 按被取代收尾', () => {
+    const { workId, chapterId } = seed();
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revA', nowMs: T0, debounceMs: 0, maxWaitMs: 5000 });
+    const a = Q.claimNext(db, { owner: 'w1', workId, nowMs: T0, leaseMs: 10_000 });
+    assert.equal(a.revision_id, 'revA');
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revB', nowMs: T0 + 10, debounceMs: 0, maxWaitMs: 5000 });
+    const b = db.prepare("SELECT * FROM story_analysis_tasks WHERE chapter_id = ? AND status = 'queued'").get(chapterId);
+    assert.ok(b, '前置：新修订 B 已排进队列');
+
+    const r = Q.rearm(db, { taskId: a.id, owner: 'w1', generation: a.lease_generation, nowMs: T0 + 20, rearmDelayMs: 800 });
+    assert.equal(r.ok, true, 'R5：不能让 UNIQUE 抛出去（那会让 drain 整轮失败）');
+    assert.equal(r.superseded, true, 'R5：已经有更新的 queued，本条必须让位');
+    assert.equal(r.supersededBy, b.id);
+    assert.equal(db.prepare('SELECT status FROM story_analysis_tasks WHERE id = ?').get(a.id).status, 'cancelled');
+    assert.equal(db.prepare('SELECT status FROM story_analysis_tasks WHERE id = ?').get(b.id).status, 'queued',
+      'R5：更新的意图必须还在队列里（不能被"收尾"顺手吞掉）');
+    const queued = db.prepare("SELECT COUNT(*) AS n FROM story_analysis_tasks WHERE chapter_id = ? AND status = 'queued'").get(chapterId);
+    assert.equal(queued.n, 1, 'R5：同章同类始终最多一条 queued');
+  }],
+
+  ['R5-02 被取代之后调度器必须还能领到 B 并正常跑完（不再整轮炸）', async () => {
+    const { workId, chapterId } = seed();
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revA', nowMs: T0, debounceMs: 0, maxWaitMs: 5000 });
+    const a = Q.claimNext(db, { owner: 'w1', workId, nowMs: T0, leaseMs: 10_000 });
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revB', nowMs: T0 + 10, debounceMs: 0, maxWaitMs: 5000 });
+    const r = Q.rearm(db, { taskId: a.id, owner: 'w1', generation: a.lease_generation, nowMs: T0 + 20, rearmDelayMs: 0 });
+    assert.equal(r.superseded, true);
+
+    const disp = D.createDispatcher({ db, owner: 'w2', now: () => T0 + 30, runAnalysis: async () => ({ ok: true, status: 'done' }) });
+    const drained = await disp.drain({ max: 3, workId });
+    assert.ok(drained.processed >= 1, 'R5：被取代后 B 必须能被执行');
+    assert.ok(drained.outcomes.includes(D.TICK.DONE), `R5：期望出现 done，实际 ${JSON.stringify(drained.outcomes)}`);
+    const b = db.prepare("SELECT status FROM story_analysis_tasks WHERE chapter_id = ? AND revision_id = 'revB'").get(chapterId);
+    assert.equal(b.status, 'done');
+  }],
+
+  ['R5-03 启动恢复：已有 queued 时，过期 running 的 requeue 也必须让位而不是抛错', () => {
+    const { workId, chapterId } = seed();
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revA', nowMs: T0, debounceMs: 0, maxWaitMs: 5000 });
+    const a = Q.claimNext(db, { owner: 'w1', workId, nowMs: T0, leaseMs: 100 });
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revB', nowMs: T0 + 10, debounceMs: 0, maxWaitMs: 5000 });
+    // A 的租约已过期（T0+100），transport 未发出 → 计划里是 requeue
+    const plan = Q.planReconciliation(db, { nowMs: T0 + 200, workId });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].action, 'requeue');
+    const applied = Q.applyReconciliation(db, { nowMs: T0 + 200, workId });
+    assert.equal(applied[0].applied, true, 'R5：恢复也不能抛 UNIQUE');
+    assert.ok(applied[0].supersededBy, 'R5：应记下让位给了哪一条');
+    assert.equal(db.prepare('SELECT status FROM story_analysis_tasks WHERE id = ?').get(a.id).status, 'cancelled');
+    const queued = db.prepare("SELECT COUNT(*) AS n FROM story_analysis_tasks WHERE chapter_id = ? AND status = 'queued'").get(chapterId);
+    assert.equal(queued.n, 1);
+  }],
+
+  ['R5-04 同章已有 running 时，claimNext 不得再领另一条 queued（不撞 one_running）', () => {
+    const { workId, chapterId } = seed();
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revA', nowMs: T0, debounceMs: 0, maxWaitMs: 5000 });
+    const a = Q.claimNext(db, { owner: 'w1', workId, nowMs: T0, leaseMs: 10_000 });
+    Q.recordIntent(db, { workId, chapterId, revisionId: 'revB', nowMs: T0 + 10, debounceMs: 0, maxWaitMs: 5000 });
+    const again = Q.claimNext(db, { owner: 'w2', workId, nowMs: T0 + 20, leaseMs: 10_000 });
+    assert.equal(again, null, 'R5：同章已有 running，本轮不该再领（否则撞 one_running）');
+    assert.equal(db.prepare('SELECT status FROM story_analysis_tasks WHERE id = ?').get(a.id).status, 'running');
+    const running = db.prepare("SELECT COUNT(*) AS n FROM story_analysis_tasks WHERE chapter_id = ? AND status = 'running'").get(chapterId);
+    assert.equal(running.n, 1);
+  }],
 ]);

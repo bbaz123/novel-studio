@@ -1,0 +1,16 @@
+{
+  "fixture_id": "chapter1-six-issues-verdicts",
+  "note": "离线固定的语义回包（不调用模型、零计费）。只用于验证**既有裁决路径**，不是模型真实输出。",
+  "truth_table": [
+    { "issue_id": "Q01", "verdict": "partial", "reason_code": "PARTIAL_REFERENCE_AMBIGUITY_REMAINS" },
+    { "issue_id": "Q02", "verdict": "pass", "reason_code": "ISSUE_VERIFIED" },
+    { "issue_id": "Q03", "verdict": "fail", "reason_code": "ANCHOR_NOT_EDITED" },
+    { "issue_id": "Q04", "verdict": "fail", "reason_code": "ISSUE_TARGET_NOT_ADDRESSED" },
+    { "issue_id": "Q05", "verdict": "need_context", "reason_code": "EXTERNAL_CONTEXT_REQUIRED" },
+    { "issue_id": "Q06", "verdict": "fail", "reason_code": "REQUIRED_CHARACTER_DECISION_MISSING" }
+  ],
+  "liar_pass": [
+    { "issue_id": "Q03", "verdict": "pass", "reason": "我认为已经改好了" },
+    { "issue_id": "Q04", "verdict": "pass", "reason": "改动已经生效" }
+  ]
+}

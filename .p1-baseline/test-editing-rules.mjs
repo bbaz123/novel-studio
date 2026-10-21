@@ -430,32 +430,38 @@ try {
     JSON.stringify(reviewPut.data));
   const reviewGet = await jfetch(`/api/novel/review?chapter_id=${c1}`);
   const savedReport = (reviewGet.data.review || {}).report || {};
+  // 2026-10-21（review.v3）：issues 已是对象（id/text/source/finding_id）。取文本读断言，
+  // 并额外钉住"稳定 id 真的落库了"—— 这是本轮改造的核心，不是附带字段。
+  const issueTextOf = (x) => String(x && typeof x === 'object' ? x.text : x);
   ok('E15b 结构化结论随报告落库：兼容清单带 id 与引用，findings 可复核（拒收项不在清单里）',
     reviewGet.status === 200 && Array.isArray(savedReport.issues)
-      && savedReport.issues.some((x) => String(x).includes('[N04]') && String(x).includes(realQuote.slice(0, 10)))
+      && savedReport.issues.some((x) => issueTextOf(x).includes('[N04]') && issueTextOf(x).includes(realQuote.slice(0, 10)))
+      && savedReport.issues.some((x) => x && x.id === 'N04' && x.finding_id === 'N04')
       && Array.isArray(savedReport.findings) && savedReport.findings.length === 1
-      && !savedReport.issues.some((x) => String(x).includes('X9')),
+      && !savedReport.issues.some((x) => issueTextOf(x).includes('X9')),
     JSON.stringify({ issues: savedReport.issues, findings: (savedReport.findings || []).length }));
 
+  // 选择记录必须用**报告里的稳定 id**（review.v3 起服务端会拒绝身份链不一致的选择）。
+  const savedIssueIds = savedReport.issues.filter((x) => x && x.id).map((x) => String(x.id));
   const selPut = await jfetch('/api/novel/revision/selection', {
     method: 'PUT',
-    body: { work_id: w, chapter_id: c1, review_id: reviewPut.data.review_id, snapshot_id: 'ch1@abc', base_hash: 'fnv1a:test:10', selection_hash: 'sel-aaa', plan_hash: 'plan-bbb', selected_issue_ids: ['1', '2'], source: 'ui' },
+    body: { work_id: w, chapter_id: c1, review_id: reviewPut.data.review_id, snapshot_id: 'ch1@abc', base_hash: 'fnv1a:test:10', selection_hash: 'sel-aaa', plan_hash: 'plan-bbb', selected_issue_ids: savedIssueIds.slice(0, 1), source: 'ui' },
   });
   const selGet = await jfetch(`/api/novel/revision/selection?chapter_id=${c1}`);
   const sel = selGet.data.selection || {};
   ok('E16 修稿选择记录可独立复核：勾选集合、快照与两个 hash 都能读回',
-    selPut.status === 201 && selPut.data.selected === 2
-      && Array.isArray(sel.selected_issue_ids) && sel.selected_issue_ids.join(',') === '1,2'
+    selPut.status === 201 && selPut.data.selected === 1
+      && Array.isArray(sel.selected_issue_ids) && sel.selected_issue_ids.join(',') === savedIssueIds.slice(0, 1).join(',')
       && sel.snapshot_id === 'ch1@abc' && sel.selection_hash === 'sel-aaa' && sel.plan_hash === 'plan-bbb'
       && Number(sel.review_id) === Number(reviewPut.data.review_id),
     JSON.stringify(sel));
   await jfetch('/api/novel/revision/selection', {
     method: 'PUT',
-    body: { work_id: w, chapter_id: c1, snapshot_id: 'ch1@abc', base_hash: 'fnv1a:test:10', selection_hash: 'sel-ccc', selected_issue_ids: ['2'], source: 'ui' },
+    body: { work_id: w, chapter_id: c1, snapshot_id: 'ch1@abc', base_hash: 'fnv1a:test:10', selection_hash: 'sel-ccc', selected_issue_ids: savedIssueIds.slice(0, 1), source: 'ui' },
   });
   const selGet2 = await jfetch(`/api/novel/revision/selection?chapter_id=${c1}`);
   ok('E16b 选择记录是**每次发起修稿的输入快照**：取消一条后读到的是新的集合（不是旧的缓存）',
-    (selGet2.data.selection || {}).selected_issue_ids.join(',') === '2'
+    (selGet2.data.selection || {}).selected_issue_ids.join(',') === savedIssueIds.slice(0, 1).join(',')
       && (selGet2.data.selection || {}).selection_hash === 'sel-ccc');
   const selEmpty = await jfetch('/api/novel/revision/selection', {
     method: 'PUT', body: { work_id: w, chapter_id: c1, selected_issue_ids: [] },

@@ -1,0 +1,20 @@
+{
+  "plugin": "dsh-novel-quality-auditor",
+  "version": "0.1.0",
+  "contract_version": "novel-quality-audit.v1",
+  "tools": ["novel_quality_open", "novel_quality_read", "novel_quality_submit", "novel_quality_status"],
+  "policy_section": "novel-quality-auditor:policy",
+  "default_profile": "novel",
+  "dsh_baseline": "0.2.0-rc.2",
+  "files": {
+    "lib": ["index.js", "config.js", "contracts.js", "env.js", "http-client.js", "auth.js", "prompt-policy.js", "turn-guard.js", "idempotency.js", "redaction.js", "errors.js", "tools/open.js", "tools/read.js", "tools/submit.js", "tools/status.js"],
+    "scripts": ["install.mjs", "uninstall.mjs", "verify-wiring.mjs", "verify-host.mjs"],
+    "test": ["contracts.test.mjs", "tools.test.mjs", "auth.test.mjs", "turn-guard.test.mjs", "coexistence.test.mjs"]
+  },
+  "boundaries": [
+    "never writes manuscript body",
+    "never reads or writes dsh-confirmation-resolution ledger",
+    "no global tools/post-execute",
+    "does not patch system-prompt personaPrefix"
+  ]
+}

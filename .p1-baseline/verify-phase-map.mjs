@@ -2076,6 +2076,113 @@ export const PHASES = [
       + '定向续写只做授权判定与缺口清单，不自动发起付费调用。'
       + '**费用**：全部离线断言零计费（模型输出为注入 fixture）。',
   },
+  {
+    id: 'V20',
+    title: '六项审稿漏修与语义闭环（引文底本/证据契约/伪修复判据）',
+    files: [
+      // 本轮**新建**的文件只有这一份实现说明；代码与测试都改在既有文件里，
+      // 因此它们的归属仍在各自的阶段（V15/SE6/… 已认领），这里不重复认领以免污染回滚判定。
+      'docs/v1.2.6-six-issue-closure.md',
+    ],
+    evidence: [
+      'docs/v1.2.6-six-issue-closure.md',
+      'docs/CHANGELOG.md',
+      'tests/narrative-repair/18-six-issue-closure.test.mjs',
+    ],
+    rollback: 'independent',
+    note: '**目的**：把"六项审稿意见修完仍有 3 条 FAIL、1 条改错位置、1 条跨资料没核验"拆成可复核的判据，'
+      + '而不是再写一版修稿提示词。根因两条（本机真实数据可证）：①落库时拿"当前章节"核验引文，'
+      + '而被审正文在 `base_text` 里，于是 review#29 六条 finding 全被拒收（`accepted=0`）；'
+      + '②审稿提示词要 `type/explanation/acceptance`，结构层白名单要 `kind/suggested_action/rationale`，'
+      + '对不上就整条丢。修法：核验被审正文 + 形状缺陷降级（保留逐字证据）+ 勾选编号按位置连接 finding + '
+      + '验收层按补丁对证据的覆盖分档、补 `UNRELATED_CHANGE` 与 `acceptance.conditions` 求值 + '
+      + '外部资料项走 `EXTERNAL_CONTEXT_REQUIRED` 且不进复修队列。'
+      + '**边界**：不新增 `AUTHOR_CONFIRMED` 状态枚举（不动 `N=P+F+U+B` 与回执契约）；'
+      + '不自动改角色卡/词条/世界设定；不改选区保护、压缩授权与费用门禁；不写正式正文。'
+      + '**费用**：全部离线断言零计费（六项夹具 + 固定语义回包），未调用任何真实模型。',
+  },
+  {
+    // dsh-novel-quality-auditor 阶段 1（2026-10-21）：审稿身份链。新文件全部在这里认领，
+    // 因为它们是"同一批代码"：契约模块 + 浏览器同一份实现 + 阶段 0 冻结脚本 + 身份链断言。
+    // 回滚 = 删这批新文件 + 恢复 public/app.js / server.js / db.js / narrative-review.mjs 的备份。
+    id: 'QA1',
+    title: '审稿身份链 review.v3（dsh-novel-quality-auditor 阶段 0–1）',
+    files: [
+      'ai/editing/review-contract.mjs',
+      'public/review-contract.js',
+      'scripts/quality-auditor/freeze-baseline.mjs',
+      'scripts/quality-auditor/verify-id-chain.mjs',
+      'docs/quality-auditor-id-chain.md',
+    ],
+    evidence: [
+      'scripts/quality-auditor/verify-id-chain.mjs',
+      'docs/quality-auditor-id-chain.md',
+      'frontend-test.mjs',
+    ],
+    // 推导=shared：ai/editing/review-contract.mjs 被 server.js 直接 import，而 server.js 属于多个阶段。
+    // 诚实标注为 shared —— "删掉新文件即回滚"不成立：还要恢复 server.js/app.js/db.js/narrative-review.mjs 的改动。
+    rollback: 'shared',
+    note: '**目的**：修复审稿 issue ID 与 structured finding ID 的断链。旧链路里 issues 被拍平成字符串，'
+      + '勾选只有数组下标身份（1/2/3），finding 是 R-0001；查不到就静默退回 legacy 空证据，'
+      + '多位置授权/逐字引用/验收条件全部丢失。修法：唯一实现 public/review-contract.js（浏览器经典脚本直接加载），'
+      + 'ai/editing/review-contract.mjs 按 ESM 转出同一份；解析/展示/勾选/修稿计划全部按稳定 id；'
+      + '结构化报告映射不完整时 fail-closed（不发起付费修稿）；存量报告惰性迁移为 LEGACY 身份且 evidence_status=legacy_missing。'
+      + '**边界**：不改生成/修稿提示词、不动 confirmation-resolution 账本、不写正文、不新增计费调用。'
+      + '**费用**：全部离线断言零计费。',
+  },
+  {
+    // dsh-novel-quality-auditor 阶段 2（2026-10-21）：审计契约/数据库/API。
+    // 新文件集中在 ai/quality-auditor/ 与 scripts/quality-auditor/；rollback=shared
+    // 因为 server.js / db.js 的接线改动无法只删新文件回滚。
+    id: 'QA2',
+    title: '质量审计契约与 API（dsh-novel-quality-auditor 阶段 2）',
+    files: [
+      'ai/quality-auditor/',
+      'ai/quality-auditor/provision.mjs',
+      'scripts/quality-auditor/test-provision.mjs',
+      'scripts/quality-auditor/harness.mjs',
+      'scripts/quality-auditor/test-contracts.mjs',
+      'scripts/quality-auditor/test-e2e.mjs',
+      'scripts/quality-auditor/real-host.mjs',
+      'docs/quality-auditor-architecture.md',
+    ],
+    evidence: [
+      'scripts/quality-auditor/test-contracts.mjs',
+      'docs/quality-auditor-architecture.md',
+    ],
+    rollback: 'shared',
+    note: '**目的**：给独立审计建立可观测的账本与鉴权边界。三张旁路表（runs/items/events）'
+      + '承载 run 状态机、一次性 token（只存 hash）、预算、租约与 append-only 事件流；'
+      + 'API 分作者通道与 DSH token 通道；状态迁移只走 store.transition 的白名单。'
+      + '**边界**：不改正文、不改既有审稿/修稿表语义、不动 confirmation-resolution 账本。'
+      + '**费用**：CT 套件全部 start:false（外部 runner），零计费。',
+  },
+  {
+    // dsh-novel-quality-auditor 阶段 3/4/6（2026-10-21）：独立插件包 + 前端审计面板。
+    // rollback=shared：app.js / index.html 的接线改动不能只删新文件回滚。
+    id: 'QA3',
+    title: '独立审计插件与前端入口（dsh-novel-quality-auditor 阶段 3/4/6）',
+    files: [
+      'harness-plugins/dsh-novel-quality-auditor/',
+      'public/quality-audit-panel.js',
+      'docs/quality-auditor-plugin.md',
+      'docs/quality-auditor-dsh-version-alignment-plan.md',
+      'docs/quality-auditor-embedding-plan.md',
+    ],
+    evidence: [
+      'harness-plugins/dsh-novel-quality-auditor/test/tools.test.mjs',
+      'harness-plugins/dsh-novel-quality-auditor/scripts/verify-wiring.mjs',
+      'docs/quality-auditor-plugin.md',
+    ],
+    // 推导=independent：插件与面板都没有被生产代码 import（app.js 只在运行时读全局）。
+    // 回滚 = 删这批新文件 + 撤销 app.js/index.html 的两处接线。
+    rollback: 'independent',
+    note: '**目的**：把"独立复核员"做成真正可安装的 DSH bundle。四工具（open/read/submit/status）只做数据交换与提交；'
+      + '没有 audit 环境时返回 NOT_APPLICABLE，普通写作任务不受影响；turn-stopping 只兜底一次。'
+      + '前端新增一行状态入口与工作区抽屉（纯函数，可离线断言）。'
+      + '**边界**：不写正文、不碰 confirmation ledger、不改 system-prompt personaPrefix。'
+      + '**费用**：工具测试对本地 HTTP stub，零计费。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

@@ -64,6 +64,10 @@ export const NARRATIVE_REPAIR_TESTS = [
   // 归属核验（quote_not_found）、strengths 绝对局限措辞的限定建议、同物件状态跨句桥接候选、
   // 未选中问题不得假称已改、缺语义核验不得报 resolved、伏笔编号锚可见性、常见等级结果的因果候选。
   'tests/narrative-repair/17-review-closure-0317.test.mjs',
+  // 《六项审稿漏修与语义闭环》方案 §11：N01–N36（六项夹具 + 判据/复修/终验/工作区同一口径）。
+  // 覆盖"只修半个问题、完全漏修、改错位置、跨角色卡未核验"四类伪修复，以及
+  // 已 PASS 项不被后续复修冲掉、单段/分段同一出口、分母不缩。
+  'tests/narrative-repair/18-six-issue-closure.test.mjs',
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();

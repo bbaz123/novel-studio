@@ -138,7 +138,18 @@ export const CHECKS = [
   { name: 'Host Contract 契约测试（代码↔契约 / 文档↔契约 / 边界 / 旧库兼容）', cmd: ['.p1-baseline/test-host-contract.mjs'], why: '冻结的宿主契约不得漂移' },
   { name: '时态故事状态重构总入口（离线：reducer/原子归约/章序/历史隔离/完整性/保存接线（自托管隔离实例 + 本机假模型）/未启用零写入，零计费）', cmd: ['scripts/test-temporal-refactor.mjs'], why: 'T1–T8 的统一状态底座：清单为空或任一子套件失败必须非零退出；保存入口接线证据不许用 mock 冒充（06 走真实 HTTP + 真实后台调度，模型端点指向本机假模型）' },
   { name: '叙事性专项修复总入口（离线：补丁协议 v2 的 P/E02/R 类 + 冻结样本 + 2026-10-09 审查回归，零计费）', cmd: ['scripts/test-narrative-repair.mjs'], why: '《叙事性专项修复》E01/E02 与审查修复的判定面：显式删除、精确跨度、按段落级门禁、schema 严格性、组合门禁、越权与 stale、阶段化规则、协议模块缺失姿态，都必须在离线可复现；清单为空必须非零退出' },
+  // 单独一条，便于失败归因到具体方案（N01–N36）；它同时也在总入口的清单里，重复执行是刻意的。
+  { name: '六项审稿漏修与语义闭环（N01–N36：半修/漏修/改错位置/跨资料未核验 + 分母/复修/终验，零计费）', cmd: ['tests/narrative-repair/18-six-issue-closure.test.mjs'], why: 'Q01 只删「四行」必须 PARTIAL；Q03 原文未动必须 FAIL（模型谎报 pass 也不行）；Q04 只删动作词必须 UNRELATED_CHANGE；Q05 待外部核验不得改正文凑数字；Q06 旁人提普通大学不算主角决定；已 PASS 项不被后续复修冲掉' },
   { name: '编码检查判据自检（含阴性对照）', cmd: ['.p1-baseline/check-utf8.mjs', '--self-test'], why: '中文仓库的编码纪律' },
+  // dsh-novel-quality-auditor 阶段 1（2026-10-21）：审稿 issue 身份链 ID-01…ID-13。
+  // 单独成条的原因：它是后续所有"精确修复/逐项终验"的前提，失败必须能一眼归因，
+  // 而不是混在几千行的前端回归里。DOM 形态的 ID-08/09/12 在 frontend-test.mjs 里。
+  { name: '审稿身份链 ID-01…ID-13（review.v3：显式/同序/断链/重复/legacy/选择映射，零计费）', cmd: ['scripts/quality-auditor/verify-id-chain.mjs'], why: 'issue.id 与 finding.id 必须全程一致：选中 id 找不到 finding 时必须 fail-closed（禁止静默退回空证据 legacy）；旧报告只生成 LEGACY 稳定 id 且 evidence_status=legacy_missing' },
+  // dsh-novel-quality-auditor 阶段 2：审计契约/数据库/API（CT-01…CT-12）。
+  { name: '质量审计契约 CT-01…CT-12（隔离实例：三张表/状态机/token/幂等/体积/取消/重启恢复，零计费）', cmd: ['scripts/quality-auditor/test-contracts.mjs'], why: 'run 状态机只能由服务端事务推进：插件不能跳态；token 只存 hash 且绑定范围；跨作品/过期 token 必须 401；重复 final 相同摘要幂等、不同摘要冲突；契约不合法时不留半条账本' },
+  // dsh-novel-quality-auditor 阶段 5/8：六项/八项样本端到端（固定裁决、外部 runner、零计费）。
+  { name: '质量审计端到端 E2E（六项/八项样本：逐项终态/定向复修/全部完成判定/候选 hash→STALE，零计费）', cmd: ['scripts/quality-auditor/test-e2e.mjs'], why: '每个已选项必须有唯一终态；只有 PARTIAL/FAIL 进入定向复修；任一非 PASS 不得显示全部完成；候选 hash 变化旧审计立即 STALE' },
+  { name: '审计插件内置化（只读状态/dry-run 不落盘/缺依赖三分支，零计费）', cmd: ['scripts/quality-auditor/test-provision.mjs'], why: '插件没装时必须能说清缺什么、给可执行命令；安装必须幂等且先备份 profile；dry-run 不得写盘' },
   { name: '日志差集归因判据自检', cmd: ['.p1-baseline/diff-log-noise.mjs', '--self-test'], why: '正常增长不得判红' },
   { name: '花钱总闸归属判据自检（本地假端点自证 / 未归属判红）', cmd: ['.p1-baseline/audit-llm-calls.mjs', '--self-test'], why: '零计费探针不得被误判成花钱，未归属的调用不得放过' },
   { name: '回滚矩阵工具自检', cmd: ['.p1-baseline/revert-matrix.mjs', '--self-test'], why: '认得出冲突才算可用' },

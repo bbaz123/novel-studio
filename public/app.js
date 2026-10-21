@@ -7864,7 +7864,9 @@ const TOOL_SPECS = [
       if (!d.found) return { ok: false, text: '未找到（在下面「dsh 仓库路径」里填一次即可）' };
       if (d.looks_like_dsh === false) return { ok: false, text: `找到了 ${d.dir}，但它不像 dsh 仓库（请填正确路径）` };
       if (!d.built) return { ok: false, text: '已找到仓库，但缺少构建产物（首次任务会自动构建）' };
-      return { ok: true, text: `已就绪 · ${d.dir}` };
+      const ver = d.version ? `v${d.version}` : '版本未知';
+      const how = d.launcher && d.launcher.kind === 'bin' ? 'npm 安装的 bin' : '源码仓库';
+      return { ok: true, text: `已就绪 · ${ver}（${how}）· ${d.dir}` };
     }
   },
   {
@@ -7884,6 +7886,25 @@ const TOOL_SPECS = [
       const anywhere = (p.installs || []).find((i) => i.exists);
       if (anywhere) return { ok: false, text: `dsh 里有一份同名插件，但不是指向本仓库（${anywhere.path}）——建议重跑安装脚本` };
       return { ok: false, text: '尚未装进 dsh（复制下面的命令运行一次即可）' };
+    }
+  },
+  {
+    key: 'quality_auditor',
+    name: '审计插件 dsh-novel-quality-auditor',
+    required: false,
+    why: '独立复核（盲审→初审对照）与修稿逐项终验的执行者。源码在本仓库；装进 dsh 的 novel profile 后才可调用。',
+    url: 'harness-plugins/dsh-novel-quality-auditor/',
+    urlLabel: '本仓库 harness-plugins/dsh-novel-quality-auditor/',
+    cmd: 'node harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs',
+    status: (env) => {
+      const q = env && env.dsh && env.dsh.plugins && env.dsh.plugins.qualityAuditor;
+      if (!q) return { ok: null, text: '未检测' };
+      if (!q.source_exists) return { ok: false, text: '本仓库缺少插件源码（harness-plugins/dsh-novel-quality-auditor）' };
+      if (q.ready) {
+        const hit = (q.installs || []).find((i) => i.ready);
+        return { ok: true, text: `已装到 ${hit ? hit.home : ''}（profile：${q.profile}）` };
+      }
+      return { ok: false, text: '尚未装进 dsh（点「一键安装」或复制命令运行一次）' };
     }
   },
   {
@@ -8039,9 +8060,14 @@ function renderEnvTools() {
   const t = state.envTools;
   const list = $('#tools-list');
   if (list) {
+    const missing = (t && t.dsh && Array.isArray(t.dsh.missing_dependencies)) ? t.dsh.missing_dependencies : [];
+    const banner = missing.length
+      ? `<div class="env-missing-banner">⚠ 有 ${missing.length} 项依赖缺失：${missing.map((m) => esc(m.name)).join('、')}
+           <button class="btn small" data-action="show-missing-deps">查看并处理</button></div>`
+      : '';
     list.innerHTML = (!t || t.error)
       ? `<div class="empty">检测失败：${esc((t && t.error) || '未知错误')}</div>`
-      : renderToolRows(t, state.ovStatus);
+      : banner + renderToolRows(t, state.ovStatus);
   }
   const box = $('#dsh-status');
   if (!box) return;
@@ -8063,7 +8089,11 @@ function renderEnvTools() {
       : '未找到'),
     statusChip(null, `路径来源：${dshSourceLabel(d.source)}`),
     statusChip(null, `profile：${esc(d.profile || '')}`),
+    statusChip(null, `dsh 版本：${esc(d.version || '未知')}`),
+    statusChip(d.launcher && d.launcher.kind === 'bin' ? true : null,
+      `启动方式：${d.launcher && d.launcher.kind === 'bin' ? 'npm 安装的 bin' : '源码仓库'}`),
     `<div class="muted mt-8">实际使用：<code>${esc(d.dir || '')}</code></div>`,
+    `<div class="muted">插件：创作 ${pluginsReadyText(d, 'novel-writing')} · 审计 ${pluginsReadyText(d, 'quality-auditor')}</div>`,
     `<div class="muted">写作任务的 DSH_HOME：<code>${esc(home.home || home.path || '')}</code>${home.home ? '' : '（专用 home 不可用，退回共享 home）'}</div>`,
     `<div class="muted">settings.yaml：<code>${esc(d.settings_file || '')}</code></div>`,
     checked ? `<details class="env-details"><summary>它按顺序找过这些位置（共 ${(d.checked || []).length} 处）</summary>${checked}</details>` : ''
@@ -11082,8 +11112,45 @@ function reviewDeferredItems(arr) {
     : { text: String(x || ''), type: '', recheck_within_chapters: 0 })).filter((d) => d.text);
 }
 
+/**
+ * 审稿契约模块（`public/review-contract.js`，UMD，index.html 先于本文件加载）。
+ *
+ * 为什么是**惰性取用**而不是顶层 const：本文件是经典脚本，契约模块在同一文档里更早执行，
+ * 但前端测试会按 index.html 顺序在 vm 里重放；惰性取用让"模块缺失"变成每次调用都能看见的
+ * 明确诊断（REVIEW_CONTRACT_UNAVAILABLE），而不是加载期 ReferenceError 把整个页面打死。
+ */
+function reviewContract() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelReviewContract) || null;
+}
+
+/**
+ * 审稿文本解析（唯一入口）→ review.v3。
+ *
+ * ⚠️ 2026-10-21（P0 身份断链）：旧实现把 `issues` 拍平成**字符串数组**，而 `findings` 保留
+ *   模型给的 `R-0001`。于是"勾选的问题"只有数组下标身份（1、2、3），与 finding ID 永远对不上；
+ *   `revisionFindingsFor()` 查不到就静默退回 legacy 空证据 —— 多位置授权、逐字引用、验收条件
+ *   全部丢失，修稿可能只改一处或改错位置，而且事后无法证明修好。
+ *   现在解析**只产出 review.v3 对象**（issue 带稳定 id），身份链从这一刻起就是稳定的；
+ *   结构不完整时（没有 findings / 无法建立映射）如实标记 integrity，由 UI 禁止进入付费修稿。
+ */
 function parseReviewText(text) {
   const s = String(text || '');
+  const RC = reviewContract();
+  const normalize = (raw, stage) => {
+    if (!RC) {
+      // 契约缺失时**不伪造身份**：返回一份明确不可用的报告，让下游 fail-closed。
+      return {
+        schema_version: 'review.unavailable', normalization_stage: stage,
+        summary: String(raw && raw.summary || ''), issues: [], findings: [],
+        strengths: [], deferred: [],
+        integrity: { ok: false, code: 'REVIEW_CONTRACT_UNAVAILABLE', repairable: false, detail: '审稿契约模块未加载（public/review-contract.js）', warnings: [], missing: [], duplicates: [] },
+        evidence_status: 'missing', review_hash: '',
+      };
+    }
+    const report = RC.normalizeReviewReport(raw, { stage });
+    report.stage = stage;
+    return report;
+  };
   const start = s.indexOf('{');
   const end = s.lastIndexOf('}');
   if (start >= 0 && end > start) {
@@ -11094,21 +11161,7 @@ function parseReviewText(text) {
       try { obj = JSON.parse(slice.replace(/"\s*,\s*"/g, '","').replace(/"\s*,\s*([}\]])/g, '"$1')); } catch (_) { obj = null; }
     }
     if (obj && (String(obj.summary || '').trim() || Array.isArray(obj.issues))) {
-      return {
-        stage: 'strict',
-        report: {
-          summary: String(obj.summary || ''),
-          issues: Array.isArray(obj.issues) ? obj.issues.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [],
-          strengths: Array.isArray(obj.strengths) ? obj.strengths.map((x) => String(typeof x === 'string' ? x : (x?.text || ''))).filter(Boolean) : [],
-          deferred: reviewDeferredItems(obj.deferred),
-          // ⚠️ 2026-10-13（《0731 增补方案》§2 P0-A）：结构化 findings **不能在这里被丢掉**。
-          //   旧实现只把 issues 拍平成字符串，于是每个问题的**逐字引用 / 反证 / verdict** 全没了，
-          //   下游只能拿到一句自然语言："作者勾选了什么"可追溯，"它到底指哪句话"不可追溯，
-          //   修后也无法核验"这一条的证据是否还在正文里"（§4 的 issue_coverage 因此做不成）。
-          //   保留但**不伪造**：老报告没有 findings 就是空数组，由下游如实表示"这项核验没做成"。
-          findings: reviewFindingsOf(obj.findings),
-        }
-      };
+      return { stage: 'strict', report: normalize(obj, 'strict') };
     }
   }
   const body = start >= 0 ? s.slice(start) : s;
@@ -11118,7 +11171,7 @@ function parseReviewText(text) {
     strengths: salvageJSONList(body, 'strengths'),
     deferred: reviewDeferredItems(salvageJSONList(body, 'deferred'))
   };
-  if (salvaged.summary || salvaged.issues.length) return { stage: 'salvaged', report: salvaged };
+  if (salvaged.summary || salvaged.issues.length) return { stage: 'salvaged', report: normalize(salvaged, 'salvaged') };
   return { stage: 'raw', report: null };
 }
 
@@ -11172,14 +11225,19 @@ function reviewFindingsOf(list) {
  * "这项没做成"，**绝不编造引用**（伪造引用会让核验得出一个看似可信的错误结论）。
  */
 function revisionIssueQuotes(review, selectedIssueIds) {
-  const findings = Array.isArray(review && review.findings) ? review.findings : [];
-  const byId = new Map(findings.map((f, i) => [String(f && f.id != null ? f.id : i + 1), f]));
-  return (Array.isArray(selectedIssueIds) ? selectedIssueIds : []).map((id) => {
-    const f = byId.get(String(id));
-    return {
-      id: String(id),
-      quotes: f && Array.isArray(f.evidence) ? f.evidence.map((e) => String(e && e.quote || '')).filter(Boolean) : [],
-    };
+  const RC = reviewContract();
+  const ids = Array.isArray(selectedIssueIds) ? selectedIssueIds.map(String) : [];
+  const legacyReport = Boolean(review && RC && (review.schema_version === RC.LEGACY_SCHEMA_VERSION || !review.schema_version));
+  const baseStatus = String((review && review.evidence_status) || (legacyReport ? 'legacy_missing' : 'structured'));
+  // ⚠️ 只按**稳定 id** 查 finding。旧实现的 `[id || index+1]` 把"勾选位置"当身份，
+  //   一旦问题列表重排或报告缺 findings，引用就会串到别的问题上 —— 那比没有证据更糟。
+  return ids.map((id) => {
+    const f = RC ? RC.findingById(review, id) : null;
+    const quotes = f && Array.isArray(f.evidence) ? f.evidence.map((e) => String(e && e.quote || '')).filter(Boolean) : [];
+    let status = baseStatus;
+    if (!f) status = legacyReport ? 'legacy_missing' : 'missing';
+    else if (legacyReport) status = 'legacy_missing';
+    return { id: String(id), quotes, evidence_status: status };
   });
 }
 
@@ -11681,7 +11739,17 @@ function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText 
   return [
     '你是严格的中文网络小说审稿编辑。请审读下面这篇章节正文，并对照小说上下文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"summary":"总评（两三句）",',
-    '"findings":[{"id":"R-0001","title":"一句话标题","type":"continuity|canon|repetition|style|causality|other","severity":"high|medium|low","explanation":"问题描述，含位置与理由","evidence":[{"quote":"正文里逐字复制的原文片段","role":"reference|candidate_edit"}],"acceptance":{"rule":"修后可客观检查的成功判据","preserve":["不得丢失的设定/伏笔/动作"]}}],',
+    '"findings":[{"id":"R-0001","title":"一句话标题",'
+      + '"kind":"fact|wording|narrative|observation|deferred","verdict":"confirmed|hypothesis",'
+      + '"suggested_action":"replace|delete|condense|keep|defer","reading_cost":"伤害了哪种阅读效果",'
+      + '"type":"continuity|canon|repetition|style|causality|other","severity":"high|medium|low",'
+      + '"problem_type":"LOCAL_PHRASE|REDUNDANCY|MULTI_SPEAKER_FUNCTION|EXTERNAL_CARD|MISSING_CHARACTER_ACTION|OTHER",'
+      + '"requires_external_context":false,'
+      + '"explanation":"问题描述，含位置与理由","rationale":"为什么它是问题","counterevidence":"为什么这可能不是问题（有才写）",'
+      + '"evidence":[{"quote":"正文里逐字复制的原文片段","role":"reference|candidate_edit","functional_group":"同功能重复片段的分组名（可选）"}],'
+      + '"acceptance":{"rule":"修后可客观检查的成功判据","preserve":["不得丢失的设定/伏笔/动作"],'
+      + '"conditions":[{"id":"c1","kind":"residual_terms_absent|required_action|must_contain|preserve_terms","terms":["字面或动作标记"],"severity":"hard|risk","note":"判定说明"}],'
+      + '"risk_terms":["改完后若仍出现就算风险的字面"]}}],',
     '"issues":[{"text":"问题描述，含位置（如：中段冲突部分）与理由，逐条可执行"}],"deferred":[{"text":"待后续核验的疑点（含位置）","type":"possible_foreshadowing","recheck_within_chapters":5}],"strengths":[{"text":"写得好的地方"}]}',
     // v1.2.1 质量闭环 P0-1：findings 是**机器可读**的那一份，issues 继续给旧界面显示。
     // 为什么必须要求逐字引文：修稿器只改"能唯一指出来的那几个字"，没有引文就只能靠猜；
@@ -11690,6 +11758,21 @@ function buildAIReviewPrompt(article, redlineScanText = '', continuityGuardText 
       + 'role=reference 是只读对比证据（例如开头原句 / 词条原文 / 蓝图），role=candidate_edit 才是本轮可以改的目标；'
       + '一条问题涉及两处以上文字时（跨位置矛盾、前后不一致），把两处都写进 evidence，不要只给一处；'
       + 'acceptance.rule 写"修完能怎么客观检查"，preserve 写"不能被这次修改弄丢的东西"。',
+    // 2026-10-21（六项漏修）：这些字段缺了不会让整条作废，但会被降级成"仅待核验"，
+    // 修稿器也拿不到可判定的子条件 —— 所以**能给就给**，不要为了填字段编造。
+    'findings 的必填形状（缺了会被降级为待核验，保留你的证据但不自动采纳）：'
+      + 'kind、verdict、suggested_action、reading_cost、rationale。'
+      + '一条问题有多个同功能片段时（例如三个不同的人反复劝同一件事），把它们都写成 evidence，并给同一个 functional_group —— '
+      + '只删其中一处不算解决。',
+    'problem_type 的用法：只是措辞/指代问题用 LOCAL_PHRASE；把已展示过的信息再总结一遍用 REDUNDANCY；'
+      + '多个发声者重复同一功能用 MULTI_SPEAKER_FUNCTION；需要查角色卡/词条/时点才能判定用 EXTERNAL_CARD'
+      + '（此时 requires_external_context 写 true，且**不要**建议改正文来凑数字）；'
+      + '主角缺少可见的取舍/行动用 MISSING_CHARACTER_ACTION。',
+    'acceptance.conditions 只写**能机械检查**的子条件：'
+      + 'residual_terms_absent（terms=改完后不该再出现的含糊字面，如 "那四个字"）；'
+      + 'required_action（terms=主角真的做了取舍时会出现的动作标记，如 "备忘录""报名""填了"）；'
+      + 'must_contain（terms=必须出现的字面）；preserve_terms（terms=必须还在的字面）。'
+      + '宁可少写一条，也不要写自己都不确定能否判定的条件。',
     // v1.2.4：两类"漏了就永远判不出"的硬约束必须显式声明，否则验收器只能靠模型自述（会假通过）。
     'acceptance 另有两个**可选**硬约束字段（能给就给，不要硬凑）：'
       + 'acceptance.must_contain：修后正文里必须出现的字面（如纪年锚点 "3751"、单号 "0731"、系统台词的关键半句）；'
@@ -11778,6 +11861,48 @@ function diffParagraphs(oldText, newText) {
   return diffTokens(a, b);
 }
 
+/**
+ * 审稿落库回执 → 作者可见的"结构化证据审计"。
+ *
+ * 为什么必须显示：2026-10-21 的真实事故（review#29）是**6 条问题全被拒收、findings=[]**，
+ * 而界面一个字都没说 —— 作者只看到"修稿后还是没改好"，于是以为是模型漏修。实际是修稿器
+ * 一条逐字证据都没拿到。被拒收/缺字段/引文底本不一致必须由界面讲出来，不能只留在服务端回执里。
+ */
+function applyReviewFindingsAudit(report, saved) {
+  if (!report || typeof report !== 'object' || !saved || typeof saved !== 'object') return report;
+  const accepted = Number(saved.findings_accepted) || 0;
+  const rejected = Number(saved.findings_rejected) || 0;
+  const defects = Number(saved.findings_shape_defects) || 0;
+  const quoteBase = saved.quote_base && typeof saved.quote_base === 'object' ? saved.quote_base : null;
+  const findingsState = String(saved.findings_state || '');
+  const problems = [];
+  if (findingsState === 'empty') {
+    problems.push('这次审稿没有给出任何结构化问题（findings 为空）：修稿只能按问题文本改，无法定位到句');
+  }
+  if (rejected > 0) problems.push(`${rejected} 条结构化问题被拒收（引文对不上这篇正文）`);
+  if (quoteBase && quoteBase.differs_from_chapter) {
+    problems.push('这次审稿的正文与库里的章节不是同一份：引文按"被审正文"核验，合并前请确认底稿');
+  }
+  if (defects > 0) problems.push(`${defects} 条缺字段，已保留证据但只作待核验`);
+  report.findings_audit = {
+    accepted,
+    rejected,
+    shape_defects: defects,
+    quote_base: quoteBase,
+    total: accepted + rejected,
+    problem: problems.length ? `审稿回执：${problems.join('；')}` : '',
+    rejected_detail: Array.isArray(saved.rejected) ? saved.rejected.slice(0, 6) : [],
+  };
+  try {
+    reportClientLog({
+      level: report.findings_audit.problem ? 'warn' : 'info',
+      kind: 'review_findings_audit',
+      message: `[审稿] 结构化证据回执：${JSON.stringify({ accepted, rejected, defects, quote_base: quoteBase })}`,
+    });
+  } catch (_) { /* 日志失败不影响审稿 */ }
+  return report;
+}
+
 // 审稿主流程：审稿报告 → 确认清单 → 修稿 → 差异预览 → 合并。
 async function runArticleReview(info) {
   // ⚠️ 章号在**入口**就定下来：后面每一步（审稿任务、报告落库、按清单修稿、差异合并）
@@ -11862,11 +11987,15 @@ async function runArticleReview(info) {
             body: { chapter_id: reviewChapterId, report: mergedReport, base_text: mergedReport.base_text, raw_text: '', status: 'parsed' }
           });
           mergedReport.review_id = saved.review_id;
+          applyReviewFindingsAudit(mergedReport, saved);
         } catch (_) { /* 保存失败不阻塞审稿流程 */ }
       }
       state.pendingReview = { info: { ...info, chapterId: reviewChapterId, baseChapterFingerprint }, review: mergedReport };
       showReviewReport(mergedReport);
       toast(`整章分 ${reviewRun.plan.segments.length} 片审完：覆盖清单通过（首段/尾段/章尾哨兵齐全，问题均带片号）`, 'success');
+      if (mergedReport.findings_audit && mergedReport.findings_audit.problem) {
+        toast(mergedReport.findings_audit.problem, 'error');
+      }
       return;
     }
     const reviewData = await runHarnessJob(
@@ -11902,6 +12031,7 @@ async function runArticleReview(info) {
         // E01 §5.2：自洽性由**服务端**在落库时算（与 report_json 同源，不在这里重写一份判据）。
         // 只带回给界面显示"这条优点与某条问题互相否认"，供作者校准措辞。
         if (saved && saved.consistency) report.consistency = saved.consistency;
+        applyReviewFindingsAudit(report, saved);
       } catch (_) { /* 保存失败不阻塞审稿流程 */ }
     }
     if (!parsedOK) {
@@ -11912,6 +12042,7 @@ async function runArticleReview(info) {
     }
     // 抢救出来的报告要主动说明，避免用户以为 AI 真的漏报了几条。
     if (stage === 'salvaged') toast('审稿报告格式有瑕疵，已尽力抢救出可读部分（可能少一两条）', 'error');
+    if (report.findings_audit && report.findings_audit.problem) toast(report.findings_audit.problem, 'error');
     markJobApplied(reviewData && reviewData.job_id);
     state.pendingReview = { info: { ...info, chapterId: reviewChapterId, baseChapterFingerprint }, review: report };
     showReviewReport(report);
@@ -11987,8 +12118,55 @@ function reportConsistencyHtml(consistency) {
   return blocks.join('');
 }
 
+/**
+ * 结构化证据回执的可见行（见 `applyReviewFindingsAudit`）。
+ * 只显示**计数与原因码**，不复述正文；没有异常时完全不出现（不给正常报告加噪音）。
+ */
+function reviewFindingsAuditHtml(audit) {
+  const a = audit && typeof audit === 'object' ? audit : null;
+  if (!a || !a.total) return '';
+  const rejected = Number(a.rejected) || 0;
+  const defects = Number(a.shape_defects) || 0;
+  const differs = !!(a.quote_base && a.quote_base.differs_from_chapter);
+  if (!rejected && !defects && !differs) {
+    return `<div class="review-item strength">✓ 结构化问题 ${Number(a.accepted) || 0} 条都带逐字证据（可精确定位到句）</div>`;
+  }
+  const lines = [];
+  if (rejected) lines.push(`${rejected} 条被拒收：引文在这篇正文里找不到，修稿时无法定位到句`);
+  if (defects) lines.push(`${defects} 条缺字段：证据保留但只作待核验`);
+  if (differs) lines.push('审稿正文与库里的章节不是同一份：引文按"被审正文"核验；合并前请确认底稿');
+  return '<div class="ref-group-title">结构化证据回执</div>'
+    + '<div class="redline-scan warn">' + lines.map((l) => `⚠️ ${esc(l)}`).join('<br>') + '</div>';
+}
+
 function showReviewReport(review) {
-  const issues = review.issues || [];
+  const RC = reviewContract();
+  // 旧报告（无 schema_version）在展示前做一次**惰性迁移**：生成 LEGACY-<review_id>-<n> 稳定 id，
+  // 只允许查看与人工选择 —— 缺证据这件事必须显示出来，不能被"看起来能勾选"掩盖。
+  if (RC && review && !review.schema_version) {
+    review = RC.migrateLegacyReviewReport(review, review.review_id);
+  }
+  const integrity = (review && review.integrity) || (RC ? RC.validateReviewIntegrity(review) : { ok: true, code: 'OK', detail: '' });
+  // 问题的**身份**来自契约：对象用自己的 id，旧字符串项用它的原始序号（LEGACY-… 或 UNLINKED-n）。
+  // 显示顺序可以变，身份不能变：复选框同时写 index（仅供样式）与 data-review-issue-id（业务键）。
+  const issues = (Array.isArray(review.issues) ? review.issues : []).map((x, i) => ({
+    id: (RC ? RC.reviewIssueId(x) : '') || String((x && x.legacy_index) || `UNLINKED-${i + 1}`),
+    text: RC ? RC.issueLineText(x) : String(x),
+    legacyIndex: Number(x && x.legacy_index) || (i + 1),
+    hasFinding: Boolean(RC && RC.findingById(review, (RC ? RC.reviewIssueId(x) : ''))),
+  }));
+  const integrityBlocked = !(integrity && integrity.ok);
+  const integrityBanner = (() => {
+    if (!integrityBlocked) return '';
+    const code = String((integrity && integrity.code) || 'REVIEW_SCHEMA_INVALID');
+    const detail = String((integrity && integrity.detail) || '');
+    const missing = Array.isArray(integrity && integrity.missing) && integrity.missing.length
+      ? `<div class="muted">缺失映射的问题：${esc(integrity.missing.join('、'))}</div>` : '';
+    return `<div class="review-integrity blocked"><b>报告结构不完整（${esc(code)}）</b>`
+      + (detail ? `：${esc(detail)}` : '')
+      + missing
+      + `<div class="muted">在结构修复前，「按确认清单修稿」不可用 —— 不会把缺证据的问题当成"已精确修复"。</div></div>`;
+  })();
   const condenseOn = revisionPreference('allow_condense');
   const protectOn = revisionPreference('protect_selection');
   // 2026-03-17（v118 §5）：绝对局限措辞的限定标记要**逐条落在优点行上**（作者看的是这一行）。
@@ -12004,6 +12182,7 @@ function showReviewReport(review) {
     title: '🔍 AI 审稿报告',
     body: `
       <div class="review-summary">${esc(review.summary || '（无总评）')}</div>
+      ${auditEntryFor(review)}
       ${(review.strengths || []).length ? `<div class="ref-group-title">优点</div>${review.strengths.map((s) => {
         const evidence = strengthQualMap.get(String(s));
         const needsLimit = strengthQualMap.has(String(s));
@@ -12013,6 +12192,7 @@ function showReviewReport(review) {
           + '</div>';
       }).join('')}` : ''}
       ${reportConsistencyHtml(review.consistency)}
+      ${reviewFindingsAuditHtml(review.findings_audit)}
       ${(review.deferred || []).length ? '<div class="ref-group-title">待后续核验（不算问题，不会进入修稿清单）</div>' + review.deferred.map((d) => {
         const text = String((d && d.text) || d);
         const type = String((d && d.type) || '');
@@ -12027,26 +12207,225 @@ function showReviewReport(review) {
         <span><b>允许对已选问题局部压缩</b>：打开后，选中问题若落在**连续的已批准跨度**上，可以用 condense 合并表达（仍受门禁与禁止扩大范围约束）。</span></label>
       <label class="review-item"><input type="checkbox" data-revision-opt="protect" ${protectOn ? 'checked' : ''}>
         <span><b>把编辑器里选中的文字列为保护</b>：打开后，点「按确认清单修稿」时会把当前编辑器选区（若没有选区则用本作品已有的保护清单）登记为不得改写；修稿器不得命中它们。</span></label>
+      ${integrityBanner}
       <div class="ref-group-title">问题（勾选 = 确认修稿；取消勾选 = 忽略）</div>
-      <div style="text-align:right"><button class="btn small secondary" data-action="review-compare" data-chapter="${esc(String((review && review.chapter_id) || state.currentChapterId || ''))}">📊 模型/人工/结构对照</button></div>
+      <div style="text-align:right"><button class="btn small secondary" data-action="review-compare" data-chapter="${esc(String((review && review.chapter_id) || state.currentChapterId || ''))}">📊 模型/人工/结构对照</button>
+        <button class="btn small secondary" data-action="quality-audit-review" data-chapter="${esc(String((review && review.chapter_id) || state.currentChapterId || ''))}">🔍 独立复核（盲审→对照）</button></div>
       ${issues.length ? issues.map((x, i) => `
-        <label class="review-item issue"><input type="checkbox" data-review-issue="${i}" checked>
-          <span>${i + 1}. ${esc(x)}</span></label>`).join('')
+        <label class="review-item issue"><input type="checkbox" data-review-issue="${i}" data-review-issue-id="${esc(x.id)}" ${x.hasFinding ? '' : 'data-review-issue-unlinked="1"'} checked>
+          <span>${x.legacyIndex}. ${esc(x.text)}</span>${x.hasFinding ? '' : ' <span class="chip">缺少结构化证据</span>'}</label>`).join('')
         : '<div class="muted">未发现问题</div>'}`,
     footer: `
       <button class="btn secondary" data-close-modal>取消</button>
-      <button class="btn" data-action="review-confirm">按确认清单修稿</button>`,
+      <button class="btn" data-action="review-confirm"${integrityBlocked ? ' disabled title="报告结构不完整：先修复 ID/证据映射，再发起修稿"' : ''}>按确认清单修稿</button>`,
     large: true
+  });
+  // 入口条先按"无运行记录"渲染，再异步取本章最近一次审计刷新（只读）。
+  hydrateReviewAuditEntry(Number((review && review.chapter_id) || state.currentChapterId) || 0);
+}
+
+/**
+ * 发起一次独立复核（review audit）。
+ *
+ * 为什么由这里只做"发起 + 轮询展示"：盲审→冻结→对照→合并的顺序由服务端协调器强制执行，
+ * 界面自己拼流程就会出现"跳过盲审直接读初审"那种无法证明顺序的路径。
+ */
+
+/** dsh 卡上一行插件状态：按 provision 的 ready 字段说人话。 */
+function pluginsReadyText(d, which) {
+  if (which === 'novel-writing') {
+    const p = d && d.plugin;
+    if (!p || !p.exists) return '<span class="env-chip err">源码缺失</span>';
+    const hit = (p.installs || []).find((i) => i.exists && i.points_here);
+    return hit ? `<span class="env-chip ok">已装（${esc(hit.profile)}）</span>` : '<span class="env-chip err">未安装</span>';
+  }
+  const q = d && d.plugins && d.plugins.qualityAuditor;
+  if (!q) return '<span class="env-chip warn">未检测</span>';
+  if (!q.source_exists) return '<span class="env-chip err">源码缺失</span>';
+  return q.ready ? `<span class="env-chip ok">已装（${esc(q.profile)}）</span>` : '<span class="env-chip err">未安装</span>';
+}
+
+function auditPanelModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelQualityAuditPanel) || null;
+}
+
+/** 审稿报告顶部的"独立复核"入口（三态）。 */
+function auditEntryFor(review) {
+  const P = auditPanelModule();
+  if (!P) return '';
+  const t = state.envTools || {};
+  const q = t.dsh && t.dsh.plugins && t.dsh.plugins.qualityAuditor;
+  const pluginReady = q ? Boolean(q.ready) : true;
+  const hasStructured = Boolean(review && Array.isArray(review.findings) && review.findings.length);
+  const run = state.qualityAudit && state.qualityAudit.reviewRun ? state.qualityAudit.reviewRun : null;
+  return `<div id="review-audit-entry">${P.auditEntryHtml({ run, pluginReady, hasStructuredReview: hasStructured })}</div>`;
+}
+
+/** 取本章最近一次审稿审计，刷新入口状态（只读，不创建任何东西）。 */
+async function hydrateReviewAuditEntry(chapterId) {
+  const P = auditPanelModule();
+  const box = $('#review-audit-entry');
+  if (!P || !box || !chapterId) return;
+  try {
+    const data = await api(`/novel/quality-audits?chapter_id=${chapterId}&kind=review`);
+    state.qualityAudit = { ...(state.qualityAudit || {}), reviewRun: (data && data.latest) || null };
+    const t = state.envTools || {};
+    const q = t.dsh && t.dsh.plugins && t.dsh.plugins.qualityAuditor;
+    const review = (state.pendingReview && state.pendingReview.review) || {};
+    box.innerHTML = P.auditEntryHtml({
+      run: state.qualityAudit.reviewRun,
+      pluginReady: q ? Boolean(q.ready) : true,
+      hasStructuredReview: Boolean(Array.isArray(review.findings) && review.findings.length),
+    });
+  } catch (_) { /* 状态取不到不影响报告本身 */ }
+}
+
+/** 缺依赖弹窗：内容来自后端同一份 missing_dependencies（单一判断）。 */
+function openMissingDepsDialog(items) {
+  const P = auditPanelModule();
+  const list = Array.isArray(items) ? items : [];
+  openModal({
+    title: '⚠ 缺少依赖，无法开始独立复核',
+    body: P ? P.missingDepsHtml(list) : `<div class="muted">缺少：${esc(list.map((i) => i.name).join('、'))}</div>`,
+    footer: `<button class="btn secondary" data-close-modal>知道了</button>
+      <button class="btn" data-action="refresh-env-tools">重新检测</button>`,
+    protectedBackdrop: true
   });
 }
 
-async function refineByChecklist() {
-  const { info, review, confirmedOverride, confirmedIdsOverride } = state.pendingReview || {};
+async function startReviewQualityAudit(chapterId) {
+  const cid = Number(chapterId) || Number(state.currentChapterId) || 0;
+  if (!cid) { toast('先选择章节，再发起独立复核', 'error'); return; }
+  const reviewId = Number(state.pendingReview && state.pendingReview.review && state.pendingReview.review.review_id) || 0;
+  // 发起前预检：缺依赖就直接弹窗（别等付费调用失败再给一句错误码）。
+  try {
+    const t = state.envTools || await api('/env/tools');
+    state.envTools = t;
+    const missing = (t && t.dsh && Array.isArray(t.dsh.missing_dependencies)) ? t.dsh.missing_dependencies : [];
+    if (missing.length) { openMissingDepsDialog(missing); return; }
+  } catch (_) { /* 检测失败不阻断：让真正的创建请求去暴露问题 */ }
+  try {
+    const created = await api('/novel/quality-audits', {
+      method: 'POST',
+      body: { kind: 'review', chapter_id: cid, review_id: reviewId || undefined },
+    });
+    if (!created || created.ok === false) {
+      const code = String((created && (created.code || created.error)) || '');
+      if (code === 'AUDIT_PLUGIN_NOT_INSTALLED' || code === 'DSH_NOT_READY') {
+        openMissingDepsDialog([{ code, name: code === 'AUDIT_PLUGIN_NOT_INSTALLED' ? '审计插件 dsh-novel-quality-auditor' : 'DeepSeek Harness（dsh）', why: '独立复核需要它才能启动审计子进程。', cmd: 'node harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs', action: code === 'AUDIT_PLUGIN_NOT_INSTALLED' ? 'install_audit_plugin' : '' }]);
+        return;
+      }
+      toast(`独立复核未启动：${code || '未知原因'}`, 'error');
+      return;
+    }
+    const auditId = String(created.audit_id || '');
+    closeModal();
+    toast(`独立复核已启动（${auditId}）：盲审阶段不会读取初审；完成后合并报告会成为最新审稿`);
+    // 轮询：只读，最多 5 分钟；不阻塞界面。
+    const terminal = new Set(['COMPLETED', 'FAILED_CONTRACT', 'FAILED_AUTH', 'FAILED_DSH', 'AUDIT_NOT_SUBMITTED', 'INTERRUPTED', 'CANCELLED', 'STALE']);
+    for (let i = 0; i < 150; i += 1) {
+      await new Promise((r) => setTimeout(r, 2000));
+      let st = null;
+      try { st = await api(`/novel/quality-audits/${encodeURIComponent(auditId)}`); } catch (_) { continue; }
+      const status = String((st && st.run && st.run.status) || '');
+      if (terminal.has(status)) {
+        const panel = (typeof globalThis !== 'undefined' && globalThis.NovelQualityAuditPanel) || null;
+        toast(`独立复核结束：${panel ? panel.runLabel(status) : status}`);
+        if (status === 'COMPLETED') {
+          // 合并后的报告已成为最新审稿：刷新恢复条，让作者从同一入口看到。
+          try { await loadAIContext(); } catch (_) { /* 刷新失败不影响结论 */ }
+        }
+        return;
+      }
+    }
+    toast('独立复核仍在运行：可在审稿工作区继续查看状态（超时未提交会显示"未结构化提交"）');
+  } catch (err) {
+    toast(`独立复核失败：${String(err && err.message || err).slice(0, 120)}`, 'error');
+  }
+}
+
+/**
+ * 发起一次修稿逐项终验（revision audit）——阶段 5 的 UI 入口。
+ *
+ * 只做"发起 + 轮询 + 展示终态表"：确定性检查、逐项裁决、定向复修目标全部由服务端
+ * coordinator / merge-revision 计算（界面自己算就会出现两套判据）。
+ * 合并按钮的可用性以终验表为准：BLOCKED_SCOPE / STALE 硬阻塞，PARTIAL 允许带标签合并。
+ */
+async function startRevisionQualityAudit(chapterId) {
+  const panel = (typeof globalThis !== 'undefined' && globalThis.NovelQualityAuditPanel) || null;
+  const pending = state.pendingReviewDiff;
+  const ctx = state.pendingRevisionClosure;
+  if (!pending || typeof pending.newText !== 'string') { toast('没有待终验的候选稿', 'error'); return; }
+  const closure = ctx && ctx.finalized && ctx.finalized.closure;
+  const selected = Array.isArray(closure && closure.issues) ? closure.issues.map((i) => String(i.issue_id)).filter(Boolean) : [];
+  if (!selected.length) { toast('没有已选问题：先完成语义复验，再发起独立终验', 'error'); return; }
+  const cid = Number(chapterId) || Number(state.currentChapterId) || 0;
+  if (!cid) { toast('先选择章节', 'error'); return; }
+  try {
+    const created = await api('/novel/quality-audits', {
+      method: 'POST',
+      body: {
+        kind: 'revision', chapter_id: cid,
+        review_id: Number(state.lastReviewId) || undefined,
+        base_text: String(pending.oldText || ''),
+        candidate_text: String(pending.newText || ''),
+        candidate_hash: String(pending.hash || pending.candidateHash || `len:${String(pending.newText || '').length}`),
+        selected_issue_ids: selected,
+        patches: Array.isArray(pending.applied) ? pending.applied : [],
+        start: true, timeout_ms: 15 * 60 * 1000,
+      },
+    });
+    if (!created || created.ok === false) {
+      toast(`逐项终验未启动：${String((created && (created.code || created.error)) || '未知原因')}`, 'error');
+      return;
+    }
+    const auditId = String(created.audit_id || '');
+    toast(`逐项终验已启动（${auditId}）：完成后按条给出 PASS/PARTIAL/FAIL`);
+    const terminal = new Set(['COMPLETED', 'FAILED_CONTRACT', 'FAILED_AUTH', 'FAILED_DSH', 'AUDIT_NOT_SUBMITTED', 'INTERRUPTED', 'CANCELLED', 'STALE']);
+    for (let i = 0; i < 300; i += 1) {
+      await new Promise((r) => setTimeout(r, 2000));
+      let st = null;
+      try { st = await api(`/novel/quality-audits/${encodeURIComponent(auditId)}`); } catch (_) { continue; }
+      const status = String((st && st.run && st.run.status) || '');
+      if (!terminal.has(status)) continue;
+      if (status !== 'COMPLETED') { toast(`逐项终验结束：${panel ? panel.runLabel(status) : status}`, 'error'); return; }
+      const merged = await api(`/novel/quality-audits/${encodeURIComponent(auditId)}/merge`, { method: 'POST', body: {} });
+      const verdict = merged && merged.merged ? merged.merged : null;
+      state.qualityAudit = { ...(state.qualityAudit || {}), revision: verdict, auditId };
+      // 终验表直接追加进当前弹窗（openModal 没有 after 选项，别指望它渲染）。
+      let host = document.querySelector('#revision-audit-slot');
+      if (!host) {
+        host = document.createElement('div');
+        host.id = 'revision-audit-slot';
+        const root = document.getElementById('modal-root');
+        if (root) root.appendChild(host);
+      }
+      if (host && panel) host.innerHTML = panel.revisionTableHtml(verdict);
+      const allow = panel ? panel.mergeAllowed(verdict) : true;
+      const mergeBtn = document.querySelector('[data-action="diff-merge"]');
+      if (mergeBtn) {
+        mergeBtn.disabled = !allow;
+        mergeBtn.title = allow ? '' : '终验未通过（越权/候选过期）：不允许合并';
+      }
+      toast(allow
+        ? `逐项终验完成：${(verdict && verdict.all_pass) ? '全部通过' : '存在未通过项（见终验表）'}`
+        : '逐项终验存在硬阻塞（越权/过期）：已禁用合并', allow ? undefined : 'error');
+      return;
+    }
+    toast('逐项终验仍在运行：稍后重新打开候选稿可恢复状态');
+  } catch (err) {
+    toast(`逐项终验失败：${String(err && err.message || err).slice(0, 120)}`, 'error');
+  }
+}
+
+async function refineByChecklist() {  const { info, review, confirmedOverride, confirmedIdsOverride } = state.pendingReview || {};
   // ⚠️ 稳定的审稿身份必须在**清空 pendingReview 之前**取出来（E02 / K5）：
   //   旧写法先 `state.pendingReview = null`，后来又从 `state.pendingReview.review_id` 读 review_id ——
   //   那个字段永远读到 undefined（而且 review_id 本来就挂在 `review` 上），
   //   于是选择记录里的 review_id 恒为空，事后无法把"这次勾选"对回"哪一份审稿报告"。
   const reviewId = Number((review && review.review_id) || (info && info.review_id)) || null;
+  // 修稿终验（revision audit）需要按稳定 id 取回 findings：pendingReview 马上被清空，先记住 id。
+  if (reviewId) state.lastReviewId = reviewId;
   state.pendingReview = null;
   if (!info || !review) return;
   const confirmed = [];
@@ -12062,11 +12441,16 @@ async function refineByChecklist() {
     confirmedIds.push(...ids.map(String));
   } else {
     document.querySelectorAll('[data-review-issue]:checked').forEach((el) => {
+      const stableId = String(el.dataset.reviewIssueId || '');
       const idx = Number(el.dataset.reviewIssue);
-      const issue = (review.issues || [])[idx];
+      // 身份只认 `data-review-issue-id`（review.v3 的稳定 id）。`data-review-issue` 只是
+      // 显示位置，检索不到时才作为旧 DOM 的兜底 —— 且兜底结果仍要过下面的映射检查。
+      const RC = reviewContract();
+      const issue = (RC && stableId ? RC.issueById(review, stableId) : null)
+        || (Array.isArray(review.issues) ? review.issues[idx] : null);
+      if (!issue) return;
       confirmed.push(issue);
-      // **稳定编号** = 报告里的原始序号（或结构化 finding 的 id），不是"当前勾选的第几个"。
-      confirmedIds.push(issueStableId(issue, idx));
+      confirmedIds.push(stableId || issueStableId(issue, idx));
     });
   }
   // ⚠️ 一条都没勾选就**不要发起任何调用**：重审发现早先这一检查放在"补丁调用之后"的回退分支里，
@@ -12076,6 +12460,29 @@ async function refineByChecklist() {
     closeModal();
     toast('没有勾选任何问题，未发起修稿', 'error');
     return;
+  }
+  // ⚠️ P0（2026-10-21）付费调用前的**映射完整性检查**，fail-closed：
+  //   结构化报告里选中的 issue_id 在 findings 中找不到时，旧实现会静默退回 legacy 空证据
+  //   （多位置授权、逐字引用、验收条件全部丢失），然后照常花钱修稿，事后无法证明修没修好。
+  //   现在只要映射不完整就**不发任何付费调用**，并把缺的是哪几个 ID 如实说出来。
+  const reviewContractModule = reviewContract();
+  if (reviewContractModule && review) {
+    const mapping = reviewContractModule.assertSelectionMappable(review, confirmedIds);
+    if (!mapping.ok) {
+      closeModal();
+      const missing = Array.isArray(mapping.missing) && mapping.missing.length ? `（缺失：${mapping.missing.join('、')}）` : '';
+      toast(`审稿报告的 ID 映射不完整（${mapping.code}）${missing}：没有发起修稿。请重新审稿或按原文指出问题后重试。`, 'error');
+      reportClientLog({
+        level: 'error', kind: 'review_id_mapping_broken',
+        message: `[修稿] 选择映射完整性检查未通过：${mapping.code}`,
+        context: { missing: mapping.missing, selected: confirmedIds },
+      });
+      return;
+    }
+    if (mapping.legacy) {
+      // 旧报告可以继续，但结论上限是"待核验"（NEED_CONTEXT），不能宣称精确修复完成。
+      toast('旧报告：缺少结构化逐字证据，本次修稿结论最多到「待核验」，不会宣称精确修复完成');
+    }
   }
   // ⚠️ 底稿为空同样不能发起调用（第四轮改动引入的新可能：'接回进度/查看上次审稿'这条路上，
   // 取目标章正文失败会让 info.article 为空）。空底稿的修稿是"必花钱、必无用"——
@@ -12132,7 +12539,21 @@ async function refineByChecklist() {
   if (selectionText) rememberProtectedContent(selectionText, revisionChapterId);
   const extraProtected = selectionText ? [selectionText] : [];
   // v1.2.1 质量闭环（P0-1/P0-3）：把结构化 findings 对齐到本次勾选；有真证据才走多热点计划。
-  const revisionPlanFindings = revisionFindingsFor(confirmed, selectedIssueIds, review, info.article);
+  // ⚠️ 映射断裂时这里会抛错（fail-closed）。必须**捕获并如实告知**：未捕获的 rejection 会
+  //   变成一个没有任何提示的"点了没反应"，作者会以为修稿正在跑。
+  let revisionPlanFindings;
+  try {
+    revisionPlanFindings = revisionFindingsFor(confirmed, selectedIssueIds, review, info.article);
+  } catch (err) {
+    closeModal();
+    toast(`审稿 ID 映射断裂（${err.code || 'REVIEW_ID_MAPPING_BROKEN'}）：${err.message}。没有发起修稿。`, 'error');
+    reportClientLog({
+      level: 'error', kind: 'review_id_mapping_broken_at_plan',
+      message: `[修稿] 计划编译前的映射检查抛错：${err.code || ''}`,
+      context: { missing: err.missing || [], selected: selectedIssueIds },
+    });
+    return;
+  }
   const planV2 = revisionHasStructuredEvidence(revisionPlanFindings);
   const revisionPlan = revisionPlanFor(info.article, confirmed, {
     snapshot: revisionSnapshot, chapterId: revisionChapterId,
@@ -12921,18 +13342,51 @@ function revisionPlanFor(article, issues, opts = {}) {
  * 找不到结构化条目的选中项按旧 issues 文本回退（如实走"引号提及"定位，不伪造证据）。
  */
 function revisionFindingsFor(issues, issueIds, review, bodyText) {
+  const RF = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionFindings) || null;
+  const RC = reviewContract();
   const ids = Array.isArray(issueIds) ? issueIds.map(String) : [];
   const structured = Array.isArray(review && review.findings) ? review.findings : [];
-  const byId = new Map(structured.map((f, i) => [String(f && f.id != null ? f.id : i + 1), f]));
+  const isLegacy = Boolean(RC && review && (review.schema_version === RC.LEGACY_SCHEMA_VERSION || !review.schema_version));
+  const mapping = RC
+    ? RC.assertSelectionMappable(review, ids)
+    : { ok: true, code: 'REVIEW_CONTRACT_UNAVAILABLE', missing: [], legacy: false };
+  // ⚠️ P0（2026-10-21）：结构化报告里选中 ID 找不到 finding 时**抛错**，不再静默退回 legacy。
+  //   静默降级的后果是：修稿照常花钱，但多位置授权/逐字引用/验收条件全空，事后无法证明修好。
+  //   只有明确标记 review.legacy 的存量报告才走兼容路径（结论上限 NEED_CONTEXT）。
+  if (!isLegacy && !mapping.ok) {
+    const err = new Error(`审稿 ID 映射断裂（${mapping.code}）：${(mapping.missing || []).join('、') || '存在没有稳定 id 的问题'}`);
+    err.code = mapping.code || 'REVIEW_ID_MAPPING_BROKEN';
+    err.missing = mapping.missing || [];
+    throw err;
+  }
   return ids.map((id, i) => {
-    const f = byId.get(id);
-    // ⚠️ v1.2.4：结构化条目**存在但没有 evidence**（例如"缺纪年锚点""篇幅不足"这类
-    //   证据天然不在正文里的问题）时，必须保留它的 acceptance —— 否则
-    //   'must_contain' / 'min_chars' 会在进入验收器之前就被丢掉，硬约束退化成"模型说什么就是什么"。
-    if (f) return { ...f, id, evidence: Array.isArray(f.evidence) ? f.evidence : [] };
+    // 按稳定 ID 命中优先；legacy 报告允许按位置借用（存量数据没有别的身份可用）。
+    let f = RC ? RC.findingById(review, id) : null;
+    let matchedBy = f ? 'id' : '';
+    if (!f && isLegacy && i < structured.length && structured[i] && typeof structured[i] === 'object') {
+      f = structured[i]; matchedBy = 'legacy_position';
+    }
+    if (f) {
+      const raw = { ...f, id, evidence: Array.isArray(f.evidence) ? f.evidence : [] };
+      // 过一遍证据契约（角色/唯一性/诊断），让"证据缺失/引文歧义"在进入计划前就可见。
+      // 契约模块不在时原样透传 —— 不因为没有归一化就丢掉结构化证据。
+      const normalized = RF && typeof RF.normalizeFinding === 'function'
+        ? RF.normalizeFinding(raw, { index: i, bodyText })
+        : raw;
+      return {
+        ...normalized, id, matched_by: matchedBy,
+        source_finding_id: String(f.id == null ? '' : f.id),
+        evidence_status: isLegacy ? 'legacy_missing' : 'structured',
+      };
+    }
     const issue = (issues || [])[i];
     const text = typeof issue === 'string' ? issue : String((issue && (issue.text || issue.title)) || '');
-    return { id, text, explanation: text, type: 'other', severity: 'medium', evidence: [], acceptance: { rule: '', preserve: [] }, legacy: true };
+    // 旧格式：**如实**标成缺证据（报告里要能读出"这一条没有逐字锚点"），不伪装成已定位。
+    const legacy = { id, text, explanation: text, type: 'other', severity: 'medium', evidence: [], acceptance: { rule: '', preserve: [] }, legacy: true, actionable: false };
+    const normalized = RF && typeof RF.normalizeFinding === 'function'
+      ? { ...RF.normalizeFinding(legacy, { index: i, bodyText }), id, matched_by: 'legacy_text' }
+      : legacy;
+    return { ...normalized, evidence_status: isLegacy ? 'legacy_missing' : 'missing' };
   });
 }
 
@@ -13332,9 +13786,23 @@ function revisionResultToast(selectedCount, patched, semantic) {
 /** 语义复验提示词（只给被选问题 + 候选稿；不索取整章重写）。 */
 function buildRevisionSemanticPrompt({ article, revised, findings }) {
   const list = (Array.isArray(findings) ? findings : []).map((f) => {
-    const ev = (Array.isArray(f.evidence) ? f.evidence : []).map((e) => `[${e.role}] ${e.quote}`).join('\n    ');
+    const ev = (Array.isArray(f.evidence) ? f.evidence : []).map((e) => `[${e.role || 'reference'}${e.functional_group ? `/${e.functional_group}` : ''}] ${e.quote}`).join('\n    ');
     const acc = f.acceptance || {};
-    return `- issue ${f.id}｜${f.title || f.explanation || ''}\n  证据：\n    ${ev || '（无逐字证据）'}\n  成功判据：${acc.rule || '（未给出）'}\n  必须保留：${(acc.preserve || []).join('；') || '（未给出）'}`;
+    // 2026-10-21：子条件也要进提示词 —— 只给一句 acceptance.rule 时，模型会把"改了别处"读成通过；
+    // 逐条子条件（残留指代 / 必需动作 / 必须保留）才是"问题本身有没有解决"的可核对口径。
+    const conds = (Array.isArray(acc.conditions) ? acc.conditions : []).map((c) => {
+      const terms = (Array.isArray(c.terms) ? c.terms : []).join('、');
+      return `    · ${c.id || c.kind}｜${c.kind}${terms ? `：${terms}` : ''}${c.severity === 'risk' ? '（风险项）' : ''}`;
+    }).join('\n');
+    const risks = (Array.isArray(acc.risk_terms) ? acc.risk_terms : []).join('、');
+    return `- issue ${f.id}｜${f.title || f.explanation || ''}`
+      + (f.problem_type ? `\n  问题类型：${f.problem_type}` : '')
+      + `\n  证据：\n    ${ev || '（无逐字证据）'}`
+      + `\n  成功判据：${acc.rule || '（未给出）'}`
+      + `\n  必须保留：${(acc.preserve || []).join('；') || '（未给出）'}`
+      + (conds ? `\n  验收子条件（逐条回答，写进 checks）：\n${conds}` : '')
+      + (risks ? `\n  残留风险字面（改完仍出现即说明没解决）：${risks}` : '')
+      + (f.requires_external_context ? '\n  ⚠️ 这条需要外部资料（角色卡/词条/时点）核对：只看正文不得判 pass。' : '');
   }).join('\n');
   return [
     '你是中文小说的独立复核编辑。下面给出**审稿问题清单**、**修前底稿**与**修后候选稿**。',
@@ -13389,10 +13857,17 @@ function parseSemanticVerification(raw, issueIds) {
   return { ok: matched > 0, reason: matched ? '' : '语义复验没有返回任何可识别的 issue_id', byIssue, matched };
 }
 
-/** 审稿问题的**稳定编号**：结构化 finding 用自己的 id，旧字符串清单用它在报告里的原始序号。 */
+/** 审稿问题的**稳定编号**：结构化 finding / issue 用自带 id，旧字符串项用原始序号（legacy_index）。 */
 function issueStableId(issue, index) {
-  if (issue && typeof issue === 'object' && issue.id != null && String(issue.id) !== '') return String(issue.id);
-  return String(Number(index) + 1);
+  const RC = reviewContract();
+  if (RC) {
+    const explicit = RC.reviewIssueId(issue);
+    if (explicit) return explicit;
+  } else if (issue && typeof issue === 'object' && issue.id != null && String(issue.id) !== '') {
+    return String(issue.id);
+  }
+  const legacyIndex = Number(issue && issue.legacy_index) || (Number(index) + 1);
+  return String(legacyIndex);
 }
 
 /** 旧格式（无 schema_version）的抢救层：模型常在字符串值里吐裸引号，严格 JSON 救不回。 */
@@ -14149,9 +14624,26 @@ function showReviewDiff(oldText, newText, { checklist = null, applied = null, no
       ${semantic && semantic.summary && Number(semantic.summary.awaiting_semantic) > 0
         ? '<button class="btn secondary" data-action="diff-semantic-verify">运行独立语义复验（一次付费调用）</button>'
         : ''}
+      <button class="btn secondary" data-action="quality-audit-revision" data-chapter="${esc(String(chapterId || state.currentChapterId || ''))}">🔍 逐项终验（独立审计）</button>
       <button class="btn" data-action="diff-merge">合并到正文</button>`,
     large: true
   });
+}
+
+/**
+ * 语义复验里哪些 verdict 算"有结论"：pass / partial / fail / blocked。
+ * `need_context` / `unverified` / 未知值都**不算** —— 它们说明这次没判定成功。
+ *
+ * 为什么要这个判据（2026-10-21 作者报「AI 都跑完了没有验收按钮」）：
+ *   旧格式审稿（findings 没有逐字证据）下模型只能全给 need_context，于是这一轮复验
+ *   **一条结论都没有**，却照样把"每份候选只复验一次"的额度耗掉了（`semanticRuns + 1`）。
+ *   额度没了、结论也没有 ⇒ 作者既不能验收也不能合并，卡死在中间。
+ *   没有结论 = 与没验过等价，所以这一轮不能扣额度。
+ */
+const SEMANTIC_CONCLUSIVE_STATUSES = ['pass', 'partial', 'fail', 'blocked'];
+function semanticConclusionCount(byIssue) {
+  const obj = byIssue && typeof byIssue === 'object' ? byIssue : {};
+  return Object.values(obj).filter((v) => SEMANTIC_CONCLUSIVE_STATUSES.includes(String(v && v.status))).length;
 }
 
 /**
@@ -14177,6 +14669,17 @@ async function runRevisionSemanticVerify() {
     return;
   }
   if (state.revisionSemanticRunning) return; // 双击保护：进度条已经起来了就别再起一次
+  // 花这笔钱之前先看一眼"这轮有没有东西可核"：findings 全部没有逐字引文时，
+  // 提示词里每条都写着"（无逐字证据）/成功判据（未给出）"，模型只能判 need_context ——
+  // 一次付费调用注定换回零结论。这时先说清并让作者自己决定（不偷偷拦、也不偷偷花）。
+  const evidenceTotal = (Array.isArray(ctx.findings) ? ctx.findings : []).reduce((n, f) => n
+    + (Array.isArray(f && f.evidence) ? f.evidence.filter((e) => String((e && e.quote) || '').trim()).length : 0), 0);
+  if (evidenceTotal === 0) {
+    const goOn = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm('这份审稿的问题都没有逐字证据（旧格式审稿）：语义复验几乎必然得不出结论，仍要花一次付费调用吗？\n\n建议改用「作者确认：跳过复验直接合并」，或重新审稿补上证据后再验。')
+      : false;
+    if (!goOn) return;
+  }
   // 先把"正在跑"画到工作区上（按钮全灰 + 进度条），再发付费请求。
   // 以前这里是先 await 再渲染，作者点完只看到按钮没反应 —— 那正是 2026-10-18 的报障。
   startRevisionSemanticProgress((ctx.findings || []).length || (ctx.selectedIssueIds || []).length);
@@ -14204,6 +14707,15 @@ async function runRevisionSemanticVerify() {
       stopRevisionSemanticProgress();
       if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响下面的通报 */ } }
       toast(`语义复验没有返回可用结论（${parsed.reason}）：候选稿保持不变，仍按"待语义复验"处理`, 'error');
+      return;
+    }
+    // 解析成功 ≠ 有结论：模型可能整份都判"需要更多上下文"。这种情况**不扣额度**、
+    // 不重写候选、不落回执 —— 否则"额度用光 + 零结论"会把作者锁死在中间（本轮修复的死锁）。
+    if (semanticConclusionCount(parsed.byIssue) === 0) {
+      stopRevisionSemanticProgress();
+      if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响下面的通报 */ } }
+      toast('语义复验跑完了一条结论都没给出（模型全判"需要更多上下文"）：候选稿不变，复验额度未消耗；'
+        + '要落稿可以用「作者确认：跳过复验直接合并」，要结论请先重新审稿（补上逐字证据）再验', 'error');
       return;
     }
     const semantic = revisionSemanticFor({
@@ -14554,11 +15066,32 @@ function reviewWorkspaceRowHtml(row, activeId) {
 </button>`;
 }
 
-function reviewBlockHtml(block) {
-  if (block.kind === 'same') return `<div class="rw-block same" id="rw-block-${block.index}">${esc(block.after)}</div>`;
-  if (block.kind === 'del') return `<div class="rw-block del" id="rw-block-${block.index}"><span class="rw-block-tag">删除</span>${esc(block.before)}</div>`;
-  if (block.kind === 'add') return `<div class="rw-block add" id="rw-block-${block.index}"><span class="rw-block-tag">新增</span>${esc(block.after)}</div>`;
-  return `<div class="rw-block change" id="rw-block-${block.index}">
+/**
+ * 一条问题对应的原始 finding：先看本轮 findings，再看终审里带的（分段/旧记录两处来源）。
+ * 抽出来是因为"详情里的逐字证据"和"对照区定位到哪一段"必须查**同一份** finding，
+ * 各查各的迟早会出现"详情说有证据、对照区说定位不到"。
+ */
+function reviewFindingFor(model, row) {
+  if (!row || !model) return null;
+  const id = String(row.issue_id);
+  return (model.findings || []).find((f) => String(f && f.id) === id)
+    || ((model.finalize && model.finalize.findings) || []).find((f) => String(f && f.id) === id)
+    || null;
+}
+
+/** 当前问题的逐字引文（供 `hitIndexesOf` 定位段落；旧格式审稿没有证据时返回空数组）。 */
+function reviewEvidenceQuotes(model, row) {
+  const finding = reviewFindingFor(model, row);
+  const list = finding && Array.isArray(finding.evidence) ? finding.evidence : [];
+  return list.map((e) => String((e && e.quote) || '')).filter(Boolean);
+}
+
+function reviewBlockHtml(block, hit = false) {
+  const cls = hit ? ' hit' : '';
+  if (block.kind === 'same') return `<div class="rw-block same${cls}" id="rw-block-${block.index}">${esc(block.after)}</div>`;
+  if (block.kind === 'del') return `<div class="rw-block del${cls}" id="rw-block-${block.index}"><span class="rw-block-tag">删除</span>${esc(block.before)}</div>`;
+  if (block.kind === 'add') return `<div class="rw-block add${cls}" id="rw-block-${block.index}"><span class="rw-block-tag">新增</span>${esc(block.after)}</div>`;
+  return `<div class="rw-block change${cls}" id="rw-block-${block.index}">
   <div class="rw-col"><span class="rw-block-tag">修前</span>${esc(block.before)}</div>
   <div class="rw-col"><span class="rw-block-tag">修后</span>${esc(block.after)}</div>
 </div>`;
@@ -14566,9 +15099,7 @@ function reviewBlockHtml(block) {
 
 function reviewEvidenceHtml(RW, model, row) {
   if (!row) return '<div class="muted">左侧选一条问题，这里显示它的逐字证据与验收理由。</div>';
-  const finding = (model.findings || []).find((f) => String(f && f.id) === String(row.issue_id))
-    || (model.finalize && model.finalize.findings || []).find((f) => String(f && f.id) === String(row.issue_id))
-    || null;
+  const finding = reviewFindingFor(model, row);
   const ev = finding ? RW.evidenceOf(finding, model.oldText, model.newText) : [];
   const checks = Array.isArray(row.checks) ? row.checks : [];
   return `<div class="rw-detail-head"><b>#${esc(row.issue_id)} ${esc(row.title)}</b>
@@ -14577,6 +15108,11 @@ function reviewEvidenceHtml(RW, model, row) {
   ${row.canon ? `<div class="muted">词条归因：${esc(row.canon.entry_title || '（按关键词命中）')} · ${row.canon.strength === 'hard' ? '硬约束（需作者裁决）' : row.canon.strength === 'soft' ? '弱约束（只作建议）' : '缺权威词条'}（${esc(row.canon.basis || '')}）</div>` : ''}
   ${row.cross_segment && row.cross_segment.split ? `<div class="muted">证据跨片：${esc(row.cross_segment.evidence_segments.join('、'))}；已改到：${esc(row.cross_segment.patched_segments.join('、') || '无')}${row.cross_segment.untouched_segments.length ? `；未处理：${esc(row.cross_segment.untouched_segments.join('、'))}` : ''}</div>` : ''}
   ${row.repair_hint ? `<div class="muted">下一步：${esc(row.repair_hint)}</div>` : ''}
+  ${(() => {
+    // 子条件/外部资料的摘要：作者要能看出"还差哪一个条件"，以及这条是不是根本不该按正文补丁处理。
+    const line = typeof RW.conditionLineOf === 'function' ? RW.conditionLineOf(row) : '';
+    return line ? `<div class="rw-condition-line ${row.external_context && row.external_context.required ? 'warn' : ''}">${esc(line)}</div>` : '';
+  })()}
   ${ev.length ? `<div class="ref-group-title">逐字证据（${ev.length}）</div>${ev.map((e) => `
     <div class="rw-evidence ${e.before.found ? '' : 'missing'}">
       <div class="muted" style="font-size:12px">证据 ${e.index}｜${e.editable ? '可编辑锚点' : '只读引用'}｜${esc(e.quote).slice(0, 80)}</div>
@@ -14669,7 +15205,10 @@ function renderReviewWorkspace(content) {
   ].filter(Boolean).join(' · ');
   const summary = RW.summaryLine({ chapterTitle: model.chapterTitle, rows: model.rows, patchedCount: model.patchedCount });
   const blocks = RW.diffBlocks(model.oldText, model.newText);
-  const shown = RW.visibleBlocks(blocks, ws.mode);
+  // 方案 §8.2：选中左侧问题 ⇒ 右侧高亮**全部相关证据**。命中段只算一次，
+  // 「相关段落」筛选与"点问题定位"共用，避免两处各判一套。
+  const hitIndexes = RW.hitIndexesOf(blocks, reviewEvidenceQuotes(model, activeRow));
+  const shown = RW.visibleBlocks(blocks, ws.mode, { hitIndexes });
   const diffInfo = RW.diffSummary(blocks);
   // v1.2.4 P2：质量历史/趋势只从**已落地的运行记录**聚合，不重新调用模型。
   const QI = (typeof globalThis !== 'undefined' && globalThis.NovelQualityInsights) || null;
@@ -14685,7 +15224,7 @@ function renderReviewWorkspace(content) {
     archiveCount: model.archives ? model.archives.count : 0,
   });
   const blocker = RW.blockerText({
-    stage: model.stage, rows: model.rows, busy: model.busy,
+    stage: model.stage, rows: model.rows, busy: model.busy, semanticRuns: model.semanticRuns,
     reason: (model.finalize && model.finalize.reasons || []).join('；'),
   });
   const actionBtn = (a) => {
@@ -14738,7 +15277,8 @@ function renderReviewWorkspace(content) {
           <button class="btn small ${ws.drawer ? '' : 'secondary'}" data-action="review-drawer" aria-pressed="${ws.drawer ? 'true' : 'false'}" aria-expanded="${ws.drawer ? 'true' : 'false'}">详情</button>
         </div>
         <div class="rw-diff" role="region" aria-label="修稿对照">
-          ${shown.length ? shown.map(reviewBlockHtml).join('') : '<div class="muted">候选与原文没有段落级差异。</div>'}
+          ${ws.mode === 'context' ? `<div class="rw-context-note muted">${activeRow ? `只看 #${esc(activeRow.ordinal)} 的证据所在段落` : '只看当前问题的证据所在段落'}${hitIndexes.length ? `（命中 ${hitIndexes.length} 段）` : '（这条问题没有可定位的逐字证据，先显示改过的段落）'}</div>` : ''}
+          ${shown.length ? shown.map((b) => reviewBlockHtml(b, hitIndexes.includes(b.index))).join('') : '<div class="muted">候选与原文没有段落级差异。</div>'}
         </div>
         ${activeRow ? `<div class="rw-active-line muted">当前 #${esc(activeRow.ordinal)} ${esc(activeRow.title)} · ${esc(activeRow.status_text)} · ${esc(activeRow.dimensions_text)}</div>` : ''}
       </section>
@@ -14791,13 +15331,30 @@ function reviewWorkspaceNarrowNav() {
   return typeof window !== 'undefined' && window.innerWidth <= 1279;
 }
 
+/** 记住对照区当前滚动位置：切筛选/切视图时原样还原，别让人每次都被弹回顶部。 */
+function reviewWorkspaceKeepScroll() {
+  const ws = reviewWorkspaceState();
+  const diff = typeof document !== 'undefined' ? document.querySelector('.rw-diff') : null;
+  if (diff) ws.scrollAnchor = Number(diff.scrollTop) || 0;
+  return Number(ws.scrollAnchor) || 0;
+}
+
 function reviewWorkspaceSelect(id) {
   const ws = reviewWorkspaceState();
   ws.activeId = String(id == null ? '' : id);
   // 窄屏的导航是覆盖式的：选中问题后必须收起，否则它会一直盖住差异区。
   if (reviewWorkspaceNarrowNav()) ws.navOpen = false;
   // 切问题**只读**：不调用模型、不计费、不动候选。
-  render().catch(() => {});
+  // 但必须**看得出变化**（2026-10-21 作者报"点问题没反应"）：整页重画会把对照区滚回顶部，
+  // 所以要主动滚到这一条的第一处命中段；没有命中就诚实地回到顶部。
+  render().then(() => {
+    const hit = document.querySelector('.rw-block.hit');
+    if (hit && typeof hit.scrollIntoView === 'function') hit.scrollIntoView({ block: 'center' });
+    else {
+      const diff = document.querySelector('.rw-diff');
+      if (diff) diff.scrollTop = 0;
+    }
+  }).catch(() => { /* 滚动失败不影响查看 */ });
 }
 
 function reviewWorkspaceMove(delta) {
@@ -14811,15 +15368,23 @@ function reviewWorkspaceMove(delta) {
 
 function reviewWorkspaceSetFilter(filter) {
   const ws = reviewWorkspaceState();
+  const keep = reviewWorkspaceKeepScroll();
   ws.filter = String(filter || 'all');
   if (reviewWorkspaceNarrowNav()) ws.navOpen = false;
-  render().catch(() => {});
+  render().then(() => {
+    const diff = document.querySelector('.rw-diff');
+    if (diff) diff.scrollTop = keep;
+  }).catch(() => {});
 }
 
 function reviewWorkspaceSetMode(mode) {
   const ws = reviewWorkspaceState();
+  const keep = reviewWorkspaceKeepScroll();
   ws.mode = String(mode || 'diff');
-  render().catch(() => {});
+  render().then(() => {
+    const diff = document.querySelector('.rw-diff');
+    if (diff) diff.scrollTop = keep;
+  }).catch(() => {});
 }
 
 function reviewWorkspaceToggleDrawer() {
@@ -18507,6 +19072,46 @@ async function handleAction(action, actionEl, e) {
       case 'review-compare':
         await showRevisionComparison(Number((actionEl && actionEl.dataset && actionEl.dataset.chapter) || 0));
         break;
+
+      case 'show-missing-deps': {
+        const t = state.envTools || {};
+        const missing = (t.dsh && Array.isArray(t.dsh.missing_dependencies)) ? t.dsh.missing_dependencies : [];
+        if (!missing.length) { toast('当前没有检测到缺失依赖'); await loadEnvTools(); break; }
+        openMissingDepsDialog(missing);
+        break;
+      }
+
+      case 'install-audit-plugin': {
+        try {
+          const out = await api('/env/plugins/install', { method: 'POST', body: { name: 'quality-auditor' } });
+          if (!out || out.ok === false) { toast(`安装失败：${String((out && out.error) || '未知原因')}`, 'error'); break; }
+          toast(out.ready ? '审计插件已安装并生效（无需重启服务）' : `安装执行完成，但仍未就绪（changed=${(out.changed || []).length}）`, out.ready ? undefined : 'error');
+          closeModal();
+          await loadEnvTools();
+        } catch (e) {
+          toast(`安装失败：${String(e && e.message || e).slice(0, 120)}`, 'error');
+        }
+        break;
+      }
+
+      case 'open-repo-path': {
+        // 只允许打开仓库内已知目录（不接收任意路径，避免把"打开目录"变成任意文件浏览器）。
+        try { await api('/env/open_folder', { method: 'POST', body: { target: 'plugin' } }); }
+        catch (e) { toast(`打开目录失败：${String(e && e.message || e).slice(0, 100)}`, 'error'); }
+        break;
+      }
+
+      case 'quality-audit-revision': {
+        await startRevisionQualityAudit(Number((actionEl && actionEl.dataset && actionEl.dataset.chapter) || 0));
+        break;
+      }
+
+      case 'quality-audit-review': {
+        // 独立复核入口（方案 §9.1）：结构检查 → DSH 盲审 → 初审对照 → 合并，
+        // 全部由服务端协调器推进；界面只负责发起与展示状态（不自己拼流程）。
+        await startReviewQualityAudit(Number((actionEl && actionEl.dataset && actionEl.dataset.chapter) || 0));
+        break;
+      }
 
       case 'review-confirm': {
         // E06：两个可选授权在这里落盘（默认关闭）；它们只影响这次修稿，不改变生成行为。

@@ -46,6 +46,33 @@ export function locateQuote(text, quote) {
   return { found: true, index: at, ambiguous: hay.indexOf(needle, at + needle.length) >= 0 };
 }
 
+/**
+ * 核验引文该拿哪份正文当底本（2026-10-21，六项审稿漏修的根因之一）。
+ *
+ * 事故形态（本机真实数据 review#29）：审稿是**对着当时那篇正文**做的，报告把那段正文
+ * 存进了 `base_text`；但服务端落库时却拿 `htmlToPlain(chapter.content)`（**当前库里的正文**）
+ * 去核验引文。只要这两者不是同一份（作者在编辑器里改了还没保存、R08「先审稿再应用」的草稿链、
+ * 或修稿已经把候选合并回正文），**全部引文都会"找不到"→ 6 条 finding 全被拒收 → findings=[]**，
+ * 修稿器于是拿不到任何逐字证据，只能照问题文本整段重写：这就是"只修半个问题/完全漏修/
+ * 改错位置"的上游成因。
+ *
+ * 纪律：**被核验的是"模型当时看到的那篇正文"**，不是"现在库里的正文"。
+ * 两者不一致时如实标注（`differs_from_chapter`），而不是悄悄换底本把真引文判成伪造。
+ * @param {{reviewedText?:string, chapterText?:string}} input
+ */
+export function resolveReviewQuoteBase(input = {}) {
+  const reviewed = String(input.reviewedText == null ? '' : input.reviewedText);
+  const chapter = String(input.chapterText == null ? '' : input.chapterText);
+  if (reviewed.trim()) {
+    return {
+      text: reviewed,
+      source: 'reviewed',
+      differs_from_chapter: !!chapter.trim() && norm(reviewed) !== norm(chapter),
+    };
+  }
+  return { text: chapter, source: chapter.trim() ? 'chapter' : 'empty', differs_from_chapter: false };
+}
+
 // ── 2026-03-17（v118 0317 专项 §3）：审稿报告不能虚构"原话" ───────────────────────
 //
 // 事故形态（本轮真实审稿）：AI 的 strengths 把两句**原文里根本没有的对白**放进引号：
@@ -107,21 +134,73 @@ export function auditReviewQuotes(lines, text) {
   };
 }
 
+/** 形状字段（缺了只损可读性/自动资格，不证明"这条问题是假的"）。 */
+const SHAPE_FIELDS = ['kind', 'severity', 'verdict', 'suggested_action'];
+
+/** 允许透传到修稿/验收层的 finding 形状（v2 兼容：未知字段不复制，但这几个必须带上）。 */
+function normalizeAcceptanceOf(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const list = (x) => (Array.isArray(x) ? x.map((s) => String(s == null ? '' : s).trim()).filter(Boolean) : []);
+  const conditions = Array.isArray(src.conditions) ? src.conditions : [];
+  return {
+    rule: String(src.rule == null ? '' : src.rule).trim(),
+    preserve: list(src.preserve),
+    // v1.2.4 的硬约束字面 / 篇幅下限：验收器按它们做确定性判定，丢了就退化成"模型说什么是什么"。
+    must_contain: list(src.must_contain),
+    min_chars: Number.isFinite(Number(src.min_chars)) && Number(src.min_chars) > 0 ? Number(src.min_chars) : 0,
+    // 2026-10-21：结构化子条件（见 revision-semantic-verifier.deterministicChecks）。
+    conditions: conditions.filter((c) => c && typeof c === 'object').map((c) => ({
+      id: String(c.id == null ? '' : c.id),
+      kind: String(c.kind == null ? '' : c.kind),
+      terms: Array.isArray(c.terms) ? c.terms.map((s) => String(s == null ? '' : s)) : [],
+      marker: String(c.marker == null ? '' : c.marker),
+      severity: c.severity === 'risk' ? 'risk' : 'hard',
+      note: String(c.note == null ? '' : c.note),
+    })),
+    // "问题可能仍存在的风险字面"：命中只形成**风险断言**，不单独判死（语境可能已消歧）。
+    risk_terms: list(src.risk_terms),
+  };
+}
+
+function normalizeEvidenceOf(raw) {
+  const e = raw && typeof raw === 'object' ? raw : {};
+  const role = e.role === 'candidate_edit' || e.role === 'reference' ? e.role : '';
+  return {
+    span_id: String(e.span_id || ''),
+    quote: String(e.quote || ''),
+    source: e.source === 'approved_context' ? 'approved_context' : 'body',
+    // ⚠️ role 必须透传：丢掉它会让"计划层把证据当可改目标"与"验收层把同一证据当只读基准"
+    //    互相矛盾（同一句既被允许改、又被要求必须原样保留）。缺省留空 = 由下游按旧口径推断。
+    role,
+    functional_group: String(e.functional_group == null ? '' : e.functional_group),
+  };
+}
+
 /**
  * 校验单条 finding 的形状与引用（Host 侧；模型不能自己声明"引用存在"）。
- * @returns {{ok:boolean, errors:string[], normalized:object|null}}
+ *
+ * 2026-10-21 修正（六项漏修的第二个上游成因）：旧实现把**形状缺陷**（缺 kind /
+ * suggested_action / rationale / reading_cost）与**引用造假**当成同一档错误，一律整条拒收。
+ * 结果是：模型按提示词给的字段（type/explanation/acceptance）与这套 review_v2 白名单对不上，
+ * 6 条有逐字证据的问题被 6 条"缺字段"直接丢掉 → 修稿器一条证据也拿不到。
+ * 现在分两档，且**只有引用层面的硬事实能拒收整条**：
+ *   · hard：没有证据 / 引文在底本里找不到 / 引文多处无法唯一定位 → 拒收（不得凭空定位）；
+ *   · defect：形状字段缺失或取值未知 → 保留证据，标 `shape_defects`，降级为待核验
+ *     （`verdict=hypothesis`、`auto_eligible=false`、`suggested_action=keep`），**不静默丢项**。
+ * @returns {{ok:boolean, errors:string[], defects:string[], normalized:object|null}}
  */
 export function validateNarrativeFinding(finding, ctx = {}) {
   const errors = [];
+  const defects = [];
   const f = finding && typeof finding === 'object' ? finding : null;
-  if (!f) return { ok: false, errors: ['finding 必须是对象'], normalized: null };
-  for (const key of ['kind', 'severity', 'verdict', 'suggested_action']) {
-    if (!f[key]) errors.push(`缺少 ${key}`);
+  if (!f) return { ok: false, errors: ['finding 必须是对象'], defects, normalized: null };
+  for (const key of SHAPE_FIELDS) {
+    if (!f[key]) { defects.push(`缺少 ${key}`); continue; }
+    if (key === 'kind' && !FINDING_KINDS.includes(f.kind)) defects.push(`未知 kind：${f.kind}`);
+    if (key === 'severity' && !FINDING_SEVERITIES.includes(f.severity)) defects.push(`未知 severity：${f.severity}`);
+    if (key === 'verdict' && !FINDING_VERDICTS.includes(f.verdict)) defects.push(`未知 verdict：${f.verdict}`);
+    if (key === 'suggested_action' && !SUGGESTED_ACTIONS.includes(f.suggested_action)) defects.push(`未知 suggested_action：${f.suggested_action}`);
   }
-  if (f.kind && !FINDING_KINDS.includes(f.kind)) errors.push(`未知 kind：${f.kind}`);
-  if (f.severity && !FINDING_SEVERITIES.includes(f.severity)) errors.push(`未知 severity：${f.severity}`);
-  if (f.verdict && !FINDING_VERDICTS.includes(f.verdict)) errors.push(`未知 verdict：${f.verdict}`);
-  if (f.suggested_action && !SUGGESTED_ACTIONS.includes(f.suggested_action)) errors.push(`未知 suggested_action：${f.suggested_action}`);
   const evidence = Array.isArray(f.evidence) ? f.evidence : [];
   if (!evidence.length) errors.push('缺少 evidence（必须给出原文引用）');
   for (const e of evidence) {
@@ -131,27 +210,39 @@ export function validateNarrativeFinding(finding, ctx = {}) {
     if (!at.found) errors.push(`引用在正文里找不到（不是逐字引用）：${clip(quote, 40)}`);
     else if (at.ambiguous) errors.push(`引用在正文里出现多次，无法唯一定位：${clip(quote, 40)}`);
   }
-  if (!String(f.rationale || '').trim()) errors.push('缺少 rationale（为什么它是问题）');
-  if (!String(f.reading_cost || '').trim()) errors.push('缺少 reading_cost（伤害了哪种阅读效果）');
+  // 提示词里的 `explanation` 就是"为什么它是问题"；只要求字段，不要求两种写法都填。
+  const rationale = String(f.rationale || f.explanation || '').trim();
+  const readingCost = String(f.reading_cost || '').trim();
+  if (!rationale) defects.push('缺少 rationale（为什么它是问题）');
+  if (!readingCost) defects.push('缺少 reading_cost（伤害了哪种阅读效果）');
   return {
     ok: errors.length === 0,
     errors,
+    defects,
     normalized: {
       id: String(f.id || ''),
+      title: String(f.title || '').trim(),
+      explanation: String(f.explanation || '').trim(),
+      // `type` 是审稿—修稿契约的分类；`kind` 是 review_v2 白名单。两者都透传，不互相冒充。
+      type: String(f.type || ''),
+      problem_type: String(f.problem_type || '').trim(),
+      requires_external_context: f.requires_external_context === true,
       kind: f.kind || null,
       severity: f.severity || null,
       verdict: f.verdict || 'unknown',
       rule_id: String(f.rule_id || ''),
       candidate_id: String(f.candidate_id || ''),
-      evidence: evidence.map((e) => ({ span_id: String((e && e.span_id) || ''), quote: String((e && e.quote) || ''), source: (e && e.source) === 'approved_context' ? 'approved_context' : 'body' })),
-      reading_cost: String(f.reading_cost || ''),
-      rationale: String(f.rationale || ''),
+      evidence: evidence.map((e) => ({ ...normalizeEvidenceOf(e), span_id: String((e && e.span_id) || '') })),
+      acceptance: normalizeAcceptanceOf(f.acceptance),
+      reading_cost: readingCost,
+      rationale,
       // 反证：模型必须自己写"为什么这可能只是有意手法"；写不出来就不是 confirmed。
       counterevidence: String(f.counterevidence || ''),
       suggested_action: f.suggested_action || 'keep',
       required_fact_ids: Array.isArray(f.required_fact_ids) ? f.required_fact_ids.map(String) : [],
       dependency_ids: Array.isArray(f.dependency_ids) ? f.dependency_ids.map(String) : [],
       keep_reason: f.keep_reason == null ? null : String(f.keep_reason),
+      shape_defects: defects,
     },
   };
 }
@@ -169,19 +260,24 @@ export function normalizeNarrativeFindings(findings, ctx = {}) {
   list.forEach((f, i) => {
     const v = validateNarrativeFinding(f, ctx);
     if (!v.ok) {
-      // 引用核验不过的**不进候选**（§6.2）：只如实记录它被拒的理由。
-      rejected.push({ index: i, id: v.normalized && v.normalized.id ? v.normalized.id : `#${i + 1}`, errors: v.errors });
+      // **引用层面**的事实问题才拒收（§6.2）：没有证据/引文对不上/定位歧义 —— 只如实记录理由。
+      rejected.push({ index: i, id: v.normalized && v.normalized.id ? v.normalized.id : `#${i + 1}`, errors: v.errors, defects: v.defects || [] });
       return;
     }
     const n = v.normalized;
     // 没有反证 → 降级为 hypothesis（可看、可讨论，但不得被当作已确认的问题自动进入修稿）。
-    const verdict = n.counterevidence.trim() ? n.verdict : (n.verdict === 'confirmed' ? 'hypothesis' : n.verdict);
+    // 形状缺陷同样降级：**证据留着**，但"这条问题是否成立"仍需作者/语义层确认。
+    const hasDefects = (n.shape_defects || []).length > 0;
+    const verdict = hasDefects
+      ? (n.verdict === 'not_applicable' ? 'not_applicable' : 'hypothesis')
+      : (n.counterevidence.trim() ? n.verdict : (n.verdict === 'confirmed' ? 'hypothesis' : n.verdict));
     const downgraded = verdict !== n.verdict;
     out.push({
       ...n,
       id: n.id || `finding-${i + 1}`,
       verdict,
-      downgraded_for_missing_counterevidence: downgraded,
+      downgraded_for_missing_counterevidence: !hasDefects && downgraded,
+      downgraded_for_shape_defects: hasDefects,
       // 只有 confirmed 且不是观察/待核验类，才可能进入"可选的修稿候选"。
       auto_eligible: verdict === 'confirmed' && n.kind !== 'observation' && n.kind !== 'deferred' && n.suggested_action !== 'keep' && n.suggested_action !== 'defer',
     });
@@ -197,6 +293,8 @@ export function normalizeNarrativeFindings(findings, ctx = {}) {
     counts: { ...counts, rejected: rejected.length, total: list.length },
     // 未运行过语义审稿时调用方不得显示"叙事诊断完成"；这里如实给出可采纳集大小。
     auto_eligible_count: out.filter((f) => f.auto_eligible).length,
+    // 形状缺陷条目数：这些条目**保留逐字证据**但不算"已确认"，报告要如实显示。
+    shape_defect_count: out.filter((f) => f.downgraded_for_shape_defects).length,
   };
 }
 
@@ -449,8 +547,12 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
  * @param {{text?:string, baseHash?:string, snapshotId?:string}} ctx
  */
 export function structureReviewReport(report = {}, ctx = {}) {
+  // ⚠️ 2026-10-21（P0 身份断链）：issues 可能是**对象**（review.v3 的 `{id,text}`）。
+  //   旧实现 `String(x)` 会把它们变成 "[object Object]"，既毁掉界面显示，也把 issue.id 丢掉。
+  //   这里按"取文本"归一：对象取 text/title，字符串原样 —— 保留行文本，身份由 review-contract 负责。
   const asList = (x) => {
-    if (Array.isArray(x)) return x.map((s) => String(s == null ? '' : s).trim()).filter(Boolean);
+    const one = (s) => String(s == null ? '' : (typeof s === 'object' ? (s.text || s.title || '') : s)).trim();
+    if (Array.isArray(x)) return x.map(one).filter(Boolean);
     const s = String(x == null ? '' : x);
     return s.split(/\n+/).map((t) => t.trim()).filter(Boolean);
   };
@@ -472,6 +574,14 @@ export function structureReviewReport(report = {}, ctx = {}) {
         checked: strengths.length,
         needs_qualification: (consistency.strength_qualifications || []).length,
       },
+      // 引文是拿**哪份正文**核验的（reviewed=被审正文快照 / chapter=当前库里的正文 / empty=没有底本）。
+      // 调用方与作者界面据此判断"引文没找到"到底是模型编的，还是底本换了。
+      quote_base: ctx.quoteBase && typeof ctx.quoteBase === 'object'
+        ? {
+          source: String(ctx.quoteBase.source || ''),
+          differs_from_chapter: ctx.quoteBase.differs_from_chapter === true,
+        }
+        : null,
     };
   };
   let rawFindings = report.findings;
@@ -491,6 +601,10 @@ export function structureReviewReport(report = {}, ctx = {}) {
     });
   }
   if (!Array.isArray(rawFindings) || !rawFindings.length) {
+    // 2026-10-21：`findings` 缺席 与 `findings: []` 是两件事 —— 后者说明模型按"结构化"口径
+    // 回答却一条也没给（或上游把条目丢了）。这两种都必须如实写清，不能都记成"旧口径报告"，
+    // 否则作者与修稿器都不知道"这一章其实没有任何逐字证据"。
+    const emptyArray = Array.isArray(rawFindings);
     return withConsistency({
       summary, strengths,
       issues: asList(report.issues),
@@ -498,6 +612,12 @@ export function structureReviewReport(report = {}, ctx = {}) {
       rejected: [],
       counts: { total: 0, accepted: 0, rejected: 0 },
       structure: 'legacy_lines',
+      // `structure` 保持旧口径（不是 review_v2），但**空数组**与**根本没有 findings 字段**
+      // 必须能分辨：前者说明模型按结构化口径回答却一条没给（或上游把条目丢了）。
+      findings_state: emptyArray ? 'empty' : 'absent',
+      structure_note: emptyArray
+        ? '这次审稿返回了空的 findings 数组：没有任何逐字证据，修稿只能按问题文本改（无法定位到句）'
+        : '',
     });
   }
   const normalized = normalizeNarrativeFindings(rawFindings, {
@@ -509,13 +629,27 @@ export function structureReviewReport(report = {}, ctx = {}) {
     const quote = f.evidence && f.evidence[0] ? String(f.evidence[0].quote || '') : '';
     const head = f.rationale || f.reading_cost || '（未给出理由）';
     return `[${f.id}] ${head}${quote ? `（引用：${clip(quote, 40)}）` : ''}`
-      + (f.verdict === 'hypothesis' ? ' ⚠️未给出反证，仅作待核验' : '');
+      + (f.downgraded_for_shape_defects ? ' ⚠️字段不全，保留证据但仅作待核验' : '')
+      + (f.verdict === 'hypothesis' && !f.downgraded_for_shape_defects ? ' ⚠️未给出反证，仅作待核验' : '');
   });
   const extraIssues = asList(report.issues).filter((line) => !derived.some((d) => d.includes(clip(line, 20))));
   return withConsistency({
     summary,
     strengths,
-    issues: [...derived, ...extraIssues],
+    // ⚠️ P0（2026-10-21）：`issues` 现在是**对象**，带稳定 id —— 这是身份链的第一段。
+    //   被接受的结构化 finding 用模型给的 id（R-0001…）；模型额外写的 issues 行没有 id 也没有
+    //   逐字证据，如实保留为 `id:''` 的未链接项（可查看、不可精确修复），而不是把它们丢掉或
+    //   伪造成 finding。被拒收的 finding 不进 issues（它们已在 rejected 里，带拒收理由）。
+    issues: [
+      ...accepted.map((f, i) => ({
+        id: String(f.id == null ? '' : f.id),
+        text: derived[i],
+        source: 'initial_review',
+        finding_id: String(f.id == null ? '' : f.id),
+        link_mode: 'explicit',
+      })),
+      ...extraIssues.map((text) => ({ id: '', text, source: 'initial_review', finding_id: '', link_mode: 'legacy' })),
+    ],
     findings: accepted,
     rejected: normalized.rejected,
     counts: { ...normalized.counts, accepted: accepted.length, auto_eligible: normalized.auto_eligible_count },
@@ -523,5 +657,6 @@ export function structureReviewReport(report = {}, ctx = {}) {
     schema_version: REVIEW_SCHEMA_VERSION,
     base_hash: String(ctx.baseHash || ''),
     snapshot_id: String(ctx.snapshotId || ''),
+    shape_defect_count: normalized.shape_defect_count || 0,
   });
 }

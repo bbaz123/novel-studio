@@ -68,16 +68,23 @@
   }
 
   /** 顶部统计：只数有结论的条目。 */
+  /**
+   * 统一取"终态"：终审行用 `final_status`，左侧显示行用 `status`（见 `filterRows` 的说明）。
+   * 只认一个的后果是**统计静默全 0**：界面会显示"已选 8 · 0 条已独立验证"，
+   * 看起来像"一条都没过"，实际是字段名没对上。这里两种形状都认。
+   */
+  const finalStatusOf = (r) => textOf(r && (r.final_status || r.status));
+
   function countsOf(rows) {
     const list = Array.isArray(rows) ? rows : [];
     return {
       selected: list.length,
-      verified: list.filter((r) => r && r.final_status === 'ISSUE_VERIFIED').length,
-      unresolved: list.filter((r) => r && r.final_status === 'UNRESOLVED').length,
-      pending: list.filter((r) => r && r.final_status === 'AWAITING_SEMANTIC').length,
-      partial: list.filter((r) => r && r.final_status === 'PARTIAL').length,
-      canon: list.filter((r) => r && r.final_status === 'CANON_CONFLICT').length,
-      patched: list.filter((r) => r && Number(r.patch_count) > 0).length,
+      verified: list.filter((r) => finalStatusOf(r) === 'ISSUE_VERIFIED').length,
+      unresolved: list.filter((r) => finalStatusOf(r) === 'UNRESOLVED').length,
+      pending: list.filter((r) => finalStatusOf(r) === 'AWAITING_SEMANTIC').length,
+      partial: list.filter((r) => finalStatusOf(r) === 'PARTIAL').length,
+      canon: list.filter((r) => finalStatusOf(r) === 'CANON_CONFLICT').length,
+      patched: list.filter((r) => Number(r && r.patch_count) > 0).length,
     };
   }
 
@@ -124,7 +131,7 @@
     const list = Array.isArray(rows) ? rows : [];
     let p = 0; let f = 0; let u = 0; let b = 0; let unknown = 0;
     for (const r of list) {
-      const s = textOf(r && r.final_status);
+      const s = finalStatusOf(r);
       if (s === 'ISSUE_VERIFIED') p += 1;
       else if (s === 'UNRESOLVED' || s === 'PARTIAL') f += 1;
       else if (s === 'AWAITING_SEMANTIC') u += 1;
@@ -229,11 +236,52 @@
         // 三维状态：列表只显示主状态（验证态），详情抽屉展示完整三维。
         dimensions: dims,
         dimensions_text: `${dims.authorization.text}｜${dims.operation.text}｜${dims.verification.text}`,
-        // "需作者决定"= 蓝图冲突或需要补范围；不是系统能自己修的。
+        // "需作者决定"= 蓝图冲突、需要补范围、外部资料待核验；都不是系统能自己修的。
         needs_author: r.final_status === 'CANON_CONFLICT'
-          || ['NEEDS_SCOPE', 'AUTHORIZATION_MISSING', 'PROTECTED_SPAN', 'CANON_CONFLICT'].includes(textOf(r.reason_code)),
+          || ['NEEDS_SCOPE', 'AUTHORIZATION_MISSING', 'PROTECTED_SPAN', 'CANON_CONFLICT',
+            'EXTERNAL_CONTEXT_REQUIRED', 'NOT_APPLICABLE_WITH_EVIDENCE', 'NEEDS_AUTHOR_APPROVAL'].includes(textOf(r.reason_code)),
+        // 2026-10-21（六项审稿漏修）：作者要能看出"这条还差哪一个子条件"以及
+        // "这条是不是根本不该由正文修稿器处理（角色卡/词条/时点）"。
+        // 注意：SKIP 不是 PASS；外部待核验也**不计入通过**。
+        condition_results: Array.isArray(r.condition_results) ? r.condition_results.map((c) => ({
+          id: textOf(c && c.id),
+          kind: textOf(c && c.kind),
+          severity: textOf(c && c.severity),
+          status: textOf(c && c.status),
+          code: textOf(c && c.code),
+          evidence: Array.isArray(c && c.evidence) ? c.evidence.map(textOf) : [],
+        })) : [],
+        unresolved_conditions: Array.isArray(r.unresolved_conditions) ? r.unresolved_conditions.map(textOf) : [],
+        external_context: r.external_context && typeof r.external_context === 'object' ? {
+          required: r.external_context.required === true,
+          resolved: r.external_context.resolved === true,
+          code: textOf(r.external_context.code),
+          source: textOf(r.external_context.source),
+          evidence: Array.isArray(r.external_context.evidence) ? r.external_context.evidence.map(textOf) : [],
+        } : null,
+        matched_by: textOf(r.matched_by),
       };
     });
+  }
+
+  /** 子条件/外部资料的一段人话摘要（详情抽屉与回执用；没有就不出现）。 */
+  function conditionLineOf(row) {
+    const r = row && typeof row === 'object' ? row : {};
+    const parts = [];
+    const ext = r.external_context;
+    if (ext && ext.required) {
+      parts.push(ext.resolved
+        ? `外部资料：已核对（${ext.code || 'NOT_APPLICABLE_WITH_EVIDENCE'}）——不是正文补丁，交作者裁决`
+        : '外部资料：待核验（角色卡/词条/时点），不能靠改正文凑');
+    }
+    const conds = Array.isArray(r.condition_results) ? r.condition_results : [];
+    const failed = conds.filter((c) => textOf(c && c.status) === 'FAIL');
+    const skipped = conds.filter((c) => textOf(c && c.status) === 'SKIP');
+    if (failed.length) {
+      parts.push(`未达成子条件 ${failed.length} 条：${failed.map((c) => `${c.id || c.kind}`).join('、')}`);
+    }
+    if (skipped.length) parts.push(`未求值子条件 ${skipped.length} 条（跳过 ≠ 通过）`);
+    return parts.join('；');
   }
 
   function filterRows(rows, filter) {
@@ -370,10 +418,46 @@
     return `预计上界：${c.estimateText} · 已授权：${c.authorizedText} · 已扣费：${c.chargedText}${c.overBudget ? ' · ⚠️ 预计已超过已授权额度' : ''}`;
   }
 
-  /** 该显示哪些块：差异模式只给改过的段，全文模式给全部。 */
-  function visibleBlocks(blocks, mode) {
+  /**
+   * 证据命中段落：把"当前这条问题的逐字引文"映射回差异块。
+   *
+   * 为什么要单独一个函数（2026-10-21 作者报「切相关段落和点问题都没反应」）：
+   *   旧实现里「相关段落」直接落到 `changedBlocks`，与「差异」逐字相同 —— 切了等于没切；
+   *   而点左侧问题时中间对照区完全不参考当前问题，只有左栏高亮会变。
+   *   两件事其实是同一份判据（"这条问题的证据落在哪几段"），所以放在这里一处算完，
+   *   视图筛选与点击定位共用，避免两处各算一套、各说一套。
+   *
+   * 命中不到就返回空数组：界面必须如实降级成"改过的段 + 一句说明"，
+   * 不能拿"改过的段"冒充"相关段落"（那正是作者以为切换失效的原因之一）。
+   */
+  function hitIndexesOf(blocks, quotes) {
     const list = Array.isArray(blocks) ? blocks : [];
-    if (textOf(mode) === 'full') return list;
+    const qs = (Array.isArray(quotes) ? quotes : []).map((q) => textOf(q).trim()).filter(Boolean);
+    if (!qs.length) return [];
+    const out = [];
+    for (const b of list) {
+      const hay = `${textOf(b && b.before)}\n${textOf(b && b.after)}`;
+      if (qs.some((q) => hay.includes(q))) out.push(b.index);
+    }
+    return out;
+  }
+
+  /**
+   * 该显示哪些块：
+   *   - `full`    全文（含未改动的段）；
+   *   - `context` 只给当前问题证据命中的段落（命中不到 → 如实回落成改过的段）；
+   *   - `diff`    改过的段。
+   * `opts.hitIndexes` 由 `hitIndexesOf()` 算好传进来，本函数不自己判断"什么是证据"。
+   */
+  function visibleBlocks(blocks, mode, opts = {}) {
+    const list = Array.isArray(blocks) ? blocks : [];
+    const m = textOf(mode);
+    if (m === 'full') return list;
+    if (m === 'context') {
+      const hits = Array.isArray(opts.hitIndexes) ? opts.hitIndexes : [];
+      const picked = list.filter((b) => hits.includes(b.index));
+      if (picked.length) return picked;
+    }
     return changedBlocks(list);
   }
 
@@ -402,14 +486,18 @@
     // 2026-10-18：跳过复验就合并的那一档，**不能是死路** —— 作者要能再点一次复验（反悔机会），
     // 也要能从历史版本回到任何一份存档。所以这里给"补跑复验 + 存档入口 + 返回"，不给合并。
     if (stage === 'PERSISTED_UNVERIFIED') {
+      // 2026-10-21 修：原来这里用 `semanticRuns >= 1` 判禁用，于是"合并前跑过一次但零结论"的稿子
+      // 合并后**再也补验不了**，与下面 runRevisionSemanticVerify 的 postMergeRetry 口径相反
+      // （动作允许、按钮禁用 = 入口形同虚设）。现在只认"合并后已经补验过"这一件事。
+      const retriedAfterMerge = input.reverifiedAfterMerge === true;
       out.push({
         action: 'semantic-verify',
         label: busy ? '正在复验…（请勿关闭）' : '对已合并的候选运行语义复验（一次付费调用）',
         primary: true,
-        disabled: busy || semanticRuns >= 1,
+        disabled: busy || retriedAfterMerge,
         help: 'review_semantic_verify',
-        note: semanticRuns >= 1
-          ? '这份候选已经补验过一次；要再验请重新发起审稿修稿'
+        note: retriedAfterMerge
+          ? '这份候选合并后已经补验过一次；要再验请重新发起审稿修稿'
           : '合并已完成，但逐条结论还没有：补跑一次就知道哪几条真修好了',
       });
       pushArchive(out, input);
@@ -418,20 +506,27 @@
       return out;
     }
     if (stage === 'AWAITING_SEMANTIC') {
+      // 复验额度是一次性的（同一份候选不重复付费），但**没有结论 ≠ 验过**：
+      // 额度用完了必须还有一条作者能自己拍板的路，否则就是死锁。
+      const exhausted = semanticRuns >= 1;
       out.push({
         action: 'semantic-verify',
         label: busy ? '正在复验…（请勿关闭）' : '运行独立语义复验（一次付费调用）',
         primary: true,
-        disabled: busy || semanticRuns >= 1,
+        disabled: busy || exhausted,
         help: 'review_semantic_verify',
-        note: semanticRuns >= 1 ? '同一份候选只复验一次；要再验必须先改候选' : '未复验的条目不算通过',
+        note: exhausted
+          ? '这次复验没有得出逐条结论（额度已用过）：要结论就重新审稿再验，要落稿就用下面的作者确认合并'
+          : '未复验的条目不算通过',
       });
-      // 作者明确要求：不给"直接合并"就等于把作者锁在付费动作后面。所以给一个**并列的**
-      // 次按钮，鼠标放上去就把跳过的后果说清楚（后果文案只有一处：forcedMergeWarning()）。
-      if (!busy && semanticRuns < 1) {
+      // 2026-10-21 作者报「AI 都跑完了，没有验收按钮和合并按钮」，实测根因就是这里：
+      // 旧条件 `semanticRuns < 1` 会在"验过一次但零结论"时把**唯一的出口**一起收走，
+      // 界面只剩导出/返回。没有结论与没验过等价，所以作者确认合并必须一直可用；
+      // 后果文案仍只有一处（forcedMergeWarning），不虚报"通过"。
+      if (!busy) {
         out.push({
           action: 'merge-forced',
-          label: '跳过复验直接合并',
+          label: exhausted ? '作者确认：跳过复验直接合并' : '跳过复验直接合并',
           primary: false,
           danger: true,
           help: 'review_merge_forced',
@@ -501,6 +596,11 @@
       // busy 时把"正在跑什么"说出来：以前只有按钮变灰，作者看不出后台有没有在干活。
       if (input.busy === true) {
         return `正在跑一次付费语义复验（${c.pending} 条待验）：进度见下方进度条，中断请用右下角进度卡的「停止」`;
+      }
+      // 复验跑过但没有一条结论：不能再说"尚未语义复验"（那是没跑过的措辞），也不能说通过。
+      if (Number(input.semanticRuns) >= 1) {
+        return `${c.pending} 条没有结论（这次复验没给出逐条判定，不算修好也不算失败）：`
+          + '要结论就重新审稿再验；要落稿请用「作者确认：跳过复验直接合并」，合并档位会如实写"未做语义复验"';
       }
       return `${c.pending} 条尚未语义复验：现在既不能算修好，也不该直接合并`;
     }
@@ -585,6 +685,7 @@
     entryLineOf,
     summaryLine,
     issueRowsOf,
+    conditionLineOf,
     filterRows,
     stepIssue,
     locateQuote,
@@ -592,6 +693,7 @@
     diffBlocks,
     changedBlocks,
     diffSummary,
+    hitIndexesOf,
     visibleBlocks,
     formatCents,
     costOf,

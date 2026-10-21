@@ -5,6 +5,137 @@
 
 ---
 
+### 🚀 v1.2.6（2026-10-21 发布）
+
+从 **v1.2.4 增量升级**（中间未单独发版的 v1.2.5 一并包含），不回退任何既有能力；数据与 API 兼容，无需迁移。
+本版四组改动：**独立质量审计**（新的复核管线，不替代作者自己的审稿/修稿）、**六项审稿漏修修复**
+（引文底本 + 契约字段漂移）、**审稿工作区与调度稳定性**、**AI 写作截断与质检闭环**。
+
+### ✨ v1.2.6 新增（2026-10-21 · dsh-novel-quality-auditor：独立质量审计）
+
+新增一条**独立复核**管线，与作者自己的审稿/修稿并存、不替代它：
+
+- **P0 审稿身份链** `public/review-contract.js`（唯一实现）+ `ai/editing/review-contract.mjs`（ESM 转发）：
+  `issue.id = finding.id = checkbox data-review-issue-id = selection/plan/patch/semantic/audit issue_id`。
+  结构化报告映射不完整时 fail-closed（付费前拒绝）；旧报告惰性迁移为 `LEGACY-<id>-<n>` + `evidence_status=legacy_missing`。
+- **审计账本** 三张旁路表（runs/items/events）+ `ai/quality-auditor/`：状态机白名单、一次性 token（只存 hash）、
+  租约与重启恢复、预算门禁（未知费用不虚构）、盲审先冻结再开放初审、主机二次校验后合并。
+- **独立插件** `harness-plugins/dsh-novel-quality-auditor/`：`novel_quality_open/read/submit/status`；
+  无审计环境时返回 NOT_APPLICABLE；turn-stopping 只兜底一次；不写正文、不碰 confirmation 账本。
+- **前端** `public/quality-audit-panel.js`：写作台一行状态、逐项终验表、`allDone`/`mergeAllowed` 判据。
+
+证据（零计费）：`verify-id-chain` 13/13、`test-contracts` 14/14、插件 5 套件全过、`test-e2e` 六项/八项 6/6、
+`verify-wiring` 全 PASS；真实 DSH 子进程联调需显式 opt-in（`NOVELSTUDIO_REAL_AUDIT=1`）。
+
+### 🛠️ v1.2.6 修复（2026-10-21 · 六项审稿漏修：根因是"引文对错底本 + 契约字段漂移"）
+
+本轮修的是**既有能力的实际接线**，不是新增一套修稿器。
+作者报的"六条问题只修半个、完全漏修、改错位置、跨资料没核验"，本机数据能直接证明**上游就断了**。
+
+- **引文核验拿错了底本** `server.js` + `ai/editing/narrative-review.mjs`：`PUT /novel/review`
+  原来固定用 `htmlToPlain(chapter.content)`（**当前库里的正文**）核验引文，而审稿是对着
+  `base_text`（**被审正文**）做的。两者一旦不是同一份（编辑器里有未保存改动、R08 草稿链、
+  或修稿已合并回正文），每条引文都判"找不到"→ 六条 finding 全被拒收 → `findings=[]`。
+  实测：`chapter_reviews#29` 的 `base_text`（3941 字）含全部引文，当前章节（3697 字）已不含
+  「四行字」，于是 `counts={accepted:0,rejected:6}`。现在新增 `resolveReviewQuoteBase()`：
+  **核验被审正文**，并如实回传 `quote_base.source / differs_from_chapter`。
+- **契约字段漂移导致整条被丢** `ai/editing/narrative-review.mjs`：审稿提示词要的是
+  `type/explanation/acceptance`，而结构层白名单要 `kind/suggested_action/rationale/reading_cost`，
+  对不上就整条拒收（作者的真实报告里 6 条都吃了"缺少 kind/suggested_action/rationale/reading_cost"）。
+  现在分两档：**只有引用层面的事实问题**（没有证据 / 引文对不上 / 定位歧义）才拒收；形状缺陷
+  记为 `shape_defects` 并降级为待核验，**逐字证据保留**。同时把 `evidence[].role`、
+  `acceptance.conditions/risk_terms/must_contain`、`problem_type`、`requires_external_context`
+  透传到修稿与验收层（以前在结构层就被抹掉了）。
+- **勾选编号与 finding id 对不上** `public/app.js`：勾选编号是 `issues` 的下标（1..N），finding id
+  是模型给的（`R-0001`），旧实现只按 id 查表 → 有证据也当没证据。现在 id 命中优先、**位置命中**
+  兜底，并过一遍 `revision-findings` 的证据契约（以前这个模块已加载但**全仓库无人调用**）。
+- **"改了但没解决"识别不了** `public/revision-semantic-verifier.js`：新增
+  ①按真实补丁跨度覆盖锚点的比例分档（整段改写 / 只改一部分 / 没动），只改半个问题落在
+  **PARTIAL 级**而不是 PASS，也不是硬 FAIL；②补丁没落在本问题证据上 → `UNRELATED_CHANGE`；
+  ③`acceptance.conditions` 逐条求值（`residual_terms_absent` / `required_action` /
+  `must_contain` / `preserve_terms`），SKIP 不算 PASS；④每项返回
+  `condition_results / unresolved_conditions`。
+- **跨角色卡问题被当正文补丁处理**（Q05）`public/revision-findings.js` + verifier +
+  `public/revision-closure.js`：`requires_external_context` 的条目不再因"没有可编辑目标"被判缺证据；
+  没有只读核对结论时终态是 `EXTERNAL_CONTEXT_REQUIRED`（待核验，不是通过），有结论则是
+  `NOT_APPLICABLE_WITH_EVIDENCE`（也**不是**通过）；两者都**不进** `repairTargets/planAutoRepair`，
+  绝不派给正文修稿器、更不会为凑数字往正文塞对白。
+- **终验/追踪/工作区**：`public/revision-finalize.js` 把子条件结果、外部资料状态落到每一行，
+  并加分母完整性守卫；`public/revision-trace.js` 补 `external_context_*` 与
+  `unresolved_condition_ids`（仍只放 ID/计数，不放正文）；`public/review-workspace.js` 透传
+  子条件并新增 `conditionLineOf()`，详情抽屉直接显示"还差哪个条件/为什么这条不该由正文补丁处理"；
+  `countsOf/summaryFormulaOf` 同时接受 `final_status` 与 `status`（只认一个会让统计**静默全 0**）。
+- **审稿回执不再静默丢项**：`PUT /novel/review` 回传 `findings_accepted/rejected/shape_defects/
+  quote_base`，界面在报告顶部与 toast 里说清"有几条被拒收、几条缺字段、底本是否换了"。
+- **新增离线套件** `tests/narrative-repair/18-six-issue-closure.test.mjs`（N01–N36 + 4 条辅助，
+  43 条）：夹具 `tests/narrative-repair/fixtures/chapter1-six-issues/` 是脱敏最小复现；
+  `scripts/test-narrative-repair.mjs` 与 `scripts/ci-offline-checks.mjs` 均已登记。
+
+**没有做的事（如实记录）**：没有新增 `AUTHOR_CONFIRMED` 状态枚举（会动 `N=P+F+U+B`、回执与
+DSH 插件契约）；没有对真实模型跑一次六项修稿（那要付费，且本轮判据用离线夹具即可证明）；
+真实浏览器点选六项仍需作者在页面上走一遍。
+
+### 🛠️ v1.2.6 修复（2026-10-21 · 审稿工作区「切了没反应」+ 验收死锁 + 分析队列 UNIQUE 崩溃）
+
+本轮只修**已经写进方案却没接通**的两处界面行为，以及作者日志里实测的调度崩溃。
+
+- **「相关段落」和「差异」逐字相同** `public/review-workspace.js`：`visibleBlocks` 只单独处理了
+  `full`，`context` 落到默认分支返回 `changedBlocks`——切标签只有按钮变亮、内容一字不差
+  （方案 §8.2 要求"只显示差异 / 相关段落 / 全文"）。新增纯函数 `hitIndexesOf()`：用当前问题的
+  逐字证据把段落映射出来，`context` 只给命中段；命中不到就**如实回落**成改过的段，并在对照区顶部
+  写明"这条问题没有可定位的逐字证据"，不拿"改过的段"冒充"相关段落"。
+- **点左侧问题中间没反应** `public/app.js`：`rw-block-N` 这个 id 自 v1.2.4 起就生成、全仓库无人
+  消费。现在命中段带 `.hit`（方案 §8.2「右侧高亮全部相关证据」），选问题后滚到第一处命中；
+  切筛选/切视图保留 `.rw-diff` 滚动位置（原来整页重画会把长章弹回顶部）。
+- **AI 跑完既没有验收也没有合并按钮**（作者报的真实死锁）：旧格式审稿（findings 无逐字证据）下
+  模型只能全给 `need_context`，这一轮复验**零结论**却照样 `semanticRuns + 1`；而 `actionsOf`
+  要求 `semanticRuns < 1` 才给「跳过复验直接合并」——额度用尽 + 出口收起，界面只剩导出/返回。
+  现在 ①零结论的复验**不消耗额度**并如实提示（"候选稿不变、额度未消耗"）；②「作者确认：跳过复验
+  直接合并」在 `AWAITING_SEMANTIC` 下始终可用（合并档位仍写 `PERSISTED_UNVERIFIED`
+  「已合并 · 未做语义复验」，不冒充通过）；③点复验前若 findings 全部没有逐字证据，先弹确认
+  说清"这钱大概率换回零结论"；④`PERSISTED_UNVERIFIED` 的补验按钮改认 `reverifiedAfterMerge`
+  （原来合并前验过一次就把补验也锁死，与 `runRevisionSemanticVerify` 的 postMergeRetry 口径相反）。
+- **分析队列 UNIQUE 崩溃**（作者日志：`派发失败 / 分析任务失败：UNIQUE constraint failed:
+  story_analysis_tasks.chapter_id, story_analysis_tasks.kind`，每 10 秒一次）
+  `ai/jobs/queue-store.mjs`、`ai/jobs/dispatcher.mjs`：R1 的正确模型是"running 不可变 + 新修订
+  另建 queued"，但把 running 退回 queued 的路径（`rearm` / `reconciliation requeue`）没检查
+  "是否已有 queued"，于是"运行中 A + 新保存 B"之后 A 的 rearm 必撞
+  `idx_story_analysis_tasks_one_queued`，整轮 `drain` 抛错、A/B 双双卡死；`claimNext` 同理会撞
+  `one_running`。现在：已有更新的 queued 时本行按 `cancelled + SUPERSEDED` 收尾（**意图仍留在
+  队列里**），恢复路径同样让位；`claimNext` 增加 `NOT EXISTS running` 前置条件。
+- **回归**（零计费）：`.p1-baseline/test-1030-ui-closure.mjs` 加 UI-17…UI-23；`frontend-test.mjs`
+  加 QC-53/54/55（**页面真的画出来**：context 模式只排 1 段且带 `hit`、差异模式 2 段里命中 1 段、
+  轮次=1 时仍有作者确认合并按钮）；`tests/nsdsh/task-fencing.test.mjs` 加 R5-01…R5-04
+  （rearm 让位不抛错、被取代后调度器仍能跑完、恢复也让位、claimNext 不撞 one_running）。
+
+**边界**：没有新增"作者确认通过 = 已验证"的状态机（那会污染五类恒等式、服务端回执与 DSH 插件契约，
+另立方案）；合并仍是作者动作，逐条仍保留"未验证"；语义复验仍是显式付费动作，本轮全部离线断言零计费。
+
+### 🛠️ v1.2.6 修复（2026-10-21 · AI 写作截断与质检闭环首轮：「连接正常结束」≠「模型写完」）
+
+「字数够」不等于「蓝图写完」，「收到 done」也不等于「正文完整」。本轮把上游终止证据一路带到前端判据：
+
+- **终止原因贯通** `server.js`：`callAIStream()` 记录 `choices[0].finish_reason` 与 `[DONE]` 是否出现
+  （缺字段保持 `null`，**不推断成 stop**）；`/api/ai/write_stream` 的 done 帧新增
+  `finish_reason / finish_reason_observed / requested_max_tokens / stream_terminated_normally /
+  generation_status`（`PROVIDER_STOP / OUTPUT_LIMIT_REACHED / EMPTY_OUTPUT / USER_CANCELLED /
+  PROVIDER_BLOCKED / UNKNOWN_TERMINATION`）。
+- **纯函数判据模块** `public/writing-quality.js`（新，UMD）：`generationStatusOf / classifyLength /
+  qualitySkipText / blueprintStatusOf / freezeRequiredBeats / continuationDecision`，只判定、不调模型、不写文件。
+- **篇幅诊断不再误判** `public/app.js`：`OUTPUT_LIMIT_REACHED` → `truncated`（即使字数已够也提示可能截断）；
+  质检 `skipped / unknown` → `unverified`，两者都**不得**判「短但完整」。质检跳过按真实 `reason` 码
+  说明原因（`unparsed / channel_unavailable / long_text_engine_unavailable / over_single_request_limit /
+  cancelled`），日志附 `reason_code`。
+- **蓝图门禁最小落点**：`length_status` 与 `blueprint_status` 分开；截断 / 质检跳过 / unknown →
+  `UNVERIFIED`（`ready_for_normal_delivery=false`）；质检 issues → `MISSING_REQUIRED_BEATS`；
+  只有 pass 才是 `VERIFIED`。必需情节点按 `blueprint.revision` + FNV-1a 哈希**冻结**后记录。
+- **回归** `.p1-baseline/test-1031-writing-quality.mjs`（21 条，零计费）；`frontend-test.mjs` /
+  `test-1020` 适配新 done 契约。
+- **如实未完成**：定向续写只做到授权判定与缺口清单，**未接自动付费调用**；完整 `required_beats`
+  逐条证据门禁只落了最小版。详见 [`docs/v1.3.1-writing-truncation.md`](v1.3.1-writing-truncation.md)。
+
+---
+
 ### 🛠️ 最近更新（2026-10-18 · **v1.2.5**：审稿→修稿闭环硬化，I01–I08 固定回归）
 
 对应用户随任务提供的《Novel Studio 审稿发现问题但修稿未完成：定向排障与质量闭环解决方案》。

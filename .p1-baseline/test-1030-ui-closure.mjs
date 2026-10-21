@@ -146,4 +146,52 @@ const row = (issue_id, final_status, extra = {}) => ({
     JSON.stringify(noPatchPass));
 }
 
+// ── 2026-10-21 作者报的两件事：①切「相关段落」/点问题后中间对照区毫无变化
+//    ②AI 跑完却既没有验收也没有合并按钮（复验额度被"零结论的一轮"吃掉，唯一的出口也被收起）
+//    这两条都属于"界面看起来在动、实际什么都没变"或"没有任何下一步"，必须钉住。
+{
+  const blocks = [
+    { index: 0, kind: 'same', before: '甲段。', after: '甲段。' },
+    { index: 1, kind: 'change', before: '乙段原文。', after: '乙段改后了。' },
+    { index: 2, kind: 'change', before: '丙段原文。', after: '丙段改后了。' },
+  ];
+  const ctxOn = RW.visibleBlocks(blocks, 'context', { hitIndexes: [2] });
+  const diffAll = RW.visibleBlocks(blocks, 'diff');
+  check('UI-17 「相关段落」只给当前问题命中的段，且必须与「差异」不同（切了要真切换）',
+    ctxOn.map((b) => b.index).join(',') === '2' && diffAll.map((b) => b.index).join(',') === '1,2',
+    JSON.stringify({ context: ctxOn.map((b) => b.index), diff: diffAll.map((b) => b.index) }));
+  check('UI-18 命中不到证据时如实回落成改过的段（不拿"改过的段"冒充"相关段落"）',
+    RW.visibleBlocks(blocks, 'context', { hitIndexes: [] }).map((b) => b.index).join(',') === '1,2'
+      && RW.hitIndexesOf(blocks, ['这句正文里没有']).length === 0
+      && RW.hitIndexesOf(blocks, ['丙段原文']).join(',') === '2',
+    JSON.stringify({ hits: RW.hitIndexesOf(blocks, ['丙段原文']), miss: RW.hitIndexesOf(blocks, ['这句正文里没有']) }));
+}
+{
+  const rows = [row('I01', 'AWAITING_SEMANTIC', { patch_count: 1, semantic_status: 'need_context' })];
+  const exhausted = RW.actionsOf({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 1, busy: false });
+  check('UI-19 验过一次但零结论：复验额度已用（按钮禁用），但作者确认合并必须仍在（不得死锁）',
+    exhausted.some((a) => a.action === 'semantic-verify' && a.disabled === true)
+      && exhausted.some((a) => a.action === 'merge-forced' && !a.disabled),
+    JSON.stringify(exhausted.map((a) => `${a.action}:${a.disabled ? 'off' : 'on'}`)));
+  const fresh = RW.actionsOf({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 0, busy: false });
+  check('UI-20 没验过时两条路都在（付费复验可点 + 作者确认合并可点）',
+    fresh.some((a) => a.action === 'semantic-verify' && !a.disabled)
+      && fresh.some((a) => a.action === 'merge-forced' && !a.disabled),
+    JSON.stringify(fresh.map((a) => `${a.action}:${a.disabled ? 'off' : 'on'}`)));
+  const busy = RW.actionsOf({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 1, busy: true });
+  check('UI-21 复验正在跑时仍然不给合并入口（中途切状态会把旧状态当新状态用）',
+    !busy.some((a) => a.action === 'merge-forced'),
+    JSON.stringify(busy.map((a) => a.action)));
+  const merged = RW.actionsOf({ stage: 'PERSISTED_UNVERIFIED', rows, semanticRuns: 1, busy: false });
+  const retried = RW.actionsOf({ stage: 'PERSISTED_UNVERIFIED', rows, semanticRuns: 1, busy: false, reverifiedAfterMerge: true });
+  check('UI-22 合并后可补跑一次复验仍可达（合并前那次不该把补验也锁死）',
+    merged.some((a) => a.action === 'semantic-verify' && !a.disabled)
+      && retried.some((a) => a.action === 'semantic-verify' && a.disabled),
+    JSON.stringify({ merged: merged.map((a) => `${a.action}:${a.disabled ? 'off' : 'on'}`), retried: retried.map((a) => `${a.action}:${a.disabled ? 'off' : 'on'}`) }));
+  check('UI-23 零结论那一档的底栏不得再说"尚未语义复验"（那是没跑过的措辞）',
+    /没有结论/.test(RW.blockerText({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 1 }))
+      && !/尚未语义复验/.test(RW.blockerText({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 1 })),
+    RW.blockerText({ stage: 'AWAITING_SEMANTIC', rows, semanticRuns: 1 }));
+}
+
 finish('test-1030 UI 闭环纯函数断言');

@@ -416,6 +416,21 @@ function newestMtimeUnder(dir, limit = 20000) {
 // **逐字相同**（`--dump-config` 各 398 行、0 差异），所以这是纯开销，不是取舍。
 // 因此：**能用产物就用产物**，源码路径保留为回退（产物不存在 / 源码更新了没重建 / 显式强制）。
 function resolveDshLaunch() {
+  // 显式二进制入口：指向 npm-global 安装的 dsh 的 `lib/bin.js`。
+  // 为什么需要它：本机固定的 DSH 是 **0.2.0-rc.2（npm 安装）**，而同级的 deepseek-harness
+  // 源码仓库是 0.1.7-rc.1 —— 用源码仓库启动会违反"DSH 固定 0.2.0-rc.2"。这里只接受
+  // `.js` 入口（由 process.execPath 执行），不猜测 exe 形态，避免在 Windows 上产生
+  // "把 exe 当 JS 跑"的诡异失败。
+  const binEnv = String(process.env.NOVELSTUDIO_DSH_BIN || '').trim();
+  if (binEnv) {
+    if (!/\.(c|m)?js$/i.test(binEnv)) {
+      throw new Error(`NOVELSTUDIO_DSH_BIN 只接受 .js 入口（收到 ${binEnv}）`);
+    }
+    if (!fs.existsSync(binEnv)) {
+      throw new Error(`NOVELSTUDIO_DSH_BIN 指向的文件不存在：${binEnv}`);
+    }
+    return { args: [binEnv], cwd: path.dirname(binEnv), source: 'bin_env' };
+  }
   try {
     const pkg = JSON.parse(fs.readFileSync(harnessPackagePath(), 'utf8'));
     const script = String((pkg.scripts && pkg.scripts.dsh) || '').trim();

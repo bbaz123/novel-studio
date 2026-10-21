@@ -1,0 +1,28 @@
+{
+  "fixture_id": "chapter1-six-issues-role-card",
+  "note": "Q05 的三种合法资料状态（真值来自本机只读核对：characters#76 王磊的 personality 写「从早上到现在把『A级』念了四遍」，且 characters 表没有 effective_chapter / as_of 字段）。",
+  "cases": [
+    {
+      "id": "offscene-count",
+      "readable": true,
+      "card_fields": { "name": "王磊", "personality": "话多、爱起哄、容易紧张；从早上到现在把“A级”念了四遍。为人热心。" },
+      "temporal_fields_present": false,
+      "expected": "允许有证据地判「不适用」（画外计数），但**不是**一次成功的正文补丁；不得往正文塞三次 A 级对白"
+    },
+    {
+      "id": "unreadable",
+      "readable": false,
+      "card_fields": null,
+      "temporal_fields_present": false,
+      "expected": "NEED_CONTEXT：卡片读不到或时点不明，既不改正文也不改卡片"
+    },
+    {
+      "id": "chapter-end-state",
+      "readable": true,
+      "card_fields": { "name": "王磊", "status": "觉醒日测出C级；岳宸炎转学后仍在江陵三中。" },
+      "temporal_fields_present": true,
+      "temporal_note": "卡片写的是卷末/后章状态，被误套到第 1 章",
+      "expected": "标注资料时态冲突，交作者裁决；不改角色命运与世界设定"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# ═══ dsh-novel-quality-auditor（bundle 补丁层）══════════════════════════════════
+# 由 dsh 按 `dsh.profile.bundles` 顺序自动套用（见同目录 package.json 的 dsh.bundle.patch）。
+#
+# 只做一件事：把本包作为一个 loader 条目插入工具层。
+# 刻意**不**改 system-prompt：novel-writing bundle 已经拥有 `personaPrefix`，
+# 两个 bundle 同时写同一个键会互相覆盖（后写的赢），结果是创作人设或审计纪律
+# 其中之一被静默丢掉。审计纪律由任务启动 prompt（ai/quality-auditor/prompts.mjs）
+# 与工具描述共同承载 —— 它在**读取任何被审文本之前**就已注入，效果等价且不会互相踩。
+#
+# 也刻意不注册全局 tools/post-execute：那会介入普通写作任务。
+- insert:
+    - id: novel-quality-auditor
+      name: dsh-novel-quality-auditor
+      config:
+        baseUrl: 'http://127.0.0.1:3737'

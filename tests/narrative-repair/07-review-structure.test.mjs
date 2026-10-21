@@ -35,13 +35,17 @@ const noCounter = { ...good, id: 'H1', counterevidence: '' };
   check('E03-a2 反证缺失 → 降级 hypothesis 且不进入 auto_eligible（可看、可讨论，但不是已确认）',
     r.findings[1].verdict === 'hypothesis' && r.findings[1].auto_eligible === false
     && r.counts.accepted === 2);
+  // 2026-10-21（review.v3）：issues 由字符串改为**对象**（id/text/source/finding_id）。
+  // 断言相应读取 `.text`，同时把"带稳定 id"这一点也钉住 —— 这是本次改造的目的，不是副作用。
+  const issueText = (x) => String(x && typeof x === 'object' ? x.text : x);
   check('E03-b 兼容清单由结构化结论派生：带 id、理由与逐字引用，界面能看出"这一条指哪句话"',
-    r.issues.length === 2 && /^\[N04\]/.test(r.issues[0])
-    && r.issues[0].includes('这道光柱和他没关系')
-    && /⚠️未给出反证/.test(r.issues[1]),
+    r.issues.length === 2 && /^\[N04\]/.test(issueText(r.issues[0]))
+    && issueText(r.issues[0]).includes('这道光柱和他没关系')
+    && /⚠️未给出反证/.test(issueText(r.issues[1]))
+    && typeof r.issues[0] === 'object' && r.issues[0].id === 'N04' && r.issues[0].finding_id === 'N04',
     JSON.stringify(r.issues));
   check('E03-b2 拒收的条目**不**混进兼容清单（避免作者以为它已被采纳）',
-    !r.issues.some((x) => x.includes('X1') && !x.includes('拒收')));
+    !r.issues.some((x) => issueText(x).includes('X1') && !issueText(x).includes('拒收')));
 }
 
 {

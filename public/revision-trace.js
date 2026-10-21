@@ -102,6 +102,13 @@
         actual_change: row.actual_change === true,
         semantic_status: textOf(row.semantic_status) || 'not_run',
         coverage_status: textOf(row.coverage_status),
+        // 2026-10-21（方案 §8 的"必要阶段字段"，仍只放 ID/计数，不放正文）：
+        //   · external_context_*：这条是不是"需外部资料核验"（Q05 形态），避免被读成正文漏修；
+        //   · unresolved_condition_ids：还差哪几个子条件（只留条件 id）。
+        external_context_required: !!(row.external_context && row.external_context.required),
+        external_context_resolved: !!(row.external_context && row.external_context.resolved),
+        unresolved_condition_count: Array.isArray(row.unresolved_conditions) ? row.unresolved_conditions.length : 0,
+        unresolved_condition_ids: (Array.isArray(row.unresolved_conditions) ? row.unresolved_conditions : []).map(textOf),
       });
     }
     return events;
@@ -148,6 +155,7 @@
   function summarizeTrace(events) {
     const list = Array.isArray(events) ? events : [];
     const run = list.find((e) => e && e.event === EVENT.RUN_FINALIZED) || null;
+    const issues = list.filter((e) => e && e.event === EVENT.ISSUE_VERDICT);
     return {
       schema: SCHEMA,
       run_id: run ? run.run_id : '',
@@ -157,7 +165,9 @@
       partial: run ? run.partial : 0,
       failed: run ? run.failed : 0,
       unverified: run ? run.unverified : 0,
-      issues: list.filter((e) => e && e.event === EVENT.ISSUE_VERDICT).length,
+      issues: issues.length,
+      // 需外部资料核验的条数（这些既不是"已通过"，也不该被当成"正文漏修"）。
+      external_pending: issues.filter((e) => e && e.external_context_required && !e.external_context_resolved).length,
     };
   }
 

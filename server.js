@@ -33,7 +33,7 @@ import { layerContribution, recallHitContribution, omittedRecallContribution, ds
 import { editingRuleCatalog, resolveEditingSelection, editingSelectionToSettings, buildEditingRuleBlock } from './ai/editing/rules.mjs';
 import { scanEditing } from './ai/editing/scan.mjs';
 // E03：审稿报告的结构化与**引用核验**（复用 E04 的判定，不另写一套）。
-import { structureReviewReport } from './ai/editing/narrative-review.mjs';
+import { structureReviewReport, resolveReviewQuoteBase } from './ai/editing/narrative-review.mjs';
 // E04：叙事诊断的**确定性候选层**（复用 scanEditing 的统计，不复制它的判据）。
 import { narrativeCandidateSignals } from './ai/editing/narrative-scan.mjs';
 // R09：作者样文 → 结构化文风档案 → 三级作者意图。样文是**数据不是事实**：
@@ -95,6 +95,13 @@ import { findingKey } from './ai/continuity-guard.mjs';
 import { computeContinuityGuard, CONTINUITY_EXEMPTIONS_PREFIX, CONTINUITY_THRESHOLDS_PREFIX } from './ai/continuity-guard-source.mjs';
 import { MODELS, EFFORTS, resolveModel, normalizeModel, normalizeEffort, effortForTier, LONG_AI_TIMEOUT_MS, policySnapshot } from './ai/policy.mjs';
 import { writingPolicyPayload } from './ai/writing/compile.mjs';
+// 审稿契约 v3（review.v3）：issue/finding 的**唯一稳定身份**。服务端与浏览器加载同一份实现
+// （浏览器侧是 /review-contract.js 别名到本文件；见 serveStatic 的 REVIEW_CONTRACT_ALIAS）。
+import * as ReviewContract from './ai/editing/review-contract.mjs';
+// 质量审计（dsh-novel-quality-auditor）：独立路由模块，自带 token 通道与体积上限。
+import { handleQualityAuditRoutes } from './ai/quality-auditor/routes.mjs';
+import { recoverInterruptedRuns } from './ai/quality-auditor/store.mjs';
+import { auditPluginStatus, ensureAuditPluginInstalled, missingAuditDependencies, activeProfileName as auditProfileName } from './ai/quality-auditor/provision.mjs';
 import { log, initLogger, timed, timedAsync, queryLogs, clearLogs, flushLogs, readableErrorMessage, SLOW_REQUEST_MS, REMOTE_LAYERS } from './logger.js';
 import {
   traceRequest, traceFn, traceEvent, traceAI, bumpTool, prepareTraced,
@@ -4288,8 +4295,8 @@ function saveRevisionSelection(workId, chapterId, payload = {}) {
     ? JSON.stringify(payload.closure).slice(0, MAX_CLOSURE_JSON) : '';
   const info = prepare(`
     INSERT INTO revision_selections
-      (work_id, chapter_id, review_id, snapshot_id, base_hash, selection_hash, plan_hash, selected_issue_ids_json, source, closure_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (work_id, chapter_id, review_id, snapshot_id, base_hash, selection_hash, plan_hash, selected_issue_ids_json, source, closure_json, review_hash, evidence_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     Number(workId) || 0, Number(chapterId) || 0,
     Number(payload.reviewId) || null,
@@ -4300,6 +4307,8 @@ function saveRevisionSelection(workId, chapterId, payload = {}) {
     JSON.stringify(ids).slice(0, 20000),
     asString(payload.source, 'ui').slice(0, 40),
     closureJson,
+    asString(payload.reviewHash, '').slice(0, 200),
+    asString(payload.evidenceStatus, '').slice(0, 40),
   );
   // 每章只保留最近 20 次选择记录（与审稿保留 10 份同一思路：可复核，但不成垃圾场）。
   prepare(`
@@ -4322,6 +4331,8 @@ function latestRevisionSelection(chapterId) {
     selection_hash: row.selection_hash || '', plan_hash: row.plan_hash || '',
     selected_issue_ids: ids, source: row.source || '', created_at: row.created_at || '',
     closure,
+    review_hash: row.review_hash || '',
+    evidence_status: row.evidence_status || '',
   };
 }
 
@@ -4365,6 +4376,27 @@ function saveReview(workId, chapterId, report, extra = {}) {
     INSERT INTO chapter_reviews (work_id, chapter_id, report_json, checklist_json, status)
     VALUES (?, ?, ?, '{}', ?)
   `).run(workId, chapterId, json, status);
+  const reviewId = Number(info.lastInsertRowid);
+  // 归一化视图与原始 payload **分列保存**：原始输出是审计证据，永不被覆盖；
+  // 归一化结果带稳定 issue 身份，供勾选/修稿/终验使用。LEGACY-<review_id>-<n> 需要真实 id，
+  // 所以必须"先插入拿 id，再回写归一化列"（同一连接、同一事务语义内）。
+  const normalized = normalizeStoredReviewReport(payload, reviewId);
+  try {
+    prepare(`UPDATE chapter_reviews
+      SET normalized_report_json = ?, normalization_version = ?, normalization_warnings_json = ?,
+          schema_version = ?, review_hash = ?
+      WHERE id = ?`).run(
+      JSON.stringify(normalized).slice(0, 400000),
+      Number(normalized.normalization_version) || 0,
+      JSON.stringify(normalized.normalization_warnings || []).slice(0, 20000),
+      String(normalized.schema_version || ''),
+      String(normalized.review_hash || ''),
+      reviewId,
+    );
+  } catch (e) {
+    // 回写失败不丢弃审稿：报告本身仍在 report_json 里，读取时会惰性重新归一化。
+    log({ level: 'warn', layer: 'server', kind: 'review_normalize_write_failed', message: `审稿归一化视图回写失败（读取时将重算）：${e.message}` });
+  }
   // 每个章节只保留最近 10 份审稿
   prepare(`
     DELETE FROM chapter_reviews WHERE chapter_id = ? AND id NOT IN (
@@ -4373,8 +4405,8 @@ function saveReview(workId, chapterId, report, extra = {}) {
   `).run(chapterId, chapterId);
   // v1.2.2 P1-3：审稿 deferred 里的"疑似伏笔"自动登记为**待确认候选**（不写事件账本）。
   // 失败不阻断审稿落库：登记是"别忘"的辅助，报告本身才是作者要看的产物。
-  try { autoRegisterForeshadowProposals(workId, chapterId, payload); } catch (_) { /* 不阻断审稿 */ }
-  return Number(info.lastInsertRowid);
+  try { autoRegisterForeshadowProposals(workId, chapterId, normalized); } catch (_) { /* 不阻断审稿 */ }
+  return reviewId;
 }
 
 /**
@@ -4471,26 +4503,70 @@ function parseReviewText(text) {
       try { obj = JSON.parse(slice.replace(/"\s*,\s*"/g, '","').replace(/"\s*,\s*([}\]])/g, '"$1')); } catch (_) { obj = null; }
     }
     if (obj && (asString(obj.summary, '').trim() || Array.isArray(obj.issues))) {
-      return {
-        summary: asString(obj.summary, ''),
-        issues: asArray(obj.issues).map((x) => asString(typeof x === 'string' ? x : x?.text, '')).filter(Boolean),
-        strengths: asArray(obj.strengths).map((x) => asString(typeof x === 'string' ? x : x?.text, '')).filter(Boolean)
-      };
+      // ⚠️ 2026-10-21：旧实现在这里把 issues 拍平成字符串（丢掉了 issue.id），
+      //   与前端 parseReviewText 同一个断链。服务端回填路径现在也产出 review.v3。
+      return ReviewContract.normalizeReviewReport(obj, { stage: 'strict' });
     }
   }
   const body = start >= 0 ? s.slice(start) : s;
-  const salvaged = { summary: salvageJSONString(body, 'summary'), issues: salvageJSONList(body, 'issues'), strengths: salvageJSONList(body, 'strengths') };
-  return (salvaged.summary || salvaged.issues.length) ? salvaged : null;
+  const salvaged = {
+    summary: salvageJSONString(body, 'summary'),
+    issues: salvageJSONList(body, 'issues'),
+    strengths: salvageJSONList(body, 'strengths'),
+    deferred: salvageJSONList(body, 'deferred'),
+  };
+  return (salvaged.summary || salvaged.issues.length)
+    ? ReviewContract.normalizeReviewReport(salvaged, { stage: 'salvaged' })
+    : null;
+}
+
+/**
+ * 把任意来源的审稿报告收敛到**可存储的**结构。
+ *
+ * 三个来源必须都走这里，否则身份链会在不同入口处分叉：
+ *   ① 前端 PUT /novel/review 提交的 report（可能已是 review.v3）；
+ *   ② 长任务回填路径 `parseReviewText()` 的产出（review.v3）；
+ *   ③ 数据库里的**存量** report_json（无 schema_version / 只有字符串 issues）。
+ * 对 ③ 只做惰性迁移：原始 payload 一个字节都不覆盖，归一化结果写入 normalized_report_json。
+ */
+function normalizeStoredReviewReport(report, reviewId) {
+  // 判据只有一份：实现在 public/review-contract.js（UMD），这里只是按服务端调用习惯转一次。
+  return ReviewContract.normalizeStoredReviewReport(report, reviewId);
 }
 
 function getLatestReview(chapterId) {  const row = prepare('SELECT * FROM chapter_reviews WHERE chapter_id = ? ORDER BY id DESC LIMIT 1').get(chapterId);
   if (!row) return null;
-  let report = {}; let checklist = {};
-  try { report = JSON.parse(row.report_json || '{}'); } catch (_) {}
+  let rawReport = {}; let checklist = {};
+  try { rawReport = JSON.parse(row.report_json || '{}'); } catch (_) {}
   try { checklist = JSON.parse(row.checklist_json || '{}'); } catch (_) {}
-  // dismissed：作者是否已经把「上次审稿」那条提示关掉（2026-10-04）。
-  // **这里不过滤**：关闭只影响恢复条那条提示，审稿报告本身仍要能查（作者可能从别处回看）。
-  return { id: row.id, chapter_id: row.chapter_id, report, checklist, status: row.status, created_at: row.created_at, dismissed: Number(row.dismissed) || 0 };
+  // §1.3.7 惰性归一化：读旧报告时生成 review.v3（或 review.legacy），**不覆盖 report_json**。
+  // 首次读取把归一化视图补写进 normalized_report_json，之后直接复用（避免每次读取都重算 hash）。
+  let report = null;
+  try { report = JSON.parse(row.normalized_report_json || 'null'); } catch (_) { report = null; }
+  if (!report || typeof report !== 'object' || !report.schema_version) {
+    report = normalizeStoredReviewReport(rawReport, row.id);
+    try {
+      prepare(`UPDATE chapter_reviews
+        SET normalized_report_json = ?, normalization_version = ?, normalization_warnings_json = ?,
+            schema_version = ?, review_hash = ?
+        WHERE id = ?`).run(
+        JSON.stringify(report).slice(0, 400000),
+        Number(report.normalization_version) || 0,
+        JSON.stringify(report.normalization_warnings || []).slice(0, 20000),
+        String(report.schema_version || ''),
+        String(report.review_hash || ''),
+        row.id,
+      );
+    } catch (_) { /* 回写失败不阻断读取：内存里的归一化结果仍可用 */ }
+  }
+  // raw_text 属于原始 payload（归一化报告可能不带它），界面回看要用。
+  if (!report.raw_text && rawReport.raw_text) report.raw_text = rawReport.raw_text;
+  if (!report.base_text && rawReport.base_text) report.base_text = rawReport.base_text;
+  return {
+    id: row.id, chapter_id: row.chapter_id, report, checklist, status: row.status,
+    created_at: row.created_at, dismissed: Number(row.dismissed) || 0,
+    schema_version: report.schema_version || '', review_hash: report.review_hash || '',
+  };
 }
 
 /**
@@ -4510,6 +4586,12 @@ function reviewForClient(review) {
     deferred_count: asArray(report.deferred).length,
     // 原文可能高达 200KB，回看列表不需要全量——只带预览，完整原文仍在库里可查。
     raw_text: asString(report.raw_text, '').slice(0, 20000),
+    // review.v3 身份链：界面据此决定"能不能进入按清单修稿"、显示哪条缺证据。
+    schema_version: asString(report.schema_version, ''),
+    evidence_status: asString(report.evidence_status, ''),
+    integrity: report.integrity && typeof report.integrity === 'object' ? report.integrity : null,
+    review_hash: asString(report.review_hash, ''),
+    link_mode: asString(report.link_mode, ''),
   };
 }
 
@@ -5861,6 +5943,15 @@ async function handleAPI(req, res, pathname, query) {
   // 未就绪期间的写请求一律 503：半初始化的服务不能改数据。
   if (!serviceReady && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     return sendError(res, 503, `服务尚未就绪（${readinessState.reason || 'initializing'}）：写操作已暂时拒绝，请稍后重试`);
+  }
+
+  // ── 质量审计（dsh-novel-quality-auditor，方案 §7）────────────────────────────
+  // 独立模块处理：作者通道（创建/状态/启动/取消/校验/合并）与 DSH token 通道
+  // （manifest/resources/submissions）。放在最前面是因为它有自己的鉴权与错误码，
+  // 不能落进后面"作者/模型"那套副作用的判断里。
+  if (resource === 'novel' && segments[2] === 'quality-audits') {
+    const handled = await handleQualityAuditRoutes(req, res, segments.slice(2), query, method);
+    if (handled) return;
   }
 
   // 宿主副作用路由集中 fail-closed：这些接口没有“模型提案”语义，
@@ -8948,6 +9039,13 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const dsh = harnessRuntimeInfo();
     const ov = openVikingConfigInfo();
     const plugin = detectPluginInstall(dsh);
+    // 审计插件与 dsh 版本/启动方式：作者最常问的两件事——"装了没"和"到底跑的是哪个 dsh"。
+    const auditPlugin = auditPluginStatus();
+    const binEnv = String(process.env.NOVELSTUDIO_DSH_BIN || '').trim();
+    const versionOfPackage = (dir) => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version || ''; } catch { return ''; } };
+    const launcher = binEnv
+      ? { kind: 'bin', path: binEnv, version: versionOfPackage(path.join(path.dirname(binEnv), '..')) }
+      : { kind: 'repo', path: dsh.dir, version: versionOfPackage(dsh.dir) };
     return sendJSON(res, 200, {
       ok: true,
       node: {
@@ -8963,7 +9061,18 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         looks_like_dsh: dsh.looks_like_dsh,
         checked: dsh.checked, override: dsh.override,
         profile: dsh.profile, settings_file: dsh.settings_file, task_home: dsh.task_home,
-        plugin
+        plugin,
+        version: launcher.version,
+        launcher,
+        plugins: {
+          novelWriting: plugin,
+          qualityAuditor: auditPlugin,
+        },
+        // 前端"缺依赖"弹窗直接消费这个列表（后端与前端同一份判断）。
+        missing_dependencies: missingAuditDependencies({
+          pluginStatus: auditPlugin,
+          dshReady: Boolean(dsh.found && dsh.looks_like_dsh !== false),
+        }),
       },
       openviking: {
         endpoint: ov.endpoint, endpoint_source: ov.endpoint_source, endpoint_source_label: ov.endpoint_source_label,
@@ -8994,6 +9103,34 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (!out.ok) return sendError(res, 500, `调用 ${out.cmd} 失败：${out.error || '未知错误'}`);
     return sendJSON(res, 200, { ok: true, target: key, label: item.label, dir: item.dir, opened: true });
   }
+  // 一键安装审计插件（AI 设置页依赖卡）：与 CLI install.mjs 共用 provision 实现。
+  // 只在作者点按钮时写 profile；dry_run 只报告将改什么（CO-08）。
+  if (resource === 'env' && segments[2] === 'plugins' && segments[3] === 'install' && method === 'POST') {
+    const author = requireAuthorChannel(req, '安装审计插件');
+    if (!author.ok) return sendError(res, author.status, author.message);
+    const parsed = await readBodyOrError(req, res);
+    if (!parsed.ok) return;
+    const body = parsed.body || {};
+    const name = String(body.name || 'quality-auditor');
+    if (name !== 'quality-auditor' && name !== 'dsh-novel-quality-auditor') {
+      return sendError(res, 400, `未知插件：${name}（当前只支持 quality-auditor）`);
+    }
+    const before = auditPluginStatus();
+    const out = ensureAuditPluginInstalled({ dryRun: body.dry_run === true });
+    if (!out.ok) return sendError(res, 500, out.error || '安装失败');
+    const after = auditPluginStatus();
+    log({
+      level: 'info', layer: 'server', kind: 'audit_plugin_install',
+      message: `审计插件安装${body.dry_run === true ? '（dry-run）' : ''}：changed=${out.changed.length}，ready=${after.ready}`,
+      context: { profile: auditProfileName(), changed: out.changed, dry_run: body.dry_run === true }
+    });
+    return sendJSON(res, 200, {
+      ok: true, name: after.name, dry_run: body.dry_run === true,
+      changed: out.changed, before_ready: before.ready, ready: after.ready,
+      installs: after.installs,
+    });
+  }
+
   // 填 dsh 仓库路径（AI 设置页「本地创作内核」卡）。与 OpenViking 卡同构：存设置 → 立即注入 → 复检。
   if (resource === 'env' && segments[2] === 'dsh_repo' && method === 'PUT') {
     const author = requireAuthorChannel(req, 'dsh 仓库配置');
@@ -9465,9 +9602,20 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const rawText = asString(body.raw_text, '');
     // E03：把审稿报告结构化并**核验引用**（结构化输入才有；只有行文本时逐字沿用旧行为）。
     // 引用不合规的条目进 rejected（带理由）——不静默丢弃，作者能在报告里看见为什么被拒收。
+    //
+    // ⚠️ 2026-10-21（六项审稿漏修根因之一）：这里原来固定拿 `htmlToPlain(chapter.content)`
+    //    （**当前库里的正文**）当核验底本。可审稿是对着**当时那篇正文**做的，报告已经把它存进
+    //    `base_text`。两者一旦不是同一份（编辑器里有未保存改动、R08 草稿链、或修稿已合并回正文），
+    //    每条引文都会被判"找不到"→ 全部 finding 被拒收 → 修稿器拿不到任何逐字证据。
+    //    真实数据可证：review#29 的 base_text（3941 字）含全部引文，而当前章节（3697 字）已不含
+    //    「四行字」；落库时按后者核验，于是 6 条全部 rejected、findings=[]。
+    //    纪律：**核验必须用被审正文**；底本不是"现在库里的正文"时如实记来源，不更换底本。
     const chapterText = htmlToPlain((chapter && chapter.content) || '');
+    const reviewedBaseText = asString(body.base_text, '') || asString(report && report.base_text, '');
+    const quoteBase = resolveReviewQuoteBase({ reviewedText: reviewedBaseText, chapterText });
     const structured = structureReviewReport(report, {
-      text: chapterText,
+      text: quoteBase.text,
+      quoteBase,
       baseHash: asString(body.base_hash, ''),
       snapshotId: asString(body.snapshot_id, ''),
     });
@@ -9491,8 +9639,17 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       review_id: reviewId,
       status: rawText && !asString(structured.summary, '').trim() ? 'raw' : 'parsed',
       structure: structured.structure,
+      // 'empty' = 模型按结构化口径回答但一条 findings 都没有（修稿侧将没有逐字证据）。
+      findings_state: structured.findings_state || '',
       findings_accepted: structured.counts ? structured.counts.accepted : 0,
       findings_rejected: structured.rejected ? structured.rejected.length : 0,
+      // 形状缺陷（缺 kind/suggested_action 等）：条目被保留但降级为待核验，必须让作者看见。
+      findings_shape_defects: structured.shape_defect_count || 0,
+      // 引文是拿哪份正文核验的：reviewed=被审正文快照 / chapter=当前库正文 / empty=没有底本。
+      quote_base: quoteBase ? {
+        source: quoteBase.source,
+        differs_from_chapter: quoteBase.differs_from_chapter === true,
+      } : null,
       // 拒收理由逐条给出（作者与测试都能核对"不是我漏了，而是引用没通过"）。
       rejected: structured.rejected || [],
       // E01 §5.2：报告自洽性（strengths 与 issues/正文不能互相否认）。随 report_json 一起落库，
@@ -9514,12 +9671,60 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     if (Number(body.work_id) && Number(body.work_id) !== chapter.work_id) return sendError(res, 400, '章节不属于该作品');
     const ids = asArray(body.selected_issue_ids);
     if (!ids.length) return sendError(res, 400, 'selected_issue_ids 不能为空（没有选择就没有修稿依据）');
+    // ⚠️ P0（2026-10-21）：**服务端**也要做一次映射完整性检查。
+    //   前端可能被旧缓存/第三方调用绕过；"付费修稿之前必须拒绝 mismatch"不能只靠界面自觉。
+    let reviewHash = asString(body.review_hash, '');
+    let evidenceStatus = asString(body.evidence_status, '');
+    if (body.review_id) {
+      const rid = Number(body.review_id);
+      const row = prepare('SELECT * FROM chapter_reviews WHERE id = ?').get(rid);
+      if (row) {
+        let rep = null;
+        try { rep = JSON.parse(row.normalized_report_json || 'null'); } catch (_) { rep = null; }
+        if (!rep || typeof rep !== 'object' || !rep.schema_version) {
+          let rawRep = {};
+          try { rawRep = JSON.parse(row.report_json || '{}'); } catch (_) { rawRep = {}; }
+          rep = normalizeStoredReviewReport(rawRep, row.id);
+        }
+        const mapping = ReviewContract.assertSelectionMappable(rep, ids);
+        if (!mapping.ok) {
+          return sendJSON(res, 409, {
+            ok: false, error: '选择与审稿报告的身份链不一致，已拒绝创建修稿选择记录',
+            code: mapping.code, missing: mapping.missing,
+          });
+        }
+        const persistedHash = asString(rep.review_hash, '');
+        const claimedHash = asString(body.review_hash, '');
+        if (claimedHash && persistedHash && claimedHash !== persistedHash) {
+          return sendJSON(res, 409, {
+            ok: false, error: '审稿报告在勾选之后被改写（review_hash 不一致），旧选择不成立',
+            code: 'REVIEW_HASH_MISMATCH', expected: persistedHash,
+          });
+        }
+        reviewHash = persistedHash || reviewHash;
+        evidenceStatus = asString(rep.evidence_status, '') || evidenceStatus;
+      } else {
+        // 存量调用方会把 review_id 当**元数据**传（历史上不校验存在性，隔离测试也这么用）。
+        // 找不到报告时没有可比对的真值 → 不伪造 409；如实记 evidence_status=unknown，
+        // 由"报告存在时必须映射通过"这条强路径负责真正的 fail-closed。
+        evidenceStatus = evidenceStatus || 'unknown';
+        log({
+          level: 'warn', layer: 'server', kind: 'revision_selection_review_missing',
+          message: `修稿选择记录引用的审稿 #${rid} 不存在：已按元数据接受（不伪造映射校验通过）`,
+          dedupMs: 60 * 1000,
+        });
+      }
+    }
     const selectionId = saveRevisionSelection(chapter.work_id, chapterId, {
       reviewId: body.review_id, snapshotId: body.snapshot_id, baseHash: body.base_hash,
       selectionHash: body.selection_hash, planHash: body.plan_hash,
       selectedIssueIds: ids, source: body.source,
+      reviewHash, evidenceStatus,
     });
-    return sendJSON(res, 201, { ok: true, selection_id: selectionId, selected: ids.length });
+    return sendJSON(res, 201, {
+      ok: true, selection_id: selectionId, selected: ids.length,
+      review_hash: reviewHash, evidence_status: evidenceStatus,
+    });
   }
   if (resource === 'novel' && segments[2] === 'revision' && segments[3] === 'selection' && method === 'GET') {
     const chapterId = Number(query.chapter_id);
@@ -10524,12 +10729,22 @@ function serveStatic(req, res, pathname) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   let filePath;
+  // 审稿契约 v3 的**唯一实现**在 ai/editing/review-contract.mjs（服务端/测试直接 import 它）。
+  // 浏览器没有构建步骤，所以这里把同一个文件按 JS 静态资源提供；前端 <script src="/review-contract.js">
+  // 加载的就是这一份，不存在"服务端一份判据、浏览器另一份"的漂移面。
+  // ⚠️ 用**别名表**而不是再加一条字面量路径分支：F12 静态度量把"手写 if 链路由"
+  //   当作要收敛的债务，每加一处静态根就会让它变多。表驱动不会（根仍是唯一那一处）。
+  // ⚠️ 不能把 /review-contract.js 别名到 ai/editing/review-contract.mjs：那是 **ESM 入口**
+  //   （含 export 与顶层 await），浏览器按经典脚本解析会 SyntaxError，window.NovelReviewContract
+  //   永远不出现 → app.js 走 REVIEW_CONTRACT_UNAVAILABLE 并把「按确认清单修稿」禁用。
+  //   UMD 实现在 public/review-contract.js，静态路径本来就正确，无需别名。
+  let staticBase = publicDir;
   if (pathname === '/') {
     filePath = path.join(publicDir, 'index.html');
   } else {
     filePath = path.join(publicDir, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
   }
-  const relative = path.relative(publicDir, filePath);
+  const relative = path.relative(staticBase, filePath);
   if (relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
     res.writeHead(403);
     return res.end('Forbidden');
@@ -10559,6 +10774,17 @@ function serveStatic(req, res, pathname) {
 
 // 首次启动写入默认红线清单（幂等）
 seedRedlinesIfEmpty();
+
+// 质量审计重启恢复（CT-10）：上一个进程拉起的 DSH 已随进程消失，租约失效的 run 标成 INTERRUPTED，
+// 让作者可以安全重跑，而不是永远卡在 RUNNING 让人以为"还在跑"。
+try {
+  const recovered = recoverInterruptedRuns();
+  if (recovered) {
+    log({ level: 'warn', layer: 'server', kind: 'quality_audit_recovered', message: `质量审计：${recovered} 个中断的 run 已标为 INTERRUPTED（可安全重跑）` });
+  }
+} catch (e) {
+  log({ level: 'warn', layer: 'server', kind: 'quality_audit_recovery_failed', message: `质量审计重启恢复失败：${e && e.message ? e.message : e}` });
+}
 
 // 把作者在 AI 设置页填过的工具配置注入到对应模块（OpenViking 凭证 / dsh 仓库路径）。
 // 必须在服务开始接请求之前执行：否则重启后第一次 AI 任务会用到旧路径或旧凭证，

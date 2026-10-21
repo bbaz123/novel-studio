@@ -49,6 +49,19 @@
     SEMANTIC_FAILED: { label: '独立复验未通过', next: '只在仍获准的热点里精准二次修复' },
     MERGE_NOT_APPROVED: { label: '候选已通过但未获写入批准', next: '保持为已验证候选，不得称为已入库定稿' },
     BASE_STALE: { label: '底稿已变化', next: '重新定位/重新授权，不套用旧跨度' },
+    // ── 2026-10-21（六项审稿漏修）：把"改了但没解决"与"根本没改到目标"拆成可复核的原因码 ──
+    ANCHOR_NOT_EDITED: { label: '原始证据原句仍在', next: '这条问题的目标段落没有被真正编辑；重新给出可编辑热点后再修' },
+    REDUNDANT_EXPLANATION_REMAINS: { label: '重复解释仍然存在', next: '删的是别处：请针对原总结段本身处理，不要改不相关台词' },
+    ISSUE_TARGET_NOT_ADDRESSED: { label: '改的不是问题本身', next: '补丁命中了别的片段：把整段相关证据一起给出后重做，不得自动判通过' },
+    REPETITIVE_CONSOLATION_REMAINS: { label: '重复劝慰功能仍然存在', next: '按发声者的信息功能收敛，不要只删动作修饰语' },
+    UNRELATED_CHANGE: { label: '疑似错误命中', next: '改动与问题证据没有交集：交复核，不得计入已修复' },
+    PARTIAL_REFERENCE_AMBIGUITY_REMAINS: { label: '含糊指代可能仍在', next: '让指代落地（点名/引号/播报动作），或由语义层给出可消歧证据' },
+    REQUIRED_CHARACTER_DECISION_MISSING: { label: '缺主角自己的取舍动作', next: '由主角做出可见的具体选择；旁人提一句不算' },
+    EXTERNAL_CONTEXT_REQUIRED: { label: '需外部资料核验', next: '只读核对角色卡/词条的时点与含义；不改正文来凑数字' },
+    NEEDS_AUTHOR_APPROVAL: { label: '需作者裁决', next: '把两种合法改法的代价说清，由作者选；不擅自改角色卡或设定' },
+    NOT_APPLICABLE_WITH_EVIDENCE: { label: '经证据判定不适用', next: '保留裁定与依据；不当成一次成功的正文补丁' },
+    SELECTED_DENOMINATOR_MISMATCH: { label: '勾选数与状态行数不一致', next: '补齐每一行的终态；禁止把没有状态的条目从分母删掉' },
+    UNACCOUNTED: { label: '覆盖表没有回答这一条', next: '补一条处置（改/保留/阻塞），不得静默略过' },
   };
 
   const textOf = (x) => String(x == null ? '' : x);
@@ -103,12 +116,37 @@
     return { evidence: out, diagnostics };
   }
 
-  function normalizeAcceptance(raw, diagnostics) {
+  function normalizeAcceptance(raw, diagnostics, opts = {}) {
     const src = raw && typeof raw === 'object' ? raw : {};
     const rule = textOf(src.rule != null ? src.rule : (typeof raw === 'string' ? raw : '')).trim();
-    const preserve = (Array.isArray(src.preserve) ? src.preserve : []).map(textOf).map((s) => s.trim()).filter(Boolean);
-    if (!rule) diagnostics.push({ code: 'ACCEPTANCE_MISSING', reason: '没有可客观检查的成功判据（acceptance.rule）' });
-    return { rule, preserve };
+    const list = (x) => (Array.isArray(x) ? x.map(textOf).map((s) => s.trim()).filter(Boolean) : []);
+    const preserve = list(src.preserve);
+    // `acceptance.rule` 是给人读的判据；以下三项是**机器可判**的子条件（2026-10-21）。
+    // 为什么必须一起归一化：丢了它们，验收层只能问模型"修好了吗"，于是"改了别处"也能算通过。
+    const conditions = (Array.isArray(src.conditions) ? src.conditions : [])
+      .filter((c) => c && typeof c === 'object')
+      .map((c) => ({
+        id: textOf(c.id),
+        kind: textOf(c.kind),
+        terms: list(c.terms),
+        marker: textOf(c.marker),
+        severity: c.severity === 'risk' ? 'risk' : 'hard',
+        note: textOf(c.note),
+      }));
+    const acceptance = {
+      rule,
+      preserve,
+      must_contain: list(src.must_contain),
+      min_chars: Number.isFinite(Number(src.min_chars)) && Number(src.min_chars) > 0 ? Number(src.min_chars) : 0,
+      conditions,
+      risk_terms: list(src.risk_terms),
+    };
+    // 外部资料类问题（角色卡/词条/时态）天然只需要**只读核验**，没有可落笔的正文跨度也合法。
+    const external = opts.externalContext === true;
+    if (!rule && !acceptance.conditions.length && !external) {
+      diagnostics.push({ code: 'ACCEPTANCE_MISSING', reason: '没有可客观检查的成功判据（acceptance.rule）' });
+    }
+    return acceptance;
   }
 
   /**
@@ -123,12 +161,18 @@
     const explanation = textOf(src.explanation != null ? src.explanation : src.text).trim();
     const rawId = textOf(src.id).trim();
     const id = rawId || `R-${String(index + 1).padStart(4, '0')}`;
-    const type = FINDING_TYPES.includes(textOf(src.type)) ? textOf(src.type) : 'other';
+    // `type`（审稿—修稿契约分类）与 `kind`（review_v2 白名单）是两套词表：谁给了就用谁，
+    // 只有一套时按固定映射补齐，**不丢分类**（丢分类会让工作区的筛选与统计失真）。
+    const KIND_TO_TYPE = { fact: 'continuity', wording: 'style', narrative: 'causality', observation: 'other', deferred: 'other' };
+    const typeSrc = textOf(src.type) || KIND_TO_TYPE[textOf(src.kind)] || '';
+    const type = FINDING_TYPES.includes(typeSrc) ? typeSrc : 'other';
     const severity = SEVERITIES.includes(textOf(src.severity)) ? textOf(src.severity) : 'medium';
     const legacy = opts.legacy === true || src.legacy === true;
+    // 外部资料类问题（Q05 形态）：合法终态是"已核对/待核对"，不是"正文改了什么"。
+    const requiresExternal = src.requires_external_context === true || textOf(src.problem_type) === 'EXTERNAL_CARD';
     const ev = normalizeEvidence(src.evidence, opts.bodyText);
     diagnostics.push(...ev.diagnostics);
-    const acceptance = normalizeAcceptance(src.acceptance, diagnostics);
+    const acceptance = normalizeAcceptance(src.acceptance, diagnostics, { externalContext: requiresExternal });
     const title = textOf(src.title).trim() || clip(explanation || '（无标题）', 40);
 
     // 跨位置问题：至少要有一处"可编辑目标"；若全部是 reference，修稿器没有落笔点。
@@ -136,8 +180,9 @@
     const references = ev.evidence.filter((e) => e.role !== 'candidate_edit');
     if (!legacy) {
       if (!ev.evidence.length) {
-        diagnostics.push({ code: 'EVIDENCE_MISSING', reason: '没有逐字引文：无法定位，也不得据此扩大授权' });
-      } else if (!targets.length) {
+        // 外部资料类问题允许"零正文证据"：它的证据在角色卡/词条里，不在本章正文。
+        if (!requiresExternal) diagnostics.push({ code: 'EVIDENCE_MISSING', reason: '没有逐字引文：无法定位，也不得据此扩大授权' });
+      } else if (!targets.length && !requiresExternal) {
         diagnostics.push({ code: 'CROSS_SPAN_EVIDENCE_MISSING', reason: '证据全部是只读引用：缺少 candidate_edit 目标，修稿器没有可落笔的跨度' });
       }
       if (src.cross_span === true && targets.length < 2) {
@@ -151,10 +196,23 @@
       id,
       title,
       type,
+      // `problem_type` 是更细的意图标签（LOCAL_PHRASE / REDUNDANCY / MULTI_SPEAKER_FUNCTION /
+      // EXTERNAL_CARD / MISSING_CHARACTER_ACTION）：验收器按它选择判据，但**不因此放宽授权**。
+      problem_type: textOf(src.problem_type).trim(),
       severity,
       explanation,
+      // 计划层要用 `suggested_action` 决定允许的 op（replace/delete/insert…），丢了它只能一律按 replace。
+      suggested_action: textOf(src.suggested_action).trim(),
+      // 审稿协议的另几项：保留原文，不在这里重算（重算等于第二套判据）。
+      kind: textOf(src.kind),
+      verdict: textOf(src.verdict),
+      rationale: textOf(src.rationale),
+      reading_cost: textOf(src.reading_cost),
+      counterevidence: textOf(src.counterevidence),
+      shape_defects: Array.isArray(src.shape_defects) ? src.shape_defects.map(textOf) : [],
       evidence: ev.evidence,
       acceptance,
+      requires_external_context: requiresExternal,
       legacy,
       cross_span: src.cross_span === true,
       reference_count: references.length,

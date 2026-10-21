@@ -1762,6 +1762,17 @@ mark.search-hit {
 .rw-block.change { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: color-mix(in srgb, var(--text) 4%, transparent); }
 .rw-block-tag { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
 .rw-col { min-width: 0; white-space: pre-wrap; word-break: break-word; }
+/* 点左侧问题 ⇒ 高亮该问题的证据所在段落（方案 §8.2）。
+   只改变视觉，不改变任何判定；「相关段落」视图也靠它把命中段标出来。 */
+.rw-block.hit { box-shadow: inset 3px 0 0 var(--primary); }
+.rw-block.same.hit,
+.rw-block.del.hit,
+.rw-block.add.hit { background: color-mix(in srgb, var(--primary) 7%, transparent); }
+.rw-block.change.hit { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.rw-context-note { font-size: 12px; color: var(--accent); padding: 2px 4px 8px; }
+/* 子条件/外部资料摘要（2026-10-21）：说明"还差哪个条件""这条是否该由正文补丁处理"。 */
+.rw-condition-line { font-size: 12px; color: var(--muted); padding: 2px 4px 6px; }
+.rw-condition-line.warn { color: var(--warn, #b4690e); }
 .rw-issue-detail {
   flex: 0 0 auto;
   max-height: 32vh;
@@ -1939,3 +1950,32 @@ mark.search-hit {
 .st-summary-line.is-off .st-summary-chip { color: var(--text-dim); }
 .st-character-compact > summary { cursor: pointer; list-style: none; }
 .st-character-compact > summary::-webkit-details-marker { display: none; }
+
+/* ── 质量审计（dsh-novel-quality-auditor）：入口条 / 缺依赖弹窗 / 终验表 ───────── */
+.qa-entry {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; margin: 10px 0 12px; background: rgba(148, 163, 184, .06);
+}
+.qa-entry.busy { border-color: rgba(59, 130, 246, .45); }
+.qa-entry.ok { border-color: rgba(34, 197, 94, .45); }
+.qa-entry.err { border-color: rgba(239, 68, 68, .45); }
+.qa-entry-main { min-width: 0; }
+.qa-entry-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.qa-missing-list { display: flex; flex-direction: column; gap: 10px; }
+.qa-missing {
+  display: flex; justify-content: space-between; gap: 12px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+}
+.qa-missing .env-cmd { margin-top: 6px; }
+.env-missing-banner {
+  border: 1px solid rgba(234, 179, 8, .45); background: rgba(234, 179, 8, .08);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.qa-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.qa-table th, .qa-table td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; font-size: 13px; }
+.qa-row.ok td { color: var(--success); }
+.qa-row.warn td { color: #eab308; }
+.qa-row.bad td { color: var(--danger); }
+.qa-repair { margin-top: 8px; font-weight: 600; }

@@ -64,8 +64,12 @@
 | **V17** | v1.2.5 审稿→修稿质量闭环硬化：I01–I08 固定回归 / PARTIAL 语义结论 / 定向复修 / 脱敏追踪 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **V18** | v1.3.0 UI 方案：单行入口四态 / 四阶段与三维状态 / 覆盖式详情 / 角色可搜索列表 / 多宽度浏览器验收 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **V19** | v1.3.1 写作截断与质检闭环首轮：终止原因贯通 / 质检跳过与截断不冒充完整 / 蓝图门禁最小落点 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **V20** | 六项审稿漏修与语义闭环（引文底本/证据契约/伪修复判据） | ✅ 可独立回滚 |
+| **QA1** | 审稿身份链 review.v3（dsh-novel-quality-auditor 阶段 0–1） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **QA2** | 质量审计契约与 API（dsh-novel-quality-auditor 阶段 2） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
+| **QA3** | 独立审计插件与前端入口（dsh-novel-quality-auditor 阶段 3/4/6） | ✅ 可独立回滚 |
 
-**可独立回滚的阶段：U、V、Z4、V1、SE7、SE8。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
+**可独立回滚的阶段：U、V、Z4、V1、SE7、SE8、V20、QA3。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
 ## 二、逐阶段明细
 
@@ -190,12 +194,12 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
+  - ai/policy.mjs 被**生产代码** ai/quality-auditor/harness-task.mjs（QA2）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** db.js（P5/Z3/L/Z6/TT/SE6/V12/V13/V14）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** harness.js（P0/Z1）import——撤掉会打断线上路径
   - ai/policy.mjs 被**生产代码** server.js（P2/P3/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
   - 文件 docs/p4-policy-verification.md 同时属于 P4/S——改动改在同一批代码里，撤不干净
   - 文件 public/app.js 同时属于 P3/P4/P5/Z5/PI/Z6/TT/SE/SE4/SE5/SE6/V13/V14/V15/V16/V17/V18/V19——改动改在同一批代码里，撤不干净
-  - 文件 server.js 同时属于 P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19——改动改在同一批代码里，撤不干净
 - **说明**：策略单点化本身可撤（恢复各处字面量），但 ai/policy.mjs 被 harness.js 与 server.js import，前端与 server.js 又被 P3/P5 共同修改 → 无法只撤 P4。
 - **验收证据**：`docs/p4-policy-verification.md`、`ai/policy.mjs`、`.p1-baseline/verify-ai-branches.mjs`、`.p1-baseline/test-model-switch-gate.mjs`
 - **本阶段认领的文件**（6 个）：
@@ -1063,7 +1067,7 @@
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`； 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`）， `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`， 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`， 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）； ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价， Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）； ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）； ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）； ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）； ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）； ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。 `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、 `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*` 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级； 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。 ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`）， 故交付文档只写"机制已实现、文学效果待评测"。
 - **验收证据**：`docs/narrative-repair/implementation-report.md`、`docs/narrative-repair/test-report.md`、`docs/narrative-repair/e07-run-manifest.json`、`docs/narrative-repair/coverage-report.json`、`docs/narrative-repair/rollback.md`、`scripts/run-narrative-acceptance.mjs`
-- **本阶段认领的文件**（61 个）：
+- **本阶段认领的文件**（68 个）：
   - `.p1-baseline/test-editing-rules.mjs`
   - `.p1-baseline/test-migration-idempotent.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -1111,8 +1115,15 @@
   - `tests/narrative-repair/15-reason-binding.test.mjs`
   - `tests/narrative-repair/16-op-authorization.test.mjs`
   - `tests/narrative-repair/17-review-closure-0317.test.mjs`
+  - `tests/narrative-repair/18-six-issue-closure.test.mjs`
   - `tests/narrative-repair/fixtures/after.txt`
   - `tests/narrative-repair/fixtures/before.txt`
+  - `tests/narrative-repair/fixtures/chapter1-six-issues/after-excerpts.json`
+  - `tests/narrative-repair/fixtures/chapter1-six-issues/before-excerpts.json`
+  - `tests/narrative-repair/fixtures/chapter1-six-issues/expected-results.json`
+  - `tests/narrative-repair/fixtures/chapter1-six-issues/model-verdicts.json`
+  - `tests/narrative-repair/fixtures/chapter1-six-issues/review-report.json`
+  - `tests/narrative-repair/fixtures/chapter1-six-issues/role-card-asof.json`
   - `tests/narrative-repair/fixtures/manifest.json`
   - `tests/narrative-repair/fixtures/new-3751-spring/F-A01-information-truncation.json`
   - `tests/narrative-repair/fixtures/new-3751-spring/F-A02-positive-compression.json`
@@ -1768,9 +1779,107 @@
   - `public/writing-quality.js`
   - `server.js`
 
+### V20 · 六项审稿漏修与语义闭环（引文底本/证据契约/伪修复判据）
+
+- **回滚方式**：可独立回滚
+- **说明**：**目的**：把"六项审稿意见修完仍有 3 条 FAIL、1 条改错位置、1 条跨资料没核验"拆成可复核的判据，而不是再写一版修稿提示词。根因两条（本机真实数据可证）：①落库时拿"当前章节"核验引文，而被审正文在 `base_text` 里，于是 review#29 六条 finding 全被拒收（`accepted=0`）；②审稿提示词要 `type/explanation/acceptance`，结构层白名单要 `kind/suggested_action/rationale`，对不上就整条丢。修法：核验被审正文 + 形状缺陷降级（保留逐字证据）+ 勾选编号按位置连接 finding + 验收层按补丁对证据的覆盖分档、补 `UNRELATED_CHANGE` 与 `acceptance.conditions` 求值 + 外部资料项走 `EXTERNAL_CONTEXT_REQUIRED` 且不进复修队列。**边界**：不新增 `AUTHOR_CONFIRMED` 状态枚举（不动 `N=P+F+U+B` 与回执契约）；不自动改角色卡/词条/世界设定；不改选区保护、压缩授权与费用门禁；不写正式正文。**费用**：全部离线断言零计费（六项夹具 + 固定语义回包），未调用任何真实模型。
+- **验收证据**：`docs/v1.2.6-six-issue-closure.md`、`docs/CHANGELOG.md`、`tests/narrative-repair/18-six-issue-closure.test.mjs`
+- **本阶段认领的文件**（1 个）：
+  - `docs/v1.2.6-six-issue-closure.md`
+
+### QA1 · 审稿身份链 review.v3（dsh-novel-quality-auditor 阶段 0–1）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - ai/editing/review-contract.mjs 被**生产代码** ai/quality-auditor/review-integrity.mjs（QA2）import——撤掉会打断线上路径
+  - ai/editing/review-contract.mjs 被**生产代码** ai/quality-auditor/routes.mjs（QA2）import——撤掉会打断线上路径
+  - ai/editing/review-contract.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
+- **说明**：**目的**：修复审稿 issue ID 与 structured finding ID 的断链。旧链路里 issues 被拍平成字符串，勾选只有数组下标身份（1/2/3），finding 是 R-0001；查不到就静默退回 legacy 空证据，多位置授权/逐字引用/验收条件全部丢失。修法：唯一实现 public/review-contract.js（浏览器经典脚本直接加载），ai/editing/review-contract.mjs 按 ESM 转出同一份；解析/展示/勾选/修稿计划全部按稳定 id；结构化报告映射不完整时 fail-closed（不发起付费修稿）；存量报告惰性迁移为 LEGACY 身份且 evidence_status=legacy_missing。**边界**：不改生成/修稿提示词、不动 confirmation-resolution 账本、不写正文、不新增计费调用。**费用**：全部离线断言零计费。
+- **验收证据**：`scripts/quality-auditor/verify-id-chain.mjs`、`docs/quality-auditor-id-chain.md`、`frontend-test.mjs`
+- **本阶段认领的文件**（5 个）：
+  - `ai/editing/review-contract.mjs`
+  - `docs/quality-auditor-id-chain.md`
+  - `public/review-contract.js`
+  - `scripts/quality-auditor/freeze-baseline.mjs`
+  - `scripts/quality-auditor/verify-id-chain.mjs`
+
+### QA2 · 质量审计契约与 API（dsh-novel-quality-auditor 阶段 2）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - ai/quality-auditor/provision.mjs 被**生产代码** harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs（QA3）import——撤掉会打断线上路径
+  - ai/quality-auditor/provision.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
+  - ai/quality-auditor/routes.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
+  - ai/quality-auditor/store.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
+- **说明**：**目的**：给独立审计建立可观测的账本与鉴权边界。三张旁路表（runs/items/events）承载 run 状态机、一次性 token（只存 hash）、预算、租约与 append-only 事件流；API 分作者通道与 DSH token 通道；状态迁移只走 store.transition 的白名单。**边界**：不改正文、不改既有审稿/修稿表语义、不动 confirmation-resolution 账本。**费用**：CT 套件全部 start:false（外部 runner），零计费。
+- **验收证据**：`scripts/quality-auditor/test-contracts.mjs`、`docs/quality-auditor-architecture.md`
+- **本阶段认领的文件**（22 个）：
+  - `ai/quality-auditor/budget.mjs`
+  - `ai/quality-auditor/contracts.mjs`
+  - `ai/quality-auditor/coordinator.mjs`
+  - `ai/quality-auditor/evidence.mjs`
+  - `ai/quality-auditor/harness-task.mjs`
+  - `ai/quality-auditor/merge-review.mjs`
+  - `ai/quality-auditor/merge-revision.mjs`
+  - `ai/quality-auditor/prompts.mjs`
+  - `ai/quality-auditor/provision.mjs`
+  - `ai/quality-auditor/review-integrity.mjs`
+  - `ai/quality-auditor/revision-integrity.mjs`
+  - `ai/quality-auditor/routes.mjs`
+  - `ai/quality-auditor/security.mjs`
+  - `ai/quality-auditor/snapshots.mjs`
+  - `ai/quality-auditor/status.mjs`
+  - `ai/quality-auditor/store.mjs`
+  - `docs/quality-auditor-architecture.md`
+  - `scripts/quality-auditor/harness.mjs`
+  - `scripts/quality-auditor/real-host.mjs`
+  - `scripts/quality-auditor/test-contracts.mjs`
+  - `scripts/quality-auditor/test-e2e.mjs`
+  - `scripts/quality-auditor/test-provision.mjs`
+
+### QA3 · 独立审计插件与前端入口（dsh-novel-quality-auditor 阶段 3/4/6）
+
+- **回滚方式**：可独立回滚
+- **说明**：**目的**：把"独立复核员"做成真正可安装的 DSH bundle。四工具（open/read/submit/status）只做数据交换与提交；没有 audit 环境时返回 NOT_APPLICABLE，普通写作任务不受影响；turn-stopping 只兜底一次。前端新增一行状态入口与工作区抽屉（纯函数，可离线断言）。**边界**：不写正文、不碰 confirmation ledger、不改 system-prompt personaPrefix。**费用**：工具测试对本地 HTTP stub，零计费。
+- **验收证据**：`harness-plugins/dsh-novel-quality-auditor/test/tools.test.mjs`、`harness-plugins/dsh-novel-quality-auditor/scripts/verify-wiring.mjs`、`docs/quality-auditor-plugin.md`
+- **本阶段认领的文件**（33 个）：
+  - `docs/quality-auditor-dsh-version-alignment-plan.md`
+  - `docs/quality-auditor-embedding-plan.md`
+  - `docs/quality-auditor-plugin.md`
+  - `harness-plugins/dsh-novel-quality-auditor/LICENSE`
+  - `harness-plugins/dsh-novel-quality-auditor/README.md`
+  - `harness-plugins/dsh-novel-quality-auditor/cordis.patch.yml`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/auth.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/config.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/contracts.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/env.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/errors.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/http-client.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/idempotency.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/index.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/prompt-policy.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/redaction.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/tools/open.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/tools/read.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/tools/status.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/tools/submit.js`
+  - `harness-plugins/dsh-novel-quality-auditor/lib/turn-guard.js`
+  - `harness-plugins/dsh-novel-quality-auditor/package.json`
+  - `harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/scripts/uninstall.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/scripts/verify-host.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/scripts/verify-wiring.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/test/auth.test.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/test/coexistence.test.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/test/contracts.test.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/test/tools.test.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/test/turn-guard.test.mjs`
+  - `harness-plugins/dsh-novel-quality-auditor/verify/manifest.json`
+  - `public/quality-audit-panel.js`
+
 ## 三、归属核对
 
-- 真实改动集：**824** 个文件
+- 真实改动集：**892** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

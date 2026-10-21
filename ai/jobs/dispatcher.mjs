@@ -112,7 +112,13 @@ export function createDispatcher({ db, runAnalysis, runImpact = null, owner = `d
         // R3：not_before 只往后不提前；R4：复位本轮传输态。判定失败即 FENCED，不虚报 REARMED。
         const r = Q.rearm(db, { taskId: task.id, owner, generation: task.lease_generation, nowMs: Number(now()), rearmDelayMs });
         if (!r.ok) return { outcome: TICK.FENCED, taskId: task.id, detail: r.reason };
-        return { outcome: TICK.REARMED, taskId: task.id, detail: verdict.reason };
+        // 2026-10-21：已经有更新的 queued 时，本轮不能也回 queued（唯一索引），
+        // 于是它按"被取代"收尾 —— 意图仍在队列里（那条 queued），不能报成 FENCED/FAILED。
+        return {
+          outcome: TICK.REARMED,
+          taskId: task.id,
+          detail: r.superseded ? `${verdict.reason} → 已由更新的排队任务 #${r.supersededBy} 取代` : verdict.reason,
+        };
       }
 
       // ── 「未运行」：如实记录，**不宣称 AI 分析成功**（R2）──────────────────────

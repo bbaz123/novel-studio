@@ -1,0 +1,20 @@
+{
+  "name": "dsh-novel-quality-auditor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Novel Studio 的独立质量审计插件：盲审→冻结→初审对照→结构化提交；不修改正文，不写 confirmation ledger。作为 DSH bundle 被 novel profile 引用。",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node test/tools.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

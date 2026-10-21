@@ -37,6 +37,48 @@ export const JOB_DEFAULTS = Object.freeze({
 const openStates = "('queued','running')";
 
 /**
+ * 同一 (chapter_id, kind) 上是否已有**另一条** queued。
+ *
+ * 为什么需要它（2026-10-21 作者日志实测）：
+ *   db.js 用两条部分唯一索引保证"最多 1 queued + 1 running"，这是 R1 的正确模型
+ *   （运行中的那版不可变，新修订另建 queued）。但把 running 回退成 queued 的几条路径
+ *   （rearm / reconciliation requeue）没有检查"是否已经有一条 queued"，于是：
+ *     分析 A 运行中 → 作者又保存一版 → recordIntent 建了 B(queued) → A 需要 rearm
+ *     → `UPDATE … status='queued'` 直接撞 `idx_story_analysis_tasks_one_queued`
+ *     → 整轮 dispatch 抛 UNIQUE constraint failed，A 和 B **双双卡死**，
+ *       每 500ms 一次的调度循环持续报"派发失败/分析任务失败"。
+ *
+ * 裁决原则：**不抢更新的意图**。已经存在的 queued 代表最新修订，本条按"被取代"收尾，
+ * 意图仍留在队列里（作者看到的还是"待分析"），而不是把两条都卡住或伪造完成。
+ */
+function queuedSiblingId(db, { chapterId, kind, excludeTaskId }) {
+  const row = db.prepare(
+    `SELECT id FROM story_analysis_tasks
+      WHERE chapter_id = ? AND kind = ? AND status = 'queued' AND id <> ?
+      ORDER BY id DESC LIMIT 1`,
+  ).get(Number(chapterId) || 0, String(kind || 'analysis'), Number(excludeTaskId) || 0);
+  return row ? Number(row.id) : 0;
+}
+
+/** 把"被更新的 queued 取代"的 running 行按终态收尾（不写 done、不冒充成功）。 */
+function supersedeWithQueued(db, { taskId, into, now, owner = null, generation = null }) {
+  const args = [`SUPERSEDED: 已由更新的排队任务 #${into} 取代`, now, Number(taskId) || 0];
+  const leaseClause = owner == null ? '' : ' AND lease_owner = ? AND lease_generation = ?';
+  if (owner != null) args.push(String(owner || ''), Number(generation) || 0);
+  const info = db.prepare(
+    `UPDATE story_analysis_tasks
+        SET status = 'cancelled', last_error = ?, lease_owner = '', lease_expires_at_ms = 0, updated_at_ms = ?
+      WHERE id = ? AND status = 'running'${leaseClause}`,
+  ).run(...args);
+  if (info.changes !== 1) return false;
+  db.prepare(
+    `UPDATE story_analysis_attempts SET status = 'abandoned', finished_at_ms = ?
+      WHERE task_id = ? AND status = 'running'`,
+  ).run(now, Number(taskId) || 0);
+  return true;
+}
+
+/**
  * 保存时的意图登记（**必须在调用方的事务里执行** —— 它与正文、修订同生共死）。
  *
  * @returns {{task: object, created: boolean, notBeforeMs: number, deadlineMs: number}}
@@ -105,13 +147,20 @@ export function claimNext(db, { owner, nowMs, leaseMs = JOB_DEFAULTS.leaseMs, ki
   const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
   const clauses = [];
   const args = [];
-  if (kind) { clauses.push('AND kind = ?'); args.push(kind); }
+  if (kind) { clauses.push('AND t.kind = ?'); args.push(kind); }
   // workId 过滤是**生产需要**（一个实例可能管多部作品），顺带让测试能按作品隔离。
-  if (Number(workId)) { clauses.push('AND work_id = ?'); args.push(Number(workId)); }
+  if (Number(workId)) { clauses.push('AND t.work_id = ?'); args.push(Number(workId)); }
+  // ⚠️ `NOT EXISTS running` 是**正确性**要求，不只是优化：同一章同一 kind 若已有一条 running，
+  // 把另一条 queued 领成 running 会撞 `idx_story_analysis_tasks_one_running`，
+  // 而 claimNext 抛出的异常在 dispatcher 里位于 try 之外 —— 整轮 drain 直接失败（2026-10-21 实测）。
   const candidate = db.prepare(
-    `SELECT id, lease_generation FROM story_analysis_tasks
-      WHERE status = 'queued' AND not_before_ms <= ? ${clauses.join(' ')}
-      ORDER BY not_before_ms ASC, id ASC LIMIT 1`,
+    `SELECT t.id, t.lease_generation FROM story_analysis_tasks t
+      WHERE t.status = 'queued' AND t.not_before_ms <= ? ${clauses.join(' ')}
+        AND NOT EXISTS (
+          SELECT 1 FROM story_analysis_tasks r
+           WHERE r.chapter_id = t.chapter_id AND r.kind = t.kind AND r.status = 'running'
+        )
+      ORDER BY t.not_before_ms ASC, t.id ASC LIMIT 1`,
   ).get(now, ...args);
   if (!candidate) return null;
   const info = db.prepare(
@@ -193,15 +242,26 @@ export function markUnknown(db, { taskId, owner, generation, error = '', nowMs }
  */
 export function rearm(db, { taskId, owner, generation, nowMs, rearmDelayMs = 0 }) {
   const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
-  const cur = db.prepare('SELECT not_before_ms FROM story_analysis_tasks WHERE id = ?').get(Number(taskId) || 0);
+  const id = Number(taskId) || 0;
+  const cur = db.prepare('SELECT * FROM story_analysis_tasks WHERE id = ?').get(id);
+  if (!cur) return { ok: false, reason: 'NOT_FOUND' };
   const existing = Number(cur && cur.not_before_ms) || 0;
   const next = Math.max(existing, now + Math.max(0, Number(rearmDelayMs) || 0));
+  // 已经有"更新修订"的 queued：本条不能再回 queued（数据库只允许一条）。
+  // 让位给那条，本条按被取代收尾 —— 意图没丢，也不会撞唯一索引把整轮调度打崩。
+  const sibling = queuedSiblingId(db, { chapterId: cur.chapter_id, kind: cur.kind, excludeTaskId: id });
+  if (sibling) {
+    if (!supersedeWithQueued(db, { taskId: id, into: sibling, now, owner, generation })) {
+      return { ok: false, reason: 'FENCED' };
+    }
+    return { ok: true, superseded: true, supersededBy: sibling, notBeforeMs: next };
+  }
   const info = db.prepare(
     `UPDATE story_analysis_tasks
         SET status = 'queued', not_before_ms = ?, transport_state = 'not_sent',
             lease_owner = '', lease_expires_at_ms = 0, updated_at_ms = ?
       WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_generation = ?`,
-  ).run(next, now, Number(taskId) || 0, String(owner || ''), Number(generation) || 0);
+  ).run(next, now, id, String(owner || ''), Number(generation) || 0);
   if (info.changes !== 1) return { ok: false, reason: 'FENCED' };
   db.prepare(
     `UPDATE story_analysis_attempts SET status = 'abandoned', finished_at_ms = ?
@@ -265,6 +325,16 @@ export function applyReconciliation(db, { nowMs, dryRun = false, workId = 0 } = 
   const out = [];
   for (const p of plan) {
     if (p.action === 'requeue') {
+      // 同一条唯一索引约束也适用于"启动恢复"：若已经有一条更新的 queued（保存时建的），
+      // 把过期 running 也塞回 queued 会撞 `idx_story_analysis_tasks_one_queued`，
+      // 而 applyReconciliation 抛错发生在 startTemporalDispatcher 里 —— 调度器直接起不来。
+      const cur = db.prepare('SELECT chapter_id, kind FROM story_analysis_tasks WHERE id = ?').get(p.taskId) || {};
+      const sibling = queuedSiblingId(db, { chapterId: cur.chapter_id, kind: cur.kind, excludeTaskId: p.taskId });
+      if (sibling) {
+        const done = supersedeWithQueued(db, { taskId: p.taskId, into: sibling, now });
+        out.push({ ...p, applied: done, supersededBy: sibling });
+        continue;
+      }
       db.prepare(
         `UPDATE story_analysis_tasks SET status = 'queued', lease_owner = '', lease_expires_at_ms = 0, updated_at_ms = ?
           WHERE id = ? AND status = 'running'`,

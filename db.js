@@ -1418,6 +1418,19 @@ const MIGRATIONS = [
   // ── v1.2.2 P1-1：词条版本指针（历史在 world_entry_versions，见基础 schema）──────
   // 默认 1 → 存量词条视为 v1；首次保存会由 entry-versioning 幂等落一版历史。
   `ALTER TABLE world_entries ADD COLUMN version INTEGER NOT NULL DEFAULT 1`,
+  // ── dsh-novel-quality-auditor（阶段 1/2）：审稿报告归一化与身份链 ──────────────
+  // 为什么是附加列而不是新表：`report_json` 是**原始**模型输出（审计证据，不能被覆盖）；
+  // 归一化结果是它的**派生视图**。分列保存后，"读旧报告只迁移视图不改原始 payload"才成立。
+  // 默认空串/0 → 存量行保持"未归一化"，读取时惰性迁移（见 server.js 的 getLatestReview）。
+  `ALTER TABLE chapter_reviews ADD COLUMN normalized_report_json TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE chapter_reviews ADD COLUMN normalization_version INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE chapter_reviews ADD COLUMN normalization_warnings_json TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE chapter_reviews ADD COLUMN schema_version TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE chapter_reviews ADD COLUMN review_hash TEXT NOT NULL DEFAULT ''`,
+  // 修稿选择记录：把"这次勾选对应哪一份审稿 hash / 证据状态"固化下来。
+  // 没有它时，报告被改写后旧选择仍能通过"ID 存在"检查 —— 身份对得上、内容对不上。
+  `ALTER TABLE revision_selections ADD COLUMN review_hash TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE revision_selections ADD COLUMN evidence_status TEXT NOT NULL DEFAULT ''`,
 ];
 // ── D4（S06 已修）：迁移必须**有账本**且**事务化** ──────────────────────────────
 // 病灶：旧循环逐条 `try { db.exec(sql) } catch {}` ——
@@ -1618,3 +1631,87 @@ const STORY_STATE_UNIQUE = [
 for (const [sql, label] of STORY_STATE_UNIQUE) {
   try { db.exec(sql); } catch (e) { console.warn(`[db] ${label}创建失败：${e.message}`); }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// dsh-novel-quality-auditor（2026-10-21）：独立审计账本（**旁路表**）
+//
+// 为什么是旁路表而不是往 chapter_reviews / revision_selections 里塞字段：
+//   ① 审计是**一次运行**（有租约、有 token、有预算、可取消），不是报告的属性；
+//   ② 回滚时删除这三张表即可，不触碰作者正文与既有审稿历史（方案 §18.2）；
+//   ③ `quality_audit_events` 是 append-only 的事件流，日志只存形状/hash/状态，不存全文。
+//
+// 状态机由服务端事务控制（见 ai/quality-auditor/store.mjs 的 ALLOWED_TRANSITIONS），
+// 插件不能直接跳到 COMPLETED。三张表都用 IF NOT EXISTS：重复执行安全。
+// ══════════════════════════════════════════════════════════════════════════════
+db.exec(`
+CREATE TABLE IF NOT EXISTS quality_audit_runs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('review','revision')),
+  work_id INTEGER NOT NULL,
+  chapter_id INTEGER NOT NULL,
+  review_id INTEGER,
+  revision_run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'CREATED',
+  phase TEXT NOT NULL DEFAULT '',
+  contract_version TEXT NOT NULL DEFAULT 'novel-quality-audit.v1',
+  base_hash TEXT NOT NULL DEFAULT '',
+  candidate_hash TEXT,
+  context_hash TEXT NOT NULL DEFAULT '',
+  input_manifest_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '',
+  -- blind 与 final 是两次独立提交，必须各存一份：对照阶段要拿盲审结果去比，
+  -- 合并阶段还要能复核"先盲后对照"这个顺序没有被绕过（只存最后一次会让顺序无法证明）。
+  blind_result_json TEXT NOT NULL DEFAULT '',
+  -- 初审报告的快照（compare 阶段才允许 DSH 读；blind 阶段读取走 API 拒绝）。
+  initial_report_json TEXT NOT NULL DEFAULT '',
+  error_code TEXT NOT NULL DEFAULT '',
+  error_detail TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT UNIQUE,
+  token_hash TEXT NOT NULL DEFAULT '',
+  token_expires_at TEXT NOT NULL DEFAULT '',
+  budget_authorized_microunits INTEGER NOT NULL DEFAULT 0,
+  budget_estimated_microunits INTEGER NOT NULL DEFAULT 0,
+  budget_charged_microunits INTEGER NOT NULL DEFAULT 0,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_expires_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  completed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_quality_audit_runs_chapter ON quality_audit_runs(chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_audit_runs_work ON quality_audit_runs(work_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_audit_runs_status ON quality_audit_runs(status);
+CREATE INDEX IF NOT EXISTS idx_quality_audit_runs_review ON quality_audit_runs(review_id);
+
+CREATE TABLE IF NOT EXISTS quality_audit_items (
+  audit_id TEXT NOT NULL,
+  issue_id TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('initial','auditor','merged')),
+  kind TEXT NOT NULL CHECK(kind IN ('finding','deferred','dispute','regression')),
+  type TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT '',
+  confidence REAL,
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_json TEXT NOT NULL DEFAULT '{}',
+  verdict TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  repair_hint TEXT NOT NULL DEFAULT '',
+  base_hash TEXT NOT NULL DEFAULT '',
+  candidate_hash TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (audit_id, issue_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_quality_audit_items_audit ON quality_audit_items(audit_id, kind);
+
+CREATE TABLE IF NOT EXISTS quality_audit_events (
+  audit_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_shape_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (audit_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_quality_audit_events_audit ON quality_audit_events(audit_id, seq);
+`);

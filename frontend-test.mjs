@@ -998,16 +998,78 @@ try {
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
   // v1.2.4：统一终验出口 + 审稿工作区 + 时态设置页（与 index.html 同序，仍先于 app.js）。
-  for (const name of ['revision-timeline.js', 'revision-canon-strength.js', 'revision-finalize.js', 'revision-run-store.js', 'revision-archive.js', 'review-workspace.js', 'temporal-settings.js', 'quality-trend.js', 'quality-profile.js', 'quality-insights.js']) {
+  for (const name of ['revision-timeline.js', 'revision-canon-strength.js', 'revision-finalize.js', 'revision-run-store.js', 'revision-archive.js', 'review-workspace.js', 'temporal-settings.js', 'quality-trend.js', 'quality-profile.js', 'quality-insights.js', 'quality-audit-panel.js', 'review-contract.js']) {
     const code = fs.readFileSync(path.join(repoRoot, 'public', name), 'utf8');
     new vm.Script(code, { filename: name }).runInContext(ctx, { timeout: 10000 });
   }
   const longTextSrc = fs.readFileSync(path.join(repoRoot, 'public', 'long-text.js'), 'utf8');
   new vm.Script(longTextSrc, { filename: 'long-text.js' }).runInContext(ctx, { timeout: 10000 });
+  // 审稿契约 v3（review.v3）：与 index.html 同序，先于 app.js。
+  // 缺了它 app.js 会返回 REVIEW_CONTRACT_UNAVAILABLE 并禁用修稿（fail-closed，不是静默降级），
+  // 所以这里必须真的加载它 —— 否则下面所有"勾选→修稿计划"的断言都在测一条不可达路径。
+  {
+    const contractSrc = fs.readFileSync(path.join(repoRoot, 'public', 'review-contract.js'), 'utf8');
+    new vm.Script(contractSrc, { filename: 'review-contract.js' }).runInContext(ctx, { timeout: 10000 });
+  }
   new vm.Script(src + probeSrc, { filename: 'app.js' }).runInContext(ctx, { timeout: 20000 });
 } catch (e) {
   runtimeError = e;
 }
+// ---- 质量审计面板（dsh-novel-quality-auditor 阶段 5/6）：纯函数级断言 ----
+{
+  const QP = sandbox.NovelQualityAuditPanel;
+  check('QA-P1 审计面板模块随页面加载（先于 app.js）', !!QP && typeof QP.summaryLine === 'function' && typeof QP.revisionTableHtml === 'function');
+  const line = QP ? QP.summaryLine({ kind: 'revision', status: 'RUNNING', counts: { selected: 6, pass: 4 } }) : '';
+  check('QA-P2 写作台只显示一行状态（含 4/6 与未通过数）',
+    /修稿验收 · 4\/6 已通过/.test(line) && /2 项未通过/.test(line));
+  check('QA-P3 无审计运行时不占位', QP && QP.summaryLine(null) === '');
+  const blocked = { status: 'COMPLETED', issues: [{ final: 'PASS' }, { final: 'BLOCKED_SCOPE' }] };
+  const partial = { status: 'COMPLETED', issues: [{ final: 'PASS' }, { final: 'PARTIAL' }] };
+  check('QA-P4 任一非 PASS（含越权/部分修复）都不得显示"全部完成"',
+    QP && QP.allDone(blocked, blocked.issues) === false && QP.allDone(partial, partial.issues) === false
+    && QP.allDone({ status: 'COMPLETED' }, [{ final: 'PASS' }]) === true);
+  const table = QP ? QP.revisionTableHtml({ issues: [{ issue_id: 'Q01', final: 'FAIL', final_reason: '锚点未动' }], counts: { selected: 1, fail: 1 }, repair_targets: ['Q01'] }) : '';
+  check('QA-P5 终验表逐条显示终态/原因/可复修目标，并写明"补丁已应用 ≠ 验收通过"',
+    /Q01/.test(table) && /复验失败/.test(table) && /锚点未动/.test(table) && /可定向复修：Q01/.test(table) && /不等于/.test(table));
+  check('QA-P6 BLOCKED_SCOPE / STALE 禁止合并；PARTIAL 允许带标签合并',
+    QP && QP.mergeAllowed(blocked) === false && QP.mergeAllowed({ issues: [{ final: 'STALE' }] }) === false
+    && QP.mergeAllowed(partial) === true);
+  check('QA-P8 独立复核入口三态可见（未做/进行中/已复核），并写明"会消耗额度"',
+  (() => {
+    const idle = QP.auditEntryHtml({ run: null, pluginReady: true, hasStructuredReview: true });
+    const busy = QP.auditEntryHtml({ run: { status: 'COMPARE_RUNNING' }, pluginReady: true, hasStructuredReview: true });
+    const done = QP.auditEntryHtml({ run: { status: 'COMPLETED' }, pluginReady: true, hasStructuredReview: false });
+    return /未做独立复核/.test(idle) && /消耗模型额度/.test(idle)
+      && /进行中/.test(busy) && /disabled/.test(busy)
+      && /上次独立复核/.test(done) && /待核验/.test(done);
+  })());
+check('QA-P9 缺依赖弹窗内容含名称/原因/可复制命令/一键安装',
+  (() => {
+    const html = QP.missingDepsHtml([{ code: 'AUDIT_PLUGIN_NOT_INSTALLED', name: '审计插件', why: '还没装进 profile', cmd: 'node harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs', action: 'install_audit_plugin' }]);
+    return /审计插件/.test(html) && /还没装进 profile/.test(html)
+      && /scripts\/install\.mjs/.test(html) && /一键安装插件/.test(html) && /data-action="copy-text"/.test(html);
+  })());
+check('QA-P10 依赖清单新增审计插件行；dsh 状态文案带版本与启动方式',
+  (() => {
+    // 这段在 const P = sandbox.__probe 之前执行：直接读 sandbox，避免 TDZ。
+    const probe = sandbox.__probe || {};
+    const specs = Array.isArray(probe.TOOL_SPECS) ? probe.TOOL_SPECS : [];
+    const audit = specs.find((t) => t.key === 'quality_auditor');
+    const dsh = specs.find((t) => t.key === 'dsh');
+    if (!audit || !dsh) return false;
+    const auditSt = audit.status({ dsh: { plugins: { qualityAuditor: { source_exists: true, ready: true, profile: 'novel', installs: [{ home: '~/.dsh-novel', ready: true }] } } } });
+    const dshSt = dsh.status({ dsh: { found: true, built: true, dir: 'X', version: '0.2.0-rc.2', launcher: { kind: 'bin' } } });
+    return auditSt.ok === true && /已装到/.test(auditSt.text)
+      && dshSt.ok === true && /0\.2\.0-rc\.2/.test(dshSt.text) && /npm 安装的 bin/.test(dshSt.text);
+  })());
+check('QA-P11 页面样式包含入口条与缺依赖横幅（不是无声无色的裸文本）',
+  fs.readFileSync(path.join(repoRoot, 'public', 'styles.css'), 'utf8').includes('.qa-entry')
+  && fs.readFileSync(path.join(repoRoot, 'public', 'styles.css'), 'utf8').includes('.env-missing-banner'));
+check('QA-P7 审稿报告与差异预览都接入了独立审计入口（动作名真实存在于 app.js）',
+    /data-action="quality-audit-review"/.test(src) && /data-action="quality-audit-revision"/.test(src)
+    && /startReviewQualityAudit\(/.test(src) && /startRevisionQualityAudit\(/.test(src));
+}
+
 check('1 app.js 在最小 DOM 环境下无顶层运行时错误', !runtimeError, runtimeError ? runtimeError.message : '');
 if (runtimeError) {
   console.log('\n--- 栈 ---');
@@ -1388,12 +1450,14 @@ P.trace.filters.onlyError = false;
   check('29 畸形 JSON 仍能抢救出审稿报告', !!salvaged && salvaged.issues.length === 2, salvaged ? `issues=${salvaged.issues.length}` : 'null');
   check('30 抢救出的总评完整', !!salvaged && salvaged.summary === '本章完成度较高。', salvaged ? salvaged.summary : '');
   check('31 抢救出的优点未被丢弃', !!salvaged && salvaged.strengths.length === 1, salvaged ? `strengths=${salvaged.strengths.length}` : '');
-  check('32 抢救出的问题文本未被截断', !!salvaged && salvaged.issues[0].includes('一字不差'), salvaged ? salvaged.issues[0].slice(-12) : '');
-  check('32b 畸形尾巴的多余引号不残留在正文里', !!salvaged && !/["']$/.test(salvaged.issues[0]), salvaged ? JSON.stringify(salvaged.issues[0].slice(-6)) : '');
+  // review.v3：issues 是**对象**（带稳定 id），文本在 `.text`。断言改为直接验证这一点，
+  // 而不是用"字符串"这个已经不再成立的形态作前提（那会把契约改造本身判成失败）。
+  check('32 抢救出的问题文本未被截断', !!salvaged && String(salvaged.issues[0].text || '').includes('一字不差'), salvaged ? String(salvaged.issues[0].text).slice(-12) : '');
+  check('32b 畸形尾巴的多余引号不残留在正文里', !!salvaged && !/["']$/.test(String(salvaged.issues[0].text || '')), salvaged ? JSON.stringify(String(salvaged.issues[0].text).slice(-6)) : '');
   // 合法 JSON 必须走严格解析、结果完全一致（不能被抢救逻辑改坏）
   const good = '{"summary":"总评","issues":[{"text":"A"}],"strengths":[{"text":"B"}]}';
   const strict = P.extractReviewFromText(good);
-  check('33 合法 JSON 仍走严格解析且结果一致', !!strict && strict.summary === '总评' && strict.issues[0] === 'A' && strict.strengths[0] === 'B');
+  check('33 合法 JSON 仍走严格解析且结果一致', !!strict && strict.summary === '总评' && strict.issues[0].text === 'A' && strict.strengths[0] === 'B');
   check('34 完全不可解析时返回 null（交由上层存原文）', P.extractReviewFromText('这不是 JSON') === null);
   // 2026-10-13（《0731 增补方案》§2 P0-A）：结构化 findings 不得在浏览器侧的解析里被丢掉。
   // 旧实现只留下 summary/issues/strengths/deferred —— 每个问题的**逐字引用/反证/verdict** 全没了，
@@ -1421,6 +1485,40 @@ P.trace.filters.onlyError = false;
     !!evObj && evObj.findings[0].evidence.length === 1
     && evObj.findings[0].evidence[0].quote === '单条证据写成对象而非数组',
     JSON.stringify(evObj && evObj.findings));
+
+  // ---- P0 身份链的**展示层**（方案 ID-08 / ID-09 / ID-10 / ID-12）----------------
+  // 契约层断言在 scripts/quality-auditor/verify-id-chain.mjs；这里钉的是"界面真的用它"。
+  // 只测契约不测 DOM 的话，把 showReviewReport 改回按下标生成复选框，契约测试依然全绿。
+  {
+    const ordered = P.extractReviewFromText(JSON.stringify({
+      summary: '总评',
+      issues: [{ id: 'R-0002', text: '第二条问题' }, { id: 'R-0001', text: '第一条问题' }],
+      findings: [
+        { id: 'R-0001', title: '第一条问题', evidence: [{ quote: 'q1' }] },
+        { id: 'R-0002', title: '第二条问题', evidence: [{ quote: 'q2' }] },
+      ],
+    }));
+    containers['#modal-root'].innerHTML = '';
+    P.showReviewReport({ ...ordered, review_id: 55, chapter_id: 1 });
+    const reviewHtml = String(containers['#modal-root'].innerHTML);
+    check('34e ID-12 审稿弹窗显示 issue.text，不出现 [object Object]',
+      reviewHtml.includes('第二条问题') && reviewHtml.includes('第一条问题') && !reviewHtml.includes('[object Object]'),
+      reviewHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 80));
+    check('34f ID-08/09 复选框同时带位置与稳定 id（重排不改身份）',
+      reviewHtml.includes('data-review-issue="0" data-review-issue-id="R-0002"')
+      && reviewHtml.includes('data-review-issue="1" data-review-issue-id="R-0001"'),
+      reviewHtml.includes('data-review-issue-id="R-0002"') ? 'ok' : 'missing id attr');
+    P.closeModal();
+    // 结构不完整（抢救后 findings 丢失）→ 按钮禁用 + 错误码可见；不能"看起来能修"。
+    const brokenReport = P.extractReviewFromText(JSON.stringify({ summary: '总评', issues: ['问题一'] }));
+    containers['#modal-root'].innerHTML = '';
+    P.showReviewReport({ ...brokenReport, review_id: 56, chapter_id: 1 });
+    const brokenHtml = String(containers['#modal-root'].innerHTML);
+    check('34g ID-10 结构不完整时「按确认清单修稿」被禁用，并显示 REVIEW_FINDINGS_MISSING',
+      /data-action="review-confirm"[^>]*disabled/.test(brokenHtml) && brokenHtml.includes('REVIEW_FINDINGS_MISSING'),
+      brokenHtml.includes('REVIEW_FINDINGS_MISSING') ? 'ok' : brokenHtml.replace(/<[^>]*>/g, ' ').slice(0, 80));
+    P.closeModal();
+  }
 }
 
 // ==================== 新手引导：AI 设置页三张卡 + 界面内帮助 ====================
@@ -6934,9 +7032,9 @@ P.traceStopStream();
       && /\.editor-content\s*\{[^}]*min-height:\s*46vh/.test(css),
     'writing-layout / editor-content');
 
-  // 版本安全：只允许增量（v1.2.4 → v1.2.5），不得把既有能力改回去。
+  // 版本安全：只允许增量（v1.2.5 → v1.2.6），不得把既有能力改回去。
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-  check('QC-36 版本声明是 1.2.5（从 1.2.4 增量升级，不回退）', pkg.version === '1.2.5', String(pkg.version));
+  check('QC-36 版本声明是 1.2.6（从 1.2.5 增量升级，不回退）', pkg.version === '1.2.6', String(pkg.version));
   const appSrc = fs.readFileSync(path.join(repoRoot, 'public', 'app.js'), 'utf8');
   const keep = [
     ['自动二次复修上限 2 轮', /REVISION_AUTO_REPAIR_MAX_ROUNDS\s*=\s*2/],
@@ -7114,6 +7212,106 @@ P.traceStopStream();
       && /修稿存档 2 份 · 查看\/回退/.test(withArchive)
       && !/data-action="review-archive-history"/.test(withoutArchive),
     JSON.stringify({ with: /review-archive-history/.test(withArchive), without: /review-archive-history/.test(withoutArchive) }));
+
+  // 2026-10-21 作者报的两件事，必须验"页面真的画出来"（纯函数对了不等于界面变了）：
+  //   ① 切「相关段落」/点问题时中间对照区一模一样 ② AI 跑完没有验收与合并入口。
+  {
+    const savedWs = P.state.reviewWorkspace;
+    const savedClosure2 = P.state.pendingRevisionClosure;
+    P.state.pendingRevisionClosure = {
+      patched: { text: '甲段。\n\n乙段改后了。\n\n丙段改后了。', applied: [], text2: '' },
+      article: '甲段。\n\n乙段原文。\n\n丙段原文。',
+      diffArgs: {
+        oldText: '甲段。\n\n乙段原文。\n\n丙段原文。',
+        newText: '甲段。\n\n乙段改后了。\n\n丙段改后了。',
+        chapterId: 1,
+      },
+      finalized: {
+        status: 'AWAITING_SEMANTIC',
+        rows: [{ issue_id: 'B03', final_status: 'AWAITING_SEMANTIC', title: '丙段问题', patch_count: 1, semantic_status: 'need_context' }],
+        findings: [{ id: 'B03', title: '丙段问题', evidence: [{ role: 'candidate_edit', quote: '丙段原文。' }] }],
+        closure: null,
+      },
+      findings: [{ id: 'B03', title: '丙段问题', evidence: [{ role: 'candidate_edit', quote: '丙段原文。' }] }],
+      chapterId: 1,
+      semanticRuns: 1,
+    };
+    P.state.reviewWorkspace = { activeId: 'B03', filter: 'all', mode: 'context', drawer: false, navOpen: false, chapterId: 1 };
+    const ctxHtml2 = drawWs();
+    P.state.reviewWorkspace.mode = 'diff';
+    const diffHtml2 = drawWs();
+    const blockCount = (html) => (html.match(/class="rw-block /g) || []).length;
+    check('QC-53 「相关段落」只排当前问题命中的段落并高亮（不再与「差异」逐字相同）',
+      blockCount(ctxHtml2) === 1 && blockCount(diffHtml2) === 2
+        && /class="rw-block change hit"/.test(ctxHtml2)
+        && ctxHtml2.includes('丙段原文。') && !ctxHtml2.includes('乙段原文。'),
+      JSON.stringify({ context: blockCount(ctxHtml2), diff: blockCount(diffHtml2) }));
+    check('QC-54 「差异」里命中的那一段也被高亮（点问题要看得出落在哪一段）',
+      (diffHtml2.match(/class="rw-block change hit"/g) || []).length === 1
+        && (diffHtml2.match(/class="rw-block change"/g) || []).length === 1,
+      JSON.stringify({ hit: (diffHtml2.match(/class="rw-block change hit"/g) || []).length }));
+    P.state.reviewWorkspace = savedWs;
+    P.state.pendingRevisionClosure = savedClosure2;
+  }
+  check('QC-55 轮次已用尽（零结论）时仍画出作者确认合并入口，并在悬停文案里说清"跳过什么"',
+    (() => {
+      const savedClosure3 = P.state.pendingRevisionClosure;
+      const savedWs3 = P.state.reviewWorkspace;
+      P.state.pendingRevisionClosure = {
+        patched: { text: '新正文', applied: [] },
+        article: '旧正文',
+        diffArgs: { oldText: '旧正文', newText: '新正文', chapterId: 1 },
+        finalized: { status: 'AWAITING_SEMANTIC', rows: mkRows(), findings: [], closure: null },
+        findings: [],
+        chapterId: 1,
+        semanticRuns: 1,
+      };
+      P.state.reviewWorkspace = { activeId: null, filter: 'all', mode: 'diff', drawer: false, navOpen: false, chapterId: 1 };
+      const html = drawWs();
+      P.state.pendingRevisionClosure = savedClosure3;
+      P.state.reviewWorkspace = savedWs3;
+      return /作者确认：跳过复验直接合并/.test(html) && /data-action="diff-merge"/.test(html)
+        && /data-help="review_merge_forced"/.test(html)
+        && /没有结论/.test(html);
+    })(),
+    '轮次已用尽时必须仍能作者确认合并（否则只剩导出/返回）');
+
+  // 2026-10-21（六项审稿漏修）：工作区必须能看到"还差哪个子条件""这条是否该由正文补丁处理"。
+  // 只校验纯函数与**渲染接线**两件事；具体页面的视觉细节由真机复现检查，不在这里假装截图。
+  {
+    const row = RW.issueRowsOf({
+      rows: [{
+        issue_id: 'Q05', title: '角色卡四次A级', final_status: 'AWAITING_SEMANTIC', reason_code: 'EXTERNAL_CONTEXT_REQUIRED',
+        external_context: { required: true, resolved: false, code: 'EXTERNAL_CONTEXT_REQUIRED', evidence: ['还没有只读核对结论'] },
+        condition_results: [{ id: 'q6-action', kind: 'required_action', severity: 'hard', status: 'FAIL', code: 'REQUIRED_CHARACTER_DECISION_MISSING', evidence: ['候选里没有任何动作标记'] }],
+        unresolved_conditions: ['q6-action'],
+      }],
+    })[0];
+    check('QC-56 工作区行透传子条件结果与外部资料状态，且外部项归入"需作者决定"而不是失败重试',
+      row.condition_results.length === 1 && row.unresolved_conditions.length === 1
+        && row.external_context && row.external_context.required === true
+        && row.needs_author === true,
+      JSON.stringify({ conds: row.condition_results.length, ext: row.external_context && row.external_context.required, author: row.needs_author }));
+    const line = RW.conditionLineOf(row);
+    check('QC-57 子条件摘要说得清"待外部核验"与"未达成子条件"，且不把它写成通过',
+      /外部资料：待核验/.test(line) && /未达成子条件 1 条/.test(line) && !/通过/.test(line.replace(/不是正文补丁/g, '')),
+      line);
+    check('QC-58 详情抽屉真的渲染这段摘要（接线存在，不是只有函数没人调）',
+      /conditionLineOf\(row\)/.test(src));
+    // 分母：只勾 4 条时统计与一句话摘要都按 4
+    const four = RW.issueRowsOf({
+      rows: [
+        { issue_id: '1', final_status: 'ISSUE_VERIFIED' }, { issue_id: '2', final_status: 'UNRESOLVED' },
+        { issue_id: '3', final_status: 'PARTIAL' }, { issue_id: '4', final_status: 'AWAITING_SEMANTIC' },
+      ],
+    });
+    const c = RW.countsOf(four);
+    const ident = RW.summaryFormulaOf(four);
+    check('QC-59 只勾 4 条时分母是 4（未勾的两条不进统计，也不被算成漏修）',
+      c.selected === 4 && ident.total === 4 && ident.balanced === true
+        && ident.pass === 1 && ident.fail === 2 && ident.unverified === 1,
+      JSON.stringify({ c, ident }));
+  }
 
   // 真页面装载守卫（2026-10-18 实测踩中过）：app.js 用 globalThis.NovelXxx 取的每个纯函数模块，
   // 都必须在 index.html 里有对应 script 标签。缺一个时界面不会报错，只会**静默少一块功能**

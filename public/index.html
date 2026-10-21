@@ -117,6 +117,15 @@
   <script src="/long-text.js"></script>
   <!-- 写作终止/质检/篇幅诊断纯函数（截断修复方案 §3/§5）：必须在 app.js 之前。 -->
   <script src="/writing-quality.js"></script>
+  <!-- 审稿契约 v3（review.v3）：issue/finding 的**唯一稳定身份**与完整性校验。
+       实现只有一份：ai/editing/review-contract.mjs（服务端 import 同一文件）。
+       缺了它时 app.js 不会伪造身份：parseReviewText 返回 REVIEW_CONTRACT_UNAVAILABLE，
+       「按确认清单修稿」被禁用 —— 宁可停下，也不退回空证据的 legacy 路径。
+       必须在 app.js 之前（后者只在调用时惰性取用，但页面顺序仍与测试重放顺序保持一致）。 -->
+  <script src="/review-contract.js"></script>
+  <!-- 质量审计面板（dsh-novel-quality-auditor）：写作台一行状态 / 工作区抽屉 / 全部完成判定。
+       缺了它时审计入口仍可发起（app.js 有兜底文案），但状态行与"全部完成"判定不可用。 -->
+  <script src="/quality-audit-panel.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

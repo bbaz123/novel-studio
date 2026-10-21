@@ -1,0 +1,13 @@
+{
+  "fixture_id": "chapter1-six-issues-expected",
+  "note": "人工参考真值（方案 §0 与 §2）。只在**六项全选**且按用户提供的修后差异对比时成立；正式计数以当次 selected_issue_ids 为分母。",
+  "rows": [
+    { "issue_id": "Q01", "human": "PARTIAL", "software_must": "不得 PASS；只删「四行」= PARTIAL", "reason_code": "PARTIAL_REFERENCE_AMBIGUITY_REMAINS" },
+    { "issue_id": "Q02", "human": "PASS", "software_must": "可 PASS；且后续复修不得把这项冲成待验", "reason_code": "ISSUE_VERIFIED" },
+    { "issue_id": "Q03", "human": "FAIL", "software_must": "原段未动即 FAIL，即使模型回包 pass", "reason_code": "REDUNDANT_EXPLANATION_REMAINS" },
+    { "issue_id": "Q04", "human": "FAIL", "software_must": "只删动作修饰语 = UNRELATED_CHANGE，不得 PASS", "reason_code": "UNRELATED_CHANGE" },
+    { "issue_id": "Q05", "human": "NEED_CONTEXT", "software_must": "待核验；不得改正文凑数字，也不得改卡片", "reason_code": "EXTERNAL_CONTEXT_REQUIRED" },
+    { "issue_id": "Q06", "human": "FAIL", "software_must": "只有旁人提普通大学 = FAIL", "reason_code": "REQUIRED_CHARACTER_DECISION_MISSING" }
+  ],
+  "identity": "N = P + F + U + B（未复验/外部待核验 = U，不算通过）"
+}

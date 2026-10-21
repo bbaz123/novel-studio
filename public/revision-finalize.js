@@ -58,6 +58,7 @@
     SEGMENT_MERGE_UNPROVEN: '调用方没有提供分段合并证明：按未验证处理（fail-closed）',
     SEGMENT_SEGMENT_FAILED: '存在失败/越界/过期的分段：整章候选不完整',
     BASE_STALE: '底稿已变化：旧候选不得复用于当前正文',
+    SELECTED_DENOMINATOR_MISMATCH: '勾选数与状态行数不一致：有一条已选问题没有状态行，禁止把分母改小',
   };
 
   const textOf = (x) => String(x == null ? '' : x);
@@ -261,6 +262,8 @@
     const SV = input.verifier || (root && root.NovelRevisionSemanticVerifier) || null;
     const CL = input.closure || (root && root.NovelRevisionClosure) || null;
     const mode = input.mode === 'segmented' ? 'segmented' : 'single';
+    // 原始勾选清单（去重前）只用来留痕：重复编号不减少分母，但必须让回执看得出调用方送了两份。
+    const rawSelectedCount = Array.isArray(input.selectedIssueIds) ? input.selectedIssueIds.length : 0;
     const selected = uniqueStrings(input.selectedIssueIds);
     const findings = normalizeFindings(input.findings, selected);
     const applied = (Array.isArray(input.applied) ? input.applied : []).map((p) => ({ ...p }));
@@ -334,6 +337,8 @@
           canonConflictIds: input.canonConflictIds || [],
           entryVersionsByIssue: input.entryVersionsByIssue || null,
           propChainsByIssue: input.propChainsByIssue || null,
+          // Q05：外部资料核对结论（缺省 = 还没核对 → 该项只能是"待核验"）。
+          externalContextByIssue: input.externalContextByIssue || null,
           // 分段：合并证明由本模块给（逐片重建 + 合并拼接），verifier 不再自己拼全局偏移。
           reconstructProof: mode === 'segmented' ? { ok: proof.ok, code: proof.code } : null,
           crossSegmentByIssue: crossSegment,
@@ -377,10 +382,26 @@
         patch_ids: v && Array.isArray(v.patch_ids) ? v.patch_ids.map(String) : [],
         evidence_ids: v && Array.isArray(v.evidence_ids) ? v.evidence_ids.map(String) : [],
         remaining_evidence: v && Array.isArray(v.remaining_evidence) ? v.remaining_evidence : [],
+        // 2026-10-21：子条件结果与外部资料状态逐条落行 —— 作者要能看出"这条还差哪一个条件"，
+        // 而不是只看到一句"未通过"。SKIP 不算 PASS；外部待核验不算通过。
+        condition_results: v && Array.isArray(v.condition_results) ? v.condition_results : [],
+        unresolved_conditions: v && Array.isArray(v.unresolved_conditions) ? v.unresolved_conditions.map(String) : [],
+        external_context: v && v.external_context ? v.external_context : null,
         // v1.2.4 P1：词条强弱归因（hard=交作者裁决 / soft=只作建议 / unknown=缺权威词条）
         canon: canon ? { strength: textOf(canon.strength), basis: textOf(canon.basis), reason: textOf(canon.reason), entry_id: canon.entry_id == null ? null : canon.entry_id, entry_title: textOf(canon.entry_title) } : null,
       };
     });
+
+    // ── ②b 分母完整性（方案 6.1 第三层）：`selected_count == 每个选中项的状态行数`。
+    //     为什么单独做一次：行是按 selected 生成的，只有**重复 id** 能让行数悄悄少一条；
+    //     一旦少了，4/6 就会被读成 4/4（"全部通过"）。缺一条就整轮阻塞，不允许把分母改小。
+    {
+      const rowIds = rows.map((r) => String(r.issue_id));
+      const unique = new Set(rowIds);
+      if (selected.length !== unique.size || rows.length !== selected.length) {
+        blockers.push('SELECTED_DENOMINATOR_MISMATCH');
+      }
+    }
 
     // ── ③ 硬阻塞：任何一条都不许留在"看起来修好了"的状态 ────────────────────
     if (blockers.length) {
@@ -406,6 +427,9 @@
 
     let status;
     const reasons = [];
+    if (rawSelectedCount > selected.length) {
+      reasons.push(`勾选清单里有 ${rawSelectedCount - selected.length} 个重复编号：已去重，但每个编号仍各自保留一行状态（分母不缩）`);
+    }
     if (blockers.length) {
       status = STAGE.BLOCKED;
       reasons.push(...blockers.map((c) => BLOCK_REASON[c] || c));
