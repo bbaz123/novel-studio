@@ -1,247 +1,282 @@
 # Novel Studio · 小说创作工坊
 
-> **写到第一百章，也要记得第一章埋下的伏笔。**
+**写到第一百章，也不忘第一章埋下的伏笔。**
 
-**Novel Studio** 是一款面向长篇小说、网文连载与系列故事的**本地优先 AI 写作工作台**。它不只帮助你写下一段文字，更关注长篇创作中容易失控的部分：**人物状态、世界设定、剧情事件、伏笔回收与前后文一致性**。
+Novel Studio 是一款开源、**本地优先的 AI 小说写作工具（AI Novel Writing Studio）**，面向长篇小说、网文连载与系列故事。它将**章节编辑器、故事设定库（Story Bible）、人物状态追踪、伏笔管理和一致性检查**放进同一个工作台，让作者更容易发现前后矛盾、维护故事事实。
 
-写作、整理设定、管理章节可以完全离线完成；需要 AI 时，再接入你自己的模型服务。
+**本地写作 · AI 可选 · 零 npm 运行依赖。** 基于 Node.js + SQLite，无须注册账号、订阅服务、独立部署数据库或构建前端。
 
-**本地运行** · **可不接 AI** · **零 npm 运行依赖** · **Node.js + SQLite** · **MIT 开源**
+[![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg?branch=Experimental-Version-v1.0)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js 22.13+](https://img.shields.io/badge/Node.js-%E2%89%A522.13-339933?logo=node.js&logoColor=white)](package.json)
+[![Zero npm dependencies](https://img.shields.io/badge/npm%20dependencies-0-2ea44f)](package.json)
 
-[English README](README.md) · [新手入门](docs/新手入门.md) · [更新日志](docs/CHANGELOG.md) · [参与贡献](CONTRIBUTING.md)
+[English README](README.md) · **简体中文** · [新手入门](docs/新手入门.md) · [更新日志](docs/CHANGELOG.md)
 
-> 📌 当前默认开发分支为 `Experimental-Version-v1.0`（实验版）。具体版本请以 [`package.json`](package.json) 和 [Releases](https://github.com/bbaz123/novel-studio/releases) 为准。本文介绍当前开发分支的功能，而非旧版 `main` 的使用方式。
+> **版本说明：** 本文对应仓库当前默认分支 `Experimental-Version-v1.0`，属于持续迭代的**实验版**，不是旧版 `main` 的使用文档。版本号请以 [`package.json`](package.json) 和 [Releases](https://github.com/bbaz123/novel-studio/releases) 为准。
 
----
+## 🚀 3 分钟快速开始
 
-## 为什么需要 Novel Studio？
-
-写长篇最难的，不总是“下一章写什么”，而是**写过的内容还能不能对得上**。
-
-| 长篇写作中的典型问题 | Novel Studio 的处理方式 |
-| --- | --- |
-| 第十章和第五十章的角色称呼、经历或状态打架 | 用角色卡、事件账本和章节时点的上下文辅助核对 |
-| 埋了伏笔，写着写着忘记回收 | 记录伏笔状态，检索尚未闭合的线索 |
-| 每次问 AI 都要重新粘贴世界观和人物设定 | 自动装配与当前写作有关的上下文，按预算裁剪 |
-| AI 文风重复、审稿意见过于笼统 | 写作红线、风格规则与可检查的审稿线索 |
-| AI 改稿时顺手改了故事事实 | 提案确认、修改授权与差异预览，保留作者决定权 |
-
-**核心思路很简单：把“故事记忆”从聊天记录里拿出来，变成可以维护、查询和检查的创作资料。**
-
-它不是承诺永远不出错的“自动写书机”，而是尽量让问题**更早暴露、更容易追溯、更方便由作者修正**。
-
-## ✨ 核心能力
-
-### 01 · 长篇一致性：角色不会只剩一张静态人设表
-
-角色档案不仅记录姓名、外貌与性格，还可以维护当前状态、人物关系，以及在不同剧情线中的状态。结合事件账本与章节上下文，写作后的连续性检查会提示值得核对的冲突。
-
-例如：角色已经受伤、失踪或知晓某个秘密，后续章节不应无缘无故忽略这些变化。
-
-### 02 · 伏笔管理：不只记得“埋过”，还要记得“有没有回收”
-
-伏笔是事件记录的一部分，可以区分未闭合与已回收状态。创作时可以查询尚未解决的线索，让后续章节有迹可循，而不是依赖作者记忆或模型临时发挥。
-
-### 03 · 上下文装配：让 AI 看到与本章有关的故事
-
-项目提供 **14 层基础上下文装配机制**，覆盖作品、大纲、长期记忆、语义召回、事件、伏笔、当前场景、章节蓝图、前文衔接、角色、人物关系、世界观、设定词条和写作规则。
-
-装配器会根据上下文预算筛选内容，并为被裁剪的信息保留可查询的路径。相关层是否有可用数据，取决于你的作品资料与可选功能配置。
-
-这比每写一章就手动复制整本“设定圣经”，更适合长期维护。
-
-### 04 · 审稿与修订：规则给出线索，作者保留裁决权
-
-项目包含成文后一致性核对、反“AI 腔”规则，以及围绕审稿与局部修订的安全机制：
-
-- 报告角色状态、设定、事件和伏笔方面的可疑冲突；
-- 将规则命中视为**候选问题**，而不是直接判定文字有错；
-- 对审稿引用、修订范围和修改授权进行检查；
-- 通过差异预览核对改动，避免未经确认就改写故事事实。
-
-**工程检查不等于文学质量保证。** 节奏、叙事张力和人物塑造仍需要作者判断。
-
-### 05 · 一套完整的写作工作台，而不只是 AI 对话框
-
-不使用 AI，也能完成日常小说管理：
-
-- **作品结构**：多作品、卷、章节与场景管理；
-- **正文编辑**：富文本、自动保存、字数统计、单/双/三栏布局、历史版本；
-- **创作资料**：剧情线、大纲、设定库、角色卡、人物关系、长期记忆；
-- **查找与关联**：全局搜索、正文关联设定词条、参考面板；
-- **导出**：整书 TXT / Markdown、单章 TXT；
-- **示例作品**：一键导入《雾都缝匠》，体验角色、设定、事件与写作流程。
-
-## 🧭 适合谁使用？
-
-**推荐给：** 写长篇网文或系列小说的作者；需要同时维护多条剧情线、众多角色和世界观设定的创作者；想把资料与作品保存在本地的写作者；希望通过本地 HTTP API 扩展创作流程的开发者。
-
-**可能不适合：** 只想聊天式生成一两段文本的人；需要开箱即用的多人在线协作或跨设备云同步的人；期待无需审核就“一键生成成品小说”的人。
-
-## 🚀 快速开始
-
-### 运行要求
-
-| 项目 | 要求 |
-| --- | --- |
-| 操作系统 | Windows / macOS / Linux |
-| Node.js | **22.13.0 或更高**；推荐使用符合要求的 LTS 版本 |
-| 浏览器 | Chrome、Edge、Firefox 等现代浏览器 |
-| 数据库 | 使用 Node.js 内置 `node:sqlite`，无需另装 SQLite |
-| 其他 | 不需要 `npm install`、前端构建、账号或 API Key（手动写作模式） |
-
-### 方式一：命令行启动（全平台）
+**不配置 AI、不购买 API，也能直接开始写小说。** 请先安装 **Node.js 22.13.0 或更高版本**（推荐 Node.js 24）。
 
 ```bash
 git clone https://github.com/bbaz123/novel-studio.git
 cd novel-studio
-node -v
 npm start
 ```
 
-打开浏览器访问：**http://localhost:3737**
+浏览器打开 **http://localhost:3737**。**不需要执行 `npm install`。**
 
-> `npm start` 运行的是 `node server.js`。项目的 `package.json` 不包含 npm 运行依赖，因此不需要额外执行 `npm install`。
+Windows 用户也可以下载仓库 ZIP 并解压，直接双击根目录的 `start-novel-studio.cmd`。
 
-### 方式二：Windows 双击启动
+**第一次打开，建议这样体验：**
 
-下载仓库 ZIP 并解压（建议避开自动云同步目录），双击项目根目录中的：
+1. 在 **「我的作品」** 页面导入内置示例小说 **《雾都缝匠》**，然后打开示例作品。
+2. 依次浏览 **「总览 → 正文写作 → 小说设定」**，快速理解章节、人物与设定之间的关系。
+3. 点击 **「新建作品」**，创建卷和章节，开始自己的故事。
+4. 如果需要 AI 续写或审稿，再去配置模型；**手动写作、设定管理和导出不依赖 AI**。
 
-```text
-start-novel-studio.cmd
-```
+![Novel Studio 正文写作界面：章节树与富文本编辑器](assets/screenshot-writing.png)
 
-启动脚本会拉起本地服务并尝试打开浏览器。关闭服务时，建议在服务窗口按 `Ctrl + C`。
+> 想跟着图文一步步操作？阅读 [《新手入门：从零到写出第一章》](docs/新手入门.md)。运行要求与常见问题可参考下方[安装说明](#-安装说明)。
 
-### 第一次打开，建议这样体验
+## ⭐ 主要功能
 
-1. 在「我的作品」页点击**一键导入示例小说《雾都缝匠》**，先看一份带有角色卡、设定和事件的完整示例。
-2. 依次浏览**总览 → 正文写作 → 小说设定**，熟悉章节树、编辑器、角色与设定库。
-3. 点击**新建作品**，建立自己的卷和章节，直接开始写作。
-4. 需要 AI 辅助时，再完成下一节的配置；**不开通 AI 也可以正常使用写作与管理功能**。
+| 功能 | 可以解决什么问题 |
+| --- | --- |
+| **长篇小说写作工作台** | 支持多作品、卷、章节、场景；富文本编辑、自动保存、字数统计、多栏布局与历史版本。 |
+| **人物一致性检查** | 维护人物档案、当前状态、关系和剧情线中的状态，审稿时提示可能存在的行为或事实冲突。 |
+| **伏笔追踪（Foreshadowing Tracker）** | 在事件账本中记录线索，区分未闭合与已回收状态，写到后续章节时可查找未回收伏笔。 |
+| **世界观与设定库（Story Bible）** | 集中管理大纲、剧情线、术语、世界设定、角色卡与长期故事记忆。 |
+| **AI 上下文装配** | 将 14 层基础创作资料按预算装配进模型上下文，裁剪内容保留查询线索；语义召回为可选能力。 |
+| **审稿与局部修订保护** | 提供规则检查、证据核对、局部修订范围约束与作者确认，避免 AI 建议未经审核就直接变成故事事实。 |
+| **本地优先、接口开放** | 无 AI 时可离线写作；需要时接入 OpenAI 兼容 API 或可选的 DeepSeek Harness，并通过本地 HTTP API 扩展流程。 |
 
-图文操作和故障排查见 **[《新手入门：从零到写出第一章》](docs/新手入门.md)**。
+**请注意：** 规则命中不代表原文一定有错，未命中也不保证没有问题；AI 生成内容和文学质量仍需要作者判断。
 
-## 🤖 AI 功能：按需开启，而不是强制依赖
+## 🎯 为什么需要 Novel Studio？
 
-Novel Studio **不内置在线模型账号，也不售卖 Token**。AI 功能需要用户自行配置可用的服务商；调用费用和数据处理规则由对应服务商决定。
+普通 AI 对话工具可以帮助写出一段文字，却不能仅靠聊天历史可靠维护上百章的故事事实。Novel Studio 的核心思路是：**把人物、事件、设定与伏笔从聊天记录中抽出来，变成可以维护、查询、审查的结构化资料。**
 
-| 使用场景 | 接入方式 | 说明 |
+| 长篇创作中的问题 | Novel Studio 的处理思路 |
+| --- | --- |
+| 第十二章已经死亡或失踪的人物，在第四十章突然正常出现 | 维护人物状态和事件记录，装配相关上下文，并在成文后提示可能的冲突。 |
+| 埋下的线索写着写着就忘了 | 用可查询的事件账本追踪未闭合和已回收的伏笔。 |
+| 每次调用 AI 都要重新粘贴整本人物设定 | 自动选取与当前章节相关的资料，并按上下文预算裁剪。 |
+| AI 润色时顺手改掉了人物关系或故事事实 | 将审稿意见、授权修改范围、修订建议和最终写入确认分开处理。 |
+| 不想把全部作品都放在第三方平台 | 默认在本机 `127.0.0.1` 运行，作品使用本地 SQLite 保存。 |
+
+**真正的差异化：** 这是一款**以手稿和故事状态为核心**的写作软件，而不仅是 AI 聊天界面，也不是承诺“点击一下自动写出成品小说”的工具。
+
+### 适合哪些人？
+
+- **网文作者、长篇小说创作者**：需要长期跟踪多卷、多人物、多条剧情线。
+- **在意隐私和数据所有权的写作者**：希望稿件存在自己电脑上，AI 可用也可不用。
+- **开发者、研究者**：希望研究结构化故事状态、AI 写作工作流或本地 HTTP API。
+
+如果你需要的是开箱即用的**多人云协作、跨设备自动同步**，或未经审稿就直接发表的自动写书服务，本项目暂时并不适合。
+
+### 与其他工具如何选择？
+
+| 主要需求 | 也可以了解 | Novel Studio 侧重点 |
 | --- | --- | --- |
-| 手动写作、管理设定、导出 | **无需 AI** | 可离线使用 |
-| AI 续写、润色、扩写、细纲等短任务 | **配置模型 API** | 通过应用内的 OpenAI 兼容 API 设置接入 |
-| 分阶段的深度创作工作台 | **可选 DeepSeek Harness** | 用于需要创作内核参与的复杂生成流程 |
-| 语义召回等扩展能力 | **按功能另行配置** | 具体能力以运行环境及配置为准 |
+| AI 辅助小说成文 | [Sudowrite](https://www.sudowrite.com/)、[Novelcrafter](https://www.novelcrafter.com/) | 本地故事状态、长篇连续性和作者审批流程。 |
+| 文件式写作和知识整理 | [novelWriter](https://novelwriter.io/)、[Obsidian](https://obsidian.md/) | 一体化章节编辑、结构化人物状态、事件与伏笔记录。 |
+| 与 LLM 自由对话 | [SillyTavern](https://github.com/SillyTavern/SillyTavern)、[Open WebUI](https://github.com/open-webui/open-webui) | 围绕作品章节、故事设定库和成文后检查组织写作。 |
 
-### 配置模型 API
+这些工具各有侧重，选择时应以自己的写作习惯为准。
 
-进入**「✨ AI 创作 → ⚙️ AI 设置」**，填写服务商的 Base URL、API Key 与模型名称，并使用界面提供的连接测试。
+## 🖼 界面截图与示例
 
-在作品的正文编辑器中使用「✍️ AI 写作」时，系统会先确认写作意图，再进行模型调用。AI 生成的事件、记忆等信息采用**提案确认**流程；正文修改也需要作者确认。
+下方均为项目内置小说 **《雾都缝匠》** 的实际界面截图，并非设计稿。
 
-### 可选：DeepSeek Harness 创作内核
+| 作品库与示例导入 | 正文写作 |
+| --- | --- |
+| ![作品库及示例作品](assets/screenshot-home.png) | ![章节正文编辑界面](assets/screenshot-writing.png) |
 
-如果需要从世界观、角色卡、大纲到章节草稿的分阶段创作流程，可进一步配置本地 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 与仓库内置的 `harness-plugins/novel-writing/` 创作插件。
+| 人物档案与当前状态 | 设定词条与世界观 |
+| --- | --- |
+| ![人物资料与关系](assets/screenshot-settings-characters.png) | ![设定库与术语](assets/screenshot-settings-terms.png) |
 
-这不是手动写作的前置条件，也不代表所有 AI 功能都必须通过 Harness。详细接入方式请看 [AI 内核说明](docs/ai-core.md)。
+启动后，可以直接从作品库导入示例，体验已经填写好章节、角色、设定、记忆和事件记录的完整工作台。
 
-> ⚠️ **隐私提醒：** 本地优先是指作品数据库和应用服务运行在你的设备上。**如果配置并调用远程 AI API，请求所需的提示词、相关设定或正文片段会发送给你指定的模型服务商。** 不调用远程 AI 时，手动写作不需要上传作品。
+## 📦 安装说明
 
-## 💾 本地数据、隐私与备份
+| 项目 | 要求 |
+| --- | --- |
+| **Node.js** | **22.13.0+** 可以运行应用；执行完整验证工具链建议 **22.15.0+**；推荐 Node.js 24。 |
+| **系统** | Windows / macOS / Linux。Windows 有可选双击启动脚本；macOS/Linux 使用 `npm start`。CI 覆盖 Windows 和 Linux，但平台特有行为仍可能存在差异。 |
+| **浏览器** | Chrome、Edge、Firefox 等现代浏览器。 |
+| **其他依赖** | 核心应用无第三方 npm 运行依赖，使用 Node 内置的 `node:sqlite`；无需单独安装 SQLite，也不用前端打包。 |
 
-- **作品数据**：默认保存在 `data/novel.db`（SQLite）。
-- **API Key**：保存在本地数据库中；请像保护稿件一样保护数据目录。
-- **访问范围**：服务默认监听 `127.0.0.1`，不是对公网开放的在线服务。
-- **运行日志**：保存在本地 `data/logs/`；诊断追踪用于排查问题。
-- **无内置云同步**：更换设备时需要你自己迁移数据。
-
-**备份建议：停止服务后，复制整个 `data/` 文件夹。** SQLite 使用 WAL 模式，只复制 `novel.db` 有可能遗漏尚未合并的最新写入。升级前也建议先做一次完整备份。
-
-> 切勿将 `data/`、数据库、API Key 或私人稿件提交到公开仓库。
-
-## 🛠️ 给开发者：结构与接口
-
-项目采用 **Node.js + 原生前端 + SQLite**，核心代码无 npm 运行依赖，不需要前端打包流程。
-
-```text
-novel-studio/
-├── public/                      # 原生 Web 界面
-├── ai/
-│   ├── context/                 # 上下文层、装配与完整性校验
-│   ├── story-state/             # 角色、事件、伏笔等故事状态
-│   └── continuity-guard.mjs     # 成文一致性检查
-├── harness-plugins/novel-writing/ # 可选创作插件
-├── server.js                    # 本地 HTTP 服务与 API
-├── db.js                        # SQLite 数据库及迁移
-├── scripts/                     # 自动化验证工具
-└── docs/                        # 设计、使用与开发文档
-```
-
-在服务启动后可以访问本地 HTTP API：
+检查 Node.js 版本：
 
 ```bash
-# 健康检查
-curl http://localhost:3737/api/novel/ping
-
-# 运行离线检查（不调用真实 AI）
-node scripts/ci-offline-checks.mjs
+node -v
 ```
 
-更多接口与设计约定，请阅读 [AI 内核](docs/ai-core.md)、[上下文契约](docs/context-contract.md) 和 [文档索引](docs/README.md)。
+**Windows 桌面快捷方式（可选）：**
 
-## ❓ 常见问题
+```powershell
+powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1
+```
 
-**Q：必须联网或购买 AI 服务才能使用吗？**  
-不需要。手动写作、作品管理、设定管理和本地导出不依赖 AI；只有启用远程模型相关功能时，才需要网络和对应服务。
+**升级：** 先关闭程序并完整备份 `data/`，在当前开发分支拉取最新代码后重新启动：
 
-**Q：为什么启动时报 `node:sqlite` 相关错误？**  
-先执行 `node -v`。本项目要求 Node.js **22.13.0+**，旧版本可能无法直接使用内置 SQLite 模块。
+```bash
+git pull
+npm start
+```
 
-**Q：默认端口 `3737` 已被占用怎么办？**  
-可以在命令行指定其他端口，例如：
+项目支持启动时执行数据库迁移，但不意味着任何升级都可以不备份。卸载时，先停止服务，**保留需要的 `data/` 数据**，再删除程序目录。
+
+## 💻 使用方法
+
+### 1. 手动创作
+
+创建作品、卷与章节，在编辑器中写正文，内容会自动保存。写作过程中，可以通过参考面板查阅人物、剧情线、词条和设定，并持续维护**角色状态、事件记录与伏笔**。
+
+### 2. 可选：接入 AI 写作
+
+进入 **「✨ AI 创作 → ⚙️ AI 设置」**，填写兼容 OpenAI 接口的服务商 **Base URL、API Key 和模型名称**。然后在正文写作界面选择 **「✍️ AI 写作」**，先确认需求，再调用模型。AI 识别的事件和记忆等信息会以提案形式等待审核，不应被理解为自动写入的最终事实。
+
+如果需要更复杂的分阶段创作流程，可以另外配置 **DeepSeek Harness** 和仓库自带的 [`harness-plugins/novel-writing/`](harness-plugins/novel-writing/) 插件。详见 [AI 内核说明](docs/ai-core.md)。**日常写作无需安装 Harness。**
+
+### 3. 可选：通过本地 HTTP API 扩展
+
+启动服务后，在终端执行：
+
+```bash
+# 检查服务是否正常运行
+curl http://localhost:3737/api/novel/ping
+
+# 通过接口导入自带示例（也可以使用界面按钮）
+curl -X POST http://localhost:3737/api/demo/install \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+
+# 查看作品上下文：将 1 替换为实际存在的作品 ID
+curl 'http://localhost:3737/api/novel/context?work_id=1'
+```
+
+以上多行 `curl` 示例使用 Bash 格式；Windows PowerShell 可使用 `curl.exe` 并写成单行命令。写入接口有本地来源限制，**不要直接把该服务暴露到公网**。
+
+## 🏗 项目架构
+
+```text
+浏览器界面 (public/)
+        |
+        v
+本地 HTTP 服务 (server.js) <----> SQLite (db.js, data/novel.db)
+        |
+        +--> 故事状态：人物 / 时间线 / 事件 / 伏笔
+        |
+        +--> 上下文装配：14 层基础资料 + 受控故事状态层
+                     |
+                     v
+                可选 AI 服务
+                     |
+                     v
+                草稿 / 审稿 / 提案
+                     |
+                     v
+                作者确认与修订
+```
+
+| 位置 | 作用 |
+| --- | --- |
+| `public/` | 原生浏览器界面，无需前端构建。 |
+| `server.js`、`db.js` | 本地服务器、API、数据库及迁移。 |
+| `ai/context/` | 上下文分层、预算、装配和完整性信息。 |
+| `ai/story-state/` | 人物、时间线、事件及故事状态。 |
+| `ai/continuity-guard.mjs` | 章节成文后的一致性检查。 |
+| `harness-plugins/novel-writing/` | 可选的小说创作插件。 |
+| `scripts/`、`tests/` | 离线测试与隔离验证。 |
+
+深入阅读：[AI 内核](docs/ai-core.md) · [上下文契约](docs/context-contract.md) · [技术文档索引](docs/README.md)。
+
+## ⚙️ 配置说明
+
+大部分写作和 AI 配置都可以在界面中完成。以下环境变量主要面向开发者与本地多实例使用：
+
+| 环境变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `PORT` | `3737` | 本地服务端口。 |
+| `NOVELSTUDIO_DATA_DIR` | `./data` | 本地作品数据目录。 |
+| `NOVELSTUDIO_DSH_REPO` | 自动检测 | 本地 DeepSeek Harness 代码路径。 |
+| `NOVELSTUDIO_OV_DISABLED` | 未设置 | 设为 `1` 时禁用可选 OpenViking 集成。 |
+| `NOVELSTUDIO_TRACE_KEEP` | `20` | 保留的运行追踪会话数量。 |
+
+```bash
+# macOS / Linux：修改端口与数据目录
+PORT=3738 NOVELSTUDIO_DATA_DIR=/tmp/novel-studio-data npm start
+```
 
 ```powershell
 # Windows PowerShell
-$env:PORT=3738; npm start
+$env:PORT=3738
+$env:NOVELSTUDIO_DATA_DIR="D:\novel-studio-data"
+npm start
 ```
+
+## 🔒 隐私、数据与备份
+
+- **默认只监听 `127.0.0.1`**，作品数据库默认保存在 **`data/novel.db`**。
+- `data/` 中可能有**私人稿件、日志和 API 密钥**。虽然目录已被 Git 忽略，仍不要主动提交、分享或打包公开。
+- **手动写作可以离线完成。** 但当你主动调用远程 AI 接口时，相关请求内容以及认证信息会发送给所配置的模型服务商。涉及未公开稿件时，请先了解服务商的数据处理政策。
+- **正确备份方式：先关闭服务，再复制整个 `data/` 文件夹。** SQLite 使用 WAL 模式，只复制 `novel.db` 可能漏掉最新写入。
+- 当前不提供内置多人在线协作或自动云同步。
+
+如发现安全漏洞，请阅读 [安全政策](SECURITY.md)，不要直接在公开 Issue 中披露敏感细节。
+
+## 🧪 验证与项目状态
+
+项目的基础自动化检查旨在**不调用付费 AI 模型**的情况下运行。完整验证工具链需要 Node.js 22.15.0+（推荐 Node.js 24）：
 
 ```bash
-# macOS / Linux
-PORT=3738 npm start
+# 运行仓库配置的离线测试
+npm test
+
+# 其他工程检查
+node .p1-baseline/verify-phase-map.mjs
+node .p1-baseline/check-utf8.mjs
+
+# 使用隔离的临时实例检查 HTTP API
+node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
 ```
 
-然后访问 `http://localhost:3738`。
+查看：[GitHub Actions](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml) · [验证状态](docs/nsdsh/STATUS.md) · [平台支持矩阵](docs/nsdsh/support-matrix.md)。请以当前 CI 结果为准，不要把历史通过次数当成永久保证。
 
-**Q：可以用手机或另一台电脑直接访问吗？**  
-默认不行。服务有意只绑定本机回环地址 `127.0.0.1`，目前没有开箱即用的局域网访问开关。
+本项目仍在**实验版持续迭代**阶段。不同系统、可选运行时和模型质量场景可能存在尚未覆盖的情况；自动检查不能代替作者或编辑的文学判断。
 
-**Q：支持 EPUB、DOCX 和多人云协作吗？**  
-当前支持 TXT / Markdown 等已列出的导出方式；**EPUB、DOCX 导出以及多人云协作不属于目前的开箱即用能力**。
+## 🗺 后续方向
 
-**Q：升级会清空作品吗？**  
-项目支持启动时执行数据库迁移，但仍建议**先停止服务并完整备份 `data/`**，再更新程序。
+以下为当前关注方向，**不代表已承诺的发布日期或完成状态**：
 
-更多问题与排查方法：[新手入门](docs/新手入门.md)。
+- 更便捷的 macOS / Linux 一键启动。
+- 更丰富的作品导出格式（**目前不支持直接导出整书 EPUB / DOCX**）。
+- 在保证默认本地安全的前提下，探索可选局域网访问。
+- 持续改进人物状态、一致性检查、审稿修订和可选 AI 运行性能。
 
-## 🗺️ 当前边界与后续方向
+具体进展请关注 [待决事项](docs/pending-decisions.md) 与 [更新日志](docs/CHANGELOG.md)。
 
-Novel Studio 当前处于**实验版持续迭代**阶段。项目的重点是让写作流程可检查、可控制，而不是保证 AI 生成内容一定正确或达到专业编辑水准。
+## 🤝 参与贡献
 
-后续方向包括更便捷的跨平台启动、更完善的导出格式，以及在保障本地安全前提下探索可选的局域网访问。具体进展以 [待决事项](docs/pending-decisions.md) 和 [更新日志](docs/CHANGELOG.md) 为准。
+**欢迎提交问题、改善文档、贡献代码，或分享真实写作体验。**
 
-## 🤝 参与项目
+- **发现可复现的 Bug？** [提交 Issue](https://github.com/bbaz123/novel-studio/issues/new/choose)，附上操作系统、Node 版本、复现步骤和必要的错误信息。
+- **有使用问题或新功能想法？** 在 [Discussions](https://github.com/bbaz123/novel-studio/discussions) 交流。
+- **准备提交 PR？** 请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。核心应用遵守零 npm 运行依赖和 ESM 等约束，较大的改动建议先讨论方向。
+- **发现安全问题？** 请按 [SECURITY.md](SECURITY.md) 的方式私密报告。
 
-欢迎提交 Bug、改进建议和 Pull Request。
+如果这个项目帮助你更好地管理长篇创作，欢迎给仓库一个 **Star ⭐**。你的反馈、Fork 和改进建议，都能帮助项目持续完善。
 
-- 使用问题与想法：[Discussions](https://github.com/bbaz123/novel-studio/discussions)
-- 可复现的问题：[Issues](https://github.com/bbaz123/novel-studio/issues)
-- 开发前建议先读：[贡献指南](CONTRIBUTING.md)
-- 安全问题处理方式：[安全政策](SECURITY.md)
+## 📄 开源协议与致谢
 
-项目采用 **[MIT License](LICENSE)**。仓库内附带的第三方组件及资产遵循各自许可证，请查看 [第三方声明](THIRD-PARTY-NOTICES.md)。
+Novel Studio 以 **[MIT License](LICENSE)** 开源。仓库中打包的部分第三方材料可能适用不同许可证，请阅读 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+可选的 AI 创作集成使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)；更多设计背景与依赖说明见应用内「借鉴与致谢」及 [技术文档](docs/README.md)。
 
 ---
 
-**写作可以自由发挥，故事的事实值得认真管理。**
-
-如果 Novel Studio 对你的长篇创作有所帮助，欢迎在 [GitHub 仓库](https://github.com/bbaz123/novel-studio) 留下反馈或一个 ⭐。
+**故事可以天马行空，已经写下的事实值得认真管理。**

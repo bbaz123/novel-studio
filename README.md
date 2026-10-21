@@ -1,169 +1,23 @@
-<div align="center">
-
 # Novel Studio
 
-**A local-first AI writing studio that keeps a long novel consistent.**
+**Write chapter 100 without forgetting what happened in chapter 1.**
 
-Writing software + an AI writing assistant for **long-form fiction and Chinese web novels (网文写作)** — with a **foreshadowing tracker, character-state checks and a story bible** wired into every draft.
+Novel Studio is an open-source, **local-first AI novel writing studio** for long-form fiction, serialized stories, and Chinese web novels (网文). It combines a chapter editor with a **story bible, character-state tracking, foreshadowing management, and continuity checks**—so you can find contradictions before they become plot holes.
 
-[![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.2.6-blue)](https://github.com/bbaz123/novel-studio/releases)
+**Local writing, optional AI, zero npm dependencies.** Built with Node.js and SQLite. No account, subscription, database server, or frontend build is required.
+
+[![CI](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml/badge.svg?branch=Experimental-Version-v1.0)](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js >= 22.13](https://img.shields.io/badge/node-%E2%89%A5%2022.13-3c873a?logo=node.js&logoColor=white)](https://nodejs.org)
-[![npm dependencies: 0](https://img.shields.io/badge/npm%20dependencies-0-brightgreen)](package.json)
-[![data: 100% local](https://img.shields.io/badge/data-100%25%20local-blue)](#-privacy--data)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
+[![Node.js 22.13+](https://img.shields.io/badge/Node.js-%E2%89%A522.13-339933?logo=node.js&logoColor=white)](package.json)
+[![Zero npm dependencies](https://img.shields.io/badge/npm%20dependencies-0-2ea44f)](package.json)
 
-[**English**](README.md) · [简体中文](README.zh-CN.md)
+**English** · [简体中文](README.zh-CN.md) · [Getting started (中文)](docs/新手入门.md) · [Changelog](docs/CHANGELOG.md)
 
-<img src="assets/screenshot-writing.png" alt="Novel Studio writing desk: chapter tree on the left, rich-text editor in the middle, live story-reference panel on the right" width="100%">
-
-</div>
-
-> 📌 Version **v1.2.6** (experimental channel). The repository's **default branch `Experimental-Version-v1.0` is the current development line**; `refactor/p0-p6` keeps the previous release (v0.9.6) and `main` keeps the pre-refactor version (v0.9.3). Install steps and project layout follow this page; release notes live in [Releases](https://github.com/bbaz123/novel-studio/releases).
-
-<details>
-<summary><b>Contents</b></summary>
-
-- [⭐ Features](#-features)
-- [🎯 Why](#-why)
-- [🧭 Where it fits](#-where-it-fits)
-- [🧪 Status & verification](#-status--verification)
-- [🚀 Quick Start](#-quick-start)
-- [📦 Installation](#-installation)
-- [💻 Usage](#-usage)
-- [🖼 Screenshots](#-screenshots)
-- [🏗 Architecture](#-architecture)
-- [⚙️ Configuration](#️-configuration)
-- [🔒 Privacy & Data](#-privacy--data)
-- [🗺 Roadmap](#-roadmap)
-- [🤝 Contributing](#-contributing)
-- [📄 License](#-license)
-- [🙏 Acknowledgements](#-acknowledgements)
-- [📝 Changelog](#-changelog)
-
-</details>
-
-Comparing tools first? Jump to [Where it fits](#-where-it-fits) — it names Sudowrite, Novelcrafter, Obsidian, novelWriter, SillyTavern and states where each one wins.
-
-**Long fiction does not break at chapter 3 — it breaks at chapter 40.** A character is 「李队」 in ch. 12 and 「李队长」 in ch. 40; someone who died in ch. 3 walks back on stage; a thread you planted is never paid off. Chat tools write good paragraphs and lose the plot, and a longer prompt does not fix it.
-
-Novel Studio turns those failures into **deterministic, inspectable gates** instead of hoping the prompt holds. It is self-hosted and privacy-first: a Node.js service on your own machine, your whole library in one SQLite file, and **zero npm dependencies** — no `npm install`, no account, no cloud, no subscription.
-
-> **Runs fully offline, with no AI at all.** Manual writing, worldbuilding, outlining and export work out of the box and cost nothing. An LLM (DeepSeek or any OpenAI-compatible endpoint) is optional and only used for the features you switch on.
-
-**Who it's for**
-
-- **Web-novel and serial fiction authors** writing 100+ chapters who keep losing track of settings, character state and unpaid foreshadowing
-- **Writers who want an AI assistant without handing over the manuscript** — everything stays in a local file you own
-- **Developers and researchers** who want to script a writing pipeline: the UI is a thin client over a documented local HTTP API ([75 endpoints](harness-plugins/novel-writing/plugin.json))
-
-**Who it's not for**
-
-- **Not a SaaS** — no account, no cloud sync, no team collaboration, no subscription: it is an offline-capable app you own
-- **Not a one-click book machine** — AI output is a draft or a proposal you approve, not an autopilot
-- **Not a model vendor** — it ships no model and sells no tokens; bring your own API key and pay your own provider
-- **Not an agent framework** — it is an application. The [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) integration is optional and used only for the heavy creation pipeline
-
----
-
-## ⭐ Features
-
-**Consistency machinery — the reason this project exists**
-
-- **Character consistency, enforced** — character sheets carry a profile, current state, relations and per-plotline state. The assembler feeds the right snapshot into each chapter, and the post-draft check flags anyone who acts against it.
-- **A foreshadowing tracker with open/resolved state** — foreshadowing is a first-class kind in the event ledger, so a planted thread cannot quietly disappear. The model can query open threads, and they are marked resolved when the manuscript pays them off.
-- **A story bible that stays wired into the draft** — glossary terms, world entries, character sheets, plotlines, long-term memory and the event ledger are assembled into context automatically, instead of being re-pasted by hand.
-- **14-layer context assembly** — work → outline → long-term memory → semantic recall → event ledger → open foreshadowing → current scene → chapter blueprint → previous-text handoff → on-stage character cards → relations → world entries → glossary → writing redlines. Trimmed to a budget, and **everything trimmed stays retrievable** (every layer declares a `tool_hint`).
-- **Zero-loss memory guardrail** — when long-term memory is compressed, every entity that has appeared in the manuscript (aliases included) must survive. Violations are **rejected at write time** and the missing names are returned.
-- **Anti-AI-tone redlines** — deterministic regex scanning plus a positive style contract, shared by both the drafting and the reviewing path.
-- **Post-draft consistency check** — after a chapter is generated, open foreshadowing, current character state, the event ledger, registered named entities and chapter boundaries are checked, and conflicts are reported as-is.
-- **Story state kernel** — entities, timeline, foreshadowing, disclosure, knowledge, approval and style-quality state, exposed through a single contract.
-- **Proposals, not auto-writes** — AI-extracted events and memories land as *proposals*; nothing is committed until you tick it. AI prose never overwrites a chapter without confirmation (the previous draft is archived automatically).
-
-**The writing app around it**
-
-- Multi-work library with a full **work → volume → chapter / scene** hierarchy
-- Rich-text editor: autosave, live word count, bold/italic/underline/heading/quote/lists, 1/2/3-column layouts, manual version history
-- **A worldbuilding tool built in** — plotlines, an outline mind-map, a glossary with categories and tags, character sheets (profile, current state, relations, per-plotline state) and long-term memory
-- Link glossary terms inside the manuscript, with hover preview and click-through
-- Global search across glossary, chapter text, characters and plotlines
-- One-click import of the bundled demo novel《雾都缝匠》(*Mist Tailor*) — chapters, characters, glossary, long-term memory, event ledger and redlines included
-
-**AI features — all optional**
-
-- AI drafting / continuation, with a one-question-at-a-time clarification protocol before any paid call
-- Polish, expand, beat-sheet and character-voice checks
-- AI-generated plotlines, outlines, glossary entries, character sheets and memory drafts
-- **AI create-a-novel** and a staged **creation pipeline** (worldbuilding → characters → outline → draft → consistency review)
-- Per-task progress cards with plain-language stage text and a working cancel button
-- **Runtime tracing** — record any UI action into a replayable call chain with token totals. It stores code locations, timings and sizes only — **never manuscript text or prompts**
-
-## 🎯 Why
-
-Chat-based tools write good paragraphs and lose the plot. Novel Studio targets the specific ways long fiction breaks, usually somewhere between chapter 20 and 80:
-
-| Symptom | Chat-based tools | Novel Studio |
-| --- | --- | --- |
-| Setting drift — a character is 「李队」 in ch. 12 and 「李队长」 in ch. 40 | Longer prompts, or you remembering to remind it | **Deterministic checks**: pre-flight plus post-draft consistency review, conflicts listed one by one |
-| A character who died in ch. 3 walks back on stage | You notice three chapters later | **Character state + event ledger** are assembled into context and checked against the new text |
-| Foreshadowing is never paid off, or is spent as if it were already true | Nothing tracks it | **Foreshadowing ledger** with open/resolved state, surfaceable via `novel_foreshadows` |
-| 「心中一凛」「眼中闪过一丝复杂」 on every page | Prompt-level pleading | **Redline rules + a positive style contract**, scanned deterministically |
-| Re-pasting the setting bible into every conversation | Too little and it invents; too much and you blow the context | **Budget-trimmed 14-layer assembly**, with retrieval paths for whatever was trimmed |
-| You cannot tell what the model actually saw, or where the money went | Guess, or read logs | **Inspectable**: `context_id`, per-layer provenance and per-call token accounting in the UI |
-| Data and API keys live on someone else's server | The default for most tools | **Listens on `127.0.0.1` only**; everything is one SQLite file on your disk |
-
-## 🧭 Where it fits
-
-Choosing writing software is not a binary. These are the alternatives people actually evaluate, and where each one wins — Novel Studio is not trying to replace them all.
-
-| If you want… | Reach for | Where Novel Studio differs |
-| --- | --- | --- |
-| A finished manuscript, professionally edited | [Sudowrite](https://www.sudowrite.com/), [Novelcrafter](https://www.novelcrafter.com/) | Those are hosted SaaS with stronger prose tooling; Novel Studio is self-hosted, free, and optimises for **continuity across 100+ chapters** rather than sentence-level polish |
-| An offline, plain-text writing environment | [Obsidian](https://obsidian.md/) + Longform, [novelWriter](https://novelwriter.io/), [Manuskript](https://www.theologeek.ch/manuskript/) | Those are excellent file-based editors with no AI and no story state; Novel Studio keeps a **queryable story state** (character state, event ledger, foreshadowing) and can drive a model from it |
-| A local LLM chat front-end | [SillyTavern](https://github.com/SillyTavern/SillyTavern), [KoboldAI](https://github.com/LostRuins/koboldcpp), [Open WebUI](https://github.com/open-webui/open-webui) | Those are conversation-first and deliberately stateless between scenes; Novel Studio is **manuscript-first**, with the model reading an assembled, budget-trimmed context |
-| To build your own writing tool | Any Node.js HTTP client | Novel Studio's UI is a thin client over a local API — you can script the same kernel directly |
-
-**The honest trade-off:** Novel Studio will not write a better *sentence* than a hosted AI writing service, and it will not give you a polished outline the way a human editor will. What it does that those tools do not is refuse to let setting drift, dead characters and unpaid foreshadowing pass silently — and it does that on your machine, for free.
-
-## 🧪 Status & verification
-
-Everything below is reproducible from a clean checkout with **Node.js only** — no account, no API key,
-no network. Numbers are measured, not aspirational; the commands are copy-paste.
-
-```bash
-node scripts/run-nsdsh-tests.mjs        # 51 suites / 385 assertions / 0 failures
-node scripts/test-temporal-refactor.mjs # 15/15 sub-suites (story-state invariants)
-node scripts/ci-offline-checks.mjs      # 55/55 checks — what CI runs
-node .p1-baseline/verify-phase-map.mjs  # every changed file owned by a rollbackable stage
-node .p1-baseline/check-utf8.mjs        # 0 invalid UTF-8 across ~6.8k text files
-node scripts/nsdsh/verify-delivery.mjs  # delivery gate — exit 0
-```
-
-Most writing tools describe behaviour in prose. This one keeps the claims executable: thresholds,
-budgets and judgement rules live in offline tests, and `docs/nsdsh/known-issues.json` records every
-known defect with its status instead of hiding it.
-
-**Verified on this machine** (`win32 10.0.26200 x64`, Node `v24.19.0`): the offline suite, the
-story-state invariants, the front-end execution test, a real sub-process run of the AI runtime
-(12 scenarios: handshake, terminal state, cancellation, cross-work isolation), a trimmed
-distribution built and re-run from its own archive, and a 25-case model-quality evaluation.
-
-**Not verified — stated so you can plan around it:**
-
-| Limit | What it means |
-| --- | --- |
-| **macOS / Linux** | No run evidence beyond what CI reports. Windows is the only platform with measured results |
-| **Prebuilt AI runtime** | The trimmed runtime is validated for `win32-x64` only; other platforms rebuild it |
-| **Model quality** | Measured, with findings: structure and verbatim-citation are reliable, *value extraction is not* — recall ~0.26 on a 25-case set. Treat AI output as a proposal, not a record |
-| **Office import** | `docx/pptx/xlsx` skills need the full AI build; the trimmed distribution excludes them |
-
-The long-form reasoning behind each number lives in [`docs/nsdsh/STATUS.md`](docs/nsdsh/STATUS.md)
-and [`docs/nsdsh/support-matrix.md`](docs/nsdsh/support-matrix.md).
+> **Development status:** This README describes the repository's default branch, `Experimental-Version-v1.0`. It is an experimental development line, not the older `main` branch. Check [`package.json`](package.json) and [Releases](https://github.com/bbaz123/novel-studio/releases) for version information.
 
 ## 🚀 Quick Start
 
-> **Just want to write?** You need **Node.js only**. No `npm install`, no database, no network, no API key, no cost.
+**Try the writing studio without an API key.** You only need Node.js **22.13.0 or newer** (Node.js 24 recommended).
 
 ```bash
 git clone https://github.com/bbaz123/novel-studio.git
@@ -171,296 +25,257 @@ cd novel-studio
 npm start
 ```
 
-Then open **<http://localhost:3737>**.
+Open **http://localhost:3737** in your browser. There is **no `npm install` step**.
 
-On Windows you can instead **double-click `start-novel-studio.cmd`** — it opens the service window and launches your browser for you.
+On Windows, you can also download the repository and double-click `start-novel-studio.cmd`.
 
-First run — four things, about three minutes:
+**Your first three minutes:**
 
-1. Click **✨ 一键导入示例小说《雾都缝匠》** (*Import demo novel*) on the home screen, then **打开** (*Open*) — this gives you a fully populated project so every screen makes sense immediately.
-2. Browse **总览** (overview) → **正文写作** (writing) → **小说设定** (settings).
-3. Create your own work with **新建作品** (*New work*).
-4. Optionally connect an LLM — see [Configuration](#-configuration).
+1. On **我的作品** (My Works), import the bundled demo novel **《雾都缝匠》** and open it.
+2. Explore **总览 → 正文写作 → 小说设定** (Overview → Writing → Story Settings).
+3. Create your own work with **新建作品** (New Work). Add a volume and chapter, then start writing.
+4. Connect an AI model later, if you want one. Manual editing, outlining, worldbuilding, and export do **not** require AI.
 
-<img src="assets/screenshot-home.png" alt="Novel Studio home screen: the works library with the one-click demo-novel import" width="100%">
+![Novel Studio writing desk with chapter navigation and rich-text editing](assets/screenshot-writing.png)
+
+> Need step-by-step help? See the [Chinese first-run guide](docs/新手入门.md). For requirements and troubleshooting, see [Installation](#-installation).
+
+## ⭐ Features
+
+| Capability | What it does |
+| --- | --- |
+| **Long-form writing workspace** | Manage multiple works, volumes, chapters, and scenes; edit rich text with autosave, word counts, layouts, and version history. |
+| **Character consistency** | Maintain character profiles, current state, relationships, and plotline-specific state; flag potential contradictions during review. |
+| **Foreshadowing tracker** | Track planted threads in an event ledger, distinguish open from resolved leads, and retrieve loose ends before writing later chapters. |
+| **Story bible & worldbuilding** | Keep outlines, plotlines, glossary entries, world settings, character sheets, and long-term story memory in one workspace. |
+| **Context-aware AI assistance** | Assemble a budget-aware context from 14 base layers, with retrieval hints for content trimmed from the prompt. Semantic recall is optional. |
+| **Review & revision safeguards** | Apply deterministic checks, surface review evidence, constrain targeted repairs, and keep author approval between suggestions and committed prose. |
+| **Offline-first and scriptable** | Write without AI; optionally use OpenAI-compatible endpoints or DeepSeek Harness. A local HTTP API supports automation. |
+
+AI suggestions are **not guaranteed to be correct**. A check can miss a contradiction or surface a false positive; the writer remains responsible for the manuscript.
+
+## 🎯 Why Novel Studio?
+
+A chat assistant may write a useful scene but cannot, by itself, be relied on to maintain the facts of a 100-chapter novel. Novel Studio makes story state **explicit and inspectable**.
+
+| Common long-novel problem | Novel Studio's approach |
+| --- | --- |
+| A dead or missing character reappears without explanation | Record character state and events; include relevant state in chapter context and flag possible conflicts after drafting. |
+| A foreshadowing thread is forgotten | Keep open and resolved leads in a queryable ledger. |
+| Each new AI session needs the full story bible pasted again | Assemble chapter-relevant context with a bounded token budget and traceable sources. |
+| An AI revision changes canon while fixing prose | Review findings, permitted edit scope, proposed changes, and author approval are separate steps. |
+| The manuscript must stay on your computer | Store the library in local SQLite and run the app on `127.0.0.1` by default. |
+
+**The distinction:** this is a **manuscript-first writing app**, not simply an LLM chat interface or a one-click novel generator.
+
+### Who is it for?
+
+- **Web-novel and serial-fiction authors** working across many chapters, characters, and plotlines.
+- **Writers who care about local data ownership** and want AI to remain optional.
+- **Developers and researchers** exploring structured story state, novel-writing workflows, and a local API.
+
+It is **not** an online collaboration suite, a built-in cloud sync service, or a promise of publish-ready prose without human review.
+
+### Where it fits
+
+| If you mainly need… | Consider also… | Novel Studio's focus |
+| --- | --- | --- |
+| AI-assisted prose drafting | [Sudowrite](https://www.sudowrite.com/), [Novelcrafter](https://www.novelcrafter.com/) | A local story-state workflow with explicit continuity and approval gates. |
+| A file-oriented writing environment | [novelWriter](https://novelwriter.io/), [Obsidian](https://obsidian.md/) | An integrated chapter editor plus structured characters, events, and foreshadowing. |
+| An LLM conversation interface | [SillyTavern](https://github.com/SillyTavern/SillyTavern), [Open WebUI](https://github.com/open-webui/open-webui) | Chapter-centric authoring with a maintained story bible and post-draft checks. |
+
+These tools serve overlapping but different workflows; no single tool is best for every writer.
+
+## 🖼 Screenshots & Demo
+
+The screenshots below use the included demo novel **《雾都缝匠》**, not a mock interface.
+
+| Library and demo import | Writing desk |
+| --- | --- |
+| ![Library with example novel](assets/screenshot-home.png) | ![Chapter editor](assets/screenshot-writing.png) |
+
+| Character sheets and current state | Glossary and worldbuilding |
+| --- | --- |
+| ![Character information and state](assets/screenshot-settings-characters.png) | ![Glossary and worldbuilding entries](assets/screenshot-settings-terms.png) |
+
+After launching, use the home-screen demo import to explore populated chapters, characters, settings, memory, and events before creating your own project.
 
 ## 📦 Installation
 
-| Requirement | Value | Notes |
-| --- | --- | --- |
-| OS | Windows / macOS / Linux | `start-novel-studio.cmd` is a Windows convenience; other platforms use `npm start` |
-| Node.js | **22.13 or later** (24 LTS recommended) | Uses the built-in `node:sqlite` module. On 22.5-22.12 it still needs `--experimental-sqlite`, hence the 22.13 floor |
-| Browser | Chrome / Edge / Firefox | Plain front-end, **no build step** |
-| Disk | ~50 MB plus your library | Your database lives in `data/` |
+| Requirement | Details |
+| --- | --- |
+| **Node.js** | **22.13.0+** for the application; **22.15.0+** for the complete verification toolchain; Node.js 24 recommended. |
+| **Operating system** | Windows, macOS, or Linux. The Windows launcher is optional; macOS/Linux use `npm start`. CI exercises Windows and Linux, but platform-specific behavior may still differ. |
+| **Browser** | A modern browser such as Chrome, Edge, or Firefox. |
+| **Dependencies** | Zero third-party npm runtime packages. Node's built-in `node:sqlite` is used; no separate SQLite installation or frontend build. |
+
+Check your installed version:
 
 ```bash
-node -v      # must print v22.13.0 or later
+node -v
 ```
 
-**Optional: connect an AI backend**
-
-AI features need either a direct API config or a local DeepSeek Harness checkout. Both are configured in the app UI — no environment variables required.
-
-- **Direct API** — `✨ AI 创作 → ⚙️ AI 设置`: set Base URL, API key and model. The key is stored only in your local SQLite database.
-- **Creation kernel (DeepSeek Harness)** — `✨ AI 创作 → ⚙️ AI 设置 → 🛠 本地创作内核 (dsh)`: point it at a local `deepseek-harness` checkout, then install the bundled plugin:
-
-```powershell
-# Dry run first (writes nothing)
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel -DryRun
-
-# Install / upgrade into the dedicated `novel` profile
-powershell -ExecutionPolicy Bypass -File .\harness-plugins\novel-writing\install.ps1 -Profile novel
-```
-
-The plugin source lives in this repository at `harness-plugins/novel-writing/` and is mirrored to [bbaz123/novel-writing-plugin](https://github.com/bbaz123/novel-writing-plugin). It installs via a junction, so editing plugin code takes effect immediately — no reinstall.
-
-**Upgrade / uninstall**
-
-```bash
-git pull && npm start        # upgrade; the database migrates automatically at startup
-```
-
-Uninstalling is "delete the folder": no installer, no registry entries, no background service. To keep the app but reset your library, stop the service and delete `data/` — it is recreated empty on the next start.
-
-**Desktop shortcut (Windows, optional)**
+**Windows convenience launcher:** double-click `start-novel-studio.cmd`, or optionally create a shortcut:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1
 ```
 
+**Updating:** stop the application, back up the entire `data/` folder, then pull updates on the branch you are using:
+
+```bash
+git pull
+npm start
+```
+
+The application manages database migrations at startup, but a backup is still recommended before upgrades. To uninstall, stop the server and remove the application folder **after saving any data you want to keep**.
 
 ## 💻 Usage
 
-**Daily writing.** Pick a chapter in the tree and write; saving is automatic. Switch to the three-column layout to keep the reference panel (glossary, characters, plotlines, and *what the AI will see*) beside you while you work.
+### Write and manage a novel
 
-**Writing with AI.** The toolbar's ✍️ **AI 写作** button opens a short requirement-confirmation dialog first — including a *just start* option — so a paid call never happens by accident. The model asks one question at a time until your intent is clear, then drafts. Generated events and memories arrive as proposals you accept or discard.
+Create a work, volume, and chapter. Write in the editor; content autosaves. Use the reference panel to look up people and world settings without leaving your draft. Maintain the **character state and event ledger** as the story develops.
 
-**HTTP API.** The UI is a thin client over a local HTTP API, so it can be scripted:
+### Draft with an AI model (optional)
+
+Go to **✨ AI 创作 → ⚙️ AI 设置** and enter an OpenAI-compatible **Base URL**, **API Key**, and **model**. In the writing desk, use **✍️ AI 写作** to describe what you need before a model call. AI-generated facts and memories are proposed for review rather than silently becoming canon.
+
+For the optional **DeepSeek Harness** creation pipeline, see [AI core documentation](docs/ai-core.md) and the included [`harness-plugins/novel-writing/`](harness-plugins/novel-writing/) integration. It requires additional setup; it is **not** needed for ordinary writing.
+
+### Use the local HTTP API
+
+With the server running, you can access its local API:
 
 ```bash
 # Health check
 curl http://localhost:3737/api/novel/ping
 
-# Import the bundled demo novel (optional; the UI button does the same)
+# Install the included example novel (also available through the UI)
 curl -X POST http://localhost:3737/api/demo/install \
-  -H 'Content-Type: application/json' -d '{}'
+  -H 'Content-Type: application/json' \
+  -d '{}'
 
-# Assemble the creation context for a work (i.e. what the model would be given)
+# Inspect assembled story context; replace 1 with an existing work ID
 curl 'http://localhost:3737/api/novel/context?work_id=1'
 ```
 
-> Write requests are restricted to same-origin local calls: the server validates `Origin` / `Host` and only listens on `127.0.0.1`, which also blocks DNS rebinding.
-
-**Verification.** Everything below is zero-cost and never calls a real model:
-
-```bash
-# Offline suite (55 checks, no live instance, does not touch your data) — this is what CI runs
-node scripts/ci-offline-checks.mjs
-
-# Live-instance regression against a throwaway instance (temp data dir, OpenViking disabled)
-node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
-node scripts/ci-isolated-run.mjs --port 3738 -- node harness-plugins/novel-writing/test/smoke.mjs
-
-# Front-end execution test (runs public/app.js inside a minimal DOM stub)
-node frontend-test.mjs
-
-# Full acceptance sweep; checks needing your own data are reported as SKIPPED, not passed
-node .p1-baseline/verify-all.mjs
-```
-
-CI (`.github/workflows/ci.yml`) runs the offline suite on Windows and Linux with Node 24, plus a Node 22.15 job that pins the dependency floor. **CI never calls a real model.**
-
-## 🖼 Screenshots
-
-| Writing desk | Characters and current state |
-| --- | --- |
-| ![Writing desk](assets/screenshot-writing.png) | ![Character sheets](assets/screenshot-settings-characters.png) |
-
-| Work overview | Glossary and worldbuilding |
-| --- | --- |
-| ![Work overview](assets/screenshot-overview.png) | ![Glossary](assets/screenshot-settings-terms.png) |
-
-<sub>All screenshots show the bundled demo novel《雾都缝匠》, captured from an isolated instance. `assets/preview.png` is the application icon, not a UI screenshot.</sub>
+On Windows PowerShell, use `curl.exe` if `curl` is mapped to another command. Write endpoints are intended for local, same-origin access; do not expose this service directly to the public internet.
 
 ## 🏗 Architecture
 
 ```text
-Your library (SQLite)
+Browser UI (public/)
         |
         v
-ai/context/layers.mjs      14 layer specs (+1 gated story-state layer): each declares source /
-        |                  time perspective / knowledge scope / selection method / known gaps
-        v
-ai/context/assembler.mjs   The single assembler: trims to budget, and everything trimmed stays
-        |                  retrievable (each layer carries a tool_hint)
-        v
-ai/context/integrity.mjs   Identity + integrity: context_id (content hash) and
-        |                  context_request_id (this assembly). The manifest and the prompt must
-        v                  match byte for byte; mismatches are recorded loudly, never dropped
-harness.js -> dsh session  Model tier and reasoning effort have exactly one source (ai/policy.mjs)
+Local HTTP API (server.js) <----> SQLite (db.js, data/novel.db)
         |
-        v
-draft / proposal           Events and memories become proposals until you approve them
+        +--> Story state (characters / timeline / events / foreshadowing)
         |
-        v
-ai/continuity-guard.mjs    Deterministic post-draft check: open foreshadowing, character state,
-                           event ledger, named entities, chapter boundaries
+        +--> Context assembler (14 base layers + gated story-state layer)
+                     |
+                     v
+             Optional AI backend
+                     |
+                     v
+             Draft / review / proposal
+                     |
+                     v
+            Author approval & revision
 ```
 
-```text
-novel-studio/
-├── public/                   # Front-end (no build step): index.html, styles.css, app.js
-├── ai/
-│   ├── policy.mjs            # Single source of truth for model tier + reasoning effort
-│   ├── context/              # layers.mjs (layer specs) + assembler.mjs + integrity.mjs
-│   ├── story-state/          # Story state kernel: entities, timeline, foreshadowing, approval...
-│   ├── library/              # Cross-work reference library (scan -> confirm -> ingest)
-│   ├── http/                 # HTTP response + request-body helpers (single owner)
-│   ├── runtime/              # Optional DeepSeek Harness SDK runtime (real sub-process, off by default)
-│   ├── model-broker/         # Explicit work+purpose model routing (no implicit first-match)
-│   └── continuity-guard.mjs  # Post-draft consistency checks
-├── db.js                     # SQLite schema and migrations
-├── server.js                 # HTTP server, API routes, creation-kernel endpoints
-├── harness.js                # DeepSeek Harness bridge (mutual exclusion + CAS restore)
-├── openviking*.js            # Optional shared-memory / semantic-recall backend
-├── logger.js                 # Unified logging (SQLite + file, slow-op detection, retention)
-├── debug-trace.js            # Runtime tracing engine (operation grouping, shape summaries)
-├── harness-plugins/novel-writing/   # Bundled creation plugin (single source; mirror repo exists)
-├── scripts/                  # CI entry points (offline checks, isolated runs)
-├── scripts/nsdsh/            # Stage gates: delivery check, real-runtime + distribution verification
-├── docs/nsdsh/               # Stage ledger, STATUS, known issues, support matrix
-├── .p1-baseline/             # Contract baselines and verification tooling
-├── demo-data.json            # The bundled demo novel
-└── data/                     # Your library and API keys (git-ignored)
-```
+| Location | Responsibility |
+| --- | --- |
+| `public/` | Browser UI; no frontend build step. |
+| `server.js`, `db.js` | Local server, HTTP routes, schema, and database migrations. |
+| `ai/context/` | Context layer definitions, assembly, budgets, and integrity metadata. |
+| `ai/story-state/` | Structured story facts and state transitions. |
+| `ai/continuity-guard.mjs` | Post-draft continuity checks. |
+| `harness-plugins/novel-writing/` | Optional novel-creation integration. |
+| `scripts/`, `tests/` | Offline and isolated verification. |
 
-Design docs live in [`docs/`](docs/README.md) — see [`docs/ai-core.md`](docs/ai-core.md) for the AI kernel and [`docs/context-contract.md`](docs/context-contract.md) for the context contract.
-
+Technical references: [AI core](docs/ai-core.md) · [Context contract](docs/context-contract.md) · [Developer documentation index](docs/README.md).
 
 ## ⚙️ Configuration
 
-Everything user-facing is configured in the app. These environment variables exist for scripting and isolated instances:
+Everyday AI settings are managed in the UI. These environment variables help with local scripting and isolated instances:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `3737` | Service port |
-| `NOVELSTUDIO_DATA_DIR` | `./data` | Data directory (multi-instance / isolation) |
-| `NOVELSTUDIO_DSH_REPO` | auto-detected | Path to a local DeepSeek Harness checkout (takes priority over the UI value) |
-| `NOVELSTUDIO_DSH_PROFILE` | `novel` | dsh profile used for writing jobs |
-| `NOVELSTUDIO_DSH_LAUNCH` | auto | Force the `source` or `built` launch path |
-| `NOVELSTUDIO_CONTEXT_CACHE_TTL_MS` | 600000 | Context-assembly cache TTL |
-| `NOVELSTUDIO_OV_DISABLED=1` | off | Disable the OpenViking integration entirely |
-| `NOVELSTUDIO_OV_AUTOINDEX=0` | on | Skip index build at startup |
-| `NOVELSTUDIO_COMPRESS_STRICT_NO_INVENTION=1` | off | Also reject entities that were merely *mentioned* but never on stage |
-| `NOVELSTUDIO_COMPRESS_MIN_COVERAGE` | — | Memory-compression coverage floor (0-1) |
-| `NOVELSTUDIO_TRACE_KEEP` | `20` | Recorded trace sessions to keep |
-| `NOVELSTUDIO_TRACE_MAX_NODES` | `2000` | Max nodes captured per operation |
-| `NOVELSTUDIO_TRACE_IDLE_MS` | `20000` | Stop tracing after the browser heartbeat is lost |
+| `PORT` | `3737` | HTTP port. |
+| `NOVELSTUDIO_DATA_DIR` | `./data` | Storage location for an isolated library. |
+| `NOVELSTUDIO_DSH_REPO` | Auto-detected | Local DeepSeek Harness checkout path. |
+| `NOVELSTUDIO_OV_DISABLED` | Not set | Set to `1` to disable the optional OpenViking integration. |
+| `NOVELSTUDIO_TRACE_KEEP` | `20` | Number of runtime trace sessions retained. |
 
 ```bash
-# Example: a different port and data directory (PowerShell)
-$env:PORT=3738; $env:NOVELSTUDIO_DATA_DIR="D:\novel-data"; npm start
-
-# macOS / Linux
-PORT=3738 NOVELSTUDIO_DATA_DIR=/tmp/novel-data npm start
+# macOS / Linux: change the port and data location
+PORT=3738 NOVELSTUDIO_DATA_DIR=/tmp/novel-studio-data npm start
 ```
 
-## 🔒 Privacy & Data
+```powershell
+# Windows PowerShell
+$env:PORT=3738
+$env:NOVELSTUDIO_DATA_DIR="D:\novel-studio-data"
+npm start
+```
 
-- Everything is stored locally in `novel-studio/data/novel.db`; logs live in `data/logs/` (14-day retention)
-- **API keys are stored in that same local SQLite file** — never uploaded anywhere
-- The server binds to `127.0.0.1`, and write requests validate `Origin` / `Host` to block DNS rebinding
-- `data/` (including `data/backup-*` and `data/debug/`) is `.gitignore`d and never pushed
-- Runtime traces contain code locations, timings and sizes only — **no manuscript text and no prompt text**
-- Back up by stopping the service and copying the whole `data/` folder: the database runs in WAL mode, so copying only `novel.db` can miss recent writes
+## 🔒 Privacy, Data & Backups
+
+- The app binds to **`127.0.0.1`** by default, and your library lives in **`data/novel.db`**.
+- The `data/` directory may contain manuscripts, logs, and API credentials. It is git-ignored, but **must not be committed or shared**.
+- **Manual writing works offline.** If you invoke a remote AI provider, the required request content—and authentication credentials—are sent to the provider you configured. Check that provider's policies before sending private work.
+- To back up safely, **stop the app and copy the whole `data/` directory**. SQLite WAL mode means copying only `novel.db` may omit recent changes.
+- No built-in cloud synchronization or multi-user hosting is provided.
+
+For responsible vulnerability reporting, see [SECURITY.md](SECURITY.md).
+
+## 🧪 Verification & Project Status
+
+The core checks are designed to run **without contacting a paid model**. For the full verification toolchain, use Node.js 22.15.0+ (Node.js 24 recommended):
+
+```bash
+npm test
+
+# Further project gates
+node .p1-baseline/verify-phase-map.mjs
+node .p1-baseline/check-utf8.mjs
+
+# Live-instance API check against an isolated temporary instance
+node scripts/ci-isolated-run.mjs --port 3738 -- node api-test-suite.mjs
+```
+
+See [CI runs](https://github.com/bbaz123/novel-studio/actions/workflows/ci.yml), [verification status](docs/nsdsh/STATUS.md), and the [platform support matrix](docs/nsdsh/support-matrix.md). Check current runs rather than treating historic pass counts as evergreen guarantees.
+
+This remains an **experimental project**. Not every optional runtime, platform combination, or model-quality scenario has been verified. Detection and model outputs still need editorial judgment.
 
 ## 🗺 Roadmap
 
-Only items that can be checked against the current repository are listed. The full backlog lives in [`docs/pending-decisions.md`](docs/pending-decisions.md).
+Current development directions—not promises or scheduled releases—include:
 
-- ~~Declare an open-source licence~~ → **MIT**
-- ~~Add CI~~ → **Done**: `.github/workflows/ci.yml` (offline suite on Windows and Linux, a Node 22.15 floor job, and isolated live-instance jobs)
-- **Cross-platform one-click launcher** — `start-novel-studio.cmd` is Windows-only today; macOS and Linux use `npm start`
-- **Optional LAN access toggle** — the server intentionally binds to `127.0.0.1`; writing from a tablet requires editing `server.js`
-- **More export formats** — whole-book TXT and Markdown plus single-chapter TXT are supported; EPUB and DOCX are not yet
-- **Wire up the warm harness pool** (`ai/harness-pool.mjs`) after measuring the gain on the production path
+- Easier one-click startup on macOS and Linux.
+- More export formats (EPUB and DOCX are **not** currently supported as book exports).
+- A carefully designed, optional local-network access mode.
+- Continued evaluation of story-state, review/revision quality, and optional runtime performance.
+
+Track actual decisions in [the project backlog](docs/pending-decisions.md) and [the changelog](docs/CHANGELOG.md).
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first — the essential rules are:
+**Bug reports, documentation improvements, and pull requests are welcome.**
 
-- **Questions, ideas and "how do I…"** — use [Discussions](https://github.com/bbaz123/novel-studio/discussions) rather than an issue
-- **Bugs** — the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml) asks for your Node version, OS, reproduction steps and the verbatim error
-- **Open an issue before a large PR** so we can agree on direction first
-- **No npm dependencies** — the project is deliberately zero-dependency, and PRs adding one will not be merged
-- **Pure ESM** — `.mjs` plus `"type": "module"`; no CommonJS `require`
-- **Never commit `data/`** — it contains your library and API keys
-- **Run the gates before pushing**: `node .p1-baseline/verify-all.mjs`, `verify-phase-map.mjs` and `check-utf8.mjs`
-- **Changing a threshold means adding an assertion** — thresholds and budgets are pinned by offline tests
+- **Found a reproducible bug?** [Open an issue](https://github.com/bbaz123/novel-studio/issues/new/choose) with your OS, Node version, reproduction steps, and relevant error output.
+- **Have an idea or a question?** Start a [Discussion](https://github.com/bbaz123/novel-studio/discussions).
+- **Want to contribute code?** Read [CONTRIBUTING.md](CONTRIBUTING.md) before a substantial change. The project intentionally maintains a zero-npm-dependency core and uses ESM.
+- **Found a security issue?** Follow [the private reporting procedure](SECURITY.md), not a public issue.
 
-Source comments are written in Chinese, explaining *why* rather than *what*. Documentation under `docs/` is Chinese-first; English summaries are being added incrementally.
+If Novel Studio helps your writing or research, **star the repository** to make it easier for other writers and developers to discover. Feedback and useful forks are welcome, too.
 
-## 📄 License
+## 📄 License & Acknowledgements
 
-[MIT](LICENSE) © Novel Studio contributors.
+Novel Studio is available under the **[MIT License](LICENSE)**. Bundled third-party materials may have separate licenses; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-Bundled third-party assets (for example `vendor/models/*.gguf`) remain under their upstream licences — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and [`vendor/README.md`](vendor/README.md).
+The optional AI creation integration uses [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). See the in-app acknowledgements and [technical documentation](docs/README.md) for implementation context.
 
-## 🙏 Acknowledgements
+---
 
-Built around [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for its AI capabilities. The in-app 「借鉴与致谢」 page lists every component and design reference actually used, together with its licence verification record.
-
-## 📝 Changelog
-
-Full per-version history — including the verification numbers and the capability boundaries of each
-round — lives in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Recent releases on this branch:
-
-- **v1.2.6** — six-issue review closure plus the first independent quality-audit pipeline. Review quote
-  verification now checks the *reviewed* base text (not the current chapter body), contract field drift is
-  degraded to "needs verification" instead of silently dropping a finding, "fixed only half" becomes a
-  `PARTIAL` verdict while "text untouched" fails, and issues that need cross-material checks are routed to
-  external verification instead of being padded into the prose. Same release adds `dsh-novel-quality-auditor`
-  (separate audit ledger, one-time tokens, lease/recovery, budget gate, blind-then-open review) and closes the
-  AI-writing termination gap: `finish_reason` reaches the client, truncated output and skipped quality checks
-  can no longer be reported as "short but complete". Also fixes the review workspace tabs/scroll, a paid
-  verification deadlock, and an analysis-queue UNIQUE crash. See `docs/v1.2.6-six-issue-closure.md` and
-  `docs/v1.3.1-writing-truncation.md`.
-- **v1.2.5** — review→revision closure hardening on the real 8-issue sample: a partial semantic
-  verdict is now a first-class `PARTIAL` result (instead of silently becoming "awaiting verification"),
-  partially fixed issues enter the cost-capped targeted-repair queue, a post-repair merge keeps earlier
-  PASS verdicts from being wiped, and each run emits a redacted `revision-trace.v1` stream (IDs, hashes
-  and reason codes only). "Text unchanged" and "changed but still broken" are now machine-distinguishable
-  (`actual_change`). The author's approve-to-write step, protected spans, canon and budget gates are
-  unchanged. See `docs/v1.2.5-review-quality-loop.md`.
-- **v1.2.4** — one final gate for both repair paths (single-shot and segmented), per-issue semantic
-  coverage that never counts an unverified item as passing, a dedicated review workspace that leaves the
-  writing desk unsqueezed, and a separate temporal-engine settings view. Same version also adds
-  timeline-aware conflict detection, hard/soft world-entry constraints, resumable revision runs, a
-  three-column cost view (estimate / authorised / charged), and P2 quality insights (trends, per-work
-  quality profiles, repair-effect stats, cross-project templates). See
-  `docs/v1.2.4-review-workspace.md`.
-- **v1.2.3** — UI fixes: the model/human/structure comparison now stacks above the review report
-  (closing it returns to the report), revision recovers the reviewed text as its base when the live
-  article is missing, and the writing area keeps a minimum height while the chapter-state panel scrolls.
-- **v1.2.2** — automatic second repair round (capped at 2, cost-gated, still ends at the author's
-  approve-to-write step), P1 quality primitives (versioned world entries, prop-state chain with verbatim
-  evidence, deferred→pending foreshadow registration) and the DSH `writing/` quality coordinator.
-  See `docs/v1.2.2-quality-closure.md`.
-- **v1.2.1** — security & correctness patch (P01–P16): authorisation boundaries and write atomicity,
-  origin/body entry hardening, startup readiness, analysis fencing, AI response caps, trace redaction,
-  input validation and search recall. See `docs/v1.2.0-1018-fix-report.md`.
-  Same version, review-quality closure: machine-readable findings with verbatim evidence, multi-hotspot
-  authorised repair, per-issue semantic verification, and an explicit "patch applied ≠ issue solved ≠
-  committed" state model (`docs/v1.2.1-revision-closure.md`).
-- **v1.2.0** — review-fact attribution; a vanished quote no longer counts as a solved problem;
-  fail-closed authorisation on the review → localised-revision chain.
-- **v1.1.9** — unapproved *institution* and *temporal-causality* candidates, plus a post-revision
-  verdict gate (`coverageVerdict`).
-- **v1.1.8** — patch protocol v2 with `reason`/`allowed_ops`, zero-width `insert`, and
-  post-revision `issue_coverage` verification.
-- **v1.1.7** — review → revision closure hardening: authorisation is fail-closed, and a report is no
-  longer allowed to contradict itself.
-- **v1.1.6** — narrative-structure mechanicalness: the generation prompt no longer asks for a
-  self-contradicting shape.
-
-Every entry above ships with offline assertions; a version without them is not released.
+**Build the story you want. Keep track of the story you've already told.**
