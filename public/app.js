@@ -8889,7 +8889,16 @@ async function streamAIDirectWrite(body, stageLabel) {
           else if (evt.done) {
             if (cancelled) throw cancelledErr(); // 用户已点停止：即使任务刚巧完成也不再采纳结果
             // usage 是服务端随 done 下发的附加用量（缓存命中 / 思考 token）；老服务端没有它就记 null。
-            return { text: String(evt.text || full), scan: evt.scan || null, complete: true, usage: evt.usage || null };
+            return {
+              text: String(evt.text || full), scan: evt.scan || null, complete: true, usage: evt.usage || null,
+              generation: {
+                status: String(evt.generation_status || 'UNKNOWN_TERMINATION'),
+                finish_reason: evt.finish_reason == null ? null : String(evt.finish_reason),
+                finish_reason_observed: evt.finish_reason_observed === true,
+                requested_max_tokens: Number(evt.requested_max_tokens) || null,
+                stream_terminated_normally: evt.stream_terminated_normally === true,
+              },
+            };
           } else if (evt.error) throw new Error(evt.error);
         }
       }
@@ -8937,7 +8946,7 @@ async function streamAIDirectWrite(body, stageLabel) {
     if (!result.complete) throw withPartial(new Error('流式连接中断，未收到完成信号（可重试或改用精写内核）'));
     // ⏱ ms 是本轮流式直连的墙钟总耗时（含重试），ttftMs 是首字延迟，usage 是服务端随 done 下发的用量。
     // 三者都只是测量值，调用方不拿它们做任何判断。
-    return { text: result.text, scan: result.scan, proposals: null, via: 'direct', ms: Date.now() - startedAt, ttftMs, usage: result.usage || null };
+    return { text: result.text, scan: result.scan, proposals: null, via: 'direct', ms: Date.now() - startedAt, ttftMs, usage: result.usage || null, generation: result.generation || null };
   } catch (e) {
     if (e.name === 'AbortError') throw cancelled ? cancelledErr() : withPartial(new Error('流式生成连接中断'));
     // 其余异常（网络层 TypeError、读取中断等）同样带上已收到的正文 ——
@@ -8979,6 +8988,9 @@ async function saveInterruptedDraft(text, chapterId) {
 // 而不是把半章正文当整章核对（半章质检比不质检更危险：它会把"没看到的部分"判成没问题）。
 function buildAIWriteQualityPrompt(article, blueprint, opts = {}) {
   const segment = opts.segment || null;
+  const beatLines = (blueprint && Array.isArray(blueprint.required_beats) && blueprint.required_beats.length)
+    ? `\n必需情节点（逐条核对，不得遗漏）：\n${blueprint.required_beats.map((b) => (typeof b === 'string' ? b : `${b.id || ''} ${b.description || b.text || ''}`)).join('\n')}`
+    : '';
   const bpText = blueprint
     ? [
         blueprint.scene_goal && `场景目标：${blueprint.scene_goal}`,
@@ -8987,13 +8999,14 @@ function buildAIWriteQualityPrompt(article, blueprint, opts = {}) {
         blueprint.character_changes && `出场角色状态变化：${blueprint.character_changes}`,
         blueprint.hook && `下一章钩子：${blueprint.hook}`,
         blueprint.references && `需要回扣的设定/伏笔：${blueprint.references}`
-      ].filter(Boolean).join('\n')
-    : '（无蓝图）';
+      ].filter(Boolean).join('\n') + beatLines
+    : `（无蓝图）${beatLines}`;
   const prompt = [
     '你是严格的小说质检员。请核对下面这篇刚生成的章节正文，输出 JSON 对象（不要 Markdown 代码块）：',
     '{"verdict":"pass 或 issues 或 unknown","issues":["硬伤描述，逐条可执行"],"deferred":[{"type":"possible_foreshadowing","text":"疑似伏笔或暂未解释的异常（引用正文具体位置）","recheck_within_chapters":5}],"coverage":{"story_state":true,"space":true,"timeline":true,"world_rules":true,"chapter_boundary":true,"style_structure":true}}',
     'deferred 是“待后续核验”通道：疑似伏笔、未知等级、暂未解释的异常、可能故意留下的缺口，一律写进 deferred，不要写进 issues，也不要为了给出结论而判成硬伤。deferred 不计入 verdict——它有内容时 verdict 仍可以是 pass；拿不准“是伏笔还是假神秘”时同样放这里，不要建议删除。',
     'verdict 三态，必须如实：pass=已经检查且所查范围内没有发现硬伤；issues=找到有证据的硬伤（issues 必须非空）；unknown=无法判断、覆盖不全或证据不足（issues 可为空）。拿不准时写 unknown，不要为了给出结论而臆造硬伤，也不要在未完成检查时写 pass。',
+    '若【本章蓝图】列出“必需情节点”，请额外输出 "beats":[{"id":"B01","status":"met|missing|unclear","evidence":"引用正文具体文字"}]；每条必需情节点都要有一行，缺证据写 unclear，不得默认 met。',
     '只标记真正的硬伤：与本章蓝图要点明显不符/重要情节点遗漏、与最近事件或未闭合伏笔冲突、角色状态矛盾、大段 AI 腔模板句（万能比喻、「不是X。是Y。」式短语判断、连续三短句总结、为呼应而呼应）、提前消费未来章内容（大纲中标注【未来章·禁止写入】或后续章节摘要的内容）、新增未登记的具名角色/地点/妖兽、场景缺少空间与身体动作。轻微瑕疵不判 issues。',
     '',
     '【本章蓝图 · 写作必须遵守】',
@@ -9056,7 +9069,14 @@ async function verifyAIDraft(blueprint, article, targetWords) {
     if (verdict !== 'issues' && cov && typeof cov === 'object'
         && REQUIRED_COVERAGE.some((k) => cov[k] === false)) verdict = 'unknown';
     const blocked = issues.some((x) => /未来章|禁止写入|未登记|具名角色|具名地点|妖兽/.test(x));
-    return { pass: verdict === 'pass', verdict, issues, deferred, skipped: false, blocked };
+    const beats = Array.isArray(parsed.beats)
+      ? parsed.beats.map((b) => ({
+        id: String(b && b.id || ''),
+        status: String(b && b.status || ''),
+        evidence: String(b && b.evidence || ''),
+      })).filter((b) => b.id)
+      : [];
+    return { pass: verdict === 'pass', verdict, issues, deferred, beats, skipped: false, blocked };
   };
   // 质检通道不可用：不阻塞成文交付（但**必须带 reason**，否则调用侧的告警分支不会触发）。
   if (!reply) return { pass: false, verdict: 'unknown', skipped: true, reason: 'channel_unavailable' };
@@ -11189,9 +11209,17 @@ function contentHashOf(text) {
 //   ok                  —— 达到目标字数（或不设目标）。
 //   short_but_complete  —— 比目标短，但没有"漏写必要情节"的证据：保留短稿。
 //   missing_content     —— 比目标短，且质检明确指出漏写：交给作者决定是否扩写（不自动在章尾追加）。
-function classifyChapterLength(article, targetWords, verdict) {
+function writingQualityModule() {
+  return (typeof globalThis !== 'undefined' && globalThis.NovelWritingQuality) || null;
+}
+
+function classifyChapterLength(article, targetWords, verdict, generation = null) {
+  const WQ = writingQualityModule();
   const chars = plainLength(article);
   const target = Number(targetWords) || 0;
+  if (WQ) return WQ.classifyLength({ chars, target, verdict, generation });
+  // 模块未加载时的保守兜底：质检跳过/未知不得判"短但完整"。
+  if (verdict && (verdict.skipped || verdict.verdict === 'unknown')) return { status: 'unverified', chars, target, gap: Math.max(0, target - chars) };
   if (!target || chars >= target) return { status: 'ok', chars, target, gap: 0 };
   const issues = (verdict && Array.isArray(verdict.issues)) ? verdict.issues : [];
   const missed = issues.some((x) => /遗漏|缺失|未写|未出现|未交代|漏掉|漏写|没有交代/.test(String(x)));
@@ -11398,6 +11426,14 @@ function articleLengthHint(article, targetWords, lengthStatus = null) {
   }
   const gap = target - n;
   const status = (lengthStatus && lengthStatus.status) || 'short_but_complete';
+  if (status === 'truncated') {
+    return `<div class="redline-scan warn">⚠️ 成文 ${n} 字：模型因输出上限（finish_reason=length）停止，正文可能被截断。请检查蓝图必需情节是否已写完，再决定是否续写/扩写；本次不能视为完整章节。</div>`
+      + `<button class="btn small mt-8" data-action="ai-continue-missing">定向续写缺失情节</button>`;
+  }
+  if (status === 'unverified') {
+    return `<div class="redline-scan warn">⚠️ 成文 ${n} 字，未达目标 ${target} 字（短 ${gap} 字），且本次质检未得出可靠结论：不能判为“短但完整”。请人工核对蓝图必需情节后再决定是否扩写。</div>`
+      + `<button class="btn small mt-8" data-action="ai-continue-missing">定向续写缺失情节</button>`;
+  }
   if (status === 'missing_content') {
     return `<div class="redline-scan warn">⚠️ 成文 ${n} 字，距目标 ${target} 字还差 ${gap} 字，且质检指出有情节遗漏：建议用「扩写」补齐必要内容（改已有段落），不要靠章尾续写凑字数。</div>`;
   }
@@ -16188,12 +16224,11 @@ async function performToolbarAIWrite(requirement, opts = {}) {
             reason: verdict.skipped ? String(verdict.reason || '') : ''
           });
           if (verdict.skipped && verdict.reason) {
-            // 显式说出"这次没质检"，并说明是体积原因——不冒充"已核对"。
-            const why = verdict.reason === 'over_single_request_limit'
-              ? '本章正文超过单请求质检上限（未分段质检）'
-              : '长正文分段模块不可用';
+            // 显式说出"这次没质检"，并按真实原因码说明——不再把所有原因都归到"分段模块不可用"。
+            const WQ = writingQualityModule();
+            const why = WQ ? WQ.qualitySkipText(verdict.reason) : `本次质检未完成（${verdict.reason}）`;
             toast(`质检修略：${why}，本次未做质检核对（可在审稿页按清单人工/分段审）`, 'error');
-            reportClientLog({ level: 'warn', kind: 'quality_gate_skipped', message: `[写作] ${why}（正文 ${String(article || '').length} 字）` });
+            reportClientLog({ level: 'warn', kind: 'quality_gate_skipped', message: `[写作] ${why}（正文 ${String(article || '').length} 字）`, context: { reason_code: String(verdict.reason) } });
           } else if (verdict.verdict === 'unknown') {
             // 三态里的 unknown：完成了调用但没得出可靠结论 —— 明确说"未完成可靠检查"，不冒充通过。
             toast('质检未得出可靠结论（unknown），本次不算“检查通过”', 'info');
@@ -16263,8 +16298,35 @@ async function performToolbarAIWrite(requirement, opts = {}) {
         // 继续追加——这是 AI 味最直接的来源之一，也会把已经成立的章尾（沉默/动作/悬而未决的
         // 对白）继续写下去。真实"漏写必要情节"由上面的质检 issues 表达并走修复；篇幅短但剧情
         // 完整时保留短稿，只提示作者，不自动续写。
-        const lengthStatus = classifyChapterLength(article, target, verdict);
+        const lengthStatus = classifyChapterLength(article, target, verdict, (proseData && proseData.generation) || null);
+        const WQ = writingQualityModule();
+        const blueprintStatus = WQ && typeof WQ.blueprintStatusOf === 'function'
+          ? WQ.blueprintStatusOf({ length: lengthStatus, verdict, blueprint: blueprintForProse })
+          : { status: verdict && verdict.pass ? 'VERIFIED' : 'UNVERIFIED', ready_for_normal_delivery: !!(verdict && verdict.pass), unresolved: [] };
+        const blueprintFreeze = WQ && typeof WQ.freezeRequiredBeats === 'function'
+          ? WQ.freezeRequiredBeats(blueprintForProse)
+          : { blueprint_revision: '', required_beats_hash: '', beats: [] };
+        reportClientLog({
+          level: 'info',
+          kind: 'ai_write_blueprint_freeze',
+          message: `[写作] 必需情节点冻结 ${blueprintFreeze.required_beats_hash || '(无)'}（revision=${blueprintFreeze.blueprint_revision || '未声明'}，beats=${blueprintFreeze.beats.length}）`,
+          context: { blueprint_revision: blueprintFreeze.blueprint_revision, required_beats_hash: blueprintFreeze.required_beats_hash, beats: blueprintFreeze.beats.length }
+        });
+        reportClientLog({
+          level: blueprintStatus.ready_for_normal_delivery ? 'info' : 'warn',
+          kind: 'ai_write_blueprint_status',
+          message: `[写作] 蓝图门禁 ${blueprintStatus.status}（可正常交付：${blueprintStatus.ready_for_normal_delivery ? '是' : '否'}）`,
+          context: { status: blueprintStatus.status, ready: blueprintStatus.ready_for_normal_delivery, unresolved: blueprintStatus.unresolved.length }
+        });
         timing.round('length', 0, { status: lengthStatus.status, chars: lengthStatus.chars, target: lengthStatus.target });
+        if (proseData && proseData.generation) {
+          reportClientLog({
+            level: proseData.generation.status === 'PROVIDER_STOP' ? 'info' : 'warn',
+            kind: 'ai_write_generation_status',
+            message: `[AI] 成文结束状态 ${proseData.generation.status}（finish_reason=${proseData.generation.finish_reason == null ? 'not_observed' : proseData.generation.finish_reason}，上限 ${proseData.generation.requested_max_tokens || '未知'}）`,
+            context: proseData.generation
+          });
+        }
         // 全文确定性红线扫描（成文定稿后）：本地正则零成本，覆盖直连路径与修复后的段落。
         try {
           const fullScan = await api('/novel/scan', {
@@ -16277,6 +16339,13 @@ async function performToolbarAIWrite(requirement, opts = {}) {
         // 此前这三项从来没被传进来过，于是 ai_eval_events 里 ms 恒为 0、channel/model 恒为空串 ——
         // 测量口径失效，"提速有没有生效"就永远无法被证明。
         const writeTiming = timing.summary();
+        state.lastAIWriteContext = {
+          article, target, chapterId: writeChapterId, blueprint: blueprintForProse,
+          lengthStatus, blueprintStatus,
+          missingBeatIds: (blueprintStatus && Array.isArray(blueprintStatus.unresolved)) ? blueprintStatus.unresolved.map((x) => (typeof x === 'string' ? x : x && x.id)).filter(Boolean) : [],
+          generation: (proseData && proseData.generation) || null,
+          reason: (verdict && verdict.reason) || '',
+        };
         const mode = await showAIWritingResult(article, proseData.scan, proseData.proposals, target, proseData && proseData.job_id, {
           chapterId: writeChapterId,
           channel: proseRoute,
@@ -16284,6 +16353,7 @@ async function performToolbarAIWrite(requirement, opts = {}) {
           ms: writeTiming.total_ms,
           timing: writeTiming,
           lengthStatus,
+          blueprintStatus,
           deferred: (verdict && verdict.deferred) || []
         });
         if (mode === null) {
@@ -17850,6 +17920,39 @@ document.addEventListener('click', async (e) => {
 async function handleAction(action, actionEl, e) {
   try {
     switch (action) {
+      case 'ai-continue-missing': {
+        const ctx = state.lastAIWriteContext || {};
+        const WQ = writingQualityModule();
+        const decision = WQ && typeof WQ.continuationDecision === 'function'
+          ? WQ.continuationDecision({
+            generation: ctx.generation || null,
+            missingBeatIds: ctx.missingBeatIds || [],
+            authorAuthorized: true, // 作者点按钮 + 下方显式确认 = 本次授权
+            readyForDelivery: !!(ctx.blueprintStatus && ctx.blueprintStatus.ready_for_normal_delivery),
+            cancelled: false,
+          })
+          : { allow: false, reason: 'MODULE_UNAVAILABLE' };
+        if (!decision.allow) {
+          toast(`不能自动续写：${decision.reason}（不会产生费用）`, 'error');
+          break;
+        }
+        const budget = 4096;
+        if (!window.confirm(`定向续写将发起一次付费模型调用（输出上限 ${budget} tokens），只补缺失情节、不自动写入正文。继续？`)) break;
+        const missing = (ctx.missingBeatIds || []).length ? `\n缺失情节点：${ctx.missingBeatIds.join('、')}` : '';
+        const bp = ctx.blueprint ? [ctx.blueprint.plot_points && `情节点：${ctx.blueprint.plot_points}`, ctx.blueprint.hook && `章末钩子：${ctx.blueprint.hook}`].filter(Boolean).join('\n') : '';
+        const prompt = `只续写下面已有正文缺少的情节，接在原文末尾，不要重写、不要复述、不要机械补字，不要输出解释。${missing}\n【蓝图】\n${bp}\n【已有正文末尾】\n${String(ctx.article || '').slice(-3000)}\n只输出续写正文。`;
+        const out = await directAIWrite([{ role: 'user', content: prompt }], { maxTokens: budget, reasoningEffort: 'low', temperature: 0.6 });
+        const cont = String(out || '').trim();
+        if (!cont) throw new Error('续写没有返回正文（未写入任何内容）');
+        const merged = `${String(ctx.article || '').trim()}\n\n${cont}`;
+        state.lastAIWriteContext = { ...ctx, article: merged, generation: null, missingBeatIds: [] };
+        await showAIWritingResult(merged, null, null, ctx.target, null, {
+          chapterId: ctx.chapterId, channel: 'direct', lengthStatus: null,
+          blueprintStatus: { status: 'UNVERIFIED', ready_for_normal_delivery: false, unresolved: [] },
+        });
+        break;
+      }
+
       case 'back-works':
         if (!(await ensureSavedBeforeNavigation())) break;
         state.workId = null;

@@ -174,6 +174,7 @@ export const CHECKS = [
   // v1.3.0 UI 方案：单行入口四态 / 四阶段 / 三维状态 / 摘要恒等式 / 未复验≠PASS。
   // 真实浏览器多宽度验收另由 .p1-baseline/browser-acceptance-v130.mjs 承担（需要活实例，不在离线清单）。
   { name: 'v1.3.0 UI 闭环纯函数（入口四态/四阶段/三维/摘要恒等式，零计费）', cmd: ['.p1-baseline/test-1030-ui-closure.mjs'], why: '补丁已应用≠问题解决；未语义复验不得显示完成；N=P+F+U+B 必须闭合' },
+  { name: 'v1.3.1 写作截断/质检诊断（finish_reason 贯通/跳过原因/短稿不误判，零计费）', cmd: ['.p1-baseline/test-1031-writing-quality.mjs'], why: 'done≠写完；质检解析失败≠无 issues；输出上限的短稿不得判 ok' },
   { name: 'v1.2.4 DSH 联调 / 真实写回 / 备份恢复演练（隔离实例，零计费）', cmd: ['.p1-baseline/test-1028-integration-drills.mjs'], why: '外层只读消费 v3 回执；作者合并不变量守恒；备份能直接当数据目录启动' },
   { name: '工具与环境配置链（OpenViking 凭证 / dsh 仓库 / 全局写入）', cmd: ['env-tools-test.mjs'], why: '环境自检卡' },
   // NSDSH S01：隔离夹具 / 阶段运行器 / 备份演练的专项套件。

@@ -1318,6 +1318,9 @@ async function callAIStream(config, messages, options = {}, onDelta) {
   if (effort && isDeepSeekEndpoint(config.base_url)) applyReasoningEffort(body, effort);
 
   let streamUsage = null; // 流式最后一个 chunk 带回的 usage（Token 采集用）
+  let finishReason = null; // 上游 choices[0].finish_reason；缺失保持 null，绝不推断成 stop
+  let finishObserved = false;
+  let streamTerminatedNormally = false; // 收到 [DONE] 才算传输正常结束
   const streamModel = body.model;
 
   const doStream = async (url) => {
@@ -1373,9 +1376,12 @@ async function callAIStream(config, messages, options = {}, onDelta) {
           buf = buf.slice(nl + 1);
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
+          if (!payload || payload === '[DONE]') { if (payload === '[DONE]') streamTerminatedNormally = true; continue; }
           try {
             const evt = JSON.parse(payload);
+            // 终止原因：只记录上游真实给出的值；兼容端点缺字段时保持 null。
+            const fr = evt?.choices?.[0]?.finish_reason;
+            if (typeof fr === 'string' && fr !== '') { finishReason = fr; finishObserved = true; }
             // Token 采集：流式的 usage 出现在最后一个 chunk（choices 为空），此前被整个丢弃。
             if (evt?.usage) streamUsage = evt.usage;
             // 思考相位：这一帧带 reasoning_content 且还没报过就报一次（内容本身不转发）。
@@ -1409,6 +1415,14 @@ async function callAIStream(config, messages, options = {}, onDelta) {
       // 其中 prompt_cache_hit_tokens 是"前缀缓存到底命不命中"的**唯一**实测来源，
       // reasoning_tokens 直接回答"思考吃掉了多少输出预算"——两者都不回传就永远测不了。
       if (streamUsage && typeof options.onUsage === 'function') options.onUsage(streamUsage);
+      if (typeof options.onFinish === 'function') {
+        options.onFinish({
+          finish_reason: finishReason,
+          finish_reason_observed: finishObserved,
+          requested_max_tokens: maxTokens,
+          stream_terminated_normally: streamTerminatedNormally,
+        });
+      }
       return full;
     } finally {
       clearTimeout(timeout);
@@ -1477,12 +1491,14 @@ async function handleAIWriteStream(req, res, body, config) {
     // 用量（含缓存命中与思考 token）：随 done 一起下发，让客户端能把"这一轮把预算花在哪了"
     // 记进成文耗时账本。**纯附加字段**，老客户端忽略即可。
     let usage = null;
+    let finish = null;
     const text = await callAIStream(config, messages, {
       temperature: body.temperature,
       max_tokens: body.max_tokens,
       reasoning_effort: body.reasoning_effort,
       signal: upstream.signal,
       onUsage: (u) => { usage = u; },
+      onFinish: (f) => { finish = f; },
       // 思考相位随流下发：客户端据此把"已 0 字"换成"模型正在思考…"。
       // 纯附加信号（老客户端忽略即可），不改任何生成参数。
       onThinking: (info) => send({ phase: 'thinking', reasoning_chars: Number(info && info.reasoning_chars) || 0 }),
@@ -1504,7 +1520,21 @@ async function handleAIWriteStream(req, res, body, config) {
       const hits = scanAgainstRedlines(redlineRows, text);
       scan = { enabled: redlineRows.length > 0, total: hits.reduce((s, h) => s + h.count, 0), hits: hits.slice(0, 50) };
     }
-    send({ done: true, text, scan, usage });
+    const fr = finish && finish.finish_reason != null ? String(finish.finish_reason) : null;
+    const generationStatus = upstream.signal.aborted ? 'USER_CANCELLED'
+      : !String(text || '').trim() ? 'EMPTY_OUTPUT'
+        : fr === 'length' ? 'OUTPUT_LIMIT_REACHED'
+          : fr === 'content_filter' ? 'PROVIDER_BLOCKED'
+            : (fr === 'stop' || fr === 'end_turn') ? 'PROVIDER_STOP'
+              : 'UNKNOWN_TERMINATION';
+    send({
+      done: true, text, scan, usage,
+      finish_reason: fr,
+      finish_reason_observed: !!(finish && finish.finish_reason_observed),
+      requested_max_tokens: finish ? finish.requested_max_tokens : null,
+      stream_terminated_normally: !!(finish && finish.stream_terminated_normally),
+      generation_status: generationStatus,
+    });
   } catch (e) {
     if (upstream.signal.aborted) {
       log({ level: 'warn', layer: 'ai', kind: 'ai_stream_aborted', message: '流式直连已被客户端中止' });

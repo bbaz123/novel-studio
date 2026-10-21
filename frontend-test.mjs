@@ -4288,14 +4288,16 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
   // 跨文件契约：DOM 桩只能证明"收到 usage 会透传"，证明不了服务端真的发了 —— 所以这里直接读 server.js。
   // 三处缺一不可：① 流式收尾把 usage 交给调用方；② 路由注册回调；③ done 帧带上它。
   const serverSrc = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8');
-  check('114c 服务端确实把流式用量随 done 下发（回流 + 回调 + 下发三处齐全）',
+  check('114c 服务端确实把流式用量与终止原因随 done 下发（回流 + 回调 + 下发三处齐全）',
     serverSrc.includes('if (streamUsage && typeof options.onUsage === \'function\') options.onUsage(streamUsage);')
       && serverSrc.includes('onUsage: (u) => { usage = u; }')
-      && serverSrc.includes('send({ done: true, text, scan, usage });'),
+      && /send\(\{\s*done: true, text, scan, usage,/.test(serverSrc)
+      && serverSrc.includes('generation_status: generationStatus'),
     JSON.stringify({
       emit: serverSrc.includes('options.onUsage(streamUsage)'),
       wire: serverSrc.includes('onUsage: (u) => { usage = u; }'),
-      frame: serverSrc.includes('send({ done: true, text, scan, usage });')
+      frame: /send\(\{\s*done: true, text, scan, usage,/.test(serverSrc),
+      termination: serverSrc.includes('generation_status: generationStatus')
     }));
 
   // 成文耗时账本：拿到了 usage 还必须真的记下来，否则"测到了"等于白测。

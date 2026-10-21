@@ -1447,7 +1447,7 @@ export const PHASES = [
       '.p1-baseline/verify-ch121-untouched.mjs',
       '.p1-baseline/verify-ch121-untouched2.mjs',
       '.p1-baseline/verify-thinking-heartbeat-20261002.mjs',
-      // —— (仓库根)（20 项）——
+      // —— (仓库根)（23 项）——
       '01.md',
       'AGENTS.md',
       'DSH Verification Gate 插件.md',
@@ -1468,6 +1468,12 @@ export const PHASES = [
       '缺点及修复报告.codex版本-20261001-1623.md',
       '缺陷修复.md',
       '缺陷问题及对应解决办法.md',
+      // 2026-10-19 追认：本轮交给执行者的输入文档（UI 方案与提示词、写作截断与质检闭环修复方案）。
+      // 与上面各项同类——**保留在磁盘供作者阅读，不随源码发布**；这里只是把归属补齐，
+      // 免得它们在真实改动集里长期是"没人说得清怎么回滚"的孤儿。
+      'Novel_Studio_AI写作截断与质检闭环_修复方案.md',
+      'ui方案.md',
+      'ui方案提示词.md',
       // —— ai（2 项）——
       'ai/writing/compile.mjs',
       'ai/writing/scopes.mjs',
@@ -2034,6 +2040,41 @@ export const PHASES = [
       + '**边界**：不改版本号、不升级、不推送 GitHub、不迁移数据库、不写正式正文；'
       + '审稿工作区的修稿质量真相仍来自 `revision-finalize`/`revision-closure`。'
       + '**费用**：离线断言与浏览器验收零计费（模型输出为注入 fixture，未调用真实模型）。',
+  },
+  {
+    id: 'V19',
+    title: 'v1.3.1 写作截断与质检闭环首轮：终止原因贯通 / 质检跳过与截断不冒充完整 / 蓝图门禁最小落点',
+    files: [
+      // 纯函数判据与回归（新模块必须先有断言，否则判据会悄悄漂回去）
+      '.p1-baseline/test-1031-writing-quality.mjs',
+      'public/writing-quality.js',
+      // 业务接线：termination 元数据从 server 到 app，index.html 负责装载顺序
+      'server.js',
+      'public/app.js',
+      'public/index.html',
+      'frontend-test.mjs',
+      '.p1-baseline/test-1020-dsh-real-integration.mjs',
+      // 交付文档与证据
+      'docs/v1.3.1-writing-truncation.md',
+      // 门禁自身（本阶段新增认领，必然要把映射与生成物一起改）
+      '.p1-baseline/verify-phase-map.mjs',
+      'docs/phase-map.md',
+      '.gitignore',
+    ],
+    evidence: [
+      '.p1-baseline/test-1031-writing-quality.mjs',
+      'docs/v1.3.1-writing-truncation.md',
+      'artifacts/v130/ci-run-1.txt',
+      'artifacts/v130/real-model/write-stream-finish.json',
+    ],
+    rollback: 'shared',
+    note: '**目的**：把"连接正常结束"与"模型写完"拆开——上游 `finish_reason`、`[DONE]` 是否出现、'
+      + '请求上限一起随 done 下发，据此判定 PROVIDER_STOP / OUTPUT_LIMIT_REACHED / EMPTY_OUTPUT 等真实状态；'
+      + '质检 skipped/unparsed/unknown 与输出截断一律不得判"短但完整"，'
+      + '并给出蓝图门禁最小落点（verified / unverified / missing_required_beats）。'
+      + '**边界**：不改版本号、不迁移数据库、不写正式正文；未批准的制度/时间机制与配对计划不入本阶段；'
+      + '定向续写只做授权判定与缺口清单，不自动发起付费调用。'
+      + '**费用**：全部离线断言零计费（模型输出为注入 fixture）。',
   },
 ];
 
