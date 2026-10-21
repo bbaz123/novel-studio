@@ -1027,10 +1027,11 @@ export const PHASES = [
       '.audit-2026/api-run.txt',
       '.p1-baseline/test-api-key-mask.mjs', '.p1-baseline/test-context-shrink-cap.mjs',
       '.p1-baseline/test-host-guard.mjs', '.p1-baseline/test-memory-segments.mjs',
-      '缺点及修复报告.md', '缺陷修复报告-20261002.md', '缺陷修复报告.md',
+      // 2026-10-21：三份根目录历史报告（缺点及修复报告 / 缺陷修复报告 / 缺陷修复报告-20261002）已按作者要求
+      // 从公开仓库删除，内容仍保留在 git 历史里（删除提交的前一个版本可取回）。
+      // 这里留说明而不是留路径：留着路径会让「映射指向的文件是否真的在」一直判红。
     ],
     evidence: [
-      '缺陷修复报告-20261002.md',
       '.audit-2026/A1-ai-pipeline.md',
       '.p1-baseline/test-api-key-mask.mjs', '.p1-baseline/test-host-guard.mjs',
     ],
@@ -1041,7 +1042,9 @@ export const PHASES = [
       + ' 也就是说，回滚这一组只回滚「证据与新增检查」，**不会**回滚报告里描述的那些修复。'
       + ' 四个新增门禁都是自托管隔离实例（临时数据目录 + 本机假模型端点），零计费；'
       + ' `.audit-2026/api-run.txt` 是修复前的原始输出（190 PASS / 1 FAIL，那条 FAIL 就是报告里的 B4 请求体上限漂移），'
-      + ' 保留原样作为对照证据。',
+      + ' 保留原样作为对照证据。'
+      + ' **2026-10-21 更新**：三份根目录报告已移出公开仓库（仍在 git 历史里），本组证据只剩 `.audit-2026/`'
+      + ' 与四个门禁脚本；报告描述的修复本身不受影响。',
   },
   {
     id: 'G2',
@@ -1243,7 +1246,8 @@ export const PHASES = [
       'scripts/run-narrative-acceptance.mjs',
       '.p1-baseline/verify-preset-copy.mjs',
       '.narrative-repair/',
-      '叙事性专项修复.md',
+      // 2026-10-21：`叙事性专项修复.md` 已按作者要求从公开仓库删除（保留在 git 历史）。
+      // 夹具重生成脚本仍接受它作为输入，只是文件本身不再随仓库发布。
       // —— 共用文件的改动（与其它阶段重叠，见 note）——
       'public/app.js',
       'public/index.html',

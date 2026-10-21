@@ -941,9 +941,9 @@
 ### V1 · 2026-10-02 轮：v1.0.0 审计修复轮的取证材料与新增离线门禁（文档 + 测试，不含产品代码）
 
 - **回滚方式**：可独立回滚
-- **说明**：这一组是**取证材料 + 新增离线门禁**，本身不含产品代码，整批删掉后工坊行为逐字节不变，故可独立回滚。 ⚠️ 但它**记录的那些被修缺陷不在这组文件里**：P1-01/03/04/06/07/08 改的是 server.js / public/app.js / ai/ 与 9 个既有门禁脚本，那些文件由 P2–P6 / R / TT / Z 系列共同拥有，按文件粒度只能整体回滚。 也就是说，回滚这一组只回滚「证据与新增检查」，**不会**回滚报告里描述的那些修复。 四个新增门禁都是自托管隔离实例（临时数据目录 + 本机假模型端点），零计费； `.audit-2026/api-run.txt` 是修复前的原始输出（190 PASS / 1 FAIL，那条 FAIL 就是报告里的 B4 请求体上限漂移）， 保留原样作为对照证据。
-- **验收证据**：`缺陷修复报告-20261002.md`、`.audit-2026/A1-ai-pipeline.md`、`.p1-baseline/test-api-key-mask.mjs`、`.p1-baseline/test-host-guard.mjs`
-- **本阶段认领的文件**（11 个）：
+- **说明**：这一组是**取证材料 + 新增离线门禁**，本身不含产品代码，整批删掉后工坊行为逐字节不变，故可独立回滚。 ⚠️ 但它**记录的那些被修缺陷不在这组文件里**：P1-01/03/04/06/07/08 改的是 server.js / public/app.js / ai/ 与 9 个既有门禁脚本，那些文件由 P2–P6 / R / TT / Z 系列共同拥有，按文件粒度只能整体回滚。 也就是说，回滚这一组只回滚「证据与新增检查」，**不会**回滚报告里描述的那些修复。 四个新增门禁都是自托管隔离实例（临时数据目录 + 本机假模型端点），零计费； `.audit-2026/api-run.txt` 是修复前的原始输出（190 PASS / 1 FAIL，那条 FAIL 就是报告里的 B4 请求体上限漂移）， 保留原样作为对照证据。 **2026-10-21 更新**：三份根目录报告已移出公开仓库（仍在 git 历史里），本组证据只剩 `.audit-2026/` 与四个门禁脚本；报告描述的修复本身不受影响。
+- **验收证据**：`.audit-2026/A1-ai-pipeline.md`、`.p1-baseline/test-api-key-mask.mjs`、`.p1-baseline/test-host-guard.mjs`
+- **本阶段认领的文件**（8 个）：
   - `.audit-2026/A1-ai-pipeline.md`
   - `.audit-2026/A2-state-data.md`
   - `.audit-2026/A3-frontend-security.md`
@@ -952,9 +952,6 @@
   - `.p1-baseline/test-context-shrink-cap.mjs`
   - `.p1-baseline/test-host-guard.mjs`
   - `.p1-baseline/test-memory-segments.mjs`
-  - `缺点及修复报告.md`
-  - `缺陷修复报告-20261002.md`
-  - `缺陷修复报告.md`
 
 ### G2 · 2026-10-02 轮：第二次 GitHub 展示面 / 增长优化（Description + Topics + 中英 README 首屏 + 文档索引与贡献者入口）
 
@@ -1067,7 +1064,7 @@
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`； 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`）， `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`， 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`， 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）； ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价， Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）； ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）； ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）； ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）； ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）； ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。 `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、 `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*` 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级； 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。 ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`）， 故交付文档只写"机制已实现、文学效果待评测"。
 - **验收证据**：`docs/narrative-repair/implementation-report.md`、`docs/narrative-repair/test-report.md`、`docs/narrative-repair/e07-run-manifest.json`、`docs/narrative-repair/coverage-report.json`、`docs/narrative-repair/rollback.md`、`scripts/run-narrative-acceptance.mjs`
-- **本阶段认领的文件**（68 个）：
+- **本阶段认领的文件**（67 个）：
   - `.p1-baseline/test-editing-rules.mjs`
   - `.p1-baseline/test-migration-idempotent.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -1135,7 +1132,6 @@
   - `tests/narrative-repair/fixtures/new-3751-spring/F-C01-narrative-contrast.json`
   - `tests/narrative-repair/fixtures/new-3751-spring/manifest.json`
   - `tests/narrative-repair/harness.mjs`
-  - `叙事性专项修复.md`
 
 ### SE7 · 2026-10-10 第七批：叙事审稿—局部修稿闭环的授权边界修复（《修复.md》E00—E07：选中问题 → 获准跨度 → 实际补丁不可越权）
 
@@ -1879,7 +1875,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**892** 个文件
+- 真实改动集：**888** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。
