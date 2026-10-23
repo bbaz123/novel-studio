@@ -60,7 +60,22 @@ finding.id
    结论上限 `NEED_CONTEXT`，不得宣称"精确修复已完成"。
 
 混合清单是正常形态：结构化 finding 有 id，模型额外写的 issues 行没有 id/证据 → 后者保留为未链接项
-（`id:''`，界面显示"缺少结构化证据"），选中它时 fail-closed，但不会因此让整份报告不可用。
+（`id:''`，界面显示"缺少结构化证据"）。
+
+**2026-10-23 修正（现场：`REVIEW_SELECTION_MISSING_FINDING`）**：旧实现有两个叠加缺陷，导致
+9 条真问题 + 9 条同义重复的清单在默认全勾选时直接 fail-closed，整章反而无法精确修稿。
+
+1. `structureReviewReport()` 的"额外 issues 行"去重只比较"派生行是否包含这一行的前 20 字"。
+   模型同一条问题会写两遍（issues 散文 + findings 结构化），两处措辞几乎从不逐字相同，
+   于是**每条被接受的 finding 都多留一条未链接项**，清单条数翻倍。现改为逐字前缀
+   **或 2-gram 覆盖率 ≥ 0.25** 任一命中即视为重复（同义改写实测 0.33–0.57，不同问题 ≤0.13；
+   <11 个 2-gram 的短行不做覆盖率判定，宁可保留也不吞掉真问题）。
+2. 清单把未链接项也默认勾选。现规则：**结构化报告（有 findings）里的未链接项置灰、不勾选**，
+   但仍显示在清单里并说明原因（重新审稿生成逐字证据，或手动修改）；没有 findings 的存量报告
+   不置灰，继续走"可人工选择 + 结论上限 NEED_CONTEXT"的兼容路径。
+   选择记录里若仍出现无证据项（旧选择、重试路径、DOM 篡改），映射闸门照旧 fail-closed。
+
+因此"不会让整份报告不可用"现在由**界面默认值**保证，而不是由闸门放宽来保证。
 
 ## 5. fail-closed 的两道闸
 
@@ -92,6 +107,7 @@ review_hash                sha256(稳定序列化的 issues+findings)
 | 套件 | 覆盖 |
 | --- | --- |
 | `scripts/quality-auditor/verify-id-chain.mjs` | ID-01…ID-13（契约层：显式/同序/断链/重复/legacy/选择映射/重排/迁移纯函数） |
-| `frontend-test.mjs`（34e–34g） | ID-08/09/12 的 DOM 形态：复选框带 `data-review-issue-id`、显示 `issue.text`、结构不完整时按钮禁用 |
+| `frontend-test.mjs`（34e–34h2） | ID-08/09/12/13 的 DOM 形态：复选框带 `data-review-issue-id`、显示 `issue.text`、结构不完整时按钮禁用、结构化报告里无证据项置灰且不默认勾选、存量报告仍可勾选 |
+| `tests/narrative-repair/07-review-structure.test.mjs`（E03-g/E03-g2） | 同义改写的 issues 行不算额外未链接项；真正额外的问题仍如实保留 |
 
 两者都在 `scripts/ci-offline-checks.mjs` 里，零计费。

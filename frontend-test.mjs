@@ -938,9 +938,12 @@ globalThis.__probe = {
   revisionAutoRepairEnabled, revisionAutoRepairNotice, runRevisionAutoRepair, revisionPlanForIssues, mergeRepairPatches, mergeRepairCoverage,
   revisionArticleForRepair,
   reportConsistencyHtml,
+  reviewFindingsAuditHtml, chapterBodyEmptyInDb,
   revisionComparisonHtml, showRevisionComparison,
   patchSafetyEngine, patchSafetyOptions, patchSafetyGate, patchSafetyVerify, patchSafetyNotesHtml,
   WRITING_DISCIPLINE, WRITING_DISCIPLINE_REVIEW, buildAIWritingBlueprintPrompt, buildAIWritingProsePrompt, buildAIReviewPrompt, buildRedlineScanText, showReviewDiff, mergeReviewDiff, revisionBaseArticle, chapterTitleOf, refineByChecklist, runArticleReview, batchGenerateChapters, aiContextTruncated, directAIWrite,
+  revisionMergeGate, revisionChapterBaseline, mergeConflictCopyOf, unresolvedIssueIdsOf, showMergeConflictDialog, rebaseMergeOnCurrentText, showForceOverwriteConfirm,
+  revisionAuditChecksForWorkspace, reviewEvidenceHtml,
   continuityGuardSummaryHtml,
   streamAIDirectWrite,
   performToolbarAIWrite, askAIQuestion, askToolbarAIWriteRequirement, showBlueprintConfirm, openModal, closeModal, restoreChapterDraft, previewChapterDraft, dismissChapterDraft, refreshRecoveryBar, dismissJobResult, dismissChapterReview,
@@ -949,7 +952,7 @@ globalThis.__probe = {
   newWriteTiming,
   withThinkingHeadroom,
   verifyAIDraft,
-  contentHashOf, classifyChapterLength, writingPolicyLines, writingStageAudit,
+  contentHashOf, textFingerprint, showAuditDefectDialog, startReviewQualityAudit, startRevisionQualityAudit, classifyChapterLength, writingPolicyLines, writingStageAudit,
   WRITING_POLICY_FALLBACK_RULES, WRITING_POLICY_FALLBACK_VERSION,
   pollHarnessJob, showAITaskProgress, runHarnessJob, handleAction,
   autoResumeChapterJob, resumeHarnessJob,
@@ -1039,9 +1042,15 @@ try {
     const idle = QP.auditEntryHtml({ run: null, pluginReady: true, hasStructuredReview: true });
     const busy = QP.auditEntryHtml({ run: { status: 'COMPARE_RUNNING' }, pluginReady: true, hasStructuredReview: true });
     const done = QP.auditEntryHtml({ run: { status: 'COMPLETED' }, pluginReady: true, hasStructuredReview: false });
+    // 2026-10-22（草稿链实测）：库内正文为空时不能再给"点了才失败"的按钮，
+    // 入口必须当场说明"独立复核只读已保存的正文"并给出路。
+    const empty = QP.auditEntryHtml({ run: null, pluginReady: true, hasStructuredReview: true, articleEmpty: true });
+    const emptyDone = QP.auditEntryHtml({ run: { status: 'COMPLETED' }, pluginReady: true, hasStructuredReview: true, articleEmpty: true });
     return /未做独立复核/.test(idle) && /消耗模型额度/.test(idle)
       && /进行中/.test(busy) && /disabled/.test(busy)
-      && /上次独立复核/.test(done) && /待核验/.test(done);
+      && /上次独立复核/.test(done) && /待核验/.test(done)
+      && /正文为空/.test(empty) && /disabled/.test(empty) && /先保存本章/.test(empty)
+      && /只读已保存的正文/.test(empty) && /正文为空/.test(emptyDone);
   })());
 check('QA-P9 缺依赖弹窗内容含名称/原因/可复制命令/一键安装',
   (() => {
@@ -1085,6 +1094,85 @@ check('1c 补丁协议 v2 模块随页面加载（UMD，先于 app.js）',
   && typeof sandbox.NovelRevisionPatch.runRevisionPipeline === 'function',
   sandbox.NovelRevisionPatch ? sandbox.NovelRevisionPatch.VERSION : 'missing');
 if (!P) process.exit(1);
+
+// --- 2026-10-22：库内正文为空时的口径（独立复核只读已保存的正文） ---
+// --- 2026-10-22：审计结果的「缺字段台账 / 子条件 / 反例相关性」三件事必须能在界面上说清 ---
+{
+  const QP = sandbox.NovelQualityAuditPanel;
+  check('QA-P14 单条终验显示子条件进度与"模型原判被降级"（不让 PARTIAL 看起来像随便判的）', (() => {
+    const html = QP.acceptanceLine({
+      issue_id: 'R-0004', final: 'PARTIAL', verdict_declared: 'PASS', verdict_derived: true,
+      acceptance_checks: [
+        { key: 'duplicate_crowd_sigh_reduced', kind: 'soft', status: 'PASS' },
+        { key: 'hero_relief_visible', kind: 'soft', status: 'FAIL', evidence: '候选里没有可见的放松反应' },
+      ],
+    });
+    return /子条件 1\/2 通过/.test(html) && /未达成：hero_relief_visible/.test(html)
+      && /模型原判 验收通过/.test(html) && /降为 部分修复/.test(html)
+      && /候选里没有可见的放松反应/.test(html);
+  })());
+  check('QA-P15 缺字段台账逐行给出 问题/字段/期望/实际/怎么修，并写明"不进逐项验收"', (() => {
+    const html = QP.defectTableHtml([
+      { finding_id: 'R-0002', field_path: 'initial_findings[R-0002].counter_evidence', expected_type: 'array[1..]', actual_type: 'undefined', resolution_path: 'PAID_REGENERATE', severity: 'blocker' },
+      { finding_id: '', field_path: 'schema_version', expected_type: 'review-audit.v1', actual_type: 'string', resolution_path: 'FREE_REPARSE', severity: 'blocker' },
+    ], { total: 2, blockers: 2, by_resolution: { PAID_REGENERATE: 1, FREE_REPARSE: 1 } });
+    return /共 2 处（阻断 2）/.test(html) && /R-0002/.test(html) && /counter_evidence/.test(html)
+      && /需模型重新生成/.test(html) && /可免费补齐/.test(html)
+      && /不会变成正式修稿问题/.test(html) && /不进逐项验收/.test(html);
+  })());
+  check('QA-P16 反例相关性降级写成"不改判为作者判错"，并给出共享词证据', (() => {
+    const html = QP.relevanceTableHtml([
+      { issue_id: 'R-0001', verdict: 'INVALID_RELEVANCE', overlap: [], reasons: ['主张与反例没有任何共享词'] },
+      { issue_id: 'R-0003', verdict: 'ADVISORY_NEEDS_REVIEW', overlap: ['主角'], reasons: ['只共享 1 个词'] },
+    ]);
+    return /这 2 条不改判为"作者判错"/.test(html) && /R-0001/.test(html) && /反例与主张不相干/.test(html)
+      && /R-0003/.test(html) && /关联太弱/.test(html) && /共享词：主角/.test(html);
+  })());
+  check('QA-P17 ADVISORY_NEEDS_REVIEW 有中文标签（不会以英文码出现在界面）',
+    QP.issueLabel('ADVISORY_NEEDS_REVIEW') === '反例待人工判断');
+  check('QA-P19 费用未知时不打印"实际 ¥0.00"（真实跑完的审计不能显示成免费）', (() => {
+    const unknown = QP.chargeText({ charged_microunits: null, charge_known: false });
+    const notYet = QP.chargeText({ charged_microunits: 0, charge_known: true, charge_source: 'not_billed_yet' });
+    const settled = QP.chargeText({ charged_microunits: 120000, charge_known: true, charge_source: 'settled' });
+    const drawer = QP.drawerHtml({ status: 'RESULT_RECEIVED', kind: 'review', base_hash: 'x', budget: { authorized_microunits: 2000000, estimated_microunits: 1200000, charged_microunits: null, charge_known: false } }, []);
+    return /未知/.test(unknown) && !/0\.00/.test(unknown)
+      && /尚未走到付费阶段/.test(notYet)
+      && /¥0\.12/.test(settled)
+      && /实际费用未知/.test(drawer) && !/实际 ¥0\.00/.test(drawer);
+  })());
+  // 接线：契约被拒时真的会把台账弹出来（跑真实函数，而不是 grep 代码）
+  check('QA-P18 审计被契约拒绝时弹出缺字段台账（跑真实函数，断言弹窗内容）', (() => {
+    containers['#modal-root'].innerHTML = '';
+    const shown = P.showAuditDefectDialog({
+      status: 422, code: 'AUDIT_CONTRACT_INVALID',
+      defects: [{ finding_id: 'R-0002', field_path: 'initial_findings[R-0002].counter_evidence', expected_type: 'array[1..]', actual_type: 'undefined', resolution_path: 'PAID_REGENERATE', severity: 'blocker' }],
+      defect_summary: { total: 1, blockers: 1, by_resolution: { PAID_REGENERATE: 1 } },
+    }, '独立复核被拒');
+    const html = String(containers['#modal-root'].innerHTML);
+    const empty = P.showAuditDefectDialog({ code: 'AUDIT_CONTRACT_INVALID' }, 'x');
+    return shown === true && /独立复核被拒/.test(html) && /counter_evidence/.test(html)
+      && empty === false;
+  })());
+}
+
+check('QA-P12 回执里"库内正文为空"单独显示，不说成"与正文无差异"', (() => {
+  const html = P.reviewFindingsAuditHtml({ total: 2, accepted: 2, rejected: 0, shape_defects: 0, quote_base: { source: 'reviewed', differs_from_chapter: false, chapter_empty: true } });
+  const legacy = P.reviewFindingsAuditHtml({ total: 2, accepted: 2, rejected: 0, shape_defects: 0, quote_base: { source: 'reviewed', differs_from_chapter: false } });
+  return /库内本章正文为空/.test(html) && /不是同一份/.test(html) === false
+    && !/库内本章正文为空/.test(legacy);
+})());
+check('QA-P13 库内正文判空与服务端同口径（<br>/只有标点算空；有汉字不算；未知章节不误伤）', (() => {
+  const prev = P.state.chapters;
+  P.state.chapters = [
+    { id: 991, content: '<br>' },
+    { id: 992, content: '<p>，。</p>' },
+    { id: 993, content: '<p>清晨五点四十。</p>' },
+  ];
+  const ok = P.chapterBodyEmptyInDb(991) === true && P.chapterBodyEmptyInDb(992) === true
+    && P.chapterBodyEmptyInDb(993) === false && P.chapterBodyEmptyInDb(999) === false;
+  P.state.chapters = prev;
+  return ok;
+})());
 // --- P0-01：409 保存冲突必须可恢复（本地优先 / 服务端优先） ---
 {
   const savedChapters = P.state.chapters, savedWorkId = P.state.workId;
@@ -1517,6 +1605,32 @@ P.trace.filters.onlyError = false;
     check('34g ID-10 结构不完整时「按确认清单修稿」被禁用，并显示 REVIEW_FINDINGS_MISSING',
       /data-action="review-confirm"[^>]*disabled/.test(brokenHtml) && brokenHtml.includes('REVIEW_FINDINGS_MISSING'),
       brokenHtml.includes('REVIEW_FINDINGS_MISSING') ? 'ok' : brokenHtml.replace(/<[^>]*>/g, ' ').slice(0, 80));
+    // 2026-10-23（现场 REVIEW_SELECTION_MISSING_FINDING）：结构化报告里"只有文字、没有逐字证据"的
+    // 问题曾被默认勾选，于是 9 条真问题 + 9 条同义重复一起送进映射闸门 → fail-closed，整章没法修。
+    // 现在这些项必须置灰（不勾选但仍在清单里），有证据的项照常默认勾选。
+    const mixed = P.extractReviewFromText(JSON.stringify({
+      summary: '总评',
+      issues: [{ id: 'R-0001', text: '有逐字证据的第一条' }, '只有文字的第二条'],
+      findings: [{ id: 'R-0001', title: '有逐字证据的第一条', evidence: [{ quote: 'q1' }] }],
+    }));
+    containers['#modal-root'].innerHTML = '';
+    P.showReviewReport({ ...mixed, schema_version: 2, review_id: 57, chapter_id: 1 });
+    const mixedHtml = String(containers['#modal-root'].innerHTML);
+    const inputTagOf = (id) => (mixedHtml.match(new RegExp(`<input[^>]*data-review-issue-id="${id}"[^>]*>`)) || [''])[0];
+    const linkedTag = inputTagOf('R-0001');
+    const lockedTag = inputTagOf('UNLINKED-2');
+    check('34h ID-13 结构化报告里无逐字证据的问题被置灰、不默认勾选（否则映射闸门整体 fail-closed）',
+      !!lockedTag && lockedTag.includes('disabled') && !lockedTag.includes('checked')
+      && !!linkedTag && linkedTag.includes('checked') && !linkedTag.includes('disabled')
+      && mixedHtml.includes('已置灰'),
+      `linked=${linkedTag.slice(0, 90)} locked=${lockedTag.slice(0, 90)}`);
+    // 置灰只针对"结构化报告里的未链接项"：纯存量报告（没有 findings）仍可人工选择，
+    // 结论上限由 mapping.legacy 的"待核验"口径兜住 —— 不能顺手把兼容路径也关掉。
+    // 归一化器给"无 findings 报告"的行文本问题补了 legacy_index（显示 id = "1"），这里按实际身份断言。
+    check('34h2 ID-13b 存量报告（无 findings）的问题仍可勾选，兼容路径不被改成"不可用"',
+      /<input[^>]*data-review-issue-id="1"[^>]*checked[^>]*>/.test(brokenHtml)
+      && !/<input[^>]*data-review-issue-id="1"[^>]*disabled/.test(brokenHtml),
+      brokenHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').slice(0, 100));
     P.closeModal();
   }
 }
@@ -3332,9 +3446,11 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       loadWorkData: sandbox.loadWorkData, render: sandbox.render, closeModal: sandbox.closeModal
     };
     // R02.3：合并现在会先取当前正文比对指纹（原文被改就拒绝）。stub 必须回出与预览底稿一致的正文。
+    // P0（2026-10-22）：门禁还要"服务端权威基线"（content_hash）—— 真服务端一直回这个字段，
+    // 桩里缺了会被判成 BASE_UNREADABLE（读不到基线），那不是被测行为，是夹具不全。
     sandbox.api = async (url, opts = {}) => {
       calls.push({ url: String(url), body: opts.body });
-      if (String(url).includes('/chapters/107')) return { id: 107, content: '甲。' };
+      if (String(url).includes('/chapters/107')) return { id: 107, content: '甲。', content_hash: 'HASH-107', updated_at: 'T-107' };
       return { ok: true };
     };
     sandbox.toast = (m) => { msgs.push(String(m)); };
@@ -3374,17 +3490,16 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       JSON.stringify(mergeCall && mergeCall.body && mergeCall.body.legacy_proposal_refs));
     check('107h 跨章合并后明确告知写到了哪一章', msgs.some((m) => m.includes('第107章')), msgs.join(' | ').slice(0, 70));
 
-    // R02.3（语义已于 2026-10-06 修订）：预览期间原文被改 → **不再拒绝合并**。
-    // 作者裁决：「无论什么时候，只要是用户执行，就直接强制合并到正文」。
-    // 与 F3「旧内容是否保存？」同一条纪律：可以**告知**、可以**留档**，但绝不**拦操作**
-    //（覆盖前那一版由服务端在采纳事务里存进本章历史版本，所以"覆盖"可回退）。
+    // P0（2026-10-22 新裁决，取代 2026-10-06 的"无条件强制合并"）：
+    // 预览期间原文被改 → **普通合并不写库**，作者必须先看见"这一章变过"，再显式确认覆盖。
+    // 出口没有被取消（107h3 证明确认后照样写进去），但"顺手一点就抹掉新编辑"这条副作用没了。
     {
       const calls2 = [];
       const msgs2 = [];
       const saved2 = { api: sandbox.api, toast: sandbox.toast, closeModal: sandbox.closeModal, loadWorkData: sandbox.loadWorkData, render: sandbox.render, applySelectedProposals: sandbox.applySelectedProposals, openModal: sandbox.openModal };
-      sandbox.api = async (url, opts = {}) => {
-        calls2.push({ url: String(url), body: opts.body });
-        if (String(url).includes('/chapters/107')) return { id: 107, content: '甲。作者又改过了。' };
+      const stubApi = (sink) => async (url, opts = {}) => {
+        sink.push({ url: String(url), body: opts.body });
+        if (String(url).includes('/chapters/107')) return { id: 107, content: '甲。作者又改过了。', content_hash: 'HASH-107-LATER', updated_at: 'T-107-LATER' };
         return { ok: true };
       };
       sandbox.toast = (m) => { msgs2.push(String(m)); };
@@ -3394,12 +3509,28 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       sandbox.applySelectedProposals = () => {};
       sandbox.openModal = () => {};
       P.state.currentChapterId = 108;
+
+      // ① 普通合并：门禁拒绝，一个 adopt 都不发，候选不丢
+      sandbox.api = stubApi(calls2);
       P.showReviewDiff('甲。', '乙。', { applied: 1, chapterId: 107 });
-      await P.mergeReviewDiff();
+      const warn1 = await P.revisionMergeGate(107, P.state.pendingReviewDiff);
+      check('107h2 原文在预览后被修改 → 普通合并被门禁拒绝（不再静默覆盖），候选仍在',
+        warn1.verdict === 'BASE_STALE' && Boolean(P.state.pendingReviewDiff)
+          && !calls2.some((c) => c.url.includes('/novel/adopt')),
+        JSON.stringify({ verdict: warn1.verdict, calls: calls2.map((c) => c.url) }));
+
+      // ② 作者明确覆盖：照常写入，请求体带二次确认，提示里说清"是覆盖"
+      calls2.length = 0;
+      sandbox.api = stubApi(calls2);
+      await P.mergeReviewDiff({ forceMode: true });
       Object.assign(sandbox, saved2);
       const adopt2 = calls2.find((c) => c.url.includes('/novel/adopt'));
-      check('107h2 原文在预览后被修改 → 仍然强制合并（不拦操作），并如实说明是它覆盖了更新的那一版',
+      check('107h3 作者确认覆盖后仍然写入正文，且请求体带 mode=explicit_force + force_ack + base_conflict',
         !!adopt2 && String(adopt2.body.content || '').includes('乙')
+          && adopt2.body.mode === 'explicit_force'
+          && adopt2.body.expected && adopt2.body.expected.force_ack === 'confirmed-by-author'
+          && adopt2.body.expected.base_conflict === 'BASE_CHANGED_SINCE_PREVIEW'
+          && adopt2.body.expected.content_hash === 'HASH-107-LATER'
           && msgs2.some((m) => m.includes('已合并') && /覆盖/.test(m)),
         (msgs2.join(' | ') || '(无提示)').slice(0, 140));
     }
@@ -3436,45 +3567,66 @@ check('64 服务端恢复正常后横幅自动消失', containers['#stale-banner
       sandbox.editorPlainText = (html) => String(html || '')
         .replace(/<br\s*\/?>/gi, '').replace(/<\/?(p|div)[^>]*>/gi, '').trim();
       // 一次合并的完整跑法：底稿文本 = 差异预览的"原文"，接口按现场值应答；日志单独收集。
-      const runMerge = async (chapterContent, baseText) => {
+      // P0（2026-10-22）：`force` 代表"作者在冲突框里已经确认过覆盖"（两次确认后的那一次重入）。
+      const runMerge = async (chapterContent, baseText, opts = {}) => {
         const calls = [];
         const msgs = [];
         const logs = [];
-        sandbox.api = async (url, opts = {}) => {
-          calls.push({ url: String(url), body: opts.body });
+        sandbox.api = async (url, opts2 = {}) => {
+          calls.push({ url: String(url), body: opts2.body });
           if (String(url).includes('/chapters/119')) return chapterContent;
           return { ok: true };
         };
         sandbox.toast = (m) => { msgs.push(String(m)); };
         sandbox.reportClientLog = (entry) => { logs.push(entry); };
         P.showReviewDiff(baseText, '改好的第一段。\n\n改好的第二段。', { applied: 2, chapterId: 119 });
-        await P.mergeReviewDiff();
-        return { msgs, logs, adopt: calls.find((c) => c.url.includes('/novel/adopt')) };
+        const run = P.mergeReviewDiff(opts.force ? { forceMode: true } : {});
+        // 普通合并若被门禁拦下，函数会 await 冲突框 —— 测试里必须替作者应答（等同点了「先不合并」），
+        // 否则这个 await 永远不返回（桩里的 openModal 是空实现，没有真实的点击）。
+        let conflicted = false;
+        if (!opts.force) {
+          for (let i = 0; i < 10 && !P.state.pendingMergeConflict; i += 1) await new Promise((r) => setTimeout(r, 0));
+          if (P.state.pendingMergeConflict) { conflicted = true; await P.handleAction('merge-conflict-cancel'); }
+        }
+        await run;
+        return { msgs, logs, conflicted, adopt: calls.find((c) => c.url.includes('/novel/adopt')) };
       };
-      // ① 空正文（草稿链的常态）：必须写入（本次报障的主断言）
-      const stillEmpty = await runMerge({ id: 119, content: '<p><br></p>' }, '');
-      check('107m 空正文的章节：合并照常写入正文（不再被任何闸门误拒）',
+      const HASH = 'HASH-119';
+      // ① 空正文（草稿链的常态）且基线一致：普通合并照常写入（不能被"空正文"误判成"读不到"）
+      const stillEmpty = await runMerge({ id: 119, content: '<p><br></p>', content_hash: HASH, updated_at: 'T1' }, '');
+      check('107m 空正文的章节且基线一致：普通合并照常写入（不被误拒）',
         !!stillEmpty.adopt && String(stillEmpty.adopt.body.content || '').includes('改好的第一段')
+          && stillEmpty.adopt.body.mode === 'normal'
           && !stillEmpty.msgs.some((m) => /拒绝|合并失败/.test(m)),
         (stillEmpty.msgs.join(' | ') || '(无提示)').slice(0, 80));
-      // ② 预览时是空的，之后作者自己写了字 → **仍然强制合并**，但必须说出来 + 留痕
-      const authorWrote = await runMerge({ id: 119, content: '<p>作者自己写的一段。</p>' }, '');
-      check('107n 空基线之后作者自己写了正文：仍然强制合并，并在提示里点明是它覆盖了更新的那一版',
+      // ② 预览时是空的，之后作者自己写了字 → 普通合并不写；明确覆盖后才写，且必须留痕
+      const authorWrotePlain = await runMerge({ id: 119, content: '<p>作者自己写的一段。</p>', content_hash: 'H2', updated_at: 'T2' }, '');
+      check('107n 空基线之后作者自己写了正文：普通合并不写库（不再静默覆盖新写的内容）',
+        !authorWrotePlain.adopt && authorWrotePlain.conflicted,
+        JSON.stringify(authorWrotePlain.msgs.slice(0, 2)));
+      const authorWrote = await runMerge({ id: 119, content: '<p>作者自己写的一段。</p>', content_hash: 'H2', updated_at: 'T2' }, '', { force: true });
+      check('107n1 作者明确覆盖后才写入，并在提示里点明是它覆盖了更新的那一版',
         !!authorWrote.adopt && String(authorWrote.adopt.body.content || '').includes('改好的第一段')
           && authorWrote.msgs.some((m) => m.includes('已合并') && /覆盖/.test(m)),
         (authorWrote.msgs.join(' | ') || '(无提示)').slice(0, 120));
       check('107n2 这次覆盖留下客户端日志（事后可查"为什么覆盖了"）',
         authorWrote.logs.some((e) => String(e && e.kind) === 'review_merge_overwrite'),
         JSON.stringify(authorWrote.logs.map((e) => e && e.kind)));
-      // ③ 预览时有正文、之后被清空 → 同样强制合并（作者的动作优先）
-      const cleared = await runMerge({ id: 119, content: '<p><br></p>' }, '原来的正文。');
-      check('107o 正文在预览后被清空：仍然强制合并（覆盖前那一版由服务端存进历史版本）',
+      // ③ 预览时有正文、之后被清空 → 同样要先确认覆盖
+      const clearedPlain = await runMerge({ id: 119, content: '<p><br></p>', content_hash: 'H3', updated_at: 'T3' }, '原来的正文。');
+      check('107o 正文在预览后被清空：普通合并不写库（先让作者看见这一章变过）',
+        !clearedPlain.adopt && clearedPlain.conflicted);
+      const cleared = await runMerge({ id: 119, content: '<p><br></p>', content_hash: 'H3', updated_at: 'T3' }, '原来的正文。', { force: true });
+      check('107o1 明确覆盖后写入（覆盖前那一版由服务端存进历史版本）',
         !!cleared.adopt && cleared.msgs.some((m) => m.includes('已合并') && /覆盖/.test(m)),
         (cleared.msgs.join(' | ') || '(无提示)').slice(0, 120));
-      // ④ 读不到这一章（接口没给出这一行）→ 客户端**不拦**，仍然发起合并，并如实说明"没能读到"
-      const unreadable = await runMerge(null, '');
-      check('107p 读不到这一章正文：客户端不再拦，仍然发起合并并如实说明没能读到',
-        !!unreadable.adopt && unreadable.msgs.some((m) => /没能读到/.test(m)),
+      // ④ 读不到这一章（接口没给出这一行）→ 普通合并不写；明确覆盖后才写，并如实说明"没能读到"
+      const unreadablePlain = await runMerge(null, '');
+      check('107p 读不到这一章正文：普通合并不写库（不在"不知道覆盖谁"的情况下整篇替换）',
+        !unreadablePlain.adopt && unreadablePlain.conflicted);
+      const unreadable = await runMerge(null, '', { force: true });
+      check('107p1 明确覆盖后写入，并如实说明没能读到（覆盖前那一版可在历史版本找回）',
+        !!unreadable.adopt && unreadable.msgs.some((m) => /没能读到|覆盖/.test(m)),
         (unreadable.msgs.join(' | ') || '(无提示)').slice(0, 120));
       // ⑤ 底稿读取要能区分「读不到」与「这一章没有正文」（上面两句告知文案靠它区分）
       {
@@ -6901,7 +7053,10 @@ P.traceStopStream();
     if (u.includes('/novel/revision/closure-receipt')) { receipts.push(bodyOf(opts)); return { ok: true }; }
     if (u.includes('/novel/adopt')) { adopts.push(bodyOf(opts)); return { adopt: { chapter_updated_at: 'v-after-merge', legacy: { events: 0, memories: 0 } } }; }
     if (u.includes('/novel/revision/selection')) return { ok: true, id: 1 };
-    if (u.includes('/chapters/')) return { id: 41, content: '<p>' + BASE + '</p>' };
+    // P0 合并门禁要"服务端权威基线"与"当前正文"：桩里必须给出 content_hash，
+    // 且正文用**纯文本**（本套件的 DOMParser 桩解析不出节点，editorPlainText 会原样返回 HTML，
+    // 那会让"预览底稿 vs 当前正文"的指纹天然对不上 —— 测到的就不是合并闸门，而是夹具缺陷）。
+    if (u.includes('/chapters/')) return { id: 41, content: BASE, content_hash: 'HASH-E2E-41', updated_at: 'T-E2E-41' };
     return { ok: true };
   };
   const toasts = [];
@@ -7307,6 +7462,96 @@ P.traceStopStream();
     });
     const c = RW.countsOf(four);
     const ident = RW.summaryFormulaOf(four);
+    // 2026-10-22（阶段 4）：审计的子条件要并进工作区行，候选与正式正文的版本关系要能说出来。
+    {
+      // 闭环自己的 condition_results 与审计的 acceptance_checks 说的是同一件事：只画一套。
+      const withAudit = RW.issueRowsOf({
+        rows: [{ issue_id: 'R-0004', final_status: 'PARTIAL', title: '群众叹息' }],
+        auditChecks: [{
+          issue_id: 'R-0004', verdict: 'PARTIAL', verdict_declared: 'PASS', verdict_derived: true,
+          acceptance_checks: [
+            { key: 'duplicate_crowd_sigh_reduced', kind: 'soft', status: 'PASS' },
+            { key: 'hero_relief_visible', kind: 'soft', status: 'FAIL', evidence: '看不到放松' },
+          ],
+        }],
+      })[0];
+      const line = RW.conditionLineOf(withAudit);
+      check('QC-60 工作区行带上审计子条件，并写明"审计原判被降级"（不各自画一套）',
+        withAudit.audit_checks.length === 2
+          && /审计子条件 1\/2 通过/.test(line)
+          && /未达成：hero_relief_visible/.test(line)
+          && /审计原判 PASS，按子条件降为 PARTIAL/.test(line),
+        JSON.stringify({ checks: withAudit.audit_checks.length, line }));
+
+      const noAudit = RW.issueRowsOf({ rows: [{ issue_id: 'R-0009', final_status: 'PARTIAL' }] })[0];
+      check('QC-61 没跑过审计就保持空（不得画成"全部通过"）',
+        Array.isArray(noAudit.audit_checks) && noAudit.audit_checks.length === 0
+          && RW.conditionLineOf(noAudit).includes('审计子条件') === false);
+
+      // 2026-10-22（§6 分档）：独立复核与逐项验收必须在**同一条**梯子上，四态各自可辨。
+      const L = (audit) => RW.stageLadderOf({ audit, verifyStage: 'PARTIAL_CANDIDATE', selected: 6, patchedCount: 4 });
+      const lNone = L(null);
+      const lRun = L({ kind: 'review', status: 'COMPARE_RUNNING' });
+      const lRecv = L({ kind: 'review', status: 'RESULT_RECEIVED' });
+      const lHost = L({ kind: 'review', status: 'HOST_VERIFIED' });
+      const lFail = L({ kind: 'review', status: 'FAILED_CONTRACT' });
+      const stepOf = (x, id) => (x.steps.find((s) => s.id === id) || {});
+      check('QC-64 一条梯子同时含独立复核与逐项验收（不再是两套各自出现的标签）',
+        lNone.steps.map((x) => x.id).join(',') === 'review,audit,candidate,verify,commit'
+          && /独立复核/.test(lNone.line) && /逐项验收/.test(lNone.line),
+        lNone.line);
+      check('QC-65 复核四态分档：未做 / 进行中 / 待主机校验 / 已复核 / 未通过 各是各的',
+        /未做/.test(stepOf(lNone, 'audit').label)
+          && /进行中/.test(stepOf(lRun, 'audit').label) && stepOf(lRun, 'audit').state === 'active'
+          && /待主机校验/.test(stepOf(lRecv, 'audit').label) && stepOf(lRecv, 'audit').state === 'active'
+          && /已复核/.test(stepOf(lHost, 'audit').label) && stepOf(lHost, 'audit').state === 'done'
+          && /未通过/.test(stepOf(lFail, 'audit').label) && stepOf(lFail, 'audit').state === 'blocked',
+        JSON.stringify([lNone, lRun, lRecv, lHost, lFail].map((x) => stepOf(x, 'audit').label)));
+      check('QC-66 没跑独立复核时"当前步骤"指向逐项验收（可选步骤不能把箭头指到没做的事上）',
+        lNone.current === 'verify' && lHost.current === 'verify',
+        JSON.stringify({ none: lNone.current, host: lHost.current }));
+
+      // 历史候选不继承验收：结论绑定 hash，不绑定槽位
+      const A = sandbox.NovelRevisionArchive;
+      const records = { verified: { hash: 'h1', verified_hash: 'h1', verdict: 'VERIFIED_CANDIDATE', pass: 4, total: 6 } };
+      const same = A.acceptanceOf(records, 'verified', 'h1');
+      const hist = A.acceptanceOf(records, 'verified', 'h2');
+      const none = A.acceptanceOf(records, 'base', 'h2');
+      check('QC-67 存档结论按 hash 归属：同一份=适用，历史候选=不继承，没存过=不存在',
+        same.own === true && /适用于它/.test(same.line)
+          && hist.own === false && /不继承/.test(hist.line) && /h1/.test(hist.line)
+          && none.found === false,
+        JSON.stringify({ same: same.line, hist: hist.line }));
+
+      check('QC-62 候选与正式正文的版本关系三态可陈述（同版 / 预览后更新过 / 已合并）',
+        /同一版（合并会直接写入）/.test(RW.versionLineOf({ previewBaseUpdatedAt: 't1', chapterUpdatedAt: 't1' }))
+          && /打开预览之后更新过/.test(RW.versionLineOf({ previewBaseUpdatedAt: 't1', chapterUpdatedAt: 't2' }))
+          && /已经合并进正文/.test(RW.versionLineOf({ merged: true }))
+          && RW.versionLineOf({}) === '',
+        JSON.stringify([
+          RW.versionLineOf({ previewBaseUpdatedAt: 't1', chapterUpdatedAt: 't1' }).slice(0, 12),
+          RW.versionLineOf({ previewBaseUpdatedAt: 't1', chapterUpdatedAt: 't2' }).slice(0, 12),
+          RW.versionLineOf({ merged: true }).slice(0, 12),
+          RW.versionLineOf({}),
+        ]));
+
+      // 接线（跑真实函数）：审计结果里的子条件真的会被挑出来交给工作区
+      const savedAudit = P.state.qualityAudit;
+      P.state.qualityAudit = {
+        revision: { issues: [
+          { issue_id: 'R-0004', final: 'PARTIAL', verdict_declared: 'PASS', verdict_derived: true, acceptance_checks: [{ key: 'hero_relief_visible', kind: 'soft', status: 'FAIL' }] },
+          { issue_id: 'R-0001', final: 'PASS', acceptance_checks: [] },
+        ] },
+      };
+      const mapped = P.revisionAuditChecksForWorkspace();
+      P.state.qualityAudit = savedAudit;
+      check('QC-63 工作区模型真的从审计结果取子条件（空子条件的条目被跳过，不做无意义占位）',
+        mapped.length === 1 && mapped[0].issue_id === 'R-0004'
+          && mapped[0].acceptance_checks.length === 1
+          && mapped[0].verdict_declared === 'PASS' && mapped[0].verdict_derived === true,
+        JSON.stringify(mapped));
+    }
+
     check('QC-59 只勾 4 条时分母是 4（未勾的两条不进统计，也不被算成漏修）',
       c.selected === 4 && ident.total === 4 && ident.balanced === true
         && ident.pass === 1 && ident.fail === 2 && ident.unverified === 1,
@@ -7356,6 +7601,148 @@ P.traceStopStream();
   P.state.pendingRevisionClosure = prevClosure;
   P.state.revisionSemanticRunning = null;
   if (P.state.revisionSemanticTimer) { clearInterval(P.state.revisionSemanticTimer); P.state.revisionSemanticTimer = null; }
+}
+
+// ── P0 合并保护（2026-10-22）：普通合并不再静默覆盖 ────────────────────────────
+// 这一组故意**驱动真实函数**（mergeReviewDiff + 冲突框 + 明确覆盖），而不是 grep 代码：
+// 要证明的性质是"库里正文在预览之后变过时，一个 adopt 请求都不会发出去"，
+// 以及"作者确认覆盖时请求体里真的带着二次确认与冲突声明"。这两件事只有跑起来才算证据。
+{
+  const CL = sandbox.NovelRevisionClosure;
+  const RPL = sandbox.NovelRevisionPlan;
+  const tick = (n = 6) => new Promise((resolve) => { let i = 0; const step = () => (++i >= n ? resolve() : setTimeout(step, 0)); step(); });
+
+  // (1) 纯判据：四个裁决各走一次
+  const gOk = CL.mergeGateOf({ currentHash: 'h-now', currentFingerprint: 'fnv1a:11:5', baseFingerprint: 'fnv1a:11:5' });
+  const gStale = CL.mergeGateOf({ currentHash: 'h-now', currentFingerprint: 'fnv1a:22:9', baseFingerprint: 'fnv1a:11:5' });
+  const gUnread = CL.mergeGateOf({ unreadable: true, baseFingerprint: 'fnv1a:11:5' });
+  const gVerif = CL.mergeGateOf({ currentHash: 'h', currentFingerprint: 'f', baseFingerprint: 'f', candidateHash: 'c2', verifiedCandidateHash: 'c1' });
+  const gReverify = CL.mergeGateOf({ currentHash: 'h', currentFingerprint: 'f', baseFingerprint: 'f', candidateHash: 'c', requiresReverify: true });
+  check('MG-01 门禁四态：一致→OK；正文变过→BASE_STALE；读不到→BASE_UNREADABLE；候选变了→VERIFICATION_STALE；重算未复验→NEEDS_REVERIFY',
+    gOk.verdict === 'OK' && gStale.verdict === 'BASE_STALE' && gUnread.verdict === 'BASE_UNREADABLE'
+      && gVerif.verdict === 'VERIFICATION_STALE' && gReverify.verdict === 'NEEDS_REVERIFY',
+    JSON.stringify([gOk.verdict, gStale.verdict, gUnread.verdict, gVerif.verdict, gReverify.verdict]));
+
+  // (2) 请求体：普通合并只带基线；明确覆盖才带二次确认 + "基线已变"声明
+  const bodyNormal = CL.mergeAdoptPayloadOf({ currentHash: 'h-now', candidateHash: 'c1', verifiedCandidateHash: 'c1', unresolvedIssueIds: ['R-0005', 'R-0005', 'R-0006'] });
+  const bodyForce = CL.mergeAdoptPayloadOf({ mode: 'explicit_force', currentHash: 'h-now', candidateHash: 'c1', unresolvedIssueIds: ['R-0006'] });
+  check('MG-02 普通合并的请求体不含 force_ack/base_conflict（覆盖必须显式声明，不能被顺手带上）',
+    bodyNormal.mode === 'normal' && !('force_ack' in bodyNormal.expected) && !('base_conflict' in bodyNormal.expected)
+      && bodyNormal.expected.content_hash === 'h-now' && bodyNormal.expected.verified_candidate_hash === 'c1');
+  check('MG-03 明确覆盖必须同时带 force_ack 与 base_conflict，未通过条目去重后随请求上报',
+    bodyForce.mode === 'explicit_force' && bodyForce.expected.force_ack === CL.FORCE_ACK
+      && bodyForce.expected.base_conflict === 'BASE_CHANGED_SINCE_PREVIEW'
+      && JSON.stringify(bodyNormal.unresolved_issue_ids) === JSON.stringify(['R-0005', 'R-0006']),
+    JSON.stringify({ force: bodyForce.expected, ids: bodyNormal.unresolved_issue_ids }));
+
+  // (3) 重算候选：锚点还在→出候选；锚点对不上→整体失败并指出是哪条（不产出半成品）
+  const patches = [
+    { issue: 'R-0005', start: 0, end: 2, original: '甲甲', replacement: '乙' },
+    { issue: 'R-0006', start: 3, end: 5, original: '丙丙', replacement: '丁' },
+  ];
+  const rebOk = RPL.rebaseCandidate('甲甲X丙丙', patches);
+  const rebBad = RPL.rebaseCandidate('甲甲X丙丁', patches);
+  check('MG-04 重放：锚点都在→得到新候选；锚点错位→ANCHOR_MISMATCH 且列出对不上的 issue，不返回半成品文本',
+    rebOk.ok === true && rebOk.text === '乙X丁' && rebOk.applied === 2
+      && rebBad.ok === false && rebBad.reason === 'ANCHOR_MISMATCH'
+      && rebBad.failed.length === 1 && rebBad.failed[0].issue === 'R-0006' && rebBad.text === undefined,
+    JSON.stringify({ ok: rebOk, bad: rebBad }));
+
+  // (4) 未通过条目台账：只有明确通过才算已解决
+  check('MG-05 未通过条目台账只认「明确通过」，partial/unresolved/awaiting 全部算欠账',
+    (() => {
+      const ids = P.unresolvedIssueIdsOf({
+        rows: [
+          { issue_id: 'R-0001', final_status: 'ISSUE_VERIFIED' },
+          { issue_id: 'R-0005', final_status: 'PARTIAL' },
+          { issue_id: 'R-0006', final_status: 'UNRESOLVED' },
+          { issue_id: 'R-0003', final_status: 'AWAITING_SEMANTIC' },
+        ],
+      }, null);
+      return JSON.stringify(ids) === JSON.stringify(['R-0005', 'R-0006', 'R-0003']);
+    })());
+
+  // (5) 真跑一次普通合并：库里正文已变 → 停在冲突框，一个 adopt 都不发，候选不丢
+  {
+    const saved = {
+      workId: P.state.workId, currentChapterId: P.state.currentChapterId,
+      chapters: P.state.chapters, pendingReviewDiff: P.state.pendingReviewDiff,
+      pendingMergeConflict: P.state.pendingMergeConflict,
+    };
+    const calls = [];
+    const realApi = sandbox.api;
+    sandbox.api = async (path, opts = {}) => {
+      const p = String(path);
+      calls.push({ path: p, body: (opts && opts.body) || null });
+      if (/^\/chapters\/\d+/.test(p)) return { id: 9901, content: '<p>库里已经改成这一版了</p>', content_hash: 'HASH-NOW-1', updated_at: 'T-NOW-1' };
+      if (p === '/novel/adopt') return { ok: true, adopt: { legacy: { events: 0, memories: 0 }, unresolved_issue_ids: ['R-0005'], forced_overwrite: false, chapter_updated_at: 'T-NEXT' } };
+      if (p === '/novel/proposals') return { proposals: [] };
+      return {};
+    };
+    P.state.workId = 9900;
+    P.state.currentChapterId = 9901;
+    P.state.chapters = [{ id: 9901, title: '合并测试章', content: '<p>库里已经改成这一版了</p>' }];
+    P.state.pendingReviewDiff = {
+      newText: '候选：旧稿上的修稿结果',
+      oldText: '旧稿正文',
+      chapterId: 9901,
+      // 预览时绑定的指纹与"库里现在"不同 —— 正是本次要拦的那个场景。
+      baseFingerprint: 'fnv1a:deadbeef:4',
+      patches: [], coverage: [], proposalIds: [], proposalRefs: [],
+      operationKey: 'merge-9901-p0test',
+      verifiedContentHash: '', unresolvedIssueIds: ['R-0005', 'R-0006'],
+    };
+    const run = P.mergeReviewDiff();
+    await tick(8);
+    const dialogOpen = Boolean(P.state.pendingMergeConflict);
+    await P.handleAction('merge-conflict-cancel');
+    await run;
+    check('MG-06 基线变过时普通合并只弹冲突框，绝不发 adopt（一个字节都不写）',
+      dialogOpen && !calls.some((c) => c.path === '/novel/adopt'),
+      JSON.stringify({ dialog: dialogOpen, calls: calls.map((c) => c.path) }));
+    check('MG-07 被拒绝的合并不消费候选（作者还能再点一次/看差异）',
+      P.state.pendingReviewDiff && P.state.pendingReviewDiff.operationKey === 'merge-9901-p0test');
+
+    // (6) 作者确认覆盖 → 请求体真的带二次确认；成功后候选才被消费
+    calls.length = 0;
+    await P.mergeReviewDiff({ forceMode: true });
+    const adoptCall = calls.find((c) => c.path === '/novel/adopt');
+    const ab = (adoptCall && adoptCall.body) || {};
+    check('MG-08 明确覆盖的 adopt 请求带 mode=explicit_force + force_ack + base_conflict，且仍带刚读到的基线（CAS 不放弃）',
+      ab.mode === 'explicit_force' && ab.expected && ab.expected.force_ack === CL.FORCE_ACK
+        && ab.expected.base_conflict === 'BASE_CHANGED_SINCE_PREVIEW'
+        && ab.expected.content_hash === 'HASH-NOW-1'
+        && ab.expected.candidate_hash === P.contentHashOf('候选：旧稿上的修稿结果')
+        && JSON.stringify(ab.unresolved_issue_ids) === JSON.stringify(['R-0005', 'R-0006']),
+      JSON.stringify(ab).slice(0, 400));
+    check('MG-09 覆盖写入成功后候选才被消费（失败路径见 MG-10）', P.state.pendingReviewDiff === null);
+
+    // (7) 采纳失败 → 不许显示成功，候选必须还在（MERGE-08）
+    calls.length = 0;
+    sandbox.api = async (path, opts = {}) => {
+      const p = String(path);
+      calls.push({ path: p, body: (opts && opts.body) || null });
+      if (/^\/chapters\/\d+/.test(p)) return { id: 9901, content: '<p>库里已经改成这一版了</p>', content_hash: 'HASH-NOW-1', updated_at: 'T-NOW-1' };
+      if (p === '/novel/adopt') { const err = new Error('采纳失败（已整体回滚，未写入任何内容）：模拟服务端拒绝'); err.status = 409; throw err; }
+      return {};
+    };
+    P.state.pendingReviewDiff = {
+      newText: '候选：旧稿上的修稿结果', oldText: '旧稿正文', chapterId: 9901,
+      baseFingerprint: 'fnv1a:deadbeef:4', patches: [], coverage: [], proposalIds: [], proposalRefs: [],
+      operationKey: 'merge-9901-p0fail', verifiedContentHash: '', unresolvedIssueIds: [],
+    };
+    let threw = null;
+    await P.mergeReviewDiff({ forceMode: true }).catch((e) => { threw = e; });
+    check('MG-10 adopt 被拒时既不抛穿也不清候选、不刷新界面（正文未被改动是事实，候选仍可重试）',
+      !threw && Boolean(P.state.pendingReviewDiff) && P.state.pendingReviewDiff.operationKey === 'merge-9901-p0fail');
+
+    sandbox.api = realApi;
+    P.state.workId = saved.workId;
+    P.state.currentChapterId = saved.currentChapterId;
+    P.state.chapters = saved.chapters;
+    P.state.pendingReviewDiff = saved.pendingReviewDiff;
+    P.state.pendingMergeConflict = saved.pendingMergeConflict;
+  }
 }
 
 console.log(`\n=== ${failures === 0 ? 'ALL PASS' : failures + ' FAILURES'} ===`);

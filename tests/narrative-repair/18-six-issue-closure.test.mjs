@@ -190,6 +190,21 @@ const rowOf = (r, id) => (r.rows || []).find((x) => x.issue_id === id) || null;
     shape.counts.accepted === 6 && shape.quote_base && shape.quote_base.source === 'reviewed'
     && shape.quote_base.differs_from_chapter === true,
     JSON.stringify({ accepted: shape.counts.accepted, qb: shape.quote_base }));
+  // 2026-10-22（第 119 章实测）：库内正文为空时 `differs_from_chapter` 只能是 false，
+  // 但"库里的正文是空的"必须单独可见，否则回执会把"报告底本不是正文"说成"无差异"。
+  const qbEmptyChapter = resolveReviewQuoteBase({ reviewedText: BODY, chapterText: '' });
+  check('N07-c 库内正文为空 ⇒ chapter_empty=true，且不靠 differs_from_chapter 表达这件事',
+    qbEmptyChapter.source === 'reviewed' && qbEmptyChapter.chapter_empty === true
+    && qbEmptyChapter.differs_from_chapter === false,
+    JSON.stringify(qbEmptyChapter));
+  const shapeEmptyChapter = structureReviewReport(
+    { summary: 's', issues: review.issues, findings: review.findings },
+    { text: BODY, quoteBase: qbEmptyChapter },
+  );
+  check('N07-d 结构化结果把 chapter_empty 传给界面（quote_base.chapter_empty）',
+    shapeEmptyChapter.quote_base && shapeEmptyChapter.quote_base.chapter_empty === true
+    && shapeEmptyChapter.counts.accepted === 6,
+    JSON.stringify({ qb: shapeEmptyChapter.quote_base, accepted: shapeEmptyChapter.counts.accepted }));
 }
 
 // ── N08 / N09 / N10：Q01 的三种形态 ──────────────────────────────────────────

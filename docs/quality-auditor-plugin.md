@@ -36,6 +36,23 @@ node scripts/uninstall.mjs          # 从备份恢复 package.json 并删除链�
 - 写作台：`public/quality-audit-panel.js` 的 `summaryLine()` 只产出一行（不压缩正文列宽）；
 - 审稿报告：新增「🔍 独立复核（盲审→对照）」入口，由 `startReviewQualityAudit()` 发起并轮询；
 - `allDone()` 是"全部完成"的唯一判据：run=COMPLETED 且所有已选项 PASS。
+- **正文来源与前置**（2026-10-22）：独立复核的 `article` **只**取自 `chapters.content`（`routes.mjs` 的
+  `buildReviewResources`），不读编辑器里未保存的内容，也不读审稿报告的 `base_text`。所以库内本章正文为空时
+  入口直接禁用并写明出路（先保存本章 / 从「有未应用的生成稿」取回），不再"点了才失败"；
+  服务端仍兜底返回 422 `AUDIT_CONTRACT_INVALID`（文案点明"库内本章正文为空"）。
+
+## 回执里的引文底本
+
+`PUT /novel/review` 回执的 `quote_base` 有两个**互不替代**的字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `differs_from_chapter` | 被审正文与库内正文都在，且内容不同 |
+| `chapter_empty` | 库内本章正文为空（此时没有"是否不同"可比，`differs_from_chapter` 只能是 false） |
+
+`chapter_empty=true` 表示这份报告是对**未落库的正文**（编辑器未保存 / 未应用的生成稿）做的：
+界面会单独提示"库内本章正文为空"，而不是把它显示成"与正文一致"。老回执没有该字段，
+展示时按库内正文补一次口径（只影响显示，不改库）。
 
 ## 测试
 

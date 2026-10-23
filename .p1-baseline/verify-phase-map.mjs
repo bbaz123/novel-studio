@@ -2106,6 +2106,70 @@ export const PHASES = [
       + '**费用**：全部离线断言零计费（六项夹具 + 固定语义回包），未调用任何真实模型。',
   },
   {
+    // 2026-10-22：作者报「逐项验收停在 PARTIAL_CANDIDATE，AI 不再修、也改不了」。
+    // 本阶段目前**只有一份诊断方案**，不含代码改动；实现落地时把代码与断言加进这个阶段，
+    // 保证"谁改的、怎么撤"仍然可核对。回滚 = 删这份文档（不涉及任何运行时代码）。
+    id: 'V21',
+    title: '逐项验收卡死诊断与出口（PARTIAL_CANDIDATE 不再无路可走）',
+    files: ['docs/review-partial-deadlock-plan-20261022.md'],
+    evidence: ['docs/review-partial-deadlock-plan-20261022.md', 'tests/narrative-repair/19-partial-repair-entry.test.mjs'],
+    rollback: 'independent',
+    note: '**目的**：把"局部未通过却没有再修入口"拆成五条可核对的根因（next_action 承诺无按钮、'
+      + '自动复修只在两条路径且额度一次性、一个 finding 一个跨度、condense 的 merged_span_approved 从无写入方、'
+      + '改正文即 BASE_STALE），并落地方案 A/B1/C1：复修入口（轮次/预算守卫）、'
+      + '按剩余证据扩范围（同一批 issue，不新增编号）、接受遗留台账；复验额度改为按候选 hash 计。'
+      + '**归属**：代码改动落在既有共享文件（public/app.js、review-workspace.js、revision-closure.js），'
+      + '按 V20 的既有做法不重复认领，以免污染回滚判定；新套件由 SE6 的 tests/narrative-repair/ 前缀覆盖。'
+      + '**边界**：不放开跨段删除/压缩授权（B2 未做）；不改正文写入路径；不新增数据库表。'
+      + '**费用**：全部离线断言零计费（模型输出为夹具，未调用真实模型）。',
+  },
+  {
+    // P0 合并保护（2026-10-22）：`docs/review-partial-deadlock-plan-20261022.md` 之外的
+    // "改完一次合并要怎么回滚"的归属。代码仍落在共享文件（server.js / public/app.js /
+    // revision-closure.js / revision-plan.js），按 V20/V21 的既有做法不重复认领；
+    // 这里只认领**新增**的现场冻结脚本，避免它与任何既有阶段混在一起。
+    id: 'P0M',
+    title: 'P0 合并保护：现场冻结 + 基线闸门（普通合并不再静默覆盖）',
+    files: ['.p1-baseline/p0-freeze-scene.mjs', '.p1-baseline/p0-rollback-drill.mjs', 'docs/quality-audit-p0-merge-protection-plan-20261022.md'],
+    evidence: ['.p1-baseline/p0-freeze-scene.mjs', '.p1-baseline/p0-rollback-drill.mjs', 'docs/quality-audit-p0-merge-protection-plan-20261022.md'],
+    rollback: 'independent',
+    note: '**目的**：把"修稿候选整篇覆盖预览之后的新编辑"从"只写一条警告"改成"事务内拒绝"，'
+      + '并把作者意图拆成 normal / explicit_force 两个请求（后者要二次确认声明 + 事务内审计）。'
+      + '**归属**：新增脚本负责阶段 0 取证（整库快照 + 正文/历史版本/采纳记录/审计日志导出），'
+      + '代码改动在共享文件里（与 V21 同一批函数），回滚按共享处理。'
+      + '**边界**：不改历史版本表结构；不新增数据库表；不带 expected 的老客户端保持原语义。'
+      + '**费用**：全部离线断言零计费（隔离实例 + 假模型输出）。',
+  },
+  {
+    // 独立复核误报修复 + 逐项验收子条件（2026-10-22 第二轮）。
+    // 只认领**新增**文件：代码改动落在共享文件（contracts/coordinator/merge-review/...），
+    // 按 V20/V21/P0M 的既有做法不重复认领，避免污染回滚判定。
+    id: 'P0Q2',
+    title: '复核反例相关性 + 缺字段台账 + 逐项验收子条件',
+    files: [
+      'scripts/quality-auditor/test-relevance.mjs',
+      'scripts/quality-auditor/test-acceptance-checks.mjs',
+      '.p1-baseline/browser-e2e-dialogs.mjs',
+      '.p1-baseline/real-audit-run.mjs',
+      'scripts/quality-auditor/set-price-table.mjs',
+    ],
+    evidence: [
+      'ai/quality-auditor/relevance.mjs',
+      'ai/quality-auditor/prop-continuity.mjs',
+      'scripts/quality-auditor/test-relevance.mjs',
+      'scripts/quality-auditor/test-acceptance-checks.mjs',
+      '.p1-baseline/browser-e2e-dialogs.mjs',
+      '.p1-baseline/real-audit-run.mjs',
+      'scripts/quality-auditor/set-price-table.mjs',
+    ],
+    rollback: 'independent',
+    note: '**目的**：把"拿不相干的原文当反例否掉作者的判断"降级成待人工判断；把"6 条缺字段"变成'
+      + '逐字段可定位台账（含能不能免费修）；把一项问题的验收拆成多条子条件并按固定规则合成。'
+      + '**归属**：新增模块与两个断言脚本在这里认领；契约/协调器/合并/前端的改动共享。'
+      + '**边界**：不改审计状态机、不新增数据库表；relevance 只做降级不做升级（同义词会漏判，宁可少判反例）。'
+      + '**费用**：全部离线断言零计费。',
+  },
+  {
     // dsh-novel-quality-auditor 阶段 1（2026-10-21）：审稿身份链。新文件全部在这里认领，
     // 因为它们是"同一批代码"：契约模块 + 浏览器同一份实现 + 阶段 0 冻结脚本 + 身份链断言。
     // 回滚 = 删这批新文件 + 恢复 public/app.js / server.js / db.js / narrative-review.mjs 的备份。

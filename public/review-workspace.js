@@ -45,6 +45,9 @@
     // 2026-10-18 作者授权：允许"跳过语义复验直接合并"。合并是发生了，但"哪几条真修好"没有结论，
     // 所以这一档必须是**warn**且措辞写明"未做语义复验"，不能混进 PERSISTED_VERIFIED 冒充复核过。
     PERSISTED_UNVERIFIED: { text: '已合并 · 未做语义复验', tone: 'warn' },
+    // 2026-10-22：部分合并（跑过复验、仍有未通过项）不能落到上面那一档——
+    // "未做语义复验"是假的，作者明明验过、而且知道还差两条。措辞必须说清"仍带未通过项"。
+    PERSISTED_PARTIAL: { text: '已合并 · 仍带未通过项', tone: 'warn' },
   };
 
   const FILTERS = [
@@ -157,7 +160,7 @@
     const selected = rows.length;
     const allVerified = selected > 0 && rows.every((r) => textOf(r && r.final_status) === 'ISSUE_VERIFIED');
     const coverageComplete = input.coverageComplete === true;
-    const merged = ['PERSISTED_VERIFIED', 'PERSISTED_UNVERIFIED'].includes(stage);
+    const merged = ['PERSISTED_VERIFIED', 'PERSISTED_UNVERIFIED', 'PERSISTED_PARTIAL'].includes(stage);
     const st = (id, label, state) => ({ id, label, state });
     return [
       st('review', '审稿清单', selected > 0 ? 'done' : 'active'),
@@ -168,7 +171,76 @@
   }
 
   /**
-   * 写作台单行入口（方案 §3.1）。四种真实状态各一句话，**绝不**在未复验时写"完成"。
+   * 统一**阶段梯**（§6）：把「独立复核」与「逐项验收」放进同一条梯子，而不是两个互不相干的标签。
+   *
+   * 为什么要合：作者看到的现状是——审稿报告顶部一个"上次独立复核 · 结果待主机校验"，
+   * 工作区头部另一个"逐项验收 · 4/6"，两套词、两处位置，谁也说不清"我现在到底卡在哪一步"。
+   * 合成分档之后，任何一个界面都只需要回答"第几步、什么状态、下一步是什么"。
+   *
+   * 判据来源（全部是既有状态，不新增推断）：
+   *   · 独立复核那一步来自审计 run 的状态机（RESULT_RECEIVED 与 HOST_VERIFIED 必须分开显示）；
+   *   · 逐项验收那一步来自终审的 stage（AWAITING_SEMANTIC / PARTIAL / VERIFIED）。
+   *
+   * @param {{audit?:{kind?:string,status?:string}|null, verifyStage?:string, merged?:boolean, selected?:number, patchedCount?:number}} input
+   * @returns {{steps:Array<{id:string,label:string,state:string,tone:string,note:string}>, current:string, line:string}}
+   */
+  function stageLadderOf(input = {}) {
+    const audit = input.audit && typeof input.audit === 'object' ? input.audit : null;
+    const status = textOf(audit && audit.status).toUpperCase();
+    const verifyStage = textOf(input.verifyStage) || 'AWAITING_SEMANTIC';
+    const selected = Number(input.selected) || 0;
+    const patched = Number(input.patchedCount) || 0;
+    const merged = input.merged === true || ['PERSISTED_VERIFIED', 'PERSISTED_UNVERIFIED', 'PERSISTED_PARTIAL'].includes(verifyStage);
+
+    // ② 独立复核：待主机校验 ≠ 已复核（这是两件事，必须分档）。
+    const auditStep = (() => {
+      if (!status) return { state: 'pending', label: '独立复核（未做 · 可选）', tone: 'muted', note: '还没跑独立复核：可选，但旧报告的结论上限是"待核验"' };
+      if (['INPUT_FROZEN', 'DSH_STARTED', 'RUNNING', 'BLIND_SUBMITTED', 'COMPARE_RUNNING', 'CREATED'].includes(status)) {
+        return { state: 'active', label: '独立复核（进行中）', tone: 'wait', note: '盲审→对照进行中：完成后还要过主机校验' };
+      }
+      if (status === 'RESULT_RECEIVED') {
+        return { state: 'active', label: '独立复核（结果待主机校验）', tone: 'wait', note: '结果已收到但**未**通过主机校验：还不能作为完整凭据，也不能据此合并' };
+      }
+      if (['HOST_VERIFIED', 'MERGED', 'COMPLETED'].includes(status)) {
+        return { state: 'done', label: '独立复核（已复核）', tone: 'ok', note: '已通过主机校验：结论可用' };
+      }
+      return { state: 'blocked', label: '独立复核（未通过）', tone: 'bad', note: '审计失败或未结构化提交：结论不可用，需重跑' };
+    })();
+
+    // ③ 修稿候选 / ④ 逐项验收
+    const candidateState = patched > 0 ? 'done' : (selected > 0 || status ? 'active' : 'pending');
+    const verifyStep = (() => {
+      if (['VERIFIED_CANDIDATE', 'PERSISTED_VERIFIED'].includes(verifyStage)) {
+        return { state: 'done', label: '逐项验收（全部通过）', tone: 'ok', note: '每一条都已逐项验证' };
+      }
+      if (['PARTIAL_CANDIDATE', 'PERSISTED_PARTIAL'].includes(verifyStage)) {
+        return { state: 'active', label: '逐项验收（存在未通过项）', tone: 'warn', note: '已跑复验但还有未通过项：可定向复修或带标签合并' };
+      }
+      if (['PERSISTED_UNVERIFIED', 'BLOCKED', 'NEEDS_SCOPE'].includes(verifyStage)) {
+        return { state: 'blocked', label: '逐项验收（未完成）', tone: 'bad', note: '候选已入库但**没有**完整验收结论：不能显示"已完成"' };
+      }
+      return { state: patched > 0 ? 'active' : 'pending', label: '逐项验收（待复验）', tone: 'wait', note: '还没有逐条结论：补丁已应用 ≠ 验收通过' };
+    })();
+
+    const steps = [
+      { id: 'review', label: '审稿与选择', state: selected > 0 ? 'done' : 'active', tone: selected > 0 ? 'ok' : 'wait', note: selected > 0 ? `已选 ${selected} 条` : '先勾选要处理的问题' },
+      { id: 'audit', ...auditStep },
+      { id: 'candidate', label: '生成修稿候选', state: candidateState, tone: candidateState === 'done' ? 'ok' : 'wait', note: patched > 0 ? `已应用 ${patched} 处` : '还没有候选稿' },
+      { id: 'verify', ...verifyStep },
+      { id: 'commit', label: merged ? '已合并到正文' : '审阅与合并', state: merged ? 'done' : (verifyStep.state === 'done' || verifyStep.state === 'active' ? 'active' : 'pending'), tone: merged ? 'ok' : 'muted', note: merged ? '正文已是这一版' : '合并前会核对基线（正文变过会先要你确认）' },
+    ];
+    // "当前步骤" = 第一个**正在发生或卡住**的；没有就退到第一个未完成的（跳过"可选且未做"的独立复核）。
+    // 为什么不能简单取"第一个非 done"：没跑独立复核时那一步永远是 pending，
+    // 于是作者明明在逐项验收，梯子却指向"独立复核未做"——那是在指错路。
+    const stuck = steps.find((x) => x.state === 'active' || x.state === 'blocked');
+    const todo = steps.find((x) => x.state !== 'done' && x.state !== 'pending');
+    const current = (stuck || todo || steps[steps.length - 1]).id;
+    const line = steps.map((x) => `${x.state === 'done' ? '✓' : (x.state === 'active' ? '▶' : (x.state === 'blocked' ? '✗' : '·'))} ${x.label}`).join('  →  ');
+    return { steps, current, line };
+  }
+
+  /**
+   * 写作台单行入口（方案 §3.1）。四种真实状态各一句话，**绝不在**未复验时写"完成"。
    * @returns {{tone:string, text:string, action:string}|null} null = 没有相关任务，不显示
    */
   function entryLineOf(input = {}) {
@@ -210,6 +282,27 @@
   /** 左侧问题行：两行以内；`#03 母亲行程矛盾` + 状态。 */
   function issueRowsOf(input = {}) {
     const rows = Array.isArray(input.rows) ? input.rows : [];
+    // 独立复核给出的**子条件**（§5）按 issue_id 并进工作区行。
+    // 为什么不各自渲染一套：闭环自己的 condition_results 与审计的 acceptance_checks
+    // 说的是同一件事（"这条还差哪个判据"），两套各画一遍，作者要对照两份清单才知道差什么。
+    const auditByIssue = new Map();
+    for (const a of (Array.isArray(input.auditChecks) ? input.auditChecks : [])) {
+      const id = textOf(a && a.issue_id);
+      if (!id) continue;
+      const checks = Array.isArray(a && a.acceptance_checks) ? a.acceptance_checks : [];
+      if (!checks.length) continue;
+      auditByIssue.set(id, {
+        checks: checks.map((c) => ({
+          key: textOf(c && c.key),
+          kind: textOf(c && c.kind) || 'soft',
+          status: textOf(c && c.status).toUpperCase() || 'UNKNOWN',
+          evidence: textOf(c && c.evidence),
+        })).filter((c) => c.key),
+        verdict: textOf(a && (a.verdict || a.final)),
+        verdict_declared: textOf(a && a.verdict_declared),
+        verdict_derived: a && a.verdict_derived === true,
+      });
+    }
     return rows.map((r, i) => {
       const st = statusOf(r.final_status);
       const id = textOf(r.issue_id);
@@ -260,8 +353,32 @@
           evidence: Array.isArray(r.external_context.evidence) ? r.external_context.evidence.map(textOf) : [],
         } : null,
         matched_by: textOf(r.matched_by),
+        // 审计子条件（没有就是空：不接受"没跑审计"被画成"全部通过"）。
+        audit_checks: (auditByIssue.get(id) || {}).checks || [],
+        audit_verdict: (auditByIssue.get(id) || {}).verdict || '',
+        audit_verdict_declared: (auditByIssue.get(id) || {}).verdict_declared || '',
+        audit_verdict_derived: Boolean((auditByIssue.get(id) || {}).verdict_derived),
       };
     });
+  }
+
+  /**
+   * 「候选与正式正文的版本关系」（§6）。
+   *
+   * 为什么必须说出来：差异预览里的候选是**几分钟前**的整章重写，而正文可能已经被编辑/自动保存推进过。
+   * 旧界面两处（候选与正文）都看不出"它们是不是同一版"，作者点合并前无从判断会不会盖掉自己刚写的。
+   * 这里只做陈述，不替作者决定：普通合并会在基线不一致时停下来要他确认（见 mergeReviewDiff）。
+   *
+   * @param {{merged?:boolean, previewBaseUpdatedAt?:string, chapterUpdatedAt?:string}} input
+   * @returns {string} 空串 = 没有可比较的版本信息（不猜）
+   */
+  function versionLineOf(input = {}) {
+    if (input.merged === true) return '正文：这份候选已经合并进正文（上面看到的就是正文那一版）';
+    const base = textOf(input.previewBaseUpdatedAt);
+    const cur = textOf(input.chapterUpdatedAt);
+    if (!base || !cur) return '';
+    if (base === cur) return '正文：与打开预览时同一版（合并会直接写入）';
+    return '正文：在打开预览之后更新过（合并前会先让你确认是否覆盖那一版）';
   }
 
   /** 子条件/外部资料的一段人话摘要（详情抽屉与回执用；没有就不出现）。 */
@@ -281,6 +398,17 @@
       parts.push(`未达成子条件 ${failed.length} 条：${failed.map((c) => `${c.id || c.kind}`).join('、')}`);
     }
     if (skipped.length) parts.push(`未求值子条件 ${skipped.length} 条（跳过 ≠ 通过）`);
+    // 独立复核的子条件（§5）：与上面那套并列显示，并说明"模型原判被降级"。
+    const ac = Array.isArray(r.audit_checks) ? r.audit_checks : [];
+    if (ac.length) {
+      const pass = ac.filter((c) => textOf(c && c.status) === 'PASS').length;
+      const bad = ac.filter((c) => textOf(c && c.status) !== 'PASS');
+      parts.push(`审计子条件 ${pass}/${ac.length} 通过`
+        + (bad.length ? `（未达成：${bad.map((c) => textOf(c && c.key)).join('、')}）` : ''));
+      if (r.audit_verdict_derived && r.audit_verdict_declared && r.audit_verdict_declared !== r.audit_verdict) {
+        parts.push(`审计原判 ${r.audit_verdict_declared}，按子条件降为 ${r.audit_verdict}`);
+      }
+    }
     return parts.join('；');
   }
 
@@ -485,7 +613,9 @@
     }
     // 2026-10-18：跳过复验就合并的那一档，**不能是死路** —— 作者要能再点一次复验（反悔机会），
     // 也要能从历史版本回到任何一份存档。所以这里给"补跑复验 + 存档入口 + 返回"，不给合并。
-    if (stage === 'PERSISTED_UNVERIFIED') {
+    // 2026-10-22：部分合并（PERSISTED_PARTIAL）走同一条自救通道——它同样允许补验一次、可回退。
+    if (stage === 'PERSISTED_UNVERIFIED' || stage === 'PERSISTED_PARTIAL') {
+      const partialMerged = stage === 'PERSISTED_PARTIAL';
       // 2026-10-21 修：原来这里用 `semanticRuns >= 1` 判禁用，于是"合并前跑过一次但零结论"的稿子
       // 合并后**再也补验不了**，与下面 runRevisionSemanticVerify 的 postMergeRetry 口径相反
       // （动作允许、按钮禁用 = 入口形同虚设）。现在只认"合并后已经补验过"这一件事。
@@ -498,10 +628,15 @@
         help: 'review_semantic_verify',
         note: retriedAfterMerge
           ? '这份候选合并后已经补验过一次；要再验请重新发起审稿修稿'
-          : '合并已完成，但逐条结论还没有：补跑一次就知道哪几条真修好了',
+          : (partialMerged
+            ? '合并时它仍有未通过项：补跑一次复验可以拿到"合并后"的逐条结论'
+            : '合并已完成，但逐条结论还没有：补跑一次就知道哪几条真修好了'),
       });
       pushArchive(out, input);
-      out.push({ action: 'back', label: '返回写作台', primary: true, note: '已合并到正文；本次没有跑语义复验' });
+      out.push({
+        action: 'back', label: '返回写作台', primary: true,
+        note: partialMerged ? '已合并到正文；其中仍有未通过项（已知遗留，不是全修好）' : '已合并到正文；本次没有跑语义复验',
+      });
       if (busy) for (const a of out) a.disabled = true;
       return out;
     }
@@ -539,6 +674,76 @@
     }
     if (stage === 'PARTIAL_CANDIDATE') {
       const remain = counts.unresolved + counts.partial + counts.canon;
+      const repair = input.repair && typeof input.repair === 'object' ? input.repair : null;
+      const left = input.leftovers && typeof input.leftovers === 'object' ? input.leftovers : null;
+      // 2026-10-22 作者报「未通过的两条既不能 AI 再修、也改不了」：这一档原来只有合并/导出/返回，
+      // 而统一出口给出的下一步恰恰是 TARGETED_REPAIR —— 承诺了下一步却没有入口。
+      // 复修的判据（目标/轮次/预算）全部来自 revision-closure，这里只翻译成按钮，不另算一套。
+      const targets = repair && Array.isArray(repair.targets) ? repair.targets : [];
+      const blockedList = repair && Array.isArray(repair.blocked) ? repair.blocked : [];
+      if (repair && repair.ok && targets.length) {
+        const roundsLeft = Number(repair.roundsLeft);
+        const budgetLeft = Number(repair.budgetLeftCents);
+        const estimate = Number(repair.estimateCents);
+        const noRounds = Number.isFinite(roundsLeft) && roundsLeft <= 0;
+        const noBudget = Number.isFinite(budgetLeft) && Number.isFinite(estimate) && estimate > budgetLeft;
+        const why = noRounds ? '本轮复修轮次已用尽' : (noBudget ? `预估 ${formatCents(estimate)} 超出剩余 ${formatCents(budgetLeft)}` : '');
+        out.push({
+          action: 'repair-partial',
+          label: `只复修未通过项（${targets.length} 条，一次付费调用）`,
+          primary: true,
+          disabled: busy || noRounds || noBudget,
+          help: 'review_repair_partial',
+          note: why || '按复验结论只重写这几处；仍受原授权跨度、保护区与组合门禁约束',
+        });
+        const widening = repair.widening && typeof repair.widening === 'object' ? repair.widening : null;
+        if (widening && widening.any) {
+          const byAuthor = Number(widening.paragraphs) > 0;
+          out.push({
+            action: 'repair-partial-widened',
+            label: byAuthor
+              ? `按已批准范围再修（${Number(widening.paragraphs)} 段）`
+              : '按复验剩余证据扩范围再修',
+            primary: false,
+            disabled: busy || noRounds || noBudget,
+            help: 'review_repair_widened',
+            note: byAuthor
+              ? '用你刚刚点"允许改"的段落作为本次可改目标（同一批问题，不新增问题编号）'
+              : '模型上一轮说"这些文字还在"：把它们一并纳入本次可改范围',
+          });
+        }
+      } else {
+        // 没有可修目标时不能只留一个灰按钮：把"为什么不能修"写出来（硬阻塞项要人处理）。
+        const reason = repair && repair.reason ? String(repair.reason) : 'NO_TARGETS';
+        const why = {
+          ROUND_LIMIT: '本次运行的复修轮次已用尽（不无限重试）',
+          BUDGET_EXCEEDED: '剩余预算不够再修一轮',
+          COST_UNKNOWN: '费用无法可靠核价（不拿"大概不到 2 元"当授权）',
+          NO_PLAN: '这次运行是从本地记录恢复的：没有可用的授权跨度，请重新发起修稿',
+          MERGED: '已经合并到正文：候选与正文是同一份，要继续修请重新审稿（不要直接改库里的正文）',
+          NO_TARGETS: blockedList.length
+            ? `${blockedList.length} 条属于人处理项（蓝图冲突/保护区/授权外），自动复修不得碰`
+            : '没有可自动复修的条目',
+        }[reason] || reason;
+        out.push({
+          action: 'repair-partial',
+          label: '只复修未通过项（当前不可用）',
+          primary: false,
+          disabled: true,
+          help: 'review_repair_partial',
+          note: why,
+        });
+      }
+      // C1：把"我知道它没修"变成可审计的决定，而不是每次审稿再被报一遍。
+      if (left && Array.isArray(left.pending) && left.pending.length) {
+        out.push({
+          action: 'accept-leftovers',
+          label: `接受 ${left.pending.length} 条为已知遗留`,
+          primary: false,
+          help: 'review_accept_leftovers',
+          note: '不改正文、不判通过：只把这批编号记进运行记录与本机台账，合并时如实带出',
+        });
+      }
       out.push({
         action: 'merge-partial', label: `合并到正文（仍有 ${remain} 条未通过）`, primary: false,
         note: '部分合并必须明确知道剩余未通过项；不宣称全部修好',
@@ -606,7 +811,16 @@
     }
     if (stage === 'PARTIAL_CANDIDATE') {
       const ids = rows.filter((r) => r.final_status !== 'ISSUE_VERIFIED').map((r) => `#${r.issue_id}`).join('、');
-      return `未通过：${ids}（这些条目仍有问题，不能宣称"全部修好"）`;
+      const repair = input.repair && typeof input.repair === 'object' ? input.repair : null;
+      const n = repair && Array.isArray(repair.targets) ? repair.targets.length : 0;
+      const left = input.leftovers && typeof input.leftovers === 'object' ? input.leftovers : null;
+      const accepted = left && Array.isArray(left.ids) ? left.ids.filter((id) => !(left.pending || []).includes(id)) : [];
+      // 只报"哪几条没过"不够：作者下一个问题必然是"那我现在点哪个"。
+      const next = n > 0
+        ? `；可「只复修未通过项」再修 ${n} 条（一次付费调用）`
+        : '；这几条需要人工处理或放宽授权范围（自动复修不得碰）';
+      const acceptedNote = accepted.length ? `；其中 ${accepted.length} 条已记为已知遗留` : '';
+      return `未通过：${ids}（这些条目仍有问题，不能宣称"全部修好"）${next}${acceptedNote}`;
     }
     if (stage === 'VERIFIED_CANDIDATE') return '全部已选问题通过语义验收；候选尚未合并到正文';
     if (stage === 'PERSISTED_VERIFIED') return '已入库并复核';
@@ -615,6 +829,11 @@
     if (stage === 'PERSISTED_UNVERIFIED') {
       return '已合并到正文（本次跳过语义复验）：哪些问题真的解决了没有结论；可以补跑一次复验，'
         + '也能在「历史版本」/ 修稿存档里恢复到审稿前原文或另一份候选';
+    }
+    if (stage === 'PERSISTED_PARTIAL') {
+      const ids = rows.filter((r) => r.final_status !== 'ISSUE_VERIFIED').map((r) => `#${r.issue_id}`).join('、');
+      return `已合并到正文，但仍有未通过项（${ids || '见覆盖表'}）：正文里带着这些已知问题；`
+        + '重新审稿（只勾这几条）可以继续修，或在「历史版本」里回退';
     }
     return '';
   }
@@ -686,6 +905,8 @@
     summaryLine,
     issueRowsOf,
     conditionLineOf,
+    versionLineOf,
+    stageLadderOf,
     filterRows,
     stepIssue,
     locateQuote,

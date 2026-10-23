@@ -65,6 +65,10 @@
 
   const textOf = (x) => String(x == null ? '' : x);
   const uniqueStrings = (list) => [...new Set((Array.isArray(list) ? list : []).map(textOf).filter(Boolean))];
+  const clipStr = (s, n) => {
+    const v = textOf(s);
+    return v.length > n ? `${v.slice(0, n)}…` : v;
+  };
 
   function canTransition(from, to) {
     const edges = TRANSITIONS[textOf(from)];
@@ -498,6 +502,324 @@
     };
   }
 
+  /**
+   * 复验额度（v1.2.7）：从"这份候选只能验一次"升级为"**每份候选各验一次**"。
+   *
+   * 为什么必须按候选算：旧口径 `semanticRuns >= 1` 是**全局一次**。
+   * 复修换了候选正文之后，复验额度并没有跟着重开 —— 于是"修好了却验不了"，
+   * 或者反过来不记 hash 就变成"同一份稿反复付费"。按候选 hash 计，两件事同时成立：
+   * 同一份稿不重复付费；改过的稿一定拿得到它自己的那一次结论。
+   *
+   * 合并后补跑一次（2026-10-18 作者要求）保留：同一份候选合进正文后仍允许补验一次，
+   * 否则"跳过复验直接合并"就永远没有回头路。
+   */
+  function verifyAllowanceOf(input = {}) {
+    const hash = textOf(input.candidateHash);
+    const used = Array.isArray(input.verifiedHashes)
+      ? uniqueStrings(input.verifiedHashes.map((x) => textOf(x)))
+      : [];
+    if (!hash) return { ok: false, code: 'NO_CANDIDATE_HASH', verified_hashes: used };
+    if (!used.includes(hash)) return { ok: true, code: 'NEW_CANDIDATE', verified_hashes: used };
+    if (input.mergedAt === true && input.reverifiedAfterMerge !== true) {
+      return { ok: true, code: 'POST_MERGE_RETRY', verified_hashes: used };
+    }
+    return { ok: false, code: 'ALREADY_VERIFIED_THIS_CANDIDATE', verified_hashes: used };
+  }
+
+  /**
+   * 把"统一终验的逐条行 + 语义复验结论"复原成**可复修清单**（纯函数）。
+   *
+   * 为什么不能直接用 `final_status` 去规划复修：`planAutoRepair` 读的是 verdict /
+   * reason_code / remaining_evidence。两套字段各写一份映射，必然漏字段；
+   * 漏掉 `remaining_evidence` 的后果就是每一轮复修都重放**同一个**跨度，
+   * 全篇多处的问题永远只改一处（作者 2026-10-22 报的 #R-0005）。
+   */
+  function repairIssuesFrom(rows, semanticByIssue) {
+    const list = Array.isArray(rows) ? rows : [];
+    const byIssue = semanticByIssue && typeof semanticByIssue === 'object' ? semanticByIssue : {};
+    const out = [];
+    for (const r of list) {
+      const id = textOf(r && r.issue_id);
+      if (!id) continue;
+      const final = textOf(r.final_status);
+      if (final === 'ISSUE_VERIFIED') continue;
+      const sem = byIssue[id] && typeof byIssue[id] === 'object' ? byIssue[id] : {};
+      const remaining = Array.isArray(sem.remaining_evidence)
+        ? sem.remaining_evidence.map((q) => textOf(q && q.quote != null ? q.quote : q)).filter(Boolean)
+        : [];
+      out.push({
+        issue_id: id,
+        // partial 是有结论的未通过项，必须与 fail 一样能进复修队列（见 planAutoRepair 的注释）。
+        verdict: textOf(r.verdict) || (final === 'PARTIAL' ? 'partial' : 'fail'),
+        final_status: final,
+        semantic_status: textOf(r.semantic_status || sem.status),
+        reason_code: textOf(sem.reason_code || r.reason_code),
+        reason: textOf(sem.reason || r.reason),
+        repair_hint: textOf(sem.repair_hint || r.repair_hint),
+        remaining_evidence: remaining,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 定向复修规划（纯函数）：**复修入口与自动复修共用同一套判据**。
+   *
+   * 输入只需要"终验行 + 语义结论 + 轮次/预算"，输出 targets（能修的）、
+   * blocked（人处理项）、remainingEvidence（复验留下的"仍在的文字"，供界面说清"扩到哪几处"）。
+   * 绝不在这里做"放宽授权"的判断：那是 Host 的显式动作（见 app 的扩范围复修）。
+   */
+  function targetedRepairOf(input = {}) {
+    const issues = repairIssuesFrom(input.rows, input.semanticByIssue);
+    const verdict = planAutoRepair({
+      issues,
+      round: Number.isInteger(Number(input.roundsUsed)) ? Number(input.roundsUsed) : 0,
+      maxRounds: input.maxRounds,
+      budgetCents: input.budgetCents,
+      estimateCents: input.estimateCents,
+      costKnown: input.costKnown,
+      allowedIssueIds: input.allowedIssueIds,
+      hardBlockCodes: input.hardBlockCodes,
+    });
+    const targets = verdict.ok ? (verdict.issue_ids || []) : [];
+    const targetSet = new Set(targets.map(textOf));
+    const blocked = issues
+      .filter((i) => !targetSet.has(i.issue_id))
+      .map((i) => ({
+        issue_id: i.issue_id,
+        reason_code: i.reason_code,
+        reason: i.reason,
+        hard: AUTO_REPAIR_HARD_BLOCK.has(i.reason_code),
+      }));
+    const remainingEvidence = {};
+    for (const i of issues) {
+      if (!targetSet.has(i.issue_id)) continue;
+      if (i.remaining_evidence.length) remainingEvidence[i.issue_id] = i.remaining_evidence.slice(0, 12);
+    }
+    return { ...verdict, issues, targets, blocked, remaining_evidence: remainingEvidence };
+  }
+
+  /** 已知遗留（C1）：列出"未通过"的条目，供作者一次性记为已接受（不是修好）。 */
+  function acceptedLeftoversOf(input = {}) {
+    const rows = Array.isArray(input.rows) ? input.rows : [];
+    const open = rows.filter((r) => textOf(r && r.final_status) !== 'ISSUE_VERIFIED');
+    const ids = uniqueStrings(open.map((r) => textOf(r && r.issue_id)));
+    const accepted = new Set((Array.isArray(input.acceptedIds) ? input.acceptedIds : []).map(textOf));
+    return {
+      ids,
+      count: ids.length,
+      pending: ids.filter((id) => !accepted.has(id)),
+      canon: uniqueStrings(open.filter((r) => textOf(r.final_status) === 'CANON_CONFLICT').map((r) => textOf(r.issue_id))),
+    };
+  }
+
+  /** 已用掉几轮"应用成功"的定向复修（跨轮累计的唯一口径）。 */
+  function roundsUsedOf(autoRepair) {
+    const rounds = autoRepair && Array.isArray(autoRepair.rounds) ? autoRepair.rounds : [];
+    return rounds.filter((r) => r && r.status === 'applied').length;
+  }
+
+  /**
+   * 把新一轮复修的轮次/花费**接到**上一轮后面（纯函数）。
+   *
+   * 为什么必须累计：定向复修按钮可以被点多次。每次都用这一轮自己的 rounds 覆盖上一轮，
+   * 轮次上限就变成"每点一次重新数"（等于无限付费重试），预算也一样会被重置。
+   */
+  function mergeRepairRounds(prior, next) {
+    if (!next) return prior || null;
+    const rounds = [
+      ...(prior && Array.isArray(prior.rounds) ? prior.rounds : []),
+      ...(Array.isArray(next.rounds) ? next.rounds : []),
+    ];
+    return {
+      ...next,
+      rounds,
+      spent_cents: (Number(prior && prior.spent_cents) || 0) + (Number(next.spent_cents) || 0),
+      rounds_used: roundsUsedOf({ rounds }),
+    };
+  }
+
+  /**
+   * 跨段授权（v1.2.7 / 方案 B2）：作者显式批准"本段起连续 N 段"可改。
+   *
+   * 为什么必须由 Host 收口而不是让模型自己放宽：放宽一步就等于把"改哪儿"的决定权交给模型，
+   * 而这条链路上所有的越权事故都源于此（`revision-plan` 从不自动放宽）。
+   * 所以这里只做**校验**：段数、字数、保护区、must_keep 四项任一超限就拒绝，
+   * 由调用方把拒绝原因原样告诉作者（不静默降级成"只改一句"）。
+   *
+   * @param {object} input
+   *   · paragraphs：`[{ span_id, start, end, text }]`（作者点到的那几段，必须连续）
+   *   · protectedSpans / mustKeep：硬约束（按子串命中即算越界）
+   *   · maxParagraphs / maxChars：上限（默认 3 段 / 600 字）
+   * @returns {{ok:boolean, code:string, chars:number, paragraphs:number, spans:Array}}
+   */
+  function wideningApprovalOf(input = {}) {
+    const list = Array.isArray(input.paragraphs) ? input.paragraphs.filter(Boolean) : [];
+    const maxParagraphs = Number.isInteger(Number(input.maxParagraphs)) && Number(input.maxParagraphs) > 0
+      ? Number(input.maxParagraphs)
+      : 3;
+    const maxChars = Number.isInteger(Number(input.maxChars)) && Number(input.maxChars) > 0
+      ? Number(input.maxChars)
+      : 600;
+    const spans = list.map((p) => ({
+      span_id: textOf(p.span_id),
+      start: Number(p.start) || 0,
+      end: Number(p.end) || 0,
+      text: textOf(p.text),
+    })).filter((p) => p.text.trim() && p.end > p.start);
+    const chars = spans.reduce((n, p) => n + p.text.length, 0);
+    const fail = (code, reason) => ({ ok: false, code, reason, chars, paragraphs: spans.length, spans: [] });
+    if (!spans.length) return fail('NO_SPAN', '这一段定位不到原文：不能据此放宽授权');
+    if (spans.length > maxParagraphs) {
+      return fail('TOO_MANY_PARAGRAPHS', `一次最多批准 ${maxParagraphs} 段（这次选了 ${spans.length} 段）`);
+    }
+    if (chars > maxChars) {
+      return fail('TOO_MANY_CHARS', `一次最多改 ${maxChars} 字（这几段共 ${chars} 字）：请减少段数`);
+    }
+    // 连续性：段与段之间只能隔着空行/换行，不允许"跳段"（跳段等于偷偷扩大范围）。
+    for (let i = 1; i < spans.length; i += 1) {
+      if (spans[i].start < spans[i - 1].end) return fail('OVERLAP', '批准的段落互相重叠：这不是一次合法的连续范围');
+    }
+    const hard = [
+      ...(Array.isArray(input.protectedSpans) ? input.protectedSpans : []).map(textOf).filter(Boolean),
+      ...(Array.isArray(input.mustKeep) ? input.mustKeep : []).map(textOf).filter(Boolean),
+    ];
+    for (const p of spans) {
+      for (const h of hard) {
+        if (h.length >= 4 && (p.text.includes(h) || h.includes(p.text))) {
+          return fail('PROTECTED', `批准的段落里含必须保留的内容（「${clipStr(h, 20)}」）：不能作为改动对象`);
+        }
+      }
+    }
+    return { ok: true, code: 'APPROVED', reason: '', chars, paragraphs: spans.length, spans };
+  }
+
+  /** 复修时哪些"额外线索"被用上了（同一问题：剩余证据 / 作者批准的段落）。 */
+  function wideningSourcesOf(input = {}) {
+    const approved = input.approved && typeof input.approved === 'object' ? input.approved : {};
+    const remaining = input.remaining && typeof input.remaining === 'object' ? input.remaining : {};
+    const approvedIds = Object.keys(approved).filter((id) => approved[id] && Array.isArray(approved[id].spans) && approved[id].spans.length);
+    const remainingIds = Object.keys(remaining).filter((id) => Array.isArray(remaining[id]) && remaining[id].length);
+    const chars = approvedIds.reduce((n, id) => n + (Number(approved[id].chars) || 0), 0);
+    const paragraphs = approvedIds.reduce((n, id) => n + (Array.isArray(approved[id].spans) ? approved[id].spans.length : 0), 0);
+    return {
+      ids: uniqueStrings([...approvedIds, ...remainingIds]),
+      approvedIds,
+      remainingIds,
+      paragraphs,
+      chars,
+      // 有任意一种"额外线索"才值得提供"扩范围再修"入口；否则那就是原有的那一轮。
+      any: approvedIds.length > 0 || remainingIds.length > 0,
+    };
+  }
+
+  /**
+   * 批准范围的默认编辑动作（纯函数）。
+   *
+   * 为什么多段批准默认是 `delete`：跨段授权要解决的正是"删掉/压掉整块"——
+   * 逐段 `replace` 表达不了"三段合成一句"，而 `condense` 还需要额外的跨度批准开关。
+   * 删除是最小的、可核对的动作（作者也能在 diff 里一眼看出删了哪几段）。
+   * 单段批准则沿用审稿给出的建议动作（没有就按 replace）。
+   */
+  function wideningOpFor(input = {}) {
+    const n = Number(input.paragraphs) || 0;
+    const allowed = ['replace', 'delete', 'condense'];
+    const suggested = textOf(input.suggested);
+    if (n >= 2) return 'delete';
+    return allowed.includes(suggested) ? suggested : 'replace';
+  }
+
+  /**
+   * 合并到正文的**门禁裁决**（P0，2026-10-22）。
+   *
+   * 为什么这是一条判据而不是散在点击处理器里的 if：
+   * 2026-10-06 的作者要求是「点合并就必须写进去」，于是旧实现把基线比较降级成一句
+   * `review_merge_overwrite` 警告就照样整篇覆盖 —— 修稿候选是几分钟前的整章重写，
+   * 作者在这期间改过的正文会被无声抹掉（只在历史版本里留一条）。
+   * 现在的语义是：**普通合并不再静默覆盖**，但它不是"拦死"——作者仍可走「明确覆盖」，
+   * 前提是他真的看见"这一章在预览之后变过"并再确认一次。两个动作在协议层就不同（mode 不同）。
+   *
+   * 判据顺序有意如此：
+   *   1. 读不到基线 → 最严重（连"基于哪一版"都不知道），只能明确覆盖或先刷新；
+   *   2. 基线变了 → 拒绝普通合并（这是本方案要解决的那个风险）；
+   *   3. 候选与已验收候选不是同一份 → 拒绝（旧结论不能给新候选背书）。
+   * 三者都不成立才是 OK。
+   *
+   * @returns {{verdict:string, reasons:string[], forceAllowed:boolean}}
+   *   verdict ∈ OK / BASE_UNREADABLE / BASE_STALE / VERIFICATION_STALE
+   */
+  function mergeGateOf(input = {}) {
+    const reasons = [];
+    const unreadable = input.unreadable === true;
+    const currentHash = textOf(input.currentHash);
+    const updatedAt = textOf(input.updatedAt);
+    const baseFingerprint = textOf(input.baseFingerprint);
+    const currentFingerprint = textOf(input.currentFingerprint);
+    const candidateHash = textOf(input.candidateHash);
+    const verifiedHash = textOf(input.verifiedCandidateHash);
+    if (unreadable || (!currentHash && !updatedAt)) {
+      reasons.push('BASE_UNREADABLE');
+      return { verdict: 'BASE_UNREADABLE', reasons, forceAllowed: true };
+    }
+    // 只有**预览时确实记过基线指纹**才谈得上"变没变"。没记过就不许猜：
+    // 猜"没变"等于把旧缺陷换个地方复现（差异预览有时不带 baseFingerprint）。
+    if (baseFingerprint && currentFingerprint && baseFingerprint !== currentFingerprint) {
+      reasons.push('BASE_STALE');
+      return { verdict: 'BASE_STALE', reasons, forceAllowed: true };
+    }
+    // "重算过候选但还没复验"：候选变了、结论没跟上来。旧实现会让旧结论给新候选背书，
+    // 这里把它单独成一个裁决 —— 作者仍可明确覆盖，但界面不许说"已通过"。
+    if (input.requiresReverify === true && !verifiedHash) {
+      reasons.push('NEEDS_REVERIFY');
+      return { verdict: 'NEEDS_REVERIFY', reasons, forceAllowed: true };
+    }
+    if (verifiedHash && candidateHash && verifiedHash !== candidateHash) {
+      reasons.push('VERIFICATION_STALE');
+      return { verdict: 'VERIFICATION_STALE', reasons, forceAllowed: true };
+    }
+    if (!baseFingerprint || !currentFingerprint) reasons.push('NO_BASE_EVIDENCE');
+    return { verdict: 'OK', reasons, forceAllowed: true };
+  }
+
+  /** 「明确覆盖」必须带的那句二次确认凭据（服务端会核对它，缺了就 409）。 */
+  const FORCE_ACK = 'confirmed-by-author';
+
+  /**
+   * `/novel/adopt` 的请求体片段（纯函数，便于断言"点了普通合并到底发了什么"）。
+   *
+   * mode=normal 时 expected.content_hash 是**现读的服务端基线**：服务端在事务内重读后再比一次，
+   * 于是"客户端检查完 → 服务端写入前"这段窗口也关上了（单靠客户端比较关不掉这段）。
+   */
+  function mergeAdoptPayloadOf(input = {}) {
+    const force = input.mode === 'explicit_force';
+    const currentHash = textOf(input.currentHash);
+    const updatedAt = textOf(input.updatedAt);
+    const candidateHash = textOf(input.candidateHash);
+    const verifiedHash = textOf(input.verifiedCandidateHash);
+    const expected = {};
+    if (currentHash) expected.content_hash = currentHash;
+    else if (updatedAt) expected.updated_at = updatedAt;
+    if (candidateHash) expected.candidate_hash = candidateHash;
+    if (verifiedHash) expected.verified_candidate_hash = verifiedHash;
+    if (force) {
+      expected.force_ack = FORCE_ACK;
+      // 覆盖仍然带着**刚读到的**服务端基线：服务端据此还能拦住"确认之后又变了"的第三次写入。
+      // 缺这两个字段中的一个，服务端就不许覆盖（见 server.js 的 explicit_force 分支）。
+      expected.base_conflict = 'BASE_CHANGED_SINCE_PREVIEW';
+    }
+    const ids = Array.isArray(input.unresolvedIssueIds)
+      ? uniqueStrings(input.unresolvedIssueIds.map((s) => textOf(s)))
+      : [];
+    return {
+      mode: force ? 'explicit_force' : 'normal',
+      expected,
+      unresolved_issue_ids: ids,
+      // 请求体里没有 expected 的整次采纳（老客户端 / AI 采纳路径）**不做** CAS ——
+      // 这条标记让界面能如实说"这次没有并发基线可校验"，而不是假装保护过。
+      has_baseline: Boolean(expected.content_hash || expected.updated_at),
+    };
+  }
+
   return {
     VERSION,
     STATES,
@@ -521,5 +843,17 @@
     isBaseStale,
     estimateRevisionCostCents,
     planAutoRepair,
+    verifyAllowanceOf,
+    repairIssuesFrom,
+    targetedRepairOf,
+    acceptedLeftoversOf,
+    wideningApprovalOf,
+    wideningSourcesOf,
+    wideningOpFor,
+    mergeGateOf,
+    mergeAdoptPayloadOf,
+    FORCE_ACK,
+    roundsUsedOf,
+    mergeRepairRounds,
   };
 });

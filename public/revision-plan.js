@@ -884,6 +884,49 @@
     };
   }
 
+  /**
+   * 在**新的正文**上重放同一批补丁（P0 合并保护的「重算候选」出口）。
+   *
+   * 为什么需要它：差异预览打开之后作者又改过正文，旧候选已经不在同一版上。
+   * 旧实现要么强行覆盖（会吞掉新改动），要么让作者手工抄（更坏）。
+   * 这里的做法是：把补丁按原位置重放到当前正文，**锚点逐条核对**，任何一条对不上就整体失败并说清是哪条。
+   *
+   * 为什么拒绝部分重放：补丁之间可能相邻，"只重放对得上的那几条"会产生一份谁都没审过的半成品，
+   * 而作者点的是"重算候选"——他等的是完整候选，不是残缺候选。
+   *
+   * @param {string} baseText 当前正文（新基线）
+   * @param {Array} patches 原补丁（位置基于**旧**正文）
+   * @returns {{ok:boolean, text?:string, applied?:number, reason?:string, failed?:Array}}
+   */
+  function rebaseCandidate(baseText, patches) {
+    const base = String(baseText == null ? '' : baseText);
+    const list = Array.isArray(patches) ? patches : [];
+    if (!list.length) return { ok: false, reason: 'NO_PATCHES', failed: [], applied: 0 };
+    const sorted = list.slice().sort((a, b) => Number(b.start) - Number(a.start));
+    for (const p of sorted) {
+      if (!Number.isFinite(Number(p && p.start)) || !Number.isFinite(Number(p && p.end))) {
+        return { ok: false, reason: 'MISSING_POSITION', failed: [], applied: 0 };
+      }
+    }
+    const failed = [];
+    let out = base;
+    let applied = 0;
+    for (const p of sorted) {
+      const start = Number(p.start);
+      const end = Number(p.end);
+      const orig = String(p.original != null ? p.original : (p.anchor != null ? p.anchor : ''));
+      const repl = String(p.replacement != null ? p.replacement : (p.revised != null ? p.revised : ''));
+      if (base.slice(start, end) !== orig) {
+        failed.push({ issue: String(p.issue || ''), reason: 'ANCHOR_MISMATCH' });
+        continue;
+      }
+      out = out.slice(0, start) + (p.op === 'delete' ? '' : repl) + out.slice(end);
+      applied += 1;
+    }
+    if (failed.length) return { ok: false, reason: 'ANCHOR_MISMATCH', failed, applied };
+    return { ok: true, text: out, applied };
+  }
+
   return {
     VERSION,
     PLAN_OPS,
@@ -896,6 +939,7 @@
     isPlanStale,
     planCoverageTable,
     candidateWithoutIssue,
+    rebaseCandidate,
     comparisonVerdict,
     revisionSampleGuard,
     // 导出给离线测试单独验（"引号抽取对不对"这类缺陷只走整条链路会被掩盖）。

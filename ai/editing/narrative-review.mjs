@@ -27,6 +27,36 @@ export const SUGGESTED_ACTIONS = ['replace', 'delete', 'condense', 'keep', 'defe
 export const PROTECTION_CLASSES = ['author_explicit', 'approved_contract', 'editorial_suggestion'];
 
 const norm = (s) => String(s == null ? '' : s).replace(/[\s\u3000]+/g, '');
+
+/**
+ * issues 行与结构化结论的"同一问题"判据（2-gram 覆盖率）。
+ *
+ * 为什么不是逐字比较：模型对同一条问题会写两遍 —— issues 里一段散文、findings 里一条结构化，
+ * 而两处措辞几乎从不逐字相同（实测是改写过）。旧实现只问"派生行是否包含这一行的前 20 字"，
+ * 于是每条被接受的 finding 都会多留一条 `id:''` 的未链接项：清单条数翻倍、默认全勾选，
+ * 修稿前的映射闸门因此 fail-closed（REVIEW_SELECTION_MISSING_FINDING），整章无法精确修稿。
+ *
+ * 阈值从现场量出来：同一问题的改写版本覆盖率 0.33–0.57，不同问题之间 ≤0.13。取 0.25 留两侧余量；
+ * 过短的行（<11 个 2-gram）覆盖率不可靠，宁可保留为未链接项，也不冒吞掉真问题的风险。
+ */
+const REPEAT_COVERAGE = 0.25;
+const REPEAT_MIN_GRAMS = 11;
+
+function bigramsOf(s) {
+  const t = String(s == null ? '' : s).replace(/[\s\p{P}]+/gu, '');
+  const out = new Set();
+  for (let i = 0; i + 1 < t.length; i += 1) out.add(t.slice(i, i + 2));
+  return out;
+}
+
+/** a 的 2-gram 有多大比例出现在 b 里。 */
+function bigramCoverage(a, b) {
+  if (!a.size || !b.size) return 0;
+  let hit = 0;
+  for (const g of a) if (b.has(g)) hit += 1;
+  return hit / a.size;
+}
+
 const clip = (s, n = 80) => {
   const t = String(s == null ? '' : s);
   return t.length <= n ? t : `${t.slice(0, n)}…`;
@@ -63,14 +93,18 @@ export function locateQuote(text, quote) {
 export function resolveReviewQuoteBase(input = {}) {
   const reviewed = String(input.reviewedText == null ? '' : input.reviewedText);
   const chapter = String(input.chapterText == null ? '' : input.chapterText);
+  // `chapter_empty` 单独记：库内正文为空时 `differs_from_chapter` 只能是 false（没有可比对象），
+  // 但"库里的正文是空的"这件事本身必须能被看见 —— 否则回执会把"报告底本不是正文"
+  // 说成"与正文无差异"（2026-10-22 第 119 章实测：review#30 回执正是 differs=false）。
   if (reviewed.trim()) {
     return {
       text: reviewed,
       source: 'reviewed',
       differs_from_chapter: !!chapter.trim() && norm(reviewed) !== norm(chapter),
+      chapter_empty: !chapter.trim(),
     };
   }
-  return { text: chapter, source: chapter.trim() ? 'chapter' : 'empty', differs_from_chapter: false };
+  return { text: chapter, source: chapter.trim() ? 'chapter' : 'empty', differs_from_chapter: false, chapter_empty: !chapter.trim() };
 }
 
 // ── 2026-03-17（v118 0317 专项 §3）：审稿报告不能虚构"原话" ───────────────────────
@@ -580,6 +614,8 @@ export function structureReviewReport(report = {}, ctx = {}) {
         ? {
           source: String(ctx.quoteBase.source || ''),
           differs_from_chapter: ctx.quoteBase.differs_from_chapter === true,
+          // 库内正文为空：与 differs 分开传 —— 空正文没有"是否有差异"可言，但必须让回执说清。
+          chapter_empty: ctx.quoteBase.chapter_empty === true,
         }
         : null,
     };
@@ -632,7 +668,17 @@ export function structureReviewReport(report = {}, ctx = {}) {
       + (f.downgraded_for_shape_defects ? ' ⚠️字段不全，保留证据但仅作待核验' : '')
       + (f.verdict === 'hypothesis' && !f.downgraded_for_shape_defects ? ' ⚠️未给出反证，仅作待核验' : '');
   });
-  const extraIssues = asList(report.issues).filter((line) => !derived.some((d) => d.includes(clip(line, 20))));
+  // 2026-10-23（现场：清单 18 条、其中 9 条是同义重复 → 修稿映射闸门拒绝整份选择）：
+  // 旧判据"派生行包含这一行的前 20 字"只对**逐字照抄**有效；模型把同一问题改写成散文后
+  // 一条也去不掉。这里改为：逐字前缀（快、准）或 2-gram 覆盖率（同义改写）任一命中即视为重复。
+  const derivedGrams = derived.map((d) => bigramsOf(d));
+  const extraIssues = asList(report.issues).filter((line) => {
+    const raw = String(line == null ? '' : line);
+    if (derived.some((d) => d.includes(clip(raw, 20)))) return false;
+    const grams = bigramsOf(raw);
+    if (grams.size < REPEAT_MIN_GRAMS) return true;
+    return !derivedGrams.some((dg) => bigramCoverage(grams, dg) >= REPEAT_COVERAGE);
+  });
   return withConsistency({
     summary,
     strengths,

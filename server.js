@@ -7842,6 +7842,36 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const expected = body.expected && typeof body.expected === 'object' ? body.expected : {};
     const opKey = asString(body.operation_key, '').trim();
     if (opKey.length < 8) return sendError(res, 400, '缺少 operation_key（整次采纳的幂等键，至少 8 个字符）');
+    // ── P0 合并保护（2026-10-22）──────────────────────────────────────────────
+    // 事故形状：修稿候选是"几分钟前"的整章重写，作者在差异预览之后又改过正文，
+    // 点「合并到正文」时旧实现只写一条 review_merge_overwrite 警告就照样整篇覆盖。
+    // 覆盖本身可回退（旧稿进历史版本），但"作者以为只是合并"与"作者知道自己要覆盖"是两回事，
+    // 所以这里把作者意图显式化，由服务端在事务内裁决：
+    //   · normal（默认）：基线不一致 → 409 REVISION_BASE_STALE，一个字节都不写；
+    //   · explicit_force：作者在「明确覆盖」框里二次确认过 → 允许写，但必须留痕（审计日志 + 旧稿历史版本）。
+    // force_ack 不是安全边界（本地应用无法证明点击者是谁），它的作用是让"顺手点合并"与
+    // "确认覆盖"在协议层就是两个不同的请求 —— 少一个字段就覆盖不了。
+    const FORCE_ACK = 'confirmed-by-author';
+    const adoptMode = asString(body.mode, '') === 'explicit_force' ? 'explicit_force' : 'normal';
+    const forceAck = asString(expected.force_ack ?? body.force_ack, '');
+    // 未通过的条目编号随采纳一起记录：合并部分候选**不等于**这些条目已修复，
+    // 事后排查必须能从采纳记录里看到"当时还欠哪几条"。
+    const unresolvedIssueIds = [...new Set((Array.isArray(body.unresolved_issue_ids) ? body.unresolved_issue_ids : [])
+      .map((s) => asString(s, '').trim()).filter(Boolean))].slice(0, 100);
+    if (adoptMode === 'explicit_force' && forceAck !== FORCE_ACK) {
+      return sendError(res, 409, '明确强制覆盖需要作者二次确认（force_ack 缺失）：普通合并不会覆盖基线已变的正文，请走「明确覆盖」入口', {
+        code: 'REVISION_FORCE_NOT_CONFIRMED',
+      });
+    }
+    // 候选一致性：验收跑在 H1 上、要合并的却是 H2 → 旧结论不能拿来给新候选背书（§4.3 规则 2）。
+    // 两边都是客户端算的同族指纹（contentHashOf），这里只做"是不是同一份"的比较。
+    const candidateHashWant = asString(expected.candidate_hash, '');
+    const verifiedCandidateHash = asString(expected.verified_candidate_hash, '');
+    if (candidateHashWant && verifiedCandidateHash && candidateHashWant !== verifiedCandidateHash) {
+      return sendError(res, 409, '要合并的候选与通过验收的候选不是同一份（hash 不一致）：请重新复验这份候选后再合并', {
+        code: 'REVISION_VERIFICATION_STALE',
+      });
+    }
     const norm = {
       work_id: workId,
       chapter_id: chapterId,
@@ -7853,8 +7883,16 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       // 幂等键要把"作者勾的到底是哪几行"也钉进去：光有裸 id 时，event:1 与 memory:1 的
       // 指纹会一样，同一个 operation_key 配不同选择会被误判成"原样重放"。
       legacy_proposal_refs: legacyRefs.map((r) => `${r.type}:${r.id}`),
+      // 幂等指纹必须覆盖"这次采纳是什么意图"：同一个 key 换个 mode 重放，
+      // 语义已经从"合并"变成"覆盖"，不能当成原样重放（否则审计里会缺这一次覆盖）。
+      mode: adoptMode,
+      unresolved_issue_ids: unresolvedIssueIds,
       expected: {
         content_hash: asString(expected.content_hash, ''),
+        candidate_hash: candidateHashWant,
+        verified_candidate_hash: verifiedCandidateHash,
+        force_ack: forceAck,
+        base_conflict: asString(expected.base_conflict, ''),
         // P1-10：并发基线的**第二形态**。`content_hash` 要求调用方拿到服务端正文原文才能算，
         // 而前端手里就有章节行的 `updated_at`（编辑保存的乐观锁 `_if_updated_at` 用的也是它）。
         // 两者取其一即可表达"我这次采纳基于哪一版正文"；都没给才表示调用方不作并发校验。
@@ -7910,8 +7948,32 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         const freshChapter = chapterId ? prepare('SELECT * FROM chapters WHERE id = ?').get(chapterId) : null;
         if (chapterId && !freshChapter) throw new Error('章节在采纳过程中被删除');
         const contentHashBefore = freshChapter ? Approvals.chapterBaselineHash(freshChapter.content) : '';
+        // P0（2026-10-22）：基线闸门从"提示"升格为"事务内拒绝"。
+        // 必须先算：这是唯一一处能同时看到"提交方认为的基线"与"库里现在的基线"的地方，
+        // 而且它在 withTx 内 —— 拒绝时不会留下半套状态（正文/历史版本/提案/outbox 都没动）。
+        let forcedOverwrite = false;
         if (contentProvided && chapterId && expected.content_hash && expected.content_hash !== contentHashBefore) {
-          throw new Error('本章正文在确认之后被修改过（基线 hash 不一致），为避免覆盖新内容已拒绝采纳；请重新审阅');
+          const err = new Error(adoptMode === 'explicit_force'
+            // 明确覆盖仍然要求"客户端刚读到的基线"就是库里这一版：否则作者确认的是 A 版、
+            // 覆盖掉的却是 B 版 —— 那不是他点的那个动作，宁可让他重来一次。
+            ? '你确认覆盖之后正文又变了（基线 hash 不一致）：为避免覆盖掉你还没看过的内容，本次未写入；请重新点一次合并'
+            : '本章正文在你预览之后被改过（基线 hash 不一致）：普通合并不会覆盖它。'
+              + '请先查看差异或在当前正文上重算候选；确需用这份旧候选替换，请走「明确覆盖」并二次确认');
+          err.status = 409;
+          err.code = adoptMode === 'explicit_force' ? 'REVISION_BASE_CHANGED_AGAIN' : 'REVISION_BASE_STALE';
+          throw err;
+        }
+        // 只有"要写正文的采纳"才有覆盖这回事：只入账提案的采纳不该被要求声明基线冲突。
+        if (adoptMode === 'explicit_force' && contentProvided && chapterId) {
+          // 作者声明"我知道正文在预览之后变过，仍要用这份候选替换"。缺这句就不许覆盖 ——
+          // 让"顺手点合并"与"确认覆盖"在协议层就是两个请求。
+          if (asString(expected.base_conflict, '') !== 'BASE_CHANGED_SINCE_PREVIEW') {
+            const err = new Error('明确覆盖需要声明"基线已变"（base_conflict 缺失）：本次未写入');
+            err.status = 409;
+            err.code = 'REVISION_FORCE_NOT_CONFIRMED';
+            throw err;
+          }
+          forcedOverwrite = true;
         }
         // P1-10：`expected.updated_at` 是并发基线的**第二形态**（见上面 norm.expected 的字段注释）。
         // 旧实现只认 content_hash，而 AI 采纳这条路径从不传它 —— 于是这道闸门**恒不成立**：
@@ -7926,7 +7988,9 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
         //   · 真并发（别人写入且内容确实变了）仍被上一道 hash 闸门拦下 —— 保护没有被削弱。
         //   · 未带 content_hash 的老客户端保持原 temporal 判据（updated_at），语义不变。
         // 判据顺序有意如此：先认内容，再退回时间戳；两者都在事务内用**重读后的行**比对。
-        if (contentProvided && chapterId && !expected.content_hash && expected.updated_at && freshChapter
+        // explicit_force 不走这条：作者已经在冲突框里确认过"要覆盖当前这一版"，
+        // 再用时间戳把他拦住只会变成"确认了也进不去"（而内容基线那一道在 force 下仍然生效）。
+        if (adoptMode !== 'explicit_force' && contentProvided && chapterId && !expected.content_hash && expected.updated_at && freshChapter
             && String(freshChapter.updated_at) !== String(expected.updated_at)) {
           throw new Error('本章正文在本页保存之后版本已推进（很可能就是本页上一次自动保存，版本标记已过期），为避免覆盖更新的内容已拒绝采纳；请直接重试这次采纳');
         }
@@ -8029,8 +8093,37 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
             // 它不再是整次采纳的失败原因 —— 正文照常写入，这里如实把原因交给界面。
             legacy: { ...legacyApplied, guard_failed: legacyGuardFailed },
             projection_ids: projections, replayed: false,
+            // P0 审计面：这次采纳到底是"合并"还是"覆盖"、覆盖时基线是什么、当时还欠哪几条。
+            // 界面据此显示「带未通过项采用」的实情，事后也能只凭采纳记录复盘（不用翻客户端日志）。
+            mode: adoptMode,
+            forced_overwrite: forcedOverwrite,
+            base_hash_at_force: forcedOverwrite ? contentHashBefore : '',
+            verified_candidate_hash: verifiedCandidateHash,
+            unresolved_issue_ids: unresolvedIssueIds,
           },
         };
+        // 覆盖必须留一条**服务端**的审计事件：客户端的 review_merge_overwrite 只是"准备覆盖"的证据，
+        // 这一条才是"这次覆盖真的提交了"（能区分"警告过"与"写成了"）。
+        //
+        // 为什么直接 INSERT app_logs 而不走 log()：log() 对非 error 级别是**内存缓冲 + 1 秒后批量落库**，
+        // 于是「审计行」既不在本事务里（回滚也删不掉它 → 会留下"覆盖发生过"的假记录），
+        // 又可能在一秒内崩溃时丢掉（那正是最需要它的时刻）。审计要的是确定性，不是低开销。
+        if (forcedOverwrite) {
+          prepare(`INSERT INTO app_logs (ts, layer, level, kind, message, context, dedup_key)
+                   VALUES (?, 'server', 'warn', 'adopt_force_overwrite', ?, ?, ?)`).run(
+            now(),
+            `[整次采纳] 作者明确覆盖：第 ${chapterId} 章正文在候选之后变过，仍按二次确认写入（覆盖前那一版已存进历史版本）`,
+            stableStringify({
+              work_id: workId, chapter_id: chapterId, operation_key: opKey,
+              adopt_kind: asString(body.adopt_kind, ''),
+              content_hash_before: contentHashBefore, content_hash_after: contentHashAfter,
+              content_version_id: contentVersionId,
+              unresolved_issue_ids: unresolvedIssueIds,
+              force_ack: forceAck,
+            }),
+            `adopt_force_overwrite|${opKey}`,
+          );
+        }
         prepare(`INSERT INTO adoption_operations (idempotency_key, payload_hash, work_id, chapter_id, result_json)
                  VALUES (?, ?, ?, ?, ?)`).run(opKey, payloadHash, workId, chapterId || 0, stableStringify(out));
         return out;
@@ -9646,9 +9739,12 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       // 形状缺陷（缺 kind/suggested_action 等）：条目被保留但降级为待核验，必须让作者看见。
       findings_shape_defects: structured.shape_defect_count || 0,
       // 引文是拿哪份正文核验的：reviewed=被审正文快照 / chapter=当前库正文 / empty=没有底本。
+      // chapter_empty 与 differs_from_chapter 分开：库内正文为空时没有"是否有差异"可比，
+      // 但"库里的正文是空的"必须让界面与作者看见（否则会读成"与正文一致"）。
       quote_base: quoteBase ? {
         source: quoteBase.source,
         differs_from_chapter: quoteBase.differs_from_chapter === true,
+        chapter_empty: quoteBase.chapter_empty === true,
       } : null,
       // 拒收理由逐条给出（作者与测试都能核对"不是我漏了，而是引用没通过"）。
       rejected: structured.rejected || [],

@@ -68,6 +68,9 @@ export const NARRATIVE_REPAIR_TESTS = [
   // 覆盖"只修半个问题、完全漏修、改错位置、跨角色卡未核验"四类伪修复，以及
   // 已 PASS 项不被后续复修冲掉、单段/分段同一出口、分母不缩。
   'tests/narrative-repair/18-six-issue-closure.test.mjs',
+  // 《逐项验收卡死》2026-10-22：V00–V39（复修入口 / 轮次预算守卫 / 剩余证据扩范围 /
+  // 已知遗留 / 复验额度按候选版本）。这套断言直接管"判了局部之后还有没有下一步"。
+  'tests/narrative-repair/19-partial-repair-entry.test.mjs',
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();

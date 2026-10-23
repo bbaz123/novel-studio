@@ -364,6 +364,195 @@ try {
     ok('H8 不再出现"达标 x/y"这类自相矛盾的计数文案', !/达标/.test(String((h.data && h.data.message) || '')));
   }
 
+  // ── M. P0 合并保护（2026-10-22）：基线闸门 / 明确覆盖 / 候选一致性 ───────────
+  // 现场形状（活库已复算）：修稿候选是几分钟前的整章重写，作者在差异预览之后又改过正文，
+  // 旧实现只写一条 review_merge_overwrite 警告就照样整篇覆盖。这里的断言就是"它现在会拦住"，
+  // 以及"作者确认覆盖时仍然能写进去、但必须留痕"。
+  {
+    const w4 = await req('/api/works', { method: 'POST', body: { title: '采纳测试·合并保护' } });
+    const work4 = w4.data.id;
+    const c4 = await req('/api/chapters', { method: 'POST', body: { work_id: work4, title: '合并章' } });
+    const ch4 = c4.data.id;
+    await req('/api/novel/chapter_save', { method: 'POST', body: { chapter_id: ch4, content: '<p>P0 基线正文</p>' } });
+    const baseRow = await getChapter(ch4);
+    const baseHash = String(baseRow.content_hash || '');
+    ok('M0 准备：单章读回带服务端权威基线 content_hash（16 位）', baseHash.length === 16, JSON.stringify(baseHash));
+
+    const versionsOf4 = async () => ((await versionsOf(ch4)).length || 0);
+
+    // M1 基线一致 + 普通合并 → 写入
+    {
+      const before = await versionsOf4();
+      const r = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>合并后的正文一</p>',
+          operation_key: `merge-M1-${Date.now().toString(36)}`, adopt_kind: 'review_merge', mode: 'normal',
+          expected: { content_hash: baseHash },
+        },
+      });
+      const a = (r.data && r.data.adopt) || {};
+      ok('M1 基线一致：普通合并 200，mode=normal 且不是覆盖',
+        r.status === 200 && a.mode === 'normal' && a.forced_overwrite === false, `${r.status} ${JSON.stringify(a).slice(0, 160)}`);
+      ok('M1b 正文已写入，旧稿进历史版本（版本 +1）',
+        (await getChapter(ch4)).content.includes('合并后的正文一') && (await versionsOf4()) === before + 1);
+    }
+
+    // 下面的用例都以"当前基线"为对照
+    const nowHash = String((await getChapter(ch4)).content_hash || '');
+
+    // M2 基线不一致 + 普通合并 → 409，一个字节都不写
+    {
+      const before = await versionsOf4();
+      const opKey = `merge-M2-${Date.now().toString(36)}`;
+      const r = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>不该写进去的覆盖</p>',
+          operation_key: opKey, adopt_kind: 'review_merge', mode: 'normal',
+          expected: { content_hash: 'ffffffffffffffff' },
+        },
+      });
+      ok('M2 基线不一致的普通合并 → 409 + REVISION_BASE_STALE',
+        r.status === 409 && r.data && r.data.code === 'REVISION_BASE_STALE', `${r.status} ${JSON.stringify(r.data).slice(0, 200)}`);
+      ok('M2b 正文未变、无历史版本、无采纳记录（事务内拒绝，回滚彻底）',
+        !(await getChapter(ch4)).content.includes('不该写进去的覆盖')
+        && (await versionsOf4()) === before
+        && !dbGet('SELECT idempotency_key FROM adoption_operations WHERE idempotency_key = ?', opKey));
+    }
+
+    // M3 要合并的候选与通过验收的候选不是同一份 → 409
+    {
+      const r = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>候选变了</p>',
+          operation_key: `merge-M3-${Date.now().toString(36)}`, adopt_kind: 'review_merge',
+          expected: { content_hash: nowHash, candidate_hash: 'cand-H2', verified_candidate_hash: 'cand-H1' },
+        },
+      });
+      ok('M3 候选 hash 与验收 hash 不一致 → 409 + REVISION_VERIFICATION_STALE（旧结论不给新候选背书）',
+        r.status === 409 && r.data && r.data.code === 'REVISION_VERIFICATION_STALE', `${r.status} ${JSON.stringify(r.data).slice(0, 160)}`);
+      ok('M3b 未写入', !(await getChapter(ch4)).content.includes('候选变了'));
+    }
+
+    // M4/M5 明确覆盖的两道声明缺一不可
+    {
+      const r4 = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>少一句声明</p>',
+          operation_key: `merge-M4-${Date.now().toString(36)}`, adopt_kind: 'review_merge', mode: 'explicit_force',
+          expected: { content_hash: nowHash },
+        },
+      });
+      ok('M4 明确覆盖缺 force_ack → 409 REVISION_FORCE_NOT_CONFIRMED',
+        r4.status === 409 && r4.data && r4.data.code === 'REVISION_FORCE_NOT_CONFIRMED', `${r4.status} ${JSON.stringify(r4.data).slice(0, 160)}`);
+      const r5 = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>少了基线声明</p>',
+          operation_key: `merge-M5-${Date.now().toString(36)}`, adopt_kind: 'review_merge', mode: 'explicit_force',
+          expected: { content_hash: nowHash, force_ack: 'confirmed-by-author' },
+        },
+      });
+      ok('M5 明确覆盖缺 base_conflict（没声明"基线已变"）→ 409，不写',
+        r5.status === 409 && r5.data && r5.data.code === 'REVISION_FORCE_NOT_CONFIRMED'
+        && !(await getChapter(ch4)).content.includes('少了基线声明'), `${r5.status} ${JSON.stringify(r5.data).slice(0, 160)}`);
+    }
+
+    // M6 完整声明的明确覆盖 → 写入 + 事务内审计 + 旧稿进历史版本
+    let forceOpKey = '';
+    {
+      const before = await versionsOf4();
+      forceOpKey = `merge-M6-${Date.now().toString(36)}`;
+      const r = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>作者确认覆盖后的正文</p>',
+          operation_key: forceOpKey, adopt_kind: 'review_merge', mode: 'explicit_force',
+          expected: { content_hash: nowHash, force_ack: 'confirmed-by-author', base_conflict: 'BASE_CHANGED_SINCE_PREVIEW' },
+          unresolved_issue_ids: ['R-0005', 'R-0006', 'R-0005'],
+        },
+      });
+      const a = (r.data && r.data.adopt) || {};
+      ok('M6 明确覆盖 200：result 如实标 forced_overwrite 与覆盖前基线',
+        r.status === 200 && a.forced_overwrite === true && a.base_hash_at_force === nowHash && a.mode === 'explicit_force',
+        `${r.status} ${JSON.stringify(a).slice(0, 220)}`);
+      ok('M6b 正文已写入，覆盖前那一版进历史版本（版本 +1）',
+        (await getChapter(ch4)).content.includes('作者确认覆盖后的正文') && (await versionsOf4()) === before + 1);
+      ok('M6c 未通过条目随采纳记录回传（去重；采用 ≠ 修好）',
+        Array.isArray(a.unresolved_issue_ids) && a.unresolved_issue_ids.join(',') === 'R-0005,R-0006',
+        JSON.stringify(a.unresolved_issue_ids));
+      const audit = dbGet(`SELECT kind, message, context FROM app_logs WHERE kind = 'adopt_force_overwrite' ORDER BY id DESC LIMIT 1`);
+      let ctx = {};
+      try { ctx = JSON.parse((audit && audit.context) || '{}'); } catch { ctx = {}; }
+      ok('M6d 服务端在事务内写了 adopt_force_overwrite 审计（含 operation_key 与当时欠的条目）',
+        !!audit && String(ctx.operation_key || '') === forceOpKey
+        && Array.isArray(ctx.unresolved_issue_ids) && ctx.unresolved_issue_ids.join(',') === 'R-0005,R-0006'
+        && String(ctx.content_hash_before || '') === nowHash,
+        JSON.stringify(ctx).slice(0, 240));
+    }
+
+    // M7/M8 幂等与意图
+    {
+      const versionsNow = await versionsOf4();
+      const replay = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>作者确认覆盖后的正文</p>',
+          operation_key: forceOpKey, adopt_kind: 'review_merge', mode: 'explicit_force',
+          expected: { content_hash: nowHash, force_ack: 'confirmed-by-author', base_conflict: 'BASE_CHANGED_SINCE_PREVIEW' },
+          unresolved_issue_ids: ['R-0005', 'R-0006', 'R-0005'],
+        },
+      });
+      ok('M7 同 key 原样重放 → 200 replayed，且没有多写一个历史版本',
+        replay.status === 200 && replay.data.replayed === true && (await versionsOf4()) === versionsNow,
+        `${replay.status} ${JSON.stringify(replay.data).slice(0, 120)}`);
+      const switched = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>作者确认覆盖后的正文</p>',
+          operation_key: forceOpKey, adopt_kind: 'review_merge', mode: 'normal',
+          expected: { content_hash: nowHash },
+        },
+      });
+      ok('M8 同一个 key 换 mode（覆盖→普通）不算原样重放 → 409（意图变了，审计不能被吞掉）',
+        switched.status === 409, `实际 ${switched.status}`);
+    }
+
+    // M9 空章节是合法基线：第一次采纳不能被基线闸门误拦
+    {
+      const c5 = await req('/api/chapters', { method: 'POST', body: { work_id: work4, title: '空章' } });
+      const ch5 = c5.data.id;
+      const emptyRow = await getChapter(ch5);
+      const r = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch5, content: '<p>第一次写进空章</p>',
+          operation_key: `merge-M9-${Date.now().toString(36)}`, adopt_kind: 'review_merge', mode: 'normal',
+          expected: { content_hash: String(emptyRow.content_hash || '') },
+        },
+      });
+      ok('M9 空章节第一次采纳：以合法空基线写入（不重演"空正文被误拦"）',
+        r.status === 200 && (await getChapter(ch5)).content.includes('第一次写进空章'),
+        `${r.status} ${JSON.stringify(r.data && r.data.code)}`);
+    }
+
+    // M10 不带 expected 的老路径：语义不变（不做 CAS），但不许假装保护过
+    {
+      const r = await req('/api/novel/adopt', {
+        method: 'POST',
+        body: {
+          work_id: work4, chapter_id: ch4, content: '<p>老路径写入</p>',
+          operation_key: `merge-M10-${Date.now().toString(36)}`, adopt_kind: 'review_merge',
+        },
+      });
+      ok('M10 不带基线（老客户端）仍按原语义写入 —— 保护只在"声明了基线"时生效（如实但不假装）',
+        r.status === 200 && (await getChapter(ch4)).content.includes('老路径写入'), `实际 ${r.status}`);
+    }
+  }
+
   // ── F. 重启恢复（只凭 outbox 续跑）──────────────────────────────────────
   {
     const row = dbGet(`SELECT * FROM projection_outbox WHERE payload_json LIKE '%adopt-A-%' ORDER BY id DESC LIMIT 1`);

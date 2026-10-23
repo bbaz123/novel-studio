@@ -49,6 +49,33 @@ const noCounter = { ...good, id: 'H1', counterevidence: '' };
 }
 
 {
+  // 2026-10-23 现场（修稿选择映射断裂 REVIEW_SELECTION_MISSING_FINDING）：
+  // 模型把同一条问题写了两遍 —— issues 里一段散文、findings 里一条结构化。旧去重只比较
+  // "派生行是否包含这一行的前 20 字"，而两处措辞几乎从不逐字相同，于是每条被接受的 finding
+  // 都会额外留下一条 id:'' 的未链接项：清单从 9 条变成 18 条，默认全勾选 → 修稿前的映射闸门
+  // fail-closed，整章无法精确修稿。这里钉住"同义改写要算重复、真·额外问题要保留"。
+  // 措辞取自 2026-10-23 的真实报告（review 32）：finding.rationale 与 issues 散文行讲同一件事，
+  // 后者多一句建议 —— 旧前缀判据因此一条也没去掉。
+  const rationale = '位置：进大厅前的排队段。广播已经把流程说全（「交表、按掌、等结果，全程不超过三分钟」），'
+    + '隔了几段叙述者又用「流程其实只有三步」重述一遍，紧接着把全套后果也讲完：'
+    + '「念什么学校、进不进防卫体系、家里人是哭还是笑，全在这三步里」。';
+  const paraphrase = rationale + '建议删掉这三步与后果的总结句，让规则由场景自己交代。';
+  const distinctExtra = '位置：第三章开头。上一章时间线已经推进到傍晚，这一章又写「刚过正午」，跨章时间倒退。';
+  const structured = structureReviewReport({
+    summary: '总评',
+    issues: [paraphrase, distinctExtra],
+    findings: [{ ...good, id: 'N04', rationale }],
+  }, { text });
+  const ids = structured.issues.map((x) => (x && typeof x === 'object' ? String(x.id) : ''));
+  check('E03-g 同义改写的 issues 行不再重复成未链接项（否则默认全勾选会让修稿映射闸门整体 fail-closed）',
+    structured.issues.length === 2 && ids[0] === 'N04',
+    JSON.stringify(ids));
+  check('E03-g2 真正额外的问题仍如实保留为未链接项（不能为了去重把它吞掉）',
+    ids.length === 2 && ids[1] === '' && String(structured.issues[1].text || '').includes('跨章时间倒退'),
+    JSON.stringify(structured.issues[1]));
+}
+
+{
   // 旧口径：只有行文本 → 逐字沿用旧行为（这条是"不破坏既有链路"的证据）
   const legacy = structureReviewReport({ summary: '总评', issues: ['问题一', '问题二'], strengths: ['优点一'] }, { text });
   check('E03-c 只有行文本（旧口径）时逐字沿用：issues 原样、structure 标 legacy_lines',

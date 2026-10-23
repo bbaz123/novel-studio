@@ -23,12 +23,37 @@ import { auditPluginStatus } from './provision.mjs';
 
 const TOKEN_HEADER = 'x-audit-token';
 
+/**
+ * 审计的**可信价目表**（`app_settings.audit_price_table`，JSON）。
+ * 没有配置就返回 null —— 服务端宁可不记账，也不按字数猜价格。
+ */
+function readAuditPriceTable() {
+  try {
+    const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get('audit_price_table');
+    if (!row || !row.value) return null;
+    const parsed = JSON.parse(String(row.value));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) { return null; }
+}
+
 function tokenOf(req, body) {
   return String((req && req.headers ? req.headers[TOKEN_HEADER] : '') || (body && body.token) || '');
 }
 
-function fail(res, status, code, detail = '') {
-  return sendJSON(res, status, { ok: false, error: detail || code, code, detail });
+/**
+ * 统一失败响应。extra 用来携带**可定位的缺陷台账**（§3.2）：
+ * 契约不合法时，界面要能显示"哪条 finding / 哪个字段 / 能不能免费修"，
+ * 而不是只有一句人读摘要。extra 只允许追加字段，不覆盖 ok/error/code/detail。
+ */
+function fail(res, status, code, detail = '', extra = null) {
+  const body = { ok: false, error: detail || code, code, detail };
+  if (extra && typeof extra === 'object') {
+    for (const [k, v] of Object.entries(extra)) {
+      if (k === 'ok' || k === 'error' || k === 'code' || k === 'detail') continue;
+      if (v !== undefined) body[k] = v;
+    }
+  }
+  return sendJSON(res, status, body);
 }
 
 function chapterRow(chapterId) {
@@ -96,11 +121,19 @@ export async function handleQualityAuditRoutes(req, res, segments, query, method
     const kind = String(query.kind || '');
     const rows = store.listForChapter(chapterId, 20).filter((r) => !kind || String(r.kind) === kind);
     const latest = rows[0] || null;
+    // 独立复核的正文**只**来自库内本章正文（见 buildReviewResources），所以"现在能不能复核"
+    // 由库里的正文决定，而不是编辑器里有什么。界面据此在点击之前就说清楚，
+    // 不必等一次创建请求回来才报"正文为空"（2026-10-22 草稿链实测）。
+    // 判据与 coordinator 同一口径：htmlToPlain 后 trim 为空即空；读不到章节时为 null（未知，不误判）。
+    const chapter = chapterRow(chapterId);
+    const articleChars = chapter ? htmlToPlain(chapter.content || '').trim().length : null;
     return (sendJSON(res, 200, {
       ok: true,
       chapter_id: chapterId,
       latest: latest ? { ...store.runSummary(latest), status_label: RUN_STATUS_LABELS[String(latest.status)] || latest.status } : null,
       runs: rows.map((r) => ({ ...store.runSummary(r), status_label: RUN_STATUS_LABELS[String(r.status)] || r.status })),
+      article_empty: articleChars === 0,
+      article_chars: articleChars,
     }), true);
   }
 
@@ -372,14 +405,22 @@ export async function handleQualityAuditRoutes(req, res, segments, query, method
     const out = operation === 'blind_draft'
       ? coordinator.submitBlind(id, token, payload)
       : operation === 'final'
-        ? coordinator.submitFinal(id, token, payload)
+        // usage / 价目表只走**请求体**（不是模型产出），单独作为 meta 传下去：
+        // 模型没有能力知道 token 数，让它填 usage 只会得到编造的数字。
+        ? coordinator.submitFinal(id, token, payload, {
+          usage: body.usage && typeof body.usage === 'object' ? body.usage : null,
+          priceTable: readAuditPriceTable(),
+        })
         : { ok: false, code: ERROR_CODES.AUDIT_CONTRACT_INVALID, detail: `operation 必须是 blind_draft 或 final（收到 ${operation}）` };
     if (!out.ok) {
       const status = out.code === ERROR_CODES.AUDIT_TOKEN_INVALID || out.code === ERROR_CODES.AUDIT_TOKEN_EXPIRED ? 401
         : out.code === ERROR_CODES.AUDIT_RESULT_CONFLICT ? 409
           : out.code === ERROR_CODES.AUDIT_ALREADY_SUBMITTED || out.code === ERROR_CODES.AUDIT_CANCELLED ? 409
             : out.code === ERROR_CODES.AUDIT_PAYLOAD_TOO_LARGE ? 413 : 422;
-      fail(res, status, out.code, out.detail);
+      fail(res, status, out.code, out.detail, {
+        defects: Array.isArray(out.defects) ? out.defects : undefined,
+        defect_summary: out.defect_summary || undefined,
+      });
       return true;
     }
     sendJSON(res, 200, { ok: true, audit_id: id, status: out.run.status, idempotent: Boolean(out.idempotent) });

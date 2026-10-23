@@ -131,6 +131,13 @@
       hash: textOf(rec.hash),
       version_id: rec.versionId == null ? null : Number(rec.versionId),
       at: textOf(rec.at) || new Date().toISOString(),
+      // §6：验收结论**跟着候选走**，不跟着槽位走。
+      // 槽位只是"这份属于哪一类（原文/未复验/已复验）"，判定的是**那一份 hash 的文本**；
+      // 候选一变，旧结论就只属于历史，不能拿来说"当前这份已经验过"。
+      verdict: textOf(rec.verdict),
+      pass: Number.isFinite(Number(rec.pass)) ? Number(rec.pass) : null,
+      total: Number.isFinite(Number(rec.total)) ? Number(rec.total) : null,
+      verified_hash: textOf(rec.hash),
     };
     try {
       const payload = JSON.stringify({ v: 1, slots });
@@ -143,6 +150,37 @@
   function clear(storage, chapterId) {
     try { if (storage && typeof storage.removeItem === 'function') storage.removeItem(storageKey(chapterId)); } catch (_) { /* 清不掉只影响去重 */ }
     return {};
+  }
+
+  /**
+   * 「这份存档的验收结论属于谁」（§6）。
+   *
+   * 修稿候选会一代代换：当前候选、上一版、上上一版。验收结论绑定的是**那一版文本的 hash**，
+   * 所以同一份存档的结论**不能**因为"它躺在 verified 槽里"就继承给后来那一版。
+   *
+   * @param {object} records 存档索引
+   * @param {string} slotId 槽位（base / unverified / verified）
+   * @param {string} currentHash 当前候选的 hash（空 = 不知道当前是哪一版）
+   * @returns {{found:boolean, own:boolean, verdict:string, line:string}}
+   */
+  function acceptanceOf(records, slotId, currentHash) {
+    const rec = (records && typeof records === 'object' ? records[textOf(slotId)] : null) || null;
+    const cur = textOf(currentHash);
+    if (!rec) return { found: false, own: false, verdict: '', line: '这份存档不存在（没存过或已清理）' };
+    const mine = textOf(rec.verified_hash || rec.hash);
+    const own = Boolean(cur) && mine === cur;
+    const verdict = textOf(rec.verdict) || (textOf(rec.slot || slotId) === 'base' ? 'ORIGINAL' : 'UNKNOWN');
+    const passInfo = rec.total != null ? `（逐条通过 ${Number(rec.pass) || 0}/${Number(rec.total) || 0}）` : '';
+    if (own) {
+      return { found: true, own: true, verdict, line: `这份就是当前候选${passInfo}：验收结论适用于它` };
+    }
+    if (!cur) {
+      return { found: true, own: false, verdict, line: `历史候选${passInfo}：当前候选未确定，结论不适用于别处` };
+    }
+    return {
+      found: true, own: false, verdict,
+      line: `历史候选${passInfo}：它的结论只属于 ${mine.slice(0, 22)}，「不继承」给当前候选`,
+    };
   }
 
   /** 一行摘要（界面与测试共用；不足 3 份时如实说少哪一份，不吹成"已全部存档"）。 */
@@ -173,6 +211,7 @@
     load,
     hasSlot,
     remember,
+    acceptanceOf,
     clear,
     summaryOf,
     storageKey,

@@ -91,6 +91,62 @@ export function revisionIntegrityCheck(input = {}) {
 }
 
 /**
+ * 逐项终验的**子条件合成**（方案 §5）。
+ *
+ * 为什么需要它："这一个问题修好了吗"不能只存一句自然语言结论。
+ * 实测形状（方案 §2）：R-0004 = 「群众重复叹息已压缩」+「主角放松的状态可见」两件事，
+ * 前者 PASS、后者 FAIL 时，整项只能是 PARTIAL —— 可如果只让模型给一个词，
+ * 它很容易把"我删了重复"当成"这项修好了"。所以验收必须编译成多条独立检查，
+ * 再由**固定规则**合成，而不是由模型综合判断。
+ *
+ * 合成规则（顺序有意，先严后宽）：
+ *   ① 任一硬条件 FAIL            → FAIL（模型说 PASS 也不能覆盖）
+ *   ② 任一 context 条件不是 PASS  → NEED_CONTEXT（缺资料不得自动上调为通过）
+ *   ③ 任一软/文学子条件 FAIL      → PARTIAL（局部达成，不算修好）
+ *   ④ 有状态缺失/非法（按 UNKNOWN）→ PARTIAL（不判通过，但也不降成失败）
+ *   ⑤ 全部必需条件 PASS          → PASS
+ */
+export const CHECK_KINDS = Object.freeze(['hard', 'soft', 'context']);
+export const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'UNKNOWN']);
+
+export function normalizeChecks(checks) {
+  const list = Array.isArray(checks) ? checks : [];
+  return list
+    .map((c) => ({
+      key: String(c && c.key != null ? c.key : '').trim().slice(0, 80),
+      kind: CHECK_KINDS.includes(String(c && c.kind)) ? String(c && c.kind) : 'soft',
+      status: CHECK_STATUSES.includes(String(c && c.status || '').toUpperCase())
+        ? String(c && c.status).toUpperCase()
+        : 'UNKNOWN',
+      evidence: String(c && (c.evidence || c.detail) || '').slice(0, 500),
+      kind_invalid: Boolean(c && c.kind) && !CHECK_KINDS.includes(String(c && c.kind)),
+      status_invalid: Boolean(c && c.status) && !CHECK_STATUSES.includes(String(c && c.status || '').toUpperCase()),
+    }))
+    .filter((c) => c.key);
+}
+
+/**
+ * 由子条件合成一个终态。没有 checks 时退回模型给的 verdict（向后兼容旧提交）。
+ * @returns {{verdict:string, derived:boolean, checks:Array, reason:string}}
+ */
+export function effectiveVerdictOf(issue) {
+  const declared = String(issue && issue.verdict || '');
+  const checks = normalizeChecks(issue && issue.checks);
+  if (!checks.length) return { verdict: declared, derived: false, checks, reason: '' };
+  const hardFail = checks.find((c) => c.kind === 'hard' && c.status === 'FAIL');
+  if (hardFail) return { verdict: 'FAIL', derived: true, checks, reason: `硬条件未通过：${hardFail.key}` };
+  const ctx = checks.find((c) => c.kind === 'context' && c.status !== 'PASS');
+  if (ctx) return { verdict: 'NEED_CONTEXT', derived: true, checks, reason: `缺少外部资料/无法判定：${ctx.key}` };
+  const softFail = checks.find((c) => c.status === 'FAIL');
+  if (softFail) return { verdict: 'PARTIAL', derived: true, checks, reason: `子目标未达成：${softFail.key}` };
+  const unknown = checks.find((c) => c.status === 'UNKNOWN' || c.status_invalid || c.kind_invalid);
+  if (unknown) return { verdict: 'PARTIAL', derived: true, checks, reason: `子条件状态缺失或非法（按未判定处理）：${unknown.key}` };
+  const allPass = checks.every((c) => c.status === 'PASS');
+  if (allPass) return { verdict: 'PASS', derived: true, checks, reason: '' };
+  return { verdict: 'PARTIAL', derived: true, checks, reason: '子条件未全部通过' };
+}
+
+/**
  * 汇总裁决（方案 §10.2 的优先级实现）。
  *
  * @param {object} input
@@ -105,6 +161,11 @@ export function revisionOverallVerdict({ deterministic, auditor, internalSemanti
 
   const merged = (det.issues || []).map((d) => {
     const a = auditorIssues.get(String(d.issue_id));
+    // 有子条件时，模型单独给的那个词不作数：终态由合成规则算出（§5）。
+    // 但"模型原本怎么说"必须留下（事后要能看出它是否与子条件自相矛盾）。
+    const declared = a ? String(a.verdict || '') : '';
+    const eff = a ? effectiveVerdictOf(a) : null;
+    if (a && eff && eff.derived) { a.verdict = eff.verdict; a.verdict_declared = declared; }
     const s = internalSemantic && internalSemantic[String(d.issue_id)] ? internalSemantic[String(d.issue_id)] : null;
     // 优先级：硬失败 → 越权/stale → auditor FAIL/PARTIAL → auditor NEED_CONTEXT → 内部语义 PASS
     let final = 'PARTIAL';
@@ -139,7 +200,14 @@ export function revisionOverallVerdict({ deterministic, auditor, internalSemanti
       // 内部语义 PASS 不能覆盖 auditor FAIL；只有 auditor 缺失时才作为 AWAITING_AUDIT 的依据。
       final = 'AWAITING_AUDIT';
     }
-    return { ...d, final, final_reason: reason, auditor_verdict: a ? a.verdict : '', auditor_reason: a ? a.reason : '' };
+    return {
+      ...d, final, final_reason: reason,
+      auditor_verdict: a ? a.verdict : '', auditor_reason: a ? a.reason : '',
+      // 子条件与它们的合成依据一起带出去：界面要能回答"这项为什么只是 PARTIAL"。
+      acceptance_checks: eff ? eff.checks : [],
+      verdict_derived: Boolean(eff && eff.derived),
+      verdict_declared: a ? String(a.verdict_declared || a.verdict || '') : '',
+    };
   });
 
   const anyBlocked = merged.some((m) => m.final === 'BLOCKED_SCOPE');

@@ -140,6 +140,8 @@ export const CHECKS = [
   { name: '叙事性专项修复总入口（离线：补丁协议 v2 的 P/E02/R 类 + 冻结样本 + 2026-10-09 审查回归，零计费）', cmd: ['scripts/test-narrative-repair.mjs'], why: '《叙事性专项修复》E01/E02 与审查修复的判定面：显式删除、精确跨度、按段落级门禁、schema 严格性、组合门禁、越权与 stale、阶段化规则、协议模块缺失姿态，都必须在离线可复现；清单为空必须非零退出' },
   // 单独一条，便于失败归因到具体方案（N01–N36）；它同时也在总入口的清单里，重复执行是刻意的。
   { name: '六项审稿漏修与语义闭环（N01–N36：半修/漏修/改错位置/跨资料未核验 + 分母/复修/终验，零计费）', cmd: ['tests/narrative-repair/18-six-issue-closure.test.mjs'], why: 'Q01 只删「四行」必须 PARTIAL；Q03 原文未动必须 FAIL（模型谎报 pass 也不行）；Q04 只删动作词必须 UNRELATED_CHANGE；Q05 待外部核验不得改正文凑数字；Q06 旁人提普通大学不算主角决定；已 PASS 项不被后续复修冲掉' },
+  // 《逐项验收卡死》2026-10-22：判"只解决局部"之后必须还有可执行的下一步。
+  { name: '逐项验收卡死出口（V00–V39：复修入口/轮次预算守卫/剩余证据扩范围/已知遗留/复验额度按候选版本，零计费）', cmd: ['tests/narrative-repair/19-partial-repair-entry.test.mjs'], why: 'PARTIAL_CANDIDATE 不得只有合并/导出/返回三条路：复修按钮必须存在并写明条数与付费口径；轮次用尽/超预算/全是人处理项时必须置灰且写清原因；复验额度必须按候选 hash 给（改过候选就能验、同一份不重复付费）；「接受遗留」只记账不得判通过' },
   { name: '编码检查判据自检（含阴性对照）', cmd: ['.p1-baseline/check-utf8.mjs', '--self-test'], why: '中文仓库的编码纪律' },
   // dsh-novel-quality-auditor 阶段 1（2026-10-21）：审稿 issue 身份链 ID-01…ID-13。
   // 单独成条的原因：它是后续所有"精确修复/逐项终验"的前提，失败必须能一眼归因，
@@ -147,6 +149,10 @@ export const CHECKS = [
   { name: '审稿身份链 ID-01…ID-13（review.v3：显式/同序/断链/重复/legacy/选择映射，零计费）', cmd: ['scripts/quality-auditor/verify-id-chain.mjs'], why: 'issue.id 与 finding.id 必须全程一致：选中 id 找不到 finding 时必须 fail-closed（禁止静默退回空证据 legacy）；旧报告只生成 LEGACY 稳定 id 且 evidence_status=legacy_missing' },
   // dsh-novel-quality-auditor 阶段 2：审计契约/数据库/API（CT-01…CT-12）。
   { name: '质量审计契约 CT-01…CT-12（隔离实例：三张表/状态机/token/幂等/体积/取消/重启恢复，零计费）', cmd: ['scripts/quality-auditor/test-contracts.mjs'], why: 'run 状态机只能由服务端事务推进：插件不能跳态；token 只存 hash 且绑定范围；跨作品/过期 token 必须 401；重复 final 相同摘要幂等、不同摘要冲突；契约不合法时不留半条账本' },
+  // 独立复核误报修复（2026-10-22）：反例相关性 + 缺字段可定位 + RESULT_RECEIVED≠可合并。
+  { name: '复核反例相关性与缺字段诊断 AUD-01…AUD-08（不相干证据不得冒充反例，零计费）', cmd: ['scripts/quality-auditor/test-relevance.mjs'], why: '拿"平头男生一直说话"否掉"系统播报克制"必须判 INVALID_RELEVANCE；DISPUTED 无逐字反例必须阻断并逐字段说明；收到结果不得直接合并' },
+  // 逐项验收子条件（方案 §5）：一项问题拆成多条独立判据，再按固定规则合成。
+  { name: '逐项验收子条件合成 REV-03…REV-11（硬失败优先/缺资料不上调/全过才 PASS，零计费）', cmd: ['scripts/quality-auditor/test-acceptance-checks.mjs'], why: 'R-0004 只删了重复叹息、主角状态仍不可见时必须 PARTIAL；硬条件 FAIL 不得被模型 PASS 覆盖；context 未确认不得自动上调；子条件形状非法必须逐字段拒绝' },
   // dsh-novel-quality-auditor 阶段 5/8：六项/八项样本端到端（固定裁决、外部 runner、零计费）。
   { name: '质量审计端到端 E2E（六项/八项样本：逐项终态/定向复修/全部完成判定/候选 hash→STALE，零计费）', cmd: ['scripts/quality-auditor/test-e2e.mjs'], why: '每个已选项必须有唯一终态；只有 PARTIAL/FAIL 进入定向复修；任一非 PASS 不得显示全部完成；候选 hash 变化旧审计立即 STALE' },
   { name: '审计插件内置化（只读状态/dry-run 不落盘/缺依赖三分支，零计费）', cmd: ['scripts/quality-auditor/test-provision.mjs'], why: '插件没装时必须能说清缺什么、给可执行命令；安装必须幂等且先备份 profile；dry-run 不得写盘' },

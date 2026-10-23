@@ -12,6 +12,7 @@
  */
 import { validateReviewIntegrity } from '../editing/review-contract.mjs';
 import { validateFindingEvidence, ERROR_CODES } from './contracts.mjs';
+import { auditLeadHintsOf } from './prop-continuity.mjs';
 
 /**
  * @param {object} report review.v3 归一化报告
@@ -47,6 +48,16 @@ export function reviewIntegrityCheck(report, articleText) {
   checks.push({ name: 'evidence_present', pass: missingEvidence === 0, detail: missingEvidence ? `${missingEvidence} 条 finding 没有逐字证据` : '' });
   checks.push({ name: 'acceptance_present', pass: missingAcceptance === 0, detail: missingAcceptance ? `${missingAcceptance} 条 finding 缺少验收条件` : '' });
 
+  // AUD-08 / AUD-09：道具持有状态与声音载体的**确定性线索**。
+  // 它们不阻塞复核（会漏、也会误命中比喻），但必须在花钱之前露出来：
+  // 作者能先自己判断"这里是不是真的断了"，模型在盲审时也拿得到这份线索。
+  const hints = auditLeadHintsOf(articleText);
+  checks.push({
+    name: 'prop_continuity',
+    pass: hints.conflicts.length === 0,
+    detail: hints.conflicts.length ? `道具状态可能不连续：${hints.conflicts.length} 处（待人确认，不作硬伤）` : '',
+  });
+
   const failed = checks.filter((c) => !c.pass);
   const code = (() => {
     if (integ.code === ERROR_CODES.REVIEW_ID_MAPPING_BROKEN) return ERROR_CODES.REVIEW_ID_MAPPING_BROKEN;
@@ -65,12 +76,18 @@ export function reviewIntegrityCheck(report, articleText) {
     legacy: Boolean(integ.legacy),
     code,
     checks,
+    // 确定性线索（不是结论）：写进复核的输入，让"可能的道具/载体不连续"先被看见。
+    advisories: [
+      ...hints.conflicts.map((x) => ({ code: x.code, severity: 'advisory', note: x.note, evidence: x.evidence })),
+      ...hints.hints.map((x) => ({ code: x.code, severity: 'need_context', note: x.note, evidence: x.evidence })),
+    ],
     stats: {
       issues: issues.length,
       findings: findings.length,
       quote_not_found: quoteNotFound,
       missing_evidence: missingEvidence,
       missing_acceptance: missingAcceptance,
+      advisories: hints.conflicts.length + hints.hints.length,
     },
   };
 }

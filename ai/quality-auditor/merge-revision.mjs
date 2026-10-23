@@ -64,14 +64,29 @@ export function mergeRevision({ deterministic, auditor, internalSemantic, round 
       audit_id: String((auditor && auditor.audit_id) || ''),
       base_hash: String((auditor && auditor.base_hash) || ''),
       candidate_hash: String((auditor && auditor.candidate_hash) || ''),
-      issues: overall.issues.map((i) => ({
-        issue_id: i.issue_id,
-        verdict: i.final,
-        reason: i.final_reason || '',
-        remaining_evidence: asList(i.checks).filter((c) => c && c.pass === false).map((c) => ({ quote: String(c.evidence || '') })),
-        checks: asList(i.checks),
-        repair_hint: i.final === 'PASS' ? '' : '只处理仍残留的证据/判据，不改已通过部分',
-      })),
+      issues: overall.issues.map((i) => {
+        // 两类检查一起交出去：
+        //   · checks            = 确定性层算的（must_contain / preserve / 残留证据）；
+        //   · acceptance_checks = auditor 给的子条件（§5：一项问题可以有多条独立判据）。
+        // 残留证据同时取自这两处 —— 只报确定性层会漏掉"文学性目标仍未达成"这类 PARTIAL 原因。
+        const detFails = asList(i.checks).filter((c) => c && c.pass === false)
+          .map((c) => ({ quote: String(c.evidence || ''), from: 'deterministic' }));
+        const subFails = asList(i.acceptance_checks)
+          .filter((c) => c && (c.status === 'FAIL' || c.status === 'UNKNOWN'))
+          .map((c) => ({ quote: String(c.evidence || c.key || ''), from: 'acceptance_check', key: String(c.key || '') }));
+        return {
+          issue_id: i.issue_id,
+          verdict: i.final,
+          reason: i.final_reason || '',
+          remaining_evidence: [...detFails, ...subFails],
+          checks: asList(i.checks),
+          acceptance_checks: asList(i.acceptance_checks),
+          verdict_derived: Boolean(i.verdict_derived),
+          // 模型原本怎么说：与子条件自相矛盾时，这一条是唯一的证据。
+          verdict_declared: String(i.verdict_declared || ''),
+          repair_hint: i.final === 'PASS' ? '' : '只处理仍残留的证据/判据，不改已通过部分',
+        };
+      }),
       regressions,
       unauthorized_changes: unauthorized,
       overall: overall.overall,

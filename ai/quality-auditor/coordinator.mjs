@@ -14,18 +14,43 @@ import { randomBytes } from 'node:crypto';
 import {
   RUN_STATUS, PHASES, ERROR_CODES, LIMITS, BLIND_FORBIDDEN_RESOURCES, DIMENSIONS,
   auditError, checkPayloadSize, validateBlindDraftPayload, validateReviewAuditPayload,
-  validateRevisionAuditPayload, quoteExists,
+  validateRevisionAuditPayload, quoteExists, autoRepairPayload,
 } from './contracts.mjs';
 import * as store from './store.mjs';
 import { normalizeResources, buildManifest, contextHash, readResourceSlice, rangesCover } from './snapshots.mjs';
 import { reviewIntegrityCheck } from './review-integrity.mjs';
 import { revisionIntegrityCheck } from './revision-integrity.mjs';
 import { mergeReview } from './merge-review.mjs';
+import { screenDisputes } from './relevance.mjs';
+import { settleChargeFrom } from './usage.mjs';
 import { mergeRevision } from './merge-revision.mjs';
 import { budgetGuard, cnyToMicrounits } from './budget.mjs';
 import { runNovelQualityAuditTask } from './harness-task.mjs';
 import { statusPayload } from './status.mjs';
 import { verifyQuotes } from './evidence.mjs';
+
+/**
+ * 缺陷台账的人读摘要（§3.2）：按"能不能免费修"分组。
+ *
+ * 为什么单独算：契约错误原本只有一句 `val.errors.join('；')`，
+ * 作者看到 6 条缺字段却不知道该重跑还是该改字段；runner 也不知道哪几条它自己就能补。
+ * 这里只做分组与前 8 条摘录，不改任何判定。
+ */
+function summarizeDefects(defects = []) {
+  const list = Array.isArray(defects) ? defects : [];
+  const byResolution = {};
+  for (const d of list) {
+    const k = String((d && d.resolution_path) || 'UNKNOWN');
+    byResolution[k] = (byResolution[k] || 0) + 1;
+  }
+  return {
+    total: list.length,
+    blockers: list.filter((d) => d && d.severity === 'blocker').length,
+    by_resolution: byResolution,
+    top: list.slice(0, 8).map((d) => (d.finding_id ? d.finding_id + ' ' : '')
+      + d.field_path + '（期望 ' + d.expected_type + '，实际 ' + d.actual_type + '）'),
+  };
+}
 
 /** 资源正文只活在内存里：DB 存清单与 hash，不存正文（作者资产不进审计账本）。 */
 const RESOURCES = new Map();
@@ -65,12 +90,28 @@ export function createReviewAudit(input = {}) {
     initial_review: JSON.stringify(initialReport),
   });
   const articleText = String(resources.article || '');
-  if (!articleText.trim()) return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID, '被审正文为空：不能对空正文做盲审');
+  // 文案必须点明"库里的正文"：2026-10-22 实测（第 119 章）作者屏幕上编辑器里有 4000 多字，
+  // 但那是**未应用的生成稿**，库内本章正文仍是空的。旧文案"被审正文为空"会被读成
+  // "我明明有字你却说不空"，于是作者去查编辑器而不是去保存正文。
+  if (!articleText.trim()) {
+    return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID,
+      '库内本章正文为空：独立复核只读已保存的正文——先在编辑器保存本章，或从「有未应用的生成稿」取回后再复核');
+  }
 
   // ① 免费结构检查（失败则不创建 run、不启动 DSH）
   const integrity = reviewIntegrityCheck(initialReport, articleText);
   if (!integrity.ok) {
     return { ok: false, code: integrity.code, detail: `审稿报告结构不完整（${integrity.code}）`, integrity };
+  }
+  // 确定性线索（AUD-08/09）写进审计输入：盲审读的是 context，这里明确标成"线索，不是结论"，
+  // 避免模型把它当成已确认的问题照抄，也避免它完全看不见。
+  if (Array.isArray(integrity.advisories) && integrity.advisories.length) {
+    const lines = integrity.advisories.map((x) => {
+      const ev = Array.isArray(x.evidence) ? x.evidence.filter(Boolean).map((q) => `「${String(q).slice(0, 60)}」`).join(' / ') : '';
+      return `- [${x.code}] ${x.note}${ev ? `　证据：${ev}` : ''}`;
+    });
+    const block = `【确定性线索（非结论，需你核验）】\n${lines.join('\n')}`;
+    resources.context = `${String(resources.context || '')}\n\n${block}`.trim();
   }
 
   const budget = budgetGuard({
@@ -335,7 +376,7 @@ export function submitBlind(runId, token, payload) {
 }
 
 /** final 提交：review 的对照结论 / revision 的逐项终验。 */
-export function submitFinal(runId, token, payload) {
+export function submitFinal(runId, token, payload, meta = {}) {
   const id = String(runId || '');
   const verified = store.verifyToken(id, token);
   if (!verified.ok) return verified;
@@ -358,8 +399,28 @@ export function submitFinal(runId, token, payload) {
     if (![RUN_STATUS.BLIND_SUBMITTED, RUN_STATUS.COMPARE_RUNNING].includes(String(run.status))) {
       return auditError(ERROR_CODES.AUDIT_PHASE_INVALID, `review 的 final 必须在 compare 阶段提交（当前 ${run.status}）`);
     }
-    const val = validateReviewAuditPayload(payload);
-    if (!val.ok) return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID, val.errors.slice(0, 6).join('；'));
+    let accepted = payload;
+    const val0 = validateReviewAuditPayload(payload, { auditId: id });
+    if (!val0.ok) {
+      // §3.2 的一半是"能免费补的自己补上"：schema_version / 按顺序补的 issue_id / QA-R 编号
+      // 由契约唯一确定，服务端补完再校验一次；补不干净才把剩余缺陷交回去让人重跑。
+      const repaired = autoRepairPayload('review', payload, {
+        auditId: id,
+        initialIssueIds: (parseJson(run.initial_report_json, {}).findings || []).map((f) => String(f && f.id)),
+      });
+      const val1 = repaired.ok ? validateReviewAuditPayload(repaired.payload, { auditId: id }) : null;
+      if (!val1 || !val1.ok) {
+        const shown = val1 || val0;
+        return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID, shown.errors.slice(0, 6).join('；'), {
+          defects: shown.defects,
+          defect_summary: summarizeDefects(shown.defects),
+          // 补过什么、还剩什么，一起说清（免得作者以为"服务端什么都没做"）。
+          auto_repair: { attempted: true, applied: repaired.applied, remaining: (shown.defects || []).length },
+        });
+      }
+      accepted = repaired.payload;
+      store.appendEvent(id, 'contract_auto_repaired', { applied: repaired.applied, source: 'submit_final', at: 'result_received' });
+    }
     // 初审每一条都要有对照结论（漏判 = 无法证明"逐项对照过"）
     const initialReport = parseJson(run.initial_report_json, {});
     const initialIds = (Array.isArray(initialReport.findings) ? initialReport.findings : []).map((f) => String(f && f.id));
@@ -369,19 +430,29 @@ export function submitFinal(runId, token, payload) {
     // 新 finding 的证据必须逐字存在
     const article = String(resources.article || '');
     const bad = [];
-    for (const f of Array.isArray(payload.new_findings) ? payload.new_findings : []) {
+    for (const f of Array.isArray(accepted.new_findings) ? accepted.new_findings : []) {
       for (const e of Array.isArray(f && f.evidence) ? f.evidence : []) {
         const quote = String(e && (e.quote != null ? e.quote : e));
         if (quote && !quoteExists(article, quote)) bad.push(quote.slice(0, 30));
       }
     }
     if (bad.length) return auditError(ERROR_CODES.AUDIT_QUOTE_NOT_FOUND, `复审新增有 ${bad.length} 条引用不在正文`);
-    const baseHash = String(payload.base_hash || '');
+    const baseHash = String(accepted.base_hash || payload.base_hash || '');
     if (baseHash && baseHash !== String(run.base_hash || '')) {
       return auditError(ERROR_CODES.AUDIT_HASH_MISMATCH, '结果里的 base_hash 与冻结输入不一致');
     }
-    const r = store.transition(id, RUN_STATUS.RESULT_RECEIVED, { result_json: payload }, 'result_received');
+    const r = store.transition(id, RUN_STATUS.RESULT_RECEIVED, { result_json: accepted }, 'result_received');
     if (!r.ok) return r;
+    // 费用结清（2026-10-23）：只有拿到**真实用量**才写；没有就保持"未知"。
+    // 位置在 transition 之后：状态推进是主线，记账失败不该把一次合法的提交判成失败。
+    if (meta && meta.usage) {
+      const table = meta.priceTable && typeof meta.priceTable === 'object' ? meta.priceTable : null;
+      const settled = settleChargeFrom({ usage: meta.usage, priceTable: table });
+      if (settled.known) store.settleCharge(id, { microunits: settled.micro_units, source: settled.source, detail: settled.detail });
+      else store.appendEvent(id, 'charge_unknown', { detail: settled.detail, source: settled.source });
+    } else {
+      store.appendEvent(id, 'charge_unknown', { detail: '提交未带 usage：无法记账（不按 0 计）', source: 'unknown' });
+    }
     return { ok: true, run: store.runToClient(store.getRun(id)) };
   }
 
@@ -439,8 +510,24 @@ export function hostVerify(runId) {
     if (!String(run.blind_result_json || '').trim()) {
       return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID, '没有 blind 结果：无法证明先盲后对照');
     }
-    const val = validateReviewAuditPayload(payload);
-    if (!val.ok) return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID, val.errors.slice(0, 5).join('；'));
+    const val = validateReviewAuditPayload(payload, { auditId: id });
+    if (!val.ok) {
+      return auditError(ERROR_CODES.AUDIT_CONTRACT_INVALID, val.errors.slice(0, 5).join('；'), {
+        defects: val.defects,
+        defect_summary: summarizeDefects(val.defects),
+      });
+    }
+    // 主机校验通过之后立刻做一次**相关性复核**并留痕：
+    // 反例与主张不是同一件事时，它不能被呈现成"作者判错了"（2026-10-22 误报）。
+    // 这里不改规则、不改结论，只把降级台账写进审计事件 —— 合并与界面都读这一份。
+    const initialReportForScreen = parseJson(run.initial_report_json, {});
+    const screened = screenDisputes({
+      initialFindings: Array.isArray(initialReportForScreen.findings) ? initialReportForScreen.findings : [],
+      compareInitial: Array.isArray(payload.initial_findings) ? payload.initial_findings : [],
+    });
+    if (screened.downgrades.length) {
+      store.appendEvent(id, 'review_relevance_downgrade', { downgrades: screened.downgrades });
+    }
   } else {
     const selectedIssueIds = store.listItems(id, 'initial').map((i) => i.issue_id);
     const val = validateRevisionAuditPayload(payload, { selectedIssueIds });
@@ -468,11 +555,18 @@ export function mergeAudit(runId) {
     const blind = parseJson(run.blind_result_json, {});
     const compare = parseJson(run.result_json, {});
     merged = mergeReview({ initialReport, blind, compare });
+    // 合并时再核一次相关性（与 hostVerify 同一判据、同一模块），并把降级台账落成事件：
+    // 事后要能回答"这条为什么不算驳倒"，而不是只看到它悄悄不见了。
+    if (Array.isArray(merged.relevance_downgrades) && merged.relevance_downgrades.length) {
+      store.appendEvent(id, 'review_relevance_downgrade', { downgrades: merged.relevance_downgrades, at: 'merge' });
+    }
     store.upsertItems(id, merged.findings.map((f) => ({
       issue_id: f.issue_id, source: 'merged', kind: 'finding',
       type: f.type, severity: f.severity, confidence: f.confidence,
       evidence: f.evidence, acceptance: f.acceptance,
-      verdict: f.review_verdict || '', reason: f.disputed ? 'DISPUTED' : '',
+      verdict: f.review_verdict || '',
+      reason: f.disputed ? 'DISPUTED'
+        : (String(f.review_verdict || '') === 'DISPUTED' ? 'ADVISORY_NEEDS_REVIEW' : ''),
       base_hash: String(run.base_hash || ''),
     })));
   } else {

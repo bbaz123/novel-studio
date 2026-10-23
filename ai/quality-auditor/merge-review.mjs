@@ -16,6 +16,7 @@
  * 自己原来的判断被谁推翻了。
  */
 import { sha256Of } from './snapshots.mjs';
+import { screenDisputes } from './relevance.mjs';
 
 const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, '').slice(0, 200);
 
@@ -46,7 +47,12 @@ export function mergeReview({ initialReport, blind, compare } = {}) {
   const compareNew = Array.isArray(compare && compare.new_findings) ? compare.new_findings : [];
 
   const verdictById = new Map(compareInitial.map((c) => [String(c && c.issue_id), String(c && c.verdict || '')]));
+  // 便宜的相关性筛选（纯词面共现，零计费）：只有"在说同一件事"的反例才允许标成"被驳倒"。
+  // 不相干/太弱的反例被降级成 ADVISORY_NEEDS_REVIEW —— 条目仍然留在清单里，理由也一起留，
+  // 只是不许它把作者的原判断说成"错的"（2026-10-22 误报的形态）。
+  const screens = screenDisputes({ initialFindings, compareInitial });
   const disputes = [];
+  const advisories = [];
   const deferred = [];
   const byKey = new Map();
 
@@ -54,6 +60,9 @@ export function mergeReview({ initialReport, blind, compare } = {}) {
   for (const f of initialFindings) {
     const id = String(f && f.id || '');
     const verdict = verdictById.get(id) || 'COVERED';
+    const screen = screens.byIssueId.get(id) || null;
+    // 审计员说 DISPUTED，但相关性与"同一件事"对不上 → 降级为"待人工判断"，不算驳倒。
+    const disputed = verdict === 'DISPUTED' && (!screen || screen.verdict === 'RELEVANT');
     const item = {
       issue_id: id,
       id,
@@ -65,10 +74,23 @@ export function mergeReview({ initialReport, blind, compare } = {}) {
       evidence: Array.isArray(f && f.evidence) ? f.evidence : [],
       acceptance: (f && f.acceptance) || { rule: '', preserve: [] },
       source: 'initial',
+      // 原始裁决照原样保留（不删除、不隐藏审计员说过什么）。
       review_verdict: verdict,
-      disputed: verdict === 'DISPUTED',
+      // 生效裁决：只有相关性过关的 DISPUTED 才算"被驳倒"。
+      review_verdict_effective: verdict === 'DISPUTED' && !disputed ? 'ADVISORY_NEEDS_REVIEW' : verdict,
+      disputed,
+      relevance: screen,
     };
-    if (verdict === 'DISPUTED') disputes.push({ issue_id: id, reason: String((compareInitial.find((c) => String(c && c.issue_id) === id) || {}).reason || '') });
+    if (disputed) {
+      disputes.push({ issue_id: id, reason: String((compareInitial.find((c) => String(c && c.issue_id) === id) || {}).reason || '') });
+    } else if (verdict === 'DISPUTED') {
+      advisories.push({
+        issue_id: id,
+        relevance: screen,
+        reasons: (screen && screen.reasons) || [],
+        reason: String((compareInitial.find((c) => String(c && c.issue_id) === id) || {}).reason || ''),
+      });
+    }
     byKey.set(canonicalKey(item), item);
   }
 
@@ -188,12 +210,17 @@ export function mergeReview({ initialReport, blind, compare } = {}) {
     coverage_complete: coverageComplete,
     overall,
     auto_eligible: autoEligible,
+    // 降级台账要能被持久化（服务端会用一条事件记下来），否则"为什么这条不算驳倒"事后无从查。
+    relevance_downgrades: screens.downgrades,
+    advisories,
     stats: {
       initial: initialFindings.length,
       blind: blindFindings.length,
       merged_new: mergedNew.length,
       deferred: deferred.length,
       disputes: disputes.length,
+      // 被相关性筛选降级的条数：它们**不**计入 disputes，也**不**降低整份报告的质量判定。
+      advisory: advisories.length,
       total: findings.length,
     },
     result,

@@ -122,6 +122,9 @@ const state = {
   editorSaveInFlight: new Map(), // 发送中的章节保存请求；导航时等待，避免只清定时器却丢回包
   editorConflictSnapshot: null, // 409 时保留本地稿，先让作者处理冲突，不静默覆盖
   editorSaveFailedSnapshot: null,
+  // 合并冲突框 / 明确覆盖二次确认的应答器（P0，2026-10-22）；两个框不共用，避免选错出口。
+  pendingMergeConflict: null,
+  pendingMergeForce: null,
   // 空内容保存护栏（2026-10-02）：正文本来有内容、编辑器却被清空时，暂停自动保存并让作者确认。
   // 存的是"被拦下的空快照"；作者确认后才放行写入（见 scheduleSave / flushSave）。
   editorEmptyBlocked: null,
@@ -288,7 +291,9 @@ async function api(path, options = {}) {
       // 调用方要据此给出"怎么补救"的具体动作，而不是把那句中文再拿去做正则匹配。
       // 纯附加字段，普通错误对象上没有这些键，行为不变。
       if (data && typeof data === 'object') {
-        for (const k of ['code', 'current_chars']) {
+        // defects / defect_summary 是"缺字段可定位"的台账（§3.2）：调用方要能显示
+        // "哪条 finding、哪个字段、能不能免费修"，所以随错误对象一起带出去（纯附加字段）。
+        for (const k of ['code', 'current_chars', 'defects', 'defect_summary']) {
           if (data[k] !== undefined) err[k] = data[k];
         }
       }
@@ -668,8 +673,25 @@ const HELP_TEXT = {
   HELP_TEXT.review_semantic_verify = {
     title: '运行一次独立语义复验（付费）',
     body: '确定性检查只能证明"字符变了"；这一步让模型逐条回答"这条问题真的解决了吗"，结论会写进覆盖表。'
-      + '同一份候选只允许跑一次（重复跑同一份稿没有新信息，只会重复付费）；要再验必须先改候选。'
+      + '每个版本的候选各允许验一次（改过候选就是新版本，会重新给一次）；重复验同一份稿没有新信息，只会重复付费。'
       + '它会用你的模型配置发一次请求，费用按你的服务商计；界面上"预计上界"是估算，不是账单。'
+  };
+  HELP_TEXT.review_repair_partial = {
+    title: '只复修未通过项（付费）',
+    body: '按复验结论挑出仍然未通过的条目，再发起一轮定向重写：只改这些条目已授权的段落，'
+      + '仍受保护区、组合门禁与轮次/预算上限约束。修完会重新算终端结论 —— 仍然不过就还是"未通过"，不会因为多跑一轮就写成修好。'
+      + '轮次用尽或预算不足时按钮会变灰并写明原因。'
+  };
+  HELP_TEXT.review_repair_widened = {
+    title: '把复验说"还在"的文字一并纳入本次可改范围',
+    body: '模型上一轮判"只解决局部"，并逐字指出了还在的文字。默认复修只在原文授权的那一处改，所以永远改不完；'
+      + '这个按钮把这几处一起纳入本次授权（同一个问题编号，不新增问题），再修一轮。'
+      + '它确实扩大了可改范围 —— 只在你亲自点它时才生效。'
+  };
+  HELP_TEXT.review_accept_leftovers = {
+    title: '把未通过项记为已知遗留（不等于修好）',
+    body: '不改正文、不判通过、不消耗调用：只把这批编号记进本次运行记录与本机台账，'
+      + '让你能诚实收工，也让你下次审稿时知道这些是"已经知道的问题"而不是新问题。'
   };
 })();
 
@@ -937,6 +959,19 @@ function upsertState(key, row) {
 // 避免正文含格式（加粗/H2/引用）时出现“保存说 298、加载变 431”的跳变。
 function wordCount(text = '') {
   return stripHtml(text).replace(/\s/g, '').length;
+}
+
+/**
+ * 库内本章正文是否为空（独立复核只读库内正文，见 ai/quality-auditor/routes.mjs 的 buildReviewResources）。
+ * 判据复用 `readableCharCount`（与服务端 readableChars 同口径）：只有标点的正文两侧都算空。
+ * 拿不到该章的行时返回 false：不确定就不要误伤，让服务端去判（它才是权威）。
+ */
+function chapterBodyEmptyInDb(chapterId) {
+  const id = Number(chapterId) || 0;
+  if (!id) return false;
+  const row = (state.chapters || []).find((c) => Number(c.id) === id);
+  if (!row || typeof row.content !== 'string') return false;
+  return readableCharCount(row.content) === 0;
 }
 
 // F-29：章节字数缓存——wordCount 需剥标签并解析全章，大纲/目录渲染会频繁调用；
@@ -3341,6 +3376,8 @@ function revisionTraceModule() {
 
 /** 本运行已走完几个"定向复修"轮次（trace 的 round 只用它，不另建口径）。 */
 function revisionRepairRoundOf(ctx) {
+  const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  if (CL && typeof CL.roundsUsedOf === 'function') return 1 + CL.roundsUsedOf(ctx && ctx.autoRepair);
   const rounds = ctx && ctx.autoRepair && Array.isArray(ctx.autoRepair.rounds) ? ctx.autoRepair.rounds : [];
   return 1 + rounds.filter((r) => r && r.status === 'applied').length;
 }
@@ -3391,6 +3428,118 @@ function revisionArchiveModule() {
 }
 
 /**
+ * 已知遗留台账（v1.2.7 / C1）：把"这条我知道、但这次不修"记成**可核对的决定**。
+ *
+ * 为什么不写进运行记录就完事：运行记录会被下一次修稿覆盖，而"我接受过这条遗留"
+ * 需要跨运行成立，否则同一批问题每次审稿都被当成新问题重报。
+ * 为什么必须绑定候选 hash：换了候选就是另一份稿，"这条我接受"不能凭空沿用。
+ */
+const REVISION_LEFTOVER_KEY = 'ns_revision_accepted_leftovers';
+function revisionLeftoverKey(chapterId) {
+  const workId = Number(state.workId || (state.work && state.work.id)) || 0;
+  return `${REVISION_LEFTOVER_KEY}:${workId}:${Number(chapterId) || 0}`;
+}
+function revisionLeftoversLoad(chapterId, candidateHash) {
+  try {
+    const raw = localStorage.getItem(revisionLeftoverKey(chapterId));
+    const obj = raw ? JSON.parse(raw) : null;
+    if (!obj || typeof obj !== 'object' || !Array.isArray(obj.ids)) return [];
+    // 换了候选（或没有可比对的 hash）时一律不沿用：宁可问一次，也不把"接受"嫁接到别的稿上。
+    if (!candidateHash || String(obj.candidate_hash || '') !== String(candidateHash)) return [];
+    return obj.ids.map(String);
+  } catch (_) { return []; }
+}
+function revisionLeftoversSave(chapterId, ids, candidateHash) {
+  try {
+    localStorage.setItem(revisionLeftoverKey(chapterId), JSON.stringify({
+      candidate_hash: String(candidateHash || ''),
+      ids: (Array.isArray(ids) ? ids : []).map(String),
+      at: new Date().toISOString(),
+    }));
+    return true;
+  } catch (_) { return false; }
+}
+
+/**
+ * 跨段授权（v1.2.7 / 方案 B2）：作者显式点"本段起连续 N 段"才放宽。
+ *
+ * 为什么不在计划里自动放宽：放宽一步就等于把"改哪儿"的决定权交给模型。
+ * 这里只负责"把作者点击落成具体的段落跨度"，上限与保护区由 revision-closure.wideningApprovalOf 判。
+ */
+function revisionParagraphSpans() {
+  const ctx = state.pendingRevisionClosure;
+  const RP = revisionPatchEngine();
+  if (!ctx || !RP || typeof RP.buildSpans !== 'function') return [];
+  try {
+    return RP.buildSpans(String(ctx.article || ''), { sentences: false, chapter_id: ctx.chapterId })
+      .filter((s) => s && s.kind === 'paragraph');
+  } catch (_) { return []; }
+}
+
+/** 这条问题的落点段落：优先用计划里的授权跨度，其次用证据引文在正文里定位。 */
+function revisionAnchorParagraphOf(ctx, issueId) {
+  const spans = revisionParagraphSpans();
+  if (!spans.length) return null;
+  const hotspots = Array.isArray(ctx && ctx.plan && ctx.plan.hotspots) ? ctx.plan.hotspots : [];
+  const hit = hotspots.find((h) => String(h && h.issue_id) === String(issueId) && h.span);
+  const article = String((ctx && ctx.article) || '');
+  let idx = -1;
+  if (hit && Number(hit.span.start) >= 0) idx = Number(hit.span.start);
+  if (!(idx >= 0)) {
+    const finding = (Array.isArray(ctx && ctx.findings) ? ctx.findings : []).find((f) => String(f && f.id) === String(issueId));
+    const quotes = (Array.isArray(finding && finding.evidence) ? finding.evidence : [])
+      .map((e) => String((e && e.quote) || '').trim()).filter(Boolean);
+    for (const q of quotes) {
+      const at = article.indexOf(q);
+      if (at >= 0) { idx = at; break; }
+    }
+  }
+  if (!(idx >= 0)) return null;
+  return spans.find((s) => idx >= s.start && idx < (s.sep_end || s.end)) || null;
+}
+
+/** 把"本段起连续 N 段"落成经过判据校验的授权；被拒时原样说清原因。 */
+function revisionApproveWidening(issueId, paragraphs) {
+  const ctx = state.pendingRevisionClosure;
+  const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  if (!ctx || !CL || typeof CL.wideningApprovalOf !== 'function') { toast('判据模块未加载', 'error'); return; }
+  const anchor = revisionAnchorParagraphOf(ctx, issueId);
+  if (!anchor) { toast('这条问题定位不到落点段落：先把证据引文补上再放宽范围', 'error'); return; }
+  const all = revisionParagraphSpans();
+  const startAt = all.findIndex((s) => s.span_id === anchor.span_id);
+  const n = Math.max(1, Math.min(3, Number(paragraphs) || 1));
+  const picked = all.slice(startAt, startAt + n).map((s) => ({ span_id: s.span_id, start: s.start, end: s.end, text: s.text }));
+  const verdict = CL.wideningApprovalOf({
+    paragraphs: picked,
+    protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
+    mustKeep: [],
+    maxParagraphs: 3,
+    maxChars: 600,
+  });
+  if (!verdict.ok) {
+    toast(`不能放宽到 ${n} 段：${verdict.reason || verdict.code}`, 'error');
+    return;
+  }
+  const next = {
+    ...(ctx.approvedWidening && typeof ctx.approvedWidening === 'object' ? ctx.approvedWidening : {}),
+    [String(issueId)]: { spans: verdict.spans, chars: verdict.chars, paragraphs: verdict.paragraphs, at: new Date().toISOString() },
+  };
+  state.pendingRevisionClosure = { ...ctx, approvedWidening: next };
+  if (state.view === 'review') { try { render(); } catch (_) { /* 重画失败不改变授权 */ } }
+  toast(`已批准 #${issueId} 可改本段起 ${verdict.paragraphs} 段（共 ${verdict.chars} 字）；点「按已批准范围再修」才真正生效`, 'success');
+}
+
+function revisionClearWidening(issueId) {
+  const ctx = state.pendingRevisionClosure;
+  if (!ctx || !ctx.approvedWidening) return;
+  const next = { ...ctx.approvedWidening };
+  delete next[String(issueId)];
+  state.pendingRevisionClosure = { ...ctx, approvedWidening: next };
+  if (state.view === 'review') { try { render(); } catch (_) { /* 重画失败不改变授权 */ } }
+  toast(`已撤销 #${issueId} 的跨段授权`, 'info');
+}
+
+/**
  * 把"审稿前原文 / 未复验候选 / 已复验候选"落成**服务端历史版本**（2026-10-18 作者要求）。
  *
  * 为什么落 `chapter_save_versions` 而不是新表：作者已经有一个「🕘 历史版本」面板，
@@ -3416,7 +3565,14 @@ async function archiveReviewVersions(ctx, input = {}) {
         method: 'POST',
         body: { chapter_id: chapterId, title: slot.title, summary: slot.summary, content: slot.content },
       });
-      records = A.remember(localStorage, chapterId, slot.id, { hash: slot.hash, versionId: row && row.id, at: new Date().toISOString() });
+      // §6：把**这一份候选自己的**验收结论一起记下来（槽位只说明它属于哪一类）。
+      // 结论绑定 hash：候选一换，旧结论就只属于历史，不给后来者背书。
+      const verdict = String((ctx.finalized && ctx.finalized.status) || '');
+      const sum = (ctx.finalized && ctx.finalized.summary) || {};
+      records = A.remember(localStorage, chapterId, slot.id, {
+        hash: slot.hash, versionId: row && row.id, at: new Date().toISOString(),
+        verdict, pass: Number(sum.verified) || 0, total: Number(sum.total) || 0,
+      });
       saved += 1;
     } catch (e) {
       // 存档失败**不影响**已经写进正文的事实；如实留痕，界面据此说"这一份没能存进历史版本"。
@@ -3492,6 +3648,10 @@ async function reviewWorkspaceRestoreRun() {
     snapshot: revisionSnapshotFor(currentText, chapterId),
     semantic: finalized.semantic, closure: finalized.closure, finalized,
     autoRepair: null, semanticRuns: restored.semanticRuns, reviewId: rec && rec.review_id,
+    // 恢复的运行没有"哪些候选已经验过"的记录：按 semanticRuns 补一次身份，避免刷新后凭空多送一次付费复验。
+    verifiedHashes: Number(restored.semanticRuns) >= 1 && restored.candidate
+      ? [contentHashOf(restored.candidate)]
+      : [],
     mode: 'single', authorization: null, protected_spans: [],
   };
   toast(`已恢复上次修稿运行：已验证 ${finalized.summary.verified} / 未通过 ${finalized.summary.unresolved}（复验额度沿用上次，不额外赠送）`, 'success');
@@ -3605,7 +3765,15 @@ function revisionArchiveStripItems(chapterId) {
   try { records = A.load(localStorage, Number(chapterId) || 0); } catch (_) { return ''; }
   const sum = A.summaryOf(records);
   if (!sum.count) return '';
-  return `<span class="rcs-item tone-wait">修稿存档 ${sum.count} 份（可回退）</span>
+  // §6：历史候选**不继承**当前验收结论。这里把归属写出来（同一行内，不占额外版面）。
+  const cur = state.pendingReviewDiff && typeof state.pendingReviewDiff.newText === 'string'
+    ? A.hashOf(state.pendingReviewDiff.newText) : '';
+  const own = (id) => (typeof A.acceptanceOf === 'function' ? A.acceptanceOf(records, id, cur) : null);
+  const verifiedRec = own('verified');
+  const ownLine = verifiedRec && verifiedRec.found
+    ? ` <span class="rcs-item ${verifiedRec.own ? 'tone-ok' : 'tone-wait'}" title="${esc(verifiedRec.line)}">${verifiedRec.own ? '当前候选即已复验那一版' : '已复验存档是历史候选（结论不继承）'}</span>`
+    : '';
+  return `<span class="rcs-item tone-wait">修稿存档 ${sum.count} 份（可回退）</span>${ownLine}
     <button class="btn small secondary" data-action="review-archive-history" data-chapter="${Number(chapterId) || 0}" title="审稿前原文 / 未复验候选 / 已复验候选：逐条查看，恢复任意一份（恢复前会自动把当前正文再存一份）">查看</button>`;
 }
 
@@ -11880,7 +12048,9 @@ function applyReviewFindingsAudit(report, saved) {
     problems.push('这次审稿没有给出任何结构化问题（findings 为空）：修稿只能按问题文本改，无法定位到句');
   }
   if (rejected > 0) problems.push(`${rejected} 条结构化问题被拒收（引文对不上这篇正文）`);
-  if (quoteBase && quoteBase.differs_from_chapter) {
+  if (quoteBase && quoteBase.chapter_empty) {
+    problems.push('库内本章正文为空：这次审稿是对未落库的正文做的（编辑器未保存/未应用的生成稿），独立复核对不上它');
+  } else if (quoteBase && quoteBase.differs_from_chapter) {
     problems.push('这次审稿的正文与库里的章节不是同一份：引文按"被审正文"核验，合并前请确认底稿');
   }
   if (defects > 0) problems.push(`${defects} 条缺字段，已保留证据但只作待核验`);
@@ -12124,17 +12294,23 @@ function reportConsistencyHtml(consistency) {
  */
 function reviewFindingsAuditHtml(audit) {
   const a = audit && typeof audit === 'object' ? audit : null;
-  if (!a || !a.total) return '';
+  if (!a) return '';
+  const total = Number(a.total) || 0;
   const rejected = Number(a.rejected) || 0;
   const defects = Number(a.shape_defects) || 0;
   const differs = !!(a.quote_base && a.quote_base.differs_from_chapter);
-  if (!rejected && !defects && !differs) {
-    return `<div class="review-item strength">✓ 结构化问题 ${Number(a.accepted) || 0} 条都带逐字证据（可精确定位到句）</div>`;
+  // 库内正文为空（与"底本不同"分开说）：空正文没有"是否有差异"可言，但作者必须知道
+  // 这份报告对着的是未落库的正文，否则会把"独立复核被拒"当成工具坏了。
+  const chapterEmpty = !!(a.quote_base && a.quote_base.chapter_empty);
+  if (!rejected && !defects && !differs && !chapterEmpty) {
+    // total=0 且没有任何异常（老报告/空回执）时保持原样：不出现 = 不加噪音。
+    return total ? `<div class="review-item strength">✓ 结构化问题 ${Number(a.accepted) || 0} 条都带逐字证据（可精确定位到句）</div>` : '';
   }
   const lines = [];
   if (rejected) lines.push(`${rejected} 条被拒收：引文在这篇正文里找不到，修稿时无法定位到句`);
   if (defects) lines.push(`${defects} 条缺字段：证据保留但只作待核验`);
-  if (differs) lines.push('审稿正文与库里的章节不是同一份：引文按"被审正文"核验；合并前请确认底稿');
+  if (chapterEmpty) lines.push('库内本章正文为空：报告是对未落库的正文做的；先保存/取回本章正文，再独立复核');
+  else if (differs) lines.push('审稿正文与库里的章节不是同一份：引文按"被审正文"核验；合并前请确认底稿');
   return '<div class="ref-group-title">结构化证据回执</div>'
     + '<div class="redline-scan warn">' + lines.map((l) => `⚠️ ${esc(l)}`).join('<br>') + '</div>';
 }
@@ -12149,12 +12325,24 @@ function showReviewReport(review) {
   const integrity = (review && review.integrity) || (RC ? RC.validateReviewIntegrity(review) : { ok: true, code: 'OK', detail: '' });
   // 问题的**身份**来自契约：对象用自己的 id，旧字符串项用它的原始序号（LEGACY-… 或 UNLINKED-n）。
   // 显示顺序可以变，身份不能变：复选框同时写 index（仅供样式）与 data-review-issue-id（业务键）。
-  const issues = (Array.isArray(review.issues) ? review.issues : []).map((x, i) => ({
-    id: (RC ? RC.reviewIssueId(x) : '') || String((x && x.legacy_index) || `UNLINKED-${i + 1}`),
-    text: RC ? RC.issueLineText(x) : String(x),
-    legacyIndex: Number(x && x.legacy_index) || (i + 1),
-    hasFinding: Boolean(RC && RC.findingById(review, (RC ? RC.reviewIssueId(x) : ''))),
-  }));
+  // 2026-10-23（现场：REVIEW_SELECTION_MISSING_FINDING）：结构化报告里"只有文字、没有逐字证据"的
+  // 问题**不能**默认勾选。旧实现一律 pre-check，于是 9 条真问题 + 9 条同义重复默认全选，
+  // 修稿前的 assertSelectionMappable() 直接 fail-closed —— 作者点一次报一次，整章反而无法精确修稿。
+  // 这些项仍然显示（不隐藏问题），但置灰并说明原因；存量 legacy 报告没有 findings，
+  // 继续沿用"可人工选择 + 结论上限 NEED_CONTEXT"的兼容路径。
+  const structuredFindings = Boolean(RC && Array.isArray(review.findings) && review.findings.length);
+  const issues = (Array.isArray(review.issues) ? review.issues : []).map((x, i) => {
+    const id = (RC ? RC.reviewIssueId(x) : '') || String((x && x.legacy_index) || `UNLINKED-${i + 1}`);
+    const hasFinding = Boolean(RC && RC.findingById(review, (RC ? RC.reviewIssueId(x) : '')));
+    return {
+      id,
+      text: RC ? RC.issueLineText(x) : String(x),
+      legacyIndex: Number(x && x.legacy_index) || (i + 1),
+      hasFinding,
+      selectable: hasFinding || !structuredFindings,
+    };
+  });
+  const lockedCount = issues.filter((x) => !x.selectable).length;
   const integrityBlocked = !(integrity && integrity.ok);
   const integrityBanner = (() => {
     if (!integrityBlocked) return '';
@@ -12169,6 +12357,15 @@ function showReviewReport(review) {
   })();
   const condenseOn = revisionPreference('allow_condense');
   const protectOn = revisionPreference('protect_selection');
+  // 老回执（2026-10-22 之前落库）里没有 `chapter_empty`：若库内本章正文此刻为空，
+  // 展示时按"库里的正文"补一次口径 —— 只影响显示，不改库、不改保存路径。
+  // 为什么不在 `applyReviewFindingsAudit` 里补：那里写的是**当次回执**，不能倒推历史报告。
+  const findingsAuditForDisplay = (() => {
+    const a = review && review.findings_audit && typeof review.findings_audit === 'object' ? review.findings_audit : null;
+    if (!a || !a.quote_base || a.quote_base.chapter_empty === true) return a;
+    const cid = Number((review && review.chapter_id) || state.currentChapterId) || 0;
+    return chapterBodyEmptyInDb(cid) ? { ...a, quote_base: { ...a.quote_base, chapter_empty: true } } : a;
+  })();
   // 2026-03-17（v118 §5）：绝对局限措辞的限定标记要**逐条落在优点行上**（作者看的是这一行）。
   //   判据来自 `checkReportConsistency` 的 `strength_qualifications`；这里只做匹配，不重算。
   const strengthQualMap = (() => {
@@ -12192,7 +12389,7 @@ function showReviewReport(review) {
           + '</div>';
       }).join('')}` : ''}
       ${reportConsistencyHtml(review.consistency)}
-      ${reviewFindingsAuditHtml(review.findings_audit)}
+      ${reviewFindingsAuditHtml(findingsAuditForDisplay)}
       ${(review.deferred || []).length ? '<div class="ref-group-title">待后续核验（不算问题，不会进入修稿清单）</div>' + review.deferred.map((d) => {
         const text = String((d && d.text) || d);
         const type = String((d && d.type) || '');
@@ -12211,8 +12408,9 @@ function showReviewReport(review) {
       <div class="ref-group-title">问题（勾选 = 确认修稿；取消勾选 = 忽略）</div>
       <div style="text-align:right"><button class="btn small secondary" data-action="review-compare" data-chapter="${esc(String((review && review.chapter_id) || state.currentChapterId || ''))}">📊 模型/人工/结构对照</button>
         <button class="btn small secondary" data-action="quality-audit-review" data-chapter="${esc(String((review && review.chapter_id) || state.currentChapterId || ''))}">🔍 独立复核（盲审→对照）</button></div>
+      ${lockedCount ? `<div class="muted">其中 ${lockedCount} 条只有文字、没有逐字证据（已置灰）：它们不会进入本次精确修稿，请重新审稿生成逐字证据，或手动修改这一处。</div>` : ''}
       ${issues.length ? issues.map((x, i) => `
-        <label class="review-item issue"><input type="checkbox" data-review-issue="${i}" data-review-issue-id="${esc(x.id)}" ${x.hasFinding ? '' : 'data-review-issue-unlinked="1"'} checked>
+        <label class="review-item issue${x.selectable ? '' : ' muted'}"><input type="checkbox" data-review-issue="${i}" data-review-issue-id="${esc(x.id)}" ${x.hasFinding ? '' : 'data-review-issue-unlinked="1"'} ${x.selectable ? 'checked' : 'disabled'}${x.selectable ? '' : ' title="没有结构化逐字证据：不能进入精确修稿"'} >
           <span>${x.legacyIndex}. ${esc(x.text)}</span>${x.hasFinding ? '' : ' <span class="chip">缺少结构化证据</span>'}</label>`).join('')
         : '<div class="muted">未发现问题</div>'}`,
     footer: `
@@ -12258,7 +12456,14 @@ function auditEntryFor(review) {
   const pluginReady = q ? Boolean(q.ready) : true;
   const hasStructured = Boolean(review && Array.isArray(review.findings) && review.findings.length);
   const run = state.qualityAudit && state.qualityAudit.reviewRun ? state.qualityAudit.reviewRun : null;
-  return `<div id="review-audit-entry">${P.auditEntryHtml({ run, pluginReady, hasStructuredReview: hasStructured })}</div>`;
+  const cid = Number((review && review.chapter_id) || state.currentChapterId) || 0;
+  // 首帧先按本地 state 判一次（hydrate 会再用服务端回执校准）：空正文时入口直接给出路，
+  // 不让作者点下去才知道"库里的正文是空的"。
+  // 缓存必须带章号：切到另一章的报告时，上一章的结论不能被当成本章的结论。
+  const qa = state.qualityAudit || {};
+  const cached = typeof qa.articleEmpty === 'boolean' && Number(qa.articleEmptyChapterId) === cid ? qa.articleEmpty : null;
+  const articleEmpty = cached === null ? chapterBodyEmptyInDb(cid) : cached;
+  return `<div id="review-audit-entry">${P.auditEntryHtml({ run, pluginReady, hasStructuredReview: hasStructured, articleEmpty })}</div>`;
 }
 
 /** 取本章最近一次审稿审计，刷新入口状态（只读，不创建任何东西）。 */
@@ -12269,6 +12474,12 @@ async function hydrateReviewAuditEntry(chapterId) {
   try {
     const data = await api(`/novel/quality-audits?chapter_id=${chapterId}&kind=review`);
     state.qualityAudit = { ...(state.qualityAudit || {}), reviewRun: (data && data.latest) || null };
+    // 服务端回执里的 article_empty 才是权威（库内正文可被另一个窗口改掉）；
+    // 字段缺失（旧服务）时退回本地 state，保持旧行为。
+    state.qualityAudit.articleEmpty = data && typeof data.article_empty === 'boolean'
+      ? data.article_empty
+      : chapterBodyEmptyInDb(chapterId);
+    state.qualityAudit.articleEmptyChapterId = Number(chapterId) || 0;
     const t = state.envTools || {};
     const q = t.dsh && t.dsh.plugins && t.dsh.plugins.qualityAuditor;
     const review = (state.pendingReview && state.pendingReview.review) || {};
@@ -12276,6 +12487,7 @@ async function hydrateReviewAuditEntry(chapterId) {
       run: state.qualityAudit.reviewRun,
       pluginReady: q ? Boolean(q.ready) : true,
       hasStructuredReview: Boolean(Array.isArray(review.findings) && review.findings.length),
+      articleEmpty: state.qualityAudit.articleEmpty,
     });
   } catch (_) { /* 状态取不到不影响报告本身 */ }
 }
@@ -12291,6 +12503,26 @@ function openMissingDepsDialog(items) {
       <button class="btn" data-action="refresh-env-tools">重新检测</button>`,
     protectedBackdrop: true
   });
+}
+
+/**
+ * 契约被拒时把**缺字段台账**摆出来（§3.2）。
+ *
+ * 为什么不是一句 toast：`AUDIT_CONTRACT_INVALID` 只说"结构不合法"，
+ * 作者既不知道缺在哪条 finding，也不知道这一处能不能免费补。
+ * 有台账就弹框逐行说明；没有台账返回 false，让调用方走原来的报错路径。
+ */
+function showAuditDefectDialog(err, title = '') {
+  const panel = (typeof globalThis !== 'undefined' && globalThis.NovelQualityAuditPanel) || null;
+  const defects = err && Array.isArray(err.defects) ? err.defects : [];
+  if (!defects.length || !panel || typeof panel.defectTableHtml !== 'function') return false;
+  const summary = err.defect_summary || null;
+  openModal({
+    title: title || '这份审计结果缺字段：不会进入逐项验收',
+    body: panel.defectTableHtml(defects, summary),
+    footer: '<button class="btn secondary" data-close-modal>知道了</button>',
+  });
+  return true;
 }
 
 async function startReviewQualityAudit(chapterId) {
@@ -12315,6 +12547,7 @@ async function startReviewQualityAudit(chapterId) {
         openMissingDepsDialog([{ code, name: code === 'AUDIT_PLUGIN_NOT_INSTALLED' ? '审计插件 dsh-novel-quality-auditor' : 'DeepSeek Harness（dsh）', why: '独立复核需要它才能启动审计子进程。', cmd: 'node harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs', action: code === 'AUDIT_PLUGIN_NOT_INSTALLED' ? 'install_audit_plugin' : '' }]);
         return;
       }
+      if (showAuditDefectDialog(created, '独立复核未启动：这份结果缺字段')) return;
       toast(`独立复核未启动：${code || '未知原因'}`, 'error');
       return;
     }
@@ -12340,6 +12573,7 @@ async function startReviewQualityAudit(chapterId) {
     }
     toast('独立复核仍在运行：可在审稿工作区继续查看状态（超时未提交会显示"未结构化提交"）');
   } catch (err) {
+    if (showAuditDefectDialog(err, '独立复核被拒：这份结果缺字段')) return;
     toast(`独立复核失败：${String(err && err.message || err).slice(0, 120)}`, 'error');
   }
 }
@@ -12414,6 +12648,8 @@ async function startRevisionQualityAudit(chapterId) {
     }
     toast('逐项终验仍在运行：稍后重新打开候选稿可恢复状态');
   } catch (err) {
+    // 终验提交被契约拒绝时，逐字段说明"缺什么、能不能免费补"（§3.2），而不是只报一句失败。
+    if (showAuditDefectDialog(err, '逐项终验被拒：这份结果缺字段')) return;
     toast(`逐项终验失败：${String(err && err.message || err).slice(0, 120)}`, 'error');
   }
 }
@@ -12471,7 +12707,15 @@ async function refineByChecklist() {  const { info, review, confirmedOverride, c
     if (!mapping.ok) {
       closeModal();
       const missing = Array.isArray(mapping.missing) && mapping.missing.length ? `（缺失：${mapping.missing.join('、')}）` : '';
-      toast(`审稿报告的 ID 映射不完整（${mapping.code}）${missing}：没有发起修稿。请重新审稿或按原文指出问题后重试。`, 'error');
+      // UNLINKED-n 是"清单里第 n 条只有文字、没有逐字证据"，报给作者时换成他能对得上的序号，
+      // 而不是让他去猜 UNLINKED-10 对应哪一行（正常路径下这些项已在界面置灰，走不到这里）。
+      const lockedNos = (Array.isArray(mapping.missing) ? mapping.missing : [])
+        .map((id) => { const m = /^UNLINKED-(\d+)$/.exec(String(id)); return m ? m[1] : ''; })
+        .filter(Boolean);
+      const why = lockedNos.length
+        ? `第 ${lockedNos.join('、')} 条没有结构化逐字证据（清单里已置灰），不能进入精确修稿：请重新审稿生成证据，或手动修改这一处。`
+        : '请重新审稿或按原文指出问题后重试。';
+      toast(`审稿报告的 ID 映射不完整（${mapping.code}）${missing}：没有发起修稿。${why}`, 'error');
       reportClientLog({
         level: 'error', kind: 'review_id_mapping_broken',
         message: `[修稿] 选择映射完整性检查未通过：${mapping.code}`,
@@ -13624,7 +13868,7 @@ function mergeRepairSemantic(prior, deterministic, repairIds) {
  *   · 每轮应用后重新跑安全门禁（组合核验）与逐条确定性验收，而不是沿用上一轮结论；
  *   · 仍失败的条目如实留在覆盖表；候选稿始终只是候选，写回仍需作者批准。
  */
-async function runRevisionAutoRepair({ article, patched, semantic, plan, findings, authorization, snapshot, chapterId, selectedIssueIds, review, jobBase, applyOpts, invariants, protectedSpans }) {
+async function runRevisionAutoRepair({ article, patched, semantic, plan, findings, authorization, snapshot, chapterId, selectedIssueIds, review, jobBase, applyOpts, invariants, protectedSpans, maxRounds, budgetCents }) {
   const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
   const RP = revisionPatchEngine();
   if (!CL || !RP || !patched || !semantic || !Array.isArray(semantic.issues)) return null;
@@ -13632,9 +13876,15 @@ async function runRevisionAutoRepair({ article, patched, semantic, plan, finding
   let current = patched;
   let sem = semantic;
   let spent = 0;
-  const budget = revisionBudgetCents();
+  // 轮次与预算可以由调用方收紧（v1.2.7「只复修未通过项」要延续本次运行已经用掉的轮次/花费），
+  // 但**不能放宽**：上限仍是 REVISION_AUTO_REPAIR_MAX_ROUNDS 与 revisionBudgetCents()。
+  const roundsCap = Number.isInteger(Number(maxRounds)) && Number(maxRounds) > 0
+    ? Math.min(Number(maxRounds), REVISION_AUTO_REPAIR_MAX_ROUNDS)
+    : 0;
+  const maxRoundsOfRun = roundsCap > 0 ? roundsCap : REVISION_AUTO_REPAIR_MAX_ROUNDS;
+  const budget = Number.isFinite(Number(budgetCents)) ? Math.max(0, Number(budgetCents)) : revisionBudgetCents();
   const rounds = [];
-  for (let round = 0; round < REVISION_AUTO_REPAIR_MAX_ROUNDS; round += 1) {
+  for (let round = 0; round < maxRoundsOfRun; round += 1) {
     // PARTIAL 也必须有去处：它是有结论的未通过项，不是"待验"。
     const failing = (sem.issues || []).filter((i) => i && (i.verdict === 'fail' || i.verdict === 'partial'));
     const failingIds = [...new Set(failing.map((i) => String(i.issue_id)))];
@@ -13651,7 +13901,7 @@ async function runRevisionAutoRepair({ article, patched, semantic, plan, finding
     });
     const estimateCents = CL.estimateRevisionCostCents({ promptChars: prompt.length, maxOutputTokens: 2048 });
     const verdict = CL.planAutoRepair({
-      issues: sem.issues, round, maxRounds: REVISION_AUTO_REPAIR_MAX_ROUNDS,
+      issues: sem.issues, round, maxRounds: maxRoundsOfRun,
       budgetCents: Math.max(0, budget - spent), estimateCents, allowedIssueIds: selectedIssueIds,
     });
     if (!verdict.ok) {
@@ -14518,13 +14768,42 @@ function downloadTextFile(name, text) {
 }
 
 /**
+ * 这次合并**还欠哪几条**（纯函数）。
+ *
+ * 为什么要在合并时算一遍：合并部分候选是产品允许的行为（作者有权带未通过项采用），
+ * 但"采用了"与"修好了"是两件事。把欠账随采纳请求一起上报，服务端就把它写进采纳记录，
+ * 事后只凭 `/novel/adopt` 的回包与 adoption_operations 就能回答"当时是什么状态"，
+ * 而不必回头翻客户端日志（那正是 §4.4 要的证据链）。
+ *
+ * 判据宁严不宽：只有明确通过（ISSUE_VERIFIED / PASS / VERIFIED）才算已解决，其余一律算欠账。
+ */
+function unresolvedIssueIdsOf(closure, finalize) {
+  const rows = [];
+  for (const src of [finalize, closure]) {
+    if (!src || typeof src !== 'object') continue;
+    for (const key of ['rows', 'issues']) if (Array.isArray(src[key])) rows.push(...src[key]);
+  }
+  const done = new Set(['ISSUE_VERIFIED', 'PASS', 'VERIFIED']);
+  const ids = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const id = String(r.issue_id || r.id || '').trim();
+    if (!id) continue;
+    const st = String(r.final_status || r.status || r.verdict || '').toUpperCase();
+    if (done.has(st)) continue;
+    ids.push(id);
+  }
+  return [...new Set(ids)];
+}
+
+/**
  * 把"这份候选属于哪一章、要写什么、幂等键是什么"固化进 `state.pendingReviewDiff`。
  *
  * 为什么抽出来（v1.2.4 P0E）：审稿工作区与旧差异弹窗是**同一份候选**的两个呈现，
  * 两条路径都必须先把合并所需的东西固化好；否则"在工作区里点合并"会找不到 pendingReviewDiff，
  * 作者看到的就是一个点了没反应的按钮。
  */
-function primePendingReviewDiff(oldText, newText, { chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, patches = [], coverage = [], verification = null } = {}) {
+function primePendingReviewDiff(oldText, newText, { chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, patches = [], coverage = [], verification = null, closure = null, finalize = null, verifiedHash = '' } = {}) {
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   // R03：整次采纳要用到的两样东西，都在**预览打开时**固化：
   //   · proposalRefs / proposalIds —— 结果弹窗里勾选的入账提案（弹窗关掉后 DOM 就没了）。
@@ -14558,17 +14837,29 @@ function primePendingReviewDiff(oldText, newText, { chapterId = null, proposalId
     proposalRefs: keptSelection.proposalRefs,
     proposalIds: keptSelection.proposalIds,
     operationKey: `merge-${targetChapterId || 0}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    // P0（2026-10-22）：合并前要知道"这份候选有没有真的被验过、验的是不是这一版的文本"。
+    // verifiedContentHash 为空 = 这份候选**没有**任何验收结论（旧审稿路径），
+    // 那时不假装验过（门禁的"候选一致性"一条退化为不做判断），但结果里也不许写成"已通过"。
+    verifiedContentHash: String(verifiedHash || ''),
+    // 「候选与正式正文是不是同一版」（§6）：把打开预览那一刻的正文版本标记钉住，
+    // 之后与库里当前值比较即可如实陈述（不猜、不把"看起来没变"当成没变）。
+    previewBaseUpdatedAt: (() => {
+      const row = (state.chapters || []).find((c) => Number(c && c.id) === Number(targetChapterId));
+      return String((row && row.updated_at) || '');
+    })(),
+    // 未通过条目随合并请求一起上报：合并部分候选 ≠ 这些条目已修复。
+    unresolvedIssueIds: unresolvedIssueIdsOf(closure, finalize),
   };
   // 勾选集合已转存进 pendingReviewDiff（本次差异预览的一部分）；清掉暂存，避免串到下一次操作。
   state.pendingProposalSelection = null;
   return state.pendingReviewDiff;
 }
 
-function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], notice = '', chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [], coverage = [], issueCoverage = [], patches = [], verification = null, targetWords = null, semantic = null, closure = null, finalize = null } = {}) {
+function showReviewDiff(oldText, newText, { checklist = null, applied = null, notes = [], notice = '', chapterId = null, proposalIds = null, proposalRefs = null, baseFingerprint = null, blocked = [], findings = [], coverage = [], issueCoverage = [], patches = [], verification = null, targetWords = null, semantic = null, closure = null, finalize = null, verifiedHash = '' } = {}) {
   // ⚠️ 绑定"这份修稿属于哪一章"。差异预览开着的期间作者可能已经切了章，
   // 而旧实现按"当前打开的章"合并 —— 会把 A 章的修稿稿整篇写进 B 章（B 章原文只剩历史版本）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
-  primePendingReviewDiff(oldText, newText, { chapterId: targetChapterId, proposalIds, proposalRefs, baseFingerprint, patches, coverage, verification });
+  primePendingReviewDiff(oldText, newText, { chapterId: targetChapterId, proposalIds, proposalRefs, baseFingerprint, patches, coverage, verification, closure, finalize, verifiedHash });
   const viewingOther = Boolean(targetChapterId) && Number(state.currentChapterId) !== targetChapterId;
   // E03（§7.1）：篇幅口径与缺口必须**在同一处**如实呈现 —— 改动条数不能证明篇幅问题已解决。
   // 这里只说"这次授权改了多少字、离目标还差多少"，**不**因此扩大任何修改范围（越权面不在这里放开）。
@@ -14658,14 +14949,23 @@ function semanticConclusionCount(byIssue) {
 async function runRevisionSemanticVerify() {
   const ctx = state.pendingRevisionClosure;
   if (!ctx || !ctx.patched) { toast('没有可复验的修稿候选：请重新发起修稿', 'error'); return; }
-  // 2026-10-18 作者：跳过复验直接合并之后，也必须能再点一次复验（反悔机会）。
-  // 所以"已用一次额度"只在**没有合并**时封锁；合并后补跑一次是允许的，
-  // 但仍只给一次（补跑过一次就不再给，避免同一份稿子反复付费）。
-  const postMergeRetry = Boolean(ctx.mergedAt && !ctx.reverifiedAfterMerge);
-  if (Number(ctx.semanticRuns) >= 1 && !postMergeRetry) {
-    toast(postMergeRetry
-      ? '这次修稿已经补跑过一次复验：同一份候选不重复付费复验；如需再验请先修改候选'
-      : '这次修稿已经做过一次语义复验：同一份候选不重复付费复验；如需再验请先修改候选', 'error');
+  // v1.2.7：额度按**候选 hash** 计（不再用全局 semanticRuns 一刀切）。
+  // 否则"复修换了候选却验不了"和"同一份稿反复付费"必居其一 —— 判据在 revision-closure.verifyAllowanceOf。
+  const CL0 = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  const candidateHash = contentHashOf(ctx.patched.text);
+  const allowance = CL0 && typeof CL0.verifyAllowanceOf === 'function'
+    ? CL0.verifyAllowanceOf({
+      candidateHash,
+      verifiedHashes: ctx.verifiedHashes,
+      mergedAt: Boolean(ctx.mergedAt),
+      reverifiedAfterMerge: Boolean(ctx.reverifiedAfterMerge),
+    })
+    : { ok: Number(ctx.semanticRuns) < 1, code: 'LEGACY_COUNTER' };
+  if (!allowance.ok) {
+    toast(allowance.code === 'NO_CANDIDATE_HASH'
+      ? '拿不到候选正文指纹：不能发起付费复验（请先重新发起修稿）'
+      : '这一版候选已经做过一次语义复验：同一份候选不重复付费复验；改过候选（含定向复修）后会自动再给一次',
+    'error');
     return;
   }
   if (state.revisionSemanticRunning) return; // 双击保护：进度条已经起来了就别再起一次
@@ -14723,119 +15023,15 @@ async function runRevisionSemanticVerify() {
       semanticByIssue: parsed.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
       currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
     });
-    // v1.2.2：语义复验判失败 → 自动做一次定向复修（成本门通过才执行），再自动复验一次。
-    // 为什么复验只跑一次：同一份候选重复付费复验没有新信息；要再验必须先改候选。
-    let finalPatched = ctx.patched;
-    let finalSemantic = semantic;
-    let autoRepair = null;
-    // 复修后复验被跳过（费用无法核价/超预算）时的如实说明；为空表示未发生跳过。
-    let recheckNote = '';
-    if (revisionAutoRepairEnabled() && semantic && semantic.summary && Number(semantic.summary.unresolved) > 0) {
-      autoRepair = await runRevisionAutoRepair({
-        article: ctx.article, patched: ctx.patched, semantic, plan: ctx.plan, findings: ctx.findings,
-        authorization: ctx.authorization,
-        snapshot: ctx.snapshot, chapterId: ctx.chapterId, selectedIssueIds: ctx.selectedIssueIds,
-        review: ctx.review, jobBase, applyOpts: patchSafetyOptions(ctx.chapterId, Array.isArray(ctx.protected_spans) ? ctx.protected_spans : []),
-        invariants: { must_keep: [] }, protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
-      });
-      if (autoRepair && autoRepair.rounds.some((r) => r.status === 'applied')) {
-        finalPatched = autoRepair.patched;
-        finalSemantic = autoRepair.semantic;
-        // 复修后的候选要重新过一次语义层：mergeRepairSemantic 已把复修过的条目置为
-        // "待复验"，这里必须补上那一次独立复验，否则 finalize 只能给出 AWAITING_SEMANTIC。
-        const needRecheck = finalSemantic && finalSemantic.summary
-          && (Number(finalSemantic.summary.unresolved) > 0 || Number(finalSemantic.summary.awaiting_semantic) > 0);
-        if (needRecheck) {
-          const recheckPrompt = buildRevisionSemanticPrompt({ article: ctx.article, revised: finalPatched.text, findings: ctx.findings });
-          // 费用门禁：复修已经花掉一轮，复验是**又一次付费调用**。
-          // 无法核价或超出剩余预算时明确跳过，候选保持"待复验"——不假装验过、不静默超支。
-          const CL2 = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
-          const spentSoFar = Number(autoRepair.spent_cents) || 0;
-          const remainingCents = Math.max(0, revisionBudgetCents() - spentSoFar);
-          const estimateCents = CL2
-            ? CL2.estimateRevisionCostCents({ promptChars: recheckPrompt.length, maxOutputTokens: 2048 })
-            : null;
-          if (estimateCents == null || estimateCents > remainingCents) {
-            recheckNote = `复修后复验未执行：${estimateCents == null ? '费用无法可靠核价' : `预估 ${estimateCents} 分超出剩余 ${remainingCents} 分`}；候选按"待复验"保留`;
-          } else {
-            try {
-              const recheck = await runHarnessJob({
-                ...jobBase, prompt: recheckPrompt, kind: 'revision_semantic_verify', stage: 'AI 修稿语义复验（复修后）',
-              }, 'AI 修稿 · 复修后再次逐条复验…');
-              const parsedAgain = parseSemanticVerification(recheck.output || '', ctx.selectedIssueIds);
-              if (parsedAgain.ok) {
-                finalSemantic = revisionSemanticFor({
-                  article: ctx.article, patched: finalPatched, plan: ctx.plan, findings: ctx.findings,
-                  semanticByIssue: parsedAgain.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
-                  currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
-                });
-              } else {
-                recheckNote = '复修后复验输出不可解析：候选按"待复验"保留';
-              }
-            } catch (e) {
-              if (e && e.cancelled) throw e;
-              // 复验失败不改变候选：如实保留"待复核"，不假装通过。
-              recheckNote = '复修后复验调用失败：候选按"待复验"保留';
-            }
-          }
-        }
-      }
-    }
-    const closure = revisionClosureFor({ patched: finalPatched, semantic: finalSemantic, selectedIssueIds: ctx.selectedIssueIds });
-    const autoNotice = revisionAutoRepairNotice(autoRepair);
-    // v1.2.4 P0C：复验后**重新走同一个出口**，这样 stage / 覆盖完备性 / 下一步都由统一逻辑给出，
-    // 而不是这一处再手写一套"看起来修好了"的判断。
-    const semanticByIssue = {};
-    for (const i of ((finalSemantic && finalSemantic.issues) || [])) {
-      semanticByIssue[String(i.issue_id)] = {
-        status: String(i.semantic_status || 'not_run'),
-        reason: String(i.reason || ''),
-        reason_code: String(i.reason_code || ''),
-        remaining_evidence: Array.isArray(i.remaining_evidence)
-          ? i.remaining_evidence.map((e) => String((e && e.quote) || e))
-          : [],
-        repair_hint: String(i.repair_hint || ''),
-        confidence: String(i.confidence || 'medium'),
-        checks: Array.isArray(i.checks) ? i.checks : [],
-      };
-    }
-    const finalized = revisionFinalizeFor({
-      mode: ctx.mode === 'segmented' ? 'segmented' : 'single',
-      article: ctx.article, patched: finalPatched, plan: ctx.plan, findings: ctx.findings,
-      selectedIssueIds: ctx.selectedIssueIds, snapshot: ctx.snapshot, chapterId: ctx.chapterId, reviewId: ctx.reviewId,
-      invariants: { must_keep: [] }, protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
-      segments: Array.isArray(ctx.segments) ? ctx.segments : null,
-      segmentCoverage: Array.isArray(ctx.segmentCoverage) ? ctx.segmentCoverage : [],
-      mergeComplete: ctx.mergeComplete === true,
-      semanticByIssue,
-      canonConflictIds: canonConflictIdsFrom((finalSemantic && finalSemantic.issues) || []),
-    });
-    state.pendingRevisionClosure = {
-      ...ctx, patched: finalPatched, semantic: finalSemantic, closure: (finalized && finalized.closure) || closure,
-      finalized: finalized || null, autoRepair, semanticRuns: Number(ctx.semanticRuns) + 1,
-      semanticByIssue,
-      // 合并之后补跑的这一轮：把档位交回终审自己（PARTIAL / VERIFIED 都可能），
-      // 不再被 PERSISTED_UNVERIFIED 挡住 —— 否则作者点了复验却看不到任何结论。
-      reverifiedAfterMerge: Boolean(ctx.mergedAt),
-      mergedUnverified: ctx.mergedAt
-        ? !(finalized && finalized.status === 'VERIFIED_CANDIDATE')
-        : ctx.mergedUnverified,
-    };
-    persistRevisionRun(state.pendingRevisionClosure, finalized, ctx.chapterId, autoRepair);
-    // 复验通过 ⇒ 这份候选就是要的"已复验候选"，落进第 3 个存档槽（正文里那份可能是未复验版）。
-    if (finalized && finalized.status === 'VERIFIED_CANDIDATE') {
-      await archiveReviewVersions(state.pendingRevisionClosure, {
-        article: ctx.article, text: finalPatched.text, verified: true,
-      });
-    }
-    await postRevisionClosureReceipt(ctx.chapterId, (finalized && finalized.closure) || closure, finalSemantic, finalized);
-    const s = (finalSemantic && finalSemantic.summary) || { verified: 0, total: 0 };
-    // 结果已经算出来了：先撤进度条，再交给统一出口渲染（否则工作区会把按钮一直画成灰的）。
-    stopRevisionSemanticProgress();
-    presentRevisionResult({
-      ...ctx.diffArgs, oldText: ctx.article, newText: finalPatched.text,
-      semantic: finalSemantic, closure: (finalized && finalized.closure) || closure, finalize: finalized || null,
-      notice: `语义复验已运行：逐条通过 ${s.verified} / 共 ${s.total}${s.partial ? `（部分修复 ${s.partial}）` : ''}（结论见下方覆盖表）${autoNotice ? `；${autoNotice}` : ''}${recheckNote ? `；${recheckNote}` : ''}`,
+    // v1.2.7：复修 → 补一次复验 的逻辑抽到 applyRevisionRepairAndRecheck，
+    // 「复验后的自动复修」与「只复修未通过项」按钮共用同一份判据（不得各写一套）。
+    const applied = await applyRevisionRepairAndRecheck(ctx, jobBase, { patched: ctx.patched, semantic });
+    const finalPatched = applied.finalPatched;
+    const finalSemantic = applied.finalSemantic;
+    const autoRepair = applied.autoRepair;
+    const recheckNote = applied.recheckNote;
+    await finalizeRevisionRun(ctx, {
+      patched: finalPatched, semantic: finalSemantic, autoRepair, recheckNote, countRun: true,
     });
   } catch (e) {
     // 失败也要把进度条撤掉并重画：留一张"永远在跑"的界面比报错更糟（作者会以为还在计费）。
@@ -14845,6 +15041,379 @@ async function runRevisionSemanticVerify() {
   } finally {
     stopRevisionSemanticProgress();
   }
+}
+
+/**
+ * 复修 → 补一次复验（v1.2.7 抽出）。
+ *
+ * 为什么必须抽出来：复验后的自动复修、与底栏「只复修未通过项」按钮，
+ * 是同一件事的两个入口。各写一份的结局一定是"按钮说能修、执行说不能"，
+ * 或者一个走费用门禁、另一个不走（2026-10-22 的卡死就出在这里：下一步只存在于文案里）。
+ *
+ * 返回 { finalPatched, finalSemantic, autoRepair, recheckNote, recheckRan }。
+ * 任何一步没跑（额度/预算/开关），都在 recheckNote 里如实写原因，绝不静默。
+ */
+async function applyRevisionRepairAndRecheck(ctx, jobBase, overrides = {}) {
+  const basePatched = overrides.patched || ctx.patched;
+  const baseSemantic = overrides.semantic || ctx.semantic;
+  const plan = overrides.plan || ctx.plan;
+  const authorization = overrides.authorization || ctx.authorization;
+  const findings = overrides.findings || ctx.findings;
+  const budgetLeft = Number.isFinite(Number(overrides.budgetCents)) ? Number(overrides.budgetCents) : revisionBudgetCents();
+  let finalPatched = basePatched;
+  let finalSemantic = baseSemantic;
+  let autoRepair = null;
+  let recheckNote = '';
+  let recheckRan = false;
+  if (!revisionAutoRepairEnabled()) {
+    return { finalPatched, finalSemantic, autoRepair, recheckNote: '自动复修已关闭（ns_revision_auto_repair=0）', recheckRan, plan, authorization };
+  }
+  // 「部分修复」也是有结论的未通过项：显式复修入口必须能修它；复验后的自动复修保持旧口径（只看 unresolved），
+  // 避免在既有的付费复验路径上悄悄多跑一轮。
+  const sum = (baseSemantic && baseSemantic.summary) || {};
+  const shouldRepair = Number(sum.unresolved) > 0 || (overrides.allowPartial === true && Number(sum.partial) > 0);
+  if (!shouldRepair) return { finalPatched, finalSemantic, autoRepair, recheckNote, recheckRan, plan, authorization };
+  autoRepair = await runRevisionAutoRepair({
+    article: ctx.article, patched: basePatched, semantic: baseSemantic, plan, findings,
+    authorization,
+    snapshot: ctx.snapshot, chapterId: ctx.chapterId, selectedIssueIds: ctx.selectedIssueIds,
+    review: ctx.review, jobBase,
+    applyOpts: patchSafetyOptions(ctx.chapterId, Array.isArray(ctx.protected_spans) ? ctx.protected_spans : []),
+    invariants: { must_keep: [] }, protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
+    maxRounds: overrides.maxRounds,
+    budgetCents: budgetLeft,
+  });
+  if (!(autoRepair && autoRepair.rounds.some((r) => r.status === 'applied'))) {
+    return { finalPatched, finalSemantic, autoRepair, recheckNote, recheckRan, plan, authorization };
+  }
+  finalPatched = autoRepair.patched;
+  finalSemantic = autoRepair.semantic;
+  // 复修后的候选要重新过一次语义层：mergeRepairSemantic 已把复修过的条目置为"待复验"，
+  // 这里必须补上那一次独立复验，否则 finalize 只能给出 AWAITING_SEMANTIC。
+  const needRecheck = finalSemantic && finalSemantic.summary
+    && (Number(finalSemantic.summary.unresolved) > 0 || Number(finalSemantic.summary.awaiting_semantic) > 0);
+  if (!needRecheck) return { finalPatched, finalSemantic, autoRepair, recheckNote, recheckRan, plan, authorization };
+  const recheckPrompt = buildRevisionSemanticPrompt({ article: ctx.article, revised: finalPatched.text, findings });
+  // 费用门禁：复修已经花掉一轮，复验是**又一次付费调用**。
+  // 无法核价或超出剩余预算时明确跳过，候选保持"待复验"——不假装验过、不静默超支。
+  const CL2 = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  const spentSoFar = Number(autoRepair.spent_cents) || 0;
+  const remainingCents = Math.max(0, budgetLeft - spentSoFar);
+  const estimateCents = CL2
+    ? CL2.estimateRevisionCostCents({ promptChars: recheckPrompt.length, maxOutputTokens: 2048 })
+    : null;
+  if (estimateCents == null || estimateCents > remainingCents) {
+    recheckNote = `复修后复验未执行：${estimateCents == null ? '费用无法可靠核价' : `预估 ${estimateCents} 分超出剩余 ${remainingCents} 分`}；候选按"待复验"保留`;
+    return { finalPatched, finalSemantic, autoRepair, recheckNote, recheckRan, plan, authorization };
+  }
+  try {
+    const recheck = await runHarnessJob({
+      ...jobBase, prompt: recheckPrompt, kind: 'revision_semantic_verify', stage: 'AI 修稿语义复验（复修后）',
+    }, 'AI 修稿 · 复修后再次逐条复验…');
+    const parsedAgain = parseSemanticVerification(recheck.output || '', ctx.selectedIssueIds);
+    if (parsedAgain.ok) {
+      finalSemantic = revisionSemanticFor({
+        article: ctx.article, patched: finalPatched, plan, findings,
+        semanticByIssue: parsedAgain.byIssue, invariants: { must_keep: [] }, protectedSpans: [],
+        currentBaseHash: ctx.snapshot ? ctx.snapshot.body_hash : undefined,
+      });
+      recheckRan = semanticConclusionCount(parsedAgain.byIssue) > 0;
+    } else {
+      recheckNote = '复修后复验输出不可解析：候选按"待复验"保留';
+    }
+  } catch (e) {
+    if (e && e.cancelled) throw e;
+    // 复验失败不改变候选：如实保留"待复核"，不假装通过。
+    recheckNote = '复修后复验调用失败：候选按"待复验"保留';
+  }
+  return { finalPatched, finalSemantic, autoRepair, recheckNote, recheckRan, plan, authorization };
+}
+
+/**
+ * 走统一出口收尾（v1.2.7 抽出）：终审 → 落运行记录 → 存档 → 回执 → 渲染。
+ *
+ * 为什么收尾也必须只有一份：复验与定向复修都会产生"新的候选 + 新的逐条结论"，
+ * 两处各写一份收尾，就会有一处忘记记 verifiedHashes / 忘记存档（那些"看起来修了其实没记"的旧缺陷）。
+ */
+async function finalizeRevisionRun(ctx, opts = {}) {
+  const patched = opts.patched || ctx.patched;
+  const semantic = opts.semantic || ctx.semantic;
+  const autoRepair = opts.autoRepair || null;
+  const recheckNote = String(opts.recheckNote || '');
+  const plan = opts.plan || ctx.plan;
+  const closure = revisionClosureFor({ patched, semantic, selectedIssueIds: ctx.selectedIssueIds });
+  // 轮次与花费必须**跨轮累计**：定向复修按钮可以点多次，如果每次都用这一轮自己的 rounds 覆盖，
+  // 轮次上限就会被"每点一次重新数"绕开（那等于无限付费重试）。这里把上一轮的轮次/花费接上。
+  const priorAuto = ctx.autoRepair && Array.isArray(ctx.autoRepair.rounds) ? ctx.autoRepair : null;
+  const mergedAutoRepair = (() => {
+    const CLM = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+    if (CLM && typeof CLM.mergeRepairRounds === 'function') return CLM.mergeRepairRounds(priorAuto, autoRepair);
+    if (!autoRepair) return priorAuto;
+    if (!priorAuto) return autoRepair;
+    const rounds = [...priorAuto.rounds, ...autoRepair.rounds];
+    return {
+      ...autoRepair,
+      rounds,
+      spent_cents: (Number(priorAuto.spent_cents) || 0) + (Number(autoRepair.spent_cents) || 0),
+    };
+  })();
+  const autoNotice = opts.autoNotice != null ? String(opts.autoNotice) : revisionAutoRepairNotice(mergedAutoRepair);
+  const semanticByIssue = {};
+  for (const i of ((semantic && semantic.issues) || [])) {
+    semanticByIssue[String(i.issue_id)] = {
+      status: String(i.semantic_status || 'not_run'),
+      reason: String(i.reason || ''),
+      reason_code: String(i.reason_code || ''),
+      remaining_evidence: Array.isArray(i.remaining_evidence)
+        ? i.remaining_evidence.map((e) => String((e && e.quote) || e))
+        : [],
+      repair_hint: String(i.repair_hint || ''),
+      confidence: String(i.confidence || 'medium'),
+      checks: Array.isArray(i.checks) ? i.checks : [],
+    };
+  }
+  const finalized = revisionFinalizeFor({
+    mode: ctx.mode === 'segmented' ? 'segmented' : 'single',
+    article: ctx.article, patched, plan, findings: ctx.findings,
+    selectedIssueIds: ctx.selectedIssueIds, snapshot: ctx.snapshot, chapterId: ctx.chapterId, reviewId: ctx.reviewId,
+    invariants: { must_keep: [] }, protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
+    segments: Array.isArray(ctx.segments) ? ctx.segments : null,
+    segmentCoverage: Array.isArray(ctx.segmentCoverage) ? ctx.segmentCoverage : [],
+    mergeComplete: ctx.mergeComplete === true,
+    semanticByIssue,
+    canonConflictIds: canonConflictIdsFrom((semantic && semantic.issues) || []),
+  });
+  // 复验额度按候选 hash 记：只有**真的跑出结论**的这一版才算"用掉了它自己的那一次"。
+  // 复修后复验被跳过（预算/解析失败）时不能记账，否则这份候选会永远验不了（另一种死锁）。
+  const candHash = contentHashOf(patched && patched.text);
+  const verifiedHashes = opts.countRun === true && candHash
+    ? [...new Set([...(Array.isArray(ctx.verifiedHashes) ? ctx.verifiedHashes : []), candHash])]
+    : (Array.isArray(ctx.verifiedHashes) ? ctx.verifiedHashes.slice() : []);
+  state.pendingRevisionClosure = {
+    ...ctx, plan, patched, semantic, closure: (finalized && finalized.closure) || closure,
+    finalized: finalized || null, autoRepair: mergedAutoRepair, semanticByIssue,
+    semanticRuns: Number(ctx.semanticRuns) + (opts.countRun === true ? 1 : 0),
+    verifiedHashes,
+    // 合并之后补跑的这一轮：把档位交回终审自己（PARTIAL / VERIFIED 都可能），
+    // 不再被 PERSISTED_UNVERIFIED 挡住 —— 否则作者点了复验却看不到任何结论。
+    reverifiedAfterMerge: Boolean(ctx.mergedAt),
+    mergedUnverified: ctx.mergedAt
+      ? !(finalized && finalized.status === 'VERIFIED_CANDIDATE')
+      : ctx.mergedUnverified,
+  };
+  persistRevisionRun(state.pendingRevisionClosure, finalized, ctx.chapterId, mergedAutoRepair);
+  // 复验通过 ⇒ 这份候选就是要的"已复验候选"，落进第 3 个存档槽（正文里那份可能是未复验版）。
+  if (finalized && finalized.status === 'VERIFIED_CANDIDATE') {
+    await archiveReviewVersions(state.pendingRevisionClosure, {
+      article: ctx.article, text: patched.text, verified: true,
+    });
+  }
+  await postRevisionClosureReceipt(ctx.chapterId, (finalized && finalized.closure) || closure, semantic, finalized);
+  const s = (semantic && semantic.summary) || { verified: 0, total: 0 };
+  // 结果已经算出来了：先撤进度条，再交给统一出口渲染（否则工作区会把按钮一直画成灰的）。
+  stopRevisionSemanticProgress();
+  const head = opts.noticePrefix ? String(opts.noticePrefix) : '语义复验已运行';
+  presentRevisionResult({
+    ...ctx.diffArgs, oldText: ctx.article, newText: patched.text,
+    semantic, closure: (finalized && finalized.closure) || closure, finalize: finalized || null,
+    // P0：把"这一版文本真的跑出过结论"钉进差异预览，合并时才能核对"要合并的是不是验过的那一版"。
+    verifiedHash: verifiedHashes.includes(candHash) ? candHash : '',
+    notice: `${head}：逐条通过 ${s.verified} / 共 ${s.total}${s.partial ? `（部分修复 ${s.partial}）` : ''}（结论见下方覆盖表）`
+      + `${autoNotice ? `；${autoNotice}` : ''}${recheckNote ? `；${recheckNote}` : ''}`,
+  });
+  return { finalized, closure };
+}
+
+/**
+ * 「只复修未通过项」按钮的执行体（v1.2.7 / 方案 A）。
+ *
+ * 判据全部来自 revision-closure.targetedRepairOf（与工作区按钮同一份计算）；
+ * `widen=true` 时把复验说"还在"的文字一并纳入**本次**授权（方案 B1，只由作者点按触发）。
+ */
+async function runRevisionTargetedRepair(options = {}) {
+  const widen = options.widen === true;
+  const ctx = state.pendingRevisionClosure;
+  if (!ctx || !ctx.patched || !ctx.finalized) { toast('没有可复修的候选：请先发起修稿', 'error'); return; }
+  if (String(ctx.finalized.status) !== 'PARTIAL_CANDIDATE') {
+    toast('当前不是"部分通过"状态：没有可定向复修的条目', 'error');
+    return;
+  }
+  // 恢复的运行没有授权跨度（plan=null）：复修只会产出"改不了"的补丁，不发起付费调用。
+  if (!ctx.plan) { toast('这次运行是从本地记录恢复的：没有授权跨度，请重新发起修稿', 'error'); return; }
+  // 已合并：候选就是正文，再定向复修等于绕开"重新审稿"去改库里的正文。
+  if (ctx.mergedAt) { toast('已经合并到正文：要继续修请重新审稿（合并后的稿子不再有独立候选）', 'error'); return; }
+  if (state.revisionSemanticRunning) return;
+  const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  if (!CL || typeof CL.targetedRepairOf !== 'function') { toast('复修判据模块未加载：无法规划本轮复修', 'error'); return; }
+  const roundsUsed = revisionRepairRoundOf(ctx) - 1;
+  const roundsLeft = Math.max(0, REVISION_AUTO_REPAIR_MAX_ROUNDS - roundsUsed);
+  const spentBefore = Number(ctx.autoRepair && ctx.autoRepair.spent_cents) || 0;
+  const budgetLeft = Math.max(0, revisionBudgetCents() - spentBefore);
+  const articleText = String(ctx.article || '');
+  const preflight = CL.targetedRepairOf({
+    rows: ctx.finalized.rows,
+    semanticByIssue: ctx.semanticByIssue || {},
+    roundsUsed,
+    maxRounds: REVISION_AUTO_REPAIR_MAX_ROUNDS,
+    budgetCents: budgetLeft,
+    estimateCents: CL.estimateRevisionCostCents({ promptChars: articleText.length + 4000, maxOutputTokens: 2048 }),
+    allowedIssueIds: Array.isArray(ctx.selectedIssueIds) ? ctx.selectedIssueIds : null,
+  });
+  if (!preflight.ok || !preflight.targets.length) {
+    const why = {
+      ROUND_LIMIT: '本次运行的复修轮次已用尽（不无限重试）',
+      BUDGET_EXCEEDED: '剩余预算不够再修一轮',
+      COST_UNKNOWN: '费用无法可靠核价，不能发起付费调用',
+      NO_TARGETS: preflight.blocked && preflight.blocked.length
+        ? `${preflight.blocked.length} 条属于人处理项（蓝图冲突/保护区/授权外），自动复修不得碰`
+        : '没有可自动复修的条目',
+    }[preflight.reason] || preflight.reason || '无可复修条目';
+    toast(`不能复修：${why}`, 'error');
+    return;
+  }
+  // B1：把复验留下的"还在的文字"变成新的可编辑目标 —— 但只在本按钮被点按时发生，
+  // 且仍限于同一批 issue（不新增问题编号）。定位不到就如实跳过，不猜位置。
+  let runPlan = ctx.plan;
+  let runAuthorization = ctx.authorization;
+  let widenNote = '';
+  if (widen) {
+    const built = revisionWidenedRepairPlan(ctx, preflight);
+    // 定位不到任何目标时不要"顺手退回原范围"就开跑：那等于用付费调用换一个已知的局部结果。
+    if (!built || !Array.isArray(built.hotspots) || !built.hotspots.length) {
+      const legacy = Number(ctx.plan && ctx.plan.schema_version) !== 2;
+      toast(legacy
+        ? '扩范围复修没做成：这份审稿是旧格式（没有结构化授权跨度），请重新审稿后再用'
+        : '扩范围复修没做成：剩余证据定位不到（不猜位置），候选与授权都没有改变', 'error');
+      return;
+    }
+    const widenedCount = built.hotspots.filter((h) => preflight.targets.includes(String(h && h.issue_id))).length;
+    const baseCount = Array.isArray(ctx.plan && ctx.plan.hotspots)
+      ? ctx.plan.hotspots.filter((h) => preflight.targets.includes(String(h && h.issue_id))).length
+      : 0;
+    // 没有新增可改位置时**不要**用一次付费调用换一个已知的局部结果：直接说清并让作者选别的路。
+    if (!(widenedCount > baseCount)) {
+      toast('剩余证据没有落在新的位置：扩范围这一步没有可改的地方（用「只复修未通过项」或人工处理）', 'error');
+      return;
+    }
+    runPlan = built;
+    runAuthorization = revisionAuthorizationFor(built);
+    widenNote = `本轮按剩余证据扩到 ${widenedCount} 处（原 ${baseCount} 处）`;
+  }
+  const jobBase = {
+    timeout: longAiTimeout(),
+    model: policyModel('quality'),
+    reasoning_effort: policyEffortForTier('quality') || undefined,
+    action: 'write',
+    work_id: state.workId || state.work?.id || undefined,
+    chapter_id: ctx.chapterId || undefined,
+    mode: 'full',
+    kind: 'revision_targeted_repair',
+    stage: 'AI 修稿（定向复修未通过项）',
+  };
+  // 与复验一致：先把"正在跑"画到工作区上（按钮全灰 + 进度条），再发付费请求。
+  startRevisionSemanticProgress(preflight.targets.length);
+  if (state.view === 'review') { try { await render(); } catch (_) { /* 画进度失败不阻塞付费动作 */ } }
+  try {
+    const applied = await applyRevisionRepairAndRecheck(ctx, jobBase, {
+      patched: ctx.patched, semantic: ctx.semantic, plan: runPlan, authorization: runAuthorization,
+      allowPartial: true, maxRounds: roundsLeft, budgetCents: budgetLeft,
+    });
+    const repaired = applied.autoRepair && applied.autoRepair.rounds.some((r) => r.status === 'applied');
+    if (!repaired) {
+      stopRevisionSemanticProgress();
+      if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响事实通报 */ } }
+      const why = revisionAutoRepairNotice(applied.autoRepair) || '模型没有产出可用补丁（候选保持不变）';
+      toast(`本轮定向复修没有改动候选：${why}`, 'error');
+      return;
+    }
+    await finalizeRevisionRun(ctx, {
+      patched: applied.finalPatched, semantic: applied.finalSemantic, autoRepair: applied.autoRepair,
+      recheckNote: applied.recheckNote, plan: runPlan, countRun: applied.recheckRan === true,
+      noticePrefix: ['只复修未通过项', widenNote].filter(Boolean).join('：'),
+    });
+  } catch (e) {
+    stopRevisionSemanticProgress();
+    if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响事实通报 */ } }
+    if (!e || !e.cancelled) toast('定向复修失败：' + (e && e.message ? e.message : String(e)), 'error');
+  } finally {
+    stopRevisionSemanticProgress();
+  }
+}
+
+/**
+ * 构建"扩到剩余证据"的本轮计划（B1）。
+ *
+ * 只对**本轮要修的 issue** 重建计划：把复验逐字指出的"还在的文字"追加成 candidate_edit 目标。
+ * 其余 issue 原样不动（它们的结论没有被推翻）；定位不到的证据由 plan 自己如实报 needs_scope。
+ */
+function revisionWidenedRepairPlan(ctx, preflight) {
+  const PL = revisionPlanEngine();
+  if (!PL || typeof PL.buildRevisionPlanV2 !== 'function') return null;
+  // 只在**结构化计划**（v2）上扩范围：v1 计划的授权表是"一条问题一个跨度"，
+  // 拿它换成 v2 会改变整轮的验收口径（那不是"扩一处"，而是换了协议）。
+  if (Number(ctx.plan && ctx.plan.schema_version) !== 2) return null;
+  const ids = new Set((preflight.targets || []).map(String));
+  const remaining = preflight.remaining_evidence || {};
+  const approved = ctx.approvedWidening && typeof ctx.approvedWidening === 'object' ? ctx.approvedWidening : {};
+  // 必须按**全部已选问题**重建：只带本轮两条会把其余已通过问题的计划弄丢，
+  // 终审会以为"有些问题没被计划覆盖"，从而把候选判成受阻。
+  const findings = (Array.isArray(ctx.findings) ? ctx.findings : []).map((f) => {
+    const id = String(f && f.id);
+    if (!ids.has(id)) return f;
+    const extra = (remaining[id] || []).map((quote) => ({ quote, role: 'candidate_edit' }));
+    // 作者显式批准的跨段范围：逐段作为可改目标（同一个问题编号，不新增问题）。
+    // 带上 span_id 是必须的：同一段文字在别的章段里可能重复，靠引文会定位歧义。
+    const approvedSpans = approved[id] && Array.isArray(approved[id].spans) ? approved[id].spans : [];
+    const approvedEv = approvedSpans.map((sp) => ({
+      quote: String(sp && sp.text || ''), span_id: String(sp && sp.span_id || ''), role: 'candidate_edit', host_approved: true,
+    })).filter((e) => e.quote.trim());
+    const ev = (Array.isArray(f.evidence) ? f.evidence : [])
+      .map((e) => ({ ...e, role: e && e.role ? e.role : 'candidate_edit' }));
+    // 多段批准默认走 delete（"删掉/压掉整块"）：per-段 replace 表达不了"三段合成一句"。
+    const CLW = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+    const suggested = approvedSpans.length && CLW && typeof CLW.wideningOpFor === 'function'
+      ? CLW.wideningOpFor({ paragraphs: approvedSpans.length, suggested: f.suggested_action })
+      : f.suggested_action;
+    return { ...f, suggested_action: suggested, evidence: [...ev, ...extra, ...approvedEv] };
+  });
+  if (!findings.length) return null;
+  const snapshot = ctx.snapshot || revisionSnapshotFor(ctx.article, ctx.chapterId);
+  try {
+    return PL.buildRevisionPlanV2({
+      snapshot, findings,
+      invariants: { must_keep: [], do_not_add: [] },
+      protectedSpans: Array.isArray(ctx.protected_spans) ? ctx.protected_spans : [],
+      allowCondense: revisionPreference('allow_condense') === true,
+      contextChars: Number(ctx.contextChars) || 0,
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+/** 接受未通过项为已知遗留（C1）：只记账，不改正文、不判通过。 */
+async function acceptRevisionLeftovers() {
+  const ctx = state.pendingRevisionClosure;
+  if (!ctx || !ctx.finalized) { toast('没有可记录的运行：请先修稿', 'error'); return; }
+  const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  if (!CL || typeof CL.acceptedLeftoversOf !== 'function') { toast('判据模块未加载', 'error'); return; }
+  const candidateHash = contentHashOf(ctx.patched && ctx.patched.text);
+  const chapterId = Number(ctx.chapterId) || Number(state.currentChapterId) || 0;
+  const left = CL.acceptedLeftoversOf({ rows: ctx.finalized.rows, acceptedIds: revisionLeftoversLoad(chapterId, candidateHash) });
+  if (!left.pending.length) { toast('没有待接受的未通过项', 'info'); return; }
+  const ok = typeof window === 'undefined' || typeof window.confirm !== 'function'
+    ? true
+    : window.confirm(`把 ${left.pending.length} 条记为"已知遗留"？\n\n`
+      + `编号：${left.pending.map((id) => '#' + id).join('、')}\n\n`
+      + '这只记账：不修改正文、不判为通过，合并到正文的按钮文案会如实带出"仍有 N 条未通过"。');
+  if (!ok) return;
+  const merged = [...new Set([...revisionLeftoversLoad(chapterId, candidateHash), ...left.pending])];
+  const saved = revisionLeftoversSave(chapterId, merged, candidateHash);
+  state.pendingRevisionClosure = { ...ctx, acceptedLeftovers: merged };
+  if (state.view === 'review') { try { await render(); } catch (_) { /* 重画失败不影响记录 */ } }
+  toast(saved
+    ? `已记录 ${left.pending.length} 条已知遗留（本机台账；不改变结论，也不算修好）`
+    : '已记录到本次运行，但本机台账写入失败（刷新后可能丢失）', saved ? 'success' : 'error');
 }
 
 /** 从逐条结论里挑出 CANON_CONFLICT 的编号（供给下一步终审，避免冲突被"漏掉"）。 */
@@ -14869,6 +15438,25 @@ function reviewWorkspaceModule() {
   return (typeof globalThis !== 'undefined' && globalThis.NovelRevisionWorkspace) || null;
 }
 
+/**
+ * 独立复核（修稿终验）给出的子条件，按 issue_id 供工作区行使用（§5 / §6）。
+ *
+ * 只在**真的跑出过终验**时才有内容：没跑审计就是空数组，界面不得把它画成"全部通过"。
+ */
+function revisionAuditChecksForWorkspace() {
+  const merged = state.qualityAudit && state.qualityAudit.revision;
+  const issues = merged && Array.isArray(merged.issues) ? merged.issues : [];
+  return issues
+    .filter((i) => i && Array.isArray(i.acceptance_checks) && i.acceptance_checks.length)
+    .map((i) => ({
+      issue_id: String(i.issue_id || ''),
+      verdict: String(i.final || i.verdict || ''),
+      verdict_declared: String(i.verdict_declared || ''),
+      verdict_derived: i.verdict_derived === true,
+      acceptance_checks: i.acceptance_checks,
+    }));
+}
+
 /** 工作区模型：没有候选就返回 null（界面据此回到写作台，而不是画一个空壳）。 */
 function reviewWorkspaceContext() {
   const ctx = state.pendingRevisionClosure;
@@ -14887,7 +15475,20 @@ function reviewWorkspaceContext() {
     : null;
   return {
     rows,
-    issueRows: RW.issueRowsOf({ rows }),
+    // 审计子条件与闭环条件并列进同一行：作者在一处就能看到"还差哪个判据"，不用对照两份清单。
+    issueRows: RW.issueRowsOf({ rows, auditChecks: revisionAuditChecksForWorkspace() }),
+    // 候选与正式正文的版本关系（只在能比较时给出行，比较不了就空着）。
+    versionLine: (() => {
+      const pending = state.pendingReviewDiff;
+      const row = (state.chapters || []).find((c) => Number(c && c.id) === Number(ctx.chapterId));
+      const fn = RW && typeof RW.versionLineOf === 'function' ? RW.versionLineOf : null;
+      if (!fn) return '';
+      return fn({
+        merged: Boolean(ctx.mergedAt),
+        previewBaseUpdatedAt: String((pending && pending.previewBaseUpdatedAt) || ''),
+        chapterUpdatedAt: String((row && row.updated_at) || ''),
+      });
+    })(),
     chapterTitle: chapterTitleOf(Number(ctx.chapterId) || Number(state.currentChapterId) || 0) || '本章',
     oldText: String(d.oldText != null ? d.oldText : (ctx.article || '')),
     newText: String(d.newText != null ? d.newText : ((ctx.patched && ctx.patched.text) || '')),
@@ -14899,7 +15500,12 @@ function reviewWorkspaceContext() {
     // 只有"合并了、且合并后没再复验"才停在那两个 PERSISTED_* 档。
     stage: (() => {
       const reverified = Boolean(ctx.mergedAt && ctx.reverifiedAfterMerge);
-      if (ctx.mergedAt && !reverified) return ctx.mergedUnverified ? 'PERSISTED_UNVERIFIED' : 'PERSISTED_VERIFIED';
+      if (ctx.mergedAt && !reverified) {
+        // 2026-10-22：部分合并（跑过复验、仍有未通过项）不能显示成"未做语义复验"——
+        // 那句话是假的，作者明明验过、也知道还差哪几条。
+        if (ctx.mergedStage === 'PARTIAL_CANDIDATE') return 'PERSISTED_PARTIAL';
+        return ctx.mergedUnverified ? 'PERSISTED_UNVERIFIED' : 'PERSISTED_VERIFIED';
+      }
       return ctx.finalized ? String(ctx.finalized.status || 'AWAITING_SEMANTIC') : 'AWAITING_SEMANTIC';
     })(),
     // 付费复验正在跑：界面据此画进度条、把按钮全置灰（以前只有按钮点不动，看不出在跑）。
@@ -14919,6 +15525,58 @@ function reviewWorkspaceContext() {
     checklist: Number(d.checklist) || rows.length,
     patchedCount: Array.isArray(ctx.patched && ctx.patched.applied) ? ctx.patched.applied.length : 0,
     semanticRuns: Number(ctx.semanticRuns) || 0,
+    // 复验额度按**候选 hash** 记（v1.2.7）：改过候选就是新版本，重新给一次验的机会。
+    verifiedHashes: Array.isArray(ctx.verifiedHashes) ? ctx.verifiedHashes.slice() : [],
+    candidateHash: contentHashOf(ctx.patched && ctx.patched.text),
+    // 「只复修未通过项」的判据全在 revision-closure.targetedRepairOf：这里只把轮次/预算喂进去，
+    // 界面拿到的 targets/blocked 与真正执行时的规划是同一套计算，不会出现"按钮说能修、执行说不能"。
+    repair: (() => {
+      const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+      if (!CL || typeof CL.targetedRepairOf !== 'function') return null;
+      // 从本地记录恢复的运行**没有计划与授权表**（plan=null）：这时给复修按钮等于给一个必然失败的动作。
+      if (!ctx.plan) {
+        return { ok: false, reason: 'NO_PLAN', targets: [], blocked: [], roundsLeft: 0, budgetLeftCents: 0, estimateCents: null };
+      }
+      // 已经合并到正文：候选与正文是同一份，再"定向复修"会绕开"重新审稿"这条正路（也容易被当成改正文）。
+      if (ctx.mergedAt) {
+        return { ok: false, reason: 'MERGED', targets: [], blocked: [], roundsLeft: 0, budgetLeftCents: 0, estimateCents: null };
+      }
+      const roundsUsed = revisionRepairRoundOf(ctx) - 1;
+      const spent = Number(ctx.autoRepair && ctx.autoRepair.spent_cents) || 0;
+      const budgetLeft = Math.max(0, revisionBudgetCents() - spent);
+      const estimate = (CL && typeof CL.estimateRevisionCostCents === 'function')
+        ? CL.estimateRevisionCostCents({ promptChars: articleText.length + 4000, maxOutputTokens: 2048 })
+        : null;
+      const plan0 = CL.targetedRepairOf({
+        rows,
+        semanticByIssue: ctx.semanticByIssue || {},
+        roundsUsed,
+        maxRounds: REVISION_AUTO_REPAIR_MAX_ROUNDS,
+        budgetCents: budgetLeft,
+        estimateCents: estimate,
+        allowedIssueIds: Array.isArray(ctx.selectedIssueIds) ? ctx.selectedIssueIds : null,
+      });
+      // 「扩范围再修」是否值得提供：作者批准过的跨段范围，或复验说"还在"的文字，二者有其一。
+      const widening = (typeof CL.wideningSourcesOf === 'function')
+        ? CL.wideningSourcesOf({ approved: ctx.approvedWidening, remaining: plan0.remaining_evidence })
+        : { any: false, ids: [], approvedIds: [], remainingIds: [], paragraphs: 0, chars: 0 };
+      return {
+        ...plan0,
+        widening,
+        roundsLeft: Math.max(0, REVISION_AUTO_REPAIR_MAX_ROUNDS - roundsUsed),
+        budgetLeftCents: budgetLeft,
+        estimateCents: estimate,
+      };
+    })(),
+    leftovers: (() => {
+      const CL = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+      if (!CL || typeof CL.acceptedLeftoversOf !== 'function') return null;
+      const candidateHash = contentHashOf(ctx.patched && ctx.patched.text);
+      const chapterId = Number(ctx.chapterId) || Number(state.currentChapterId) || 0;
+      return CL.acceptedLeftoversOf({ rows, acceptedIds: revisionLeftoversLoad(chapterId, candidateHash) });
+    })(),
+    // 作者批准过的跨段范围（只在本轮运行内有效，换了候选自然作废）。
+    approvedWidening: ctx.approvedWidening && typeof ctx.approvedWidening === 'object' ? ctx.approvedWidening : {},
     findings: Array.isArray(ctx.findings) ? ctx.findings : [],
     notice: String(d.notice || ''),
     blocked: Array.isArray(d.blocked) ? d.blocked : [],
@@ -14956,6 +15614,7 @@ function openReviewWorkspace(diffArgs, opts = {}) {
     chapterId: diffArgs.chapterId, proposalIds: diffArgs.proposalIds, proposalRefs: diffArgs.proposalRefs,
     baseFingerprint: diffArgs.baseFingerprint, patches: diffArgs.patches, coverage: diffArgs.coverage,
     verification: diffArgs.verification,
+    closure: diffArgs.closure, finalize: diffArgs.finalize, verifiedHash: diffArgs.verifiedHash,
   });
   // 同一章的再次进入要恢复上次的 Issue/筛选/差异模式/滚动锚点（方案 §2.1）；
   // 换章则重置 UI 选择，避免把上一章的 activeId 套到新章。
@@ -15086,6 +15745,31 @@ function reviewEvidenceQuotes(model, row) {
   return list.map((e) => String((e && e.quote) || '')).filter(Boolean);
 }
 
+/** 详情抽屉里的「允许改多大范围」（v1.2.7 / B2）：只对未通过项、且本轮真的还能复修时出现。 */
+function reviewWidenHtml(model, row) {
+  if (!row) return '';
+  if (String(model && model.stage) !== 'PARTIAL_CANDIDATE') return '';
+  if (String(row.final_status) === 'ISSUE_VERIFIED') return '';
+  const repair = model && model.repair;
+  if (!repair || !repair.ok) return '';
+  const id = String(row.issue_id);
+  const approved = model.approvedWidening && model.approvedWidening[id];
+  if (approved) {
+    return '<div class="ref-group-title">跨段授权</div>'
+      + `<div class="muted">已批准 #${esc(id)}：本段起 ${Number(approved.paragraphs) || 1} 段`
+      + `（${Number(approved.chars) || 0} 字）。点底栏「按已批准范围再修」才会真正生效。</div>`
+      + '<div class="row mt-8">'
+      + `<button class="btn small secondary" data-action="review-widen-clear" data-issue="${esc(id)}">撤销批准</button>`
+      + '</div>';
+  }
+  const btn = (n) => `<button class="btn small secondary" data-action="review-widen" data-issue="${esc(id)}" data-paragraphs="${n}">`
+    + `${n > 1 ? `本段起 ${n} 段` : '只本段'}</button>`;
+  return '<div class="ref-group-title">允许改的范围（默认只改问题所在的那一句）</div>'
+    + '<div class="muted">跨段删除/压缩必须由你**点开范围**：一次最多 3 段 / 600 字；'
+    + '保护区与必须保留的内容仍会被拦下。批准后底栏才出现「按已批准范围再修」。</div>'
+    + `<div class="row mt-8">${[1, 2, 3].map(btn).join(' ')}</div>`;
+}
+
 function reviewBlockHtml(block, hit = false) {
   const cls = hit ? ' hit' : '';
   if (block.kind === 'same') return `<div class="rw-block same${cls}" id="rw-block-${block.index}">${esc(block.after)}</div>`;
@@ -15108,11 +15792,14 @@ function reviewEvidenceHtml(RW, model, row) {
   ${row.canon ? `<div class="muted">词条归因：${esc(row.canon.entry_title || '（按关键词命中）')} · ${row.canon.strength === 'hard' ? '硬约束（需作者裁决）' : row.canon.strength === 'soft' ? '弱约束（只作建议）' : '缺权威词条'}（${esc(row.canon.basis || '')}）</div>` : ''}
   ${row.cross_segment && row.cross_segment.split ? `<div class="muted">证据跨片：${esc(row.cross_segment.evidence_segments.join('、'))}；已改到：${esc(row.cross_segment.patched_segments.join('、') || '无')}${row.cross_segment.untouched_segments.length ? `；未处理：${esc(row.cross_segment.untouched_segments.join('、'))}` : ''}</div>` : ''}
   ${row.repair_hint ? `<div class="muted">下一步：${esc(row.repair_hint)}</div>` : ''}
+  ${model && model.versionLine ? `<div class="rw-version-line muted">${esc(model.versionLine)}</div>` : ''}
   ${(() => {
     // 子条件/外部资料的摘要：作者要能看出"还差哪一个条件"，以及这条是不是根本不该按正文补丁处理。
     const line = typeof RW.conditionLineOf === 'function' ? RW.conditionLineOf(row) : '';
     return line ? `<div class="rw-condition-line ${row.external_context && row.external_context.required ? 'warn' : ''}">${esc(line)}</div>` : '';
   })()}
+  ${Array.isArray(row.audit_checks) && row.audit_checks.length ? `<div class="ref-group-title">独立复核子条件（${row.audit_checks.length}）</div>${row.audit_checks.map((c) => `
+    <div class="rw-check ${c.status === 'PASS' ? 'ok' : 'bad'}">${c.status === 'PASS' ? '✓' : (c.status === 'FAIL' ? '✗' : '?')} ${esc(String(c.key || ''))}${c.evidence ? `<span class="muted" style="font-size:12px">（${esc(c.evidence)}）</span>` : ''}</div>`).join('')}` : ''}
   ${ev.length ? `<div class="ref-group-title">逐字证据（${ev.length}）</div>${ev.map((e) => `
     <div class="rw-evidence ${e.before.found ? '' : 'missing'}">
       <div class="muted" style="font-size:12px">证据 ${e.index}｜${e.editable ? '可编辑锚点' : '只读引用'}｜${esc(e.quote).slice(0, 80)}</div>
@@ -15222,14 +15909,31 @@ function renderReviewWorkspace(content) {
   const actions = RW.actionsOf({
     stage: model.stage, rows: model.rows, semanticRuns: model.semanticRuns, busy: model.busy,
     archiveCount: model.archives ? model.archives.count : 0,
+    repair: model.repair, leftovers: model.leftovers,
   });
+  // 独立复核那一步的状态来自审计 run（state.qualityAudit.reviewRun），不新造状态。
+  const auditRun = (state.qualityAudit && state.qualityAudit.reviewRun) || null;
+  const ladder = typeof RW.stageLadderOf === 'function'
+    ? RW.stageLadderOf({
+      audit: auditRun ? { kind: String(auditRun.kind || 'review'), status: String(auditRun.status || '') } : null,
+      verifyStage: model.stage,
+      // 已合并与否由 verifyStage 的 PERSISTED_* 决定（stageLadderOf 内部判），这里不重复推断。
+      merged: false,
+      selected: Array.isArray(model.rows) ? model.rows.length : 0,
+      patchedCount: Number(model.patchedCount) || 0,
+    })
+    : null;
   const blocker = RW.blockerText({
     stage: model.stage, rows: model.rows, busy: model.busy, semanticRuns: model.semanticRuns,
+    repair: model.repair, leftovers: model.leftovers,
     reason: (model.finalize && model.finalize.reasons || []).join('；'),
   });
   const actionBtn = (a) => {
     const map = {
       'semantic-verify': 'diff-semantic-verify', merge: 'diff-merge', 'merge-partial': 'diff-merge',
+      // v1.2.7：未通过项的两个新出口（复修 / 接受遗留）。合并仍走同一条写库路径。
+      'repair-partial': 'review-repair-partial', 'repair-partial-widened': 'review-repair-wide',
+      'accept-leftovers': 'review-accept-leftovers',
       // 作者 2026-10-18 授权：跳过语义复验直接合并（走同一条合并路径，差别只在"没有逐条结论"）。
       'merge-forced': 'diff-merge',
       // 修稿存档（审稿前原文 / 未复验候选 / 已复验候选）：走现成的「历史版本」面板查看与恢复。
@@ -15250,7 +15954,14 @@ function renderReviewWorkspace(content) {
       <span class="rw-stage tone-${esc(stage.tone)}">${esc(stage.text)}</span>
     </header>
     <nav class="rw-stages" aria-label="修稿阶段">
-      ${stages.map((s, i) => `<span class="rw-stage-item ${esc(s.state)}"${s.state === 'active' ? ' aria-current="step"' : ''}>${i + 1}. ${esc(s.label)}</span>`).join('<span class="rw-stage-sep">→</span>')}
+      ${(() => {
+        // §6：一条梯子同时回答"独立复核到哪一步了"和"逐项验收到哪一步了"。
+        // 旧界面把两件事拆成两个标签（报告顶部"待主机校验" + 工作区"逐项验收 4/6"），
+        // 作者看到的是两套词、两个位置，说不出"我卡在第几步"。
+        const L = ladder;
+        const list = (L && Array.isArray(L.steps) && L.steps.length) ? L.steps : stages.map((s) => ({ id: s.id, label: s.label, state: s.state, tone: '', note: '' }));
+        return list.map((x, i) => `<span class="rw-stage-item ${esc(x.state)}${L && x.id === L.current ? ' current' : ''}"${L && x.id === L.current ? ' aria-current="step"' : ''} title="${esc(x.note || '')}">${i + 1}. ${esc(x.label)}</span>`).join('<span class="rw-stage-sep">→</span>');
+      })()}
     </nav>
     <div class="rw-body">
       <aside class="rw-nav ${ws.navOpen ? 'open' : ''}" aria-label="问题导航" aria-hidden="${ws.navOpen ? 'false' : 'true'}">
@@ -15293,6 +16004,7 @@ function renderReviewWorkspace(content) {
         ${trendText ? `<div class="muted">质量趋势：${esc(trendText)}</div>` : ''}
         <div class="row mt-8"><button class="btn small secondary" data-action="quality-profile-open">🎛 作品级质量规则档案</button></div>
         <div class="rw-detail-body">${reviewEvidenceHtml(RW, model, activeRow)}</div>
+        ${reviewWidenHtml(model, activeRow)}
         ${model.closure && model.closure.text ? `<pre class="muted rw-closure">${esc(model.closure.text)}</pre>` : ''}
         ${model.blocked.length ? `<div class="redline-scan warn">安全门禁拦下 ${model.blocked.length} 处：${model.blocked.slice(0, 4).map((b) => esc(String(b.code || b.reason || ''))).join('；')}</div>` : ''}
         <div class="muted" style="font-size:12px">费用：语义复验是显式付费动作；工作区不会自己发起模型调用。</div>
@@ -15424,9 +16136,218 @@ function reviewWorkspaceExportPending() {
   toast('待处理清单已导出（只含编号/原因/理由，不含正文）', 'success');
 }
 
-async function mergeReviewDiff() {
+/**
+ * 现读**服务端**正文基线（纯观测，不碰编辑器）。
+ *
+ * 与 revisionBaseArticle 的区别：那个会优先用编辑器（含未落盘改动），适合当"修稿底稿"；
+ * 而合并门禁要回答的是"库里现在是哪一版"—— 编辑器里还没存的东西此刻不在库里，
+ * 拿它当基线等于自己骗自己。所以这里只认 `/chapters/:id` 的回包（带权威 content_hash）。
+ */
+async function revisionChapterBaseline(chapterId) {
+  const row = await api(`/chapters/${chapterId}`);
+  if (!row) throw new Error('读不到这一章的正文');
+  return {
+    text: row.content ? editorPlainText(row.content) : '',
+    content_hash: String(row.content_hash || ''),
+    updated_at: String(row.updated_at || ''),
+  };
+}
+
+/**
+ * 合并门禁：把"库里那一版 / 预览绑定的那一版 / 这份候选验过没有"三件事交给 mergeGateOf 裁决。
+ * 读不到基线时**不猜**（unreadable=true），由裁决给出 BASE_UNREADABLE。
+ */
+async function revisionMergeGate(targetChapterId, pending) {
+  const CLM = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+  let currentText = '';
+  let currentHash = '';
+  let updatedAt = '';
+  let unreadable = false;
+  try {
+    const baseline = await revisionChapterBaseline(targetChapterId);
+    currentText = baseline.text;
+    currentHash = baseline.content_hash;
+    updatedAt = baseline.updated_at;
+  } catch (_) { unreadable = true; }
+  const candidateHash = contentHashOf(pending && pending.newText);
+  const verifiedCandidateHash = String((pending && pending.verifiedContentHash) || '');
+  const verdict = CLM && typeof CLM.mergeGateOf === 'function'
+    ? CLM.mergeGateOf({
+      unreadable, currentHash, updatedAt,
+      baseFingerprint: (pending && pending.baseFingerprint) || '',
+      currentFingerprint: unreadable ? '' : textFingerprint(currentText),
+      candidateHash, verifiedCandidateHash,
+      requiresReverify: Boolean(pending && pending.requiresReverify),
+    })
+    : { verdict: 'OK', reasons: ['NO_GATE'] };
+  return { ...verdict, currentText, currentHash, updatedAt, candidateHash, verifiedCandidateHash, unreadable };
+}
+
+/**
+ * 关掉"合并相关"的弹窗，但**保留**待合并候选。
+ *
+ * 为什么不能直接 closeModal：closeModal 会顺手清掉 `state.pendingReviewDiff`（N6 的收口：
+ * 所有 pending* 必须在同一个边界清掉）。可合并冲突框 / 明确覆盖确认 / 只读对比这三个框，
+ * 恰恰是"作者还在决定要不要合并"的时刻 —— 在那里把候选清掉，作者点完「查看差异」就再也合并不进去了
+ *（比旧缺陷更糟：旧缺陷是"静默覆盖"，这个是"选了之后什么都没发生"）。所以这一小撮路径显式保回来。
+ */
+function closeMergeDialog() {
+  const keep = state.pendingReviewDiff;
+  closeModal();
+  if (keep && !state.pendingReviewDiff) state.pendingReviewDiff = keep;
+}
+
+/** 冲突框里的说明文案（三个出口共用一个数据源，避免"框里说 A、按钮做 B"）。 */
+function mergeConflictCopyOf(gate) {
+  const v = String((gate && gate.verdict) || '');
+  if (v === 'BASE_UNREADABLE') {
+    return {
+      title: '合并前读不到这一章的正文',
+      lead: '这一章的正文此刻读不出来（服务未响应或章节刚被删除）。为避免在"不知道要覆盖谁"的情况下整篇替换，普通合并已停下。',
+      detail: '被覆盖的那一版会由服务端存进历史版本，可在「历史版本」里找回。',
+    };
+  }
+  if (v === 'NEEDS_REVERIFY') {
+    return {
+      title: '这份候选还没有复验结论',
+      lead: '它是在当前正文上重放出来的（或复修后还没复验）。旧的验收结论属于上一版文本，不能拿来给这一版背书。',
+      detail: '建议先重新复验（逐条再判一次）；确要用这份未复验的候选替换正文，请走「明确覆盖」。',
+    };
+  }
+  if (v === 'VERIFICATION_STALE') {
+    return {
+      title: '要合并的候选与通过验收的候选不是同一份',
+      lead: '这份候选在你上次验收之后又变过。旧结论不能给新文本背书，所以普通合并不会写进去。',
+      detail: '建议先重新复验这份候选；确要用它替换正文，请走「明确覆盖」。',
+    };
+  }
+  return {
+    title: '这一章在你预览之后被改过',
+    lead: '差异预览绑定的是**你打开预览时**那一版正文，而库里现在已经是另一版（你在编辑器里保存过，或另一个窗口写过）。'
+      + '普通合并不会用几分钟前的候选整篇盖掉它。',
+    detail: '被覆盖的那一版会存进历史版本；但"悄悄盖掉新编辑"仍然是数据丢失，所以这次要你明确选一个出口。',
+  };
+}
+
+/**
+ * 普通合并被门禁拒绝时的出口（三选一 + 取消）。
+ *
+ * 为什么要有这个框而不是直接报错：2026-10-06 的裁决是"作者点了合并就必须能写进去"。
+ * 这条裁决没有被取消 —— 只是"写进去"现在需要作者看见"这一章变过"再确认一次（`明确覆盖`）。
+ * 于是它既不是静默覆盖，也不是把作者挡死。
+ *
+ * @returns {Promise<'cancel'|'diff'|'rebase'|'force'>}
+ */
+function showMergeConflictDialog({ gate, pending, chapterId }) {
+  return new Promise((resolve) => {
+    const copy = mergeConflictCopyOf(gate);
+    const patches = (pending && Array.isArray(pending.patches)) ? pending.patches : [];
+    state.pendingMergeConflict = { chapterId: Number(chapterId) || 0, resolve };
+    // 重算候选只在"这份候选本身就是逐处补丁"时才成立：整章重写的候选没有锚点可重放。
+    const canRebase = patches.length > 0;
+    const rebaseBtn = canRebase
+      ? '<button class="btn secondary" data-action="merge-conflict-rebase">在当前正文上重算候选</button>'
+      : '<button class="btn secondary" disabled title="这份候选是整章重写，没有可重放的补丁锚点">在当前正文上重算候选（不可用）</button>';
+    openModal({
+      title: copy.title,
+      body: `<div class="muted">${esc(copy.lead)}</div>
+        <div class="muted mt-8">${esc(copy.detail)}</div>
+        <div class="muted mt-8">当前状态：库里 ≈ ${gate && gate.currentHash ? esc(String(gate.currentHash).slice(0, 12)) : '读不到'}；
+          你要合并的候选 ${gate && gate.candidateHash ? esc(String(gate.candidateHash)) : '无指纹'}；
+          预览绑定的那一版 ${gate && gate.reasons && gate.reasons.includes('NO_BASE_EVIDENCE') ? '未记录' : '已记录'}。</div>
+        <div class="muted mt-8">三个出口：<b>查看差异</b>=只读对比，不改正文；<b>重算候选</b>=把改动重放到当前正文，重放不成功就不出候选；<b>明确覆盖</b>=用这份候选替换当前正文（覆盖前那一版进历史版本，并在服务端留审计）。</div>`,
+      footer: `<button class="btn secondary" data-action="merge-conflict-cancel">先不合并</button>
+        <button class="btn secondary" data-action="merge-conflict-diff">查看差异</button>
+        ${rebaseBtn}
+        <button class="btn danger" data-action="merge-conflict-force">明确覆盖</button>`,
+      protectedBackdrop: true,
+    });
+  });
+}
+
+/** 「明确覆盖」的第二次确认：与第一步是两个框，避免一次误点就把正文换掉。 */
+function showForceOverwriteConfirm({ gate, chapterId }) {
+  return new Promise((resolve) => {
+    state.pendingMergeForce = { chapterId: Number(chapterId) || 0, resolve };
+    openModal({
+      title: '确认用这份候选替换当前正文？',
+      body: `<div>这一章的正文会被这份候选整篇替换。覆盖前那一版会存进本章历史版本，服务端会记一条 <code>adopt_force_overwrite</code> 审计事件。</div>
+        <div class="muted mt-8">如果还没通过的条目也会被一起采用，它们不会被标成"已修复"——采用 ≠ 修好。</div>`,
+      footer: `<button class="btn secondary" data-action="merge-force-cancel">取消</button>
+        <button class="btn danger" data-action="merge-force-confirm">确认覆盖</button>`,
+      protectedBackdrop: true,
+    });
+  });
+}
+
+/** 只读对比：当前正文 vs 待合并候选（不写任何东西）。 */
+function openMergeConflictDiff(gate, pending, chapterId) {
+  const current = String((gate && gate.currentText) || '');
+  const next = String((pending && pending.newText) || '');
+  const ops = diffParagraphs(current, next);
+  const body = ops.map((op) => {
+    if (op.t === 'same') return `<div class="diff-p">${esc(op.x)}</div>`;
+    if (op.t === 'del') return `<div class="diff-p diff-del">${esc(op.x)}</div>`;
+    return `<div class="diff-p diff-add">${esc(op.x)}</div>`;
+  }).join('');
+  openModal({
+    title: `当前正文 ↔ 待合并候选（第 ${Number(chapterId) || 0} 章）`,
+    body: `<div class="muted">左红=库里现在有、候选里没有（这次会被删掉）；右绿=候选新增。只读，不改任何东西。</div>
+      <div class="review-diff-body mt-8">${body || '<div class="muted">两边没有段落差异</div>'}</div>`,
+    footer: '<button class="btn" data-action="merge-diff-close">知道了</button>',
+  });
+}
+
+/**
+ * 「重算候选」出口：把原补丁重放到**当前正文**上。
+ *
+ * 重放成功后这份候选**不再是验过的那一版**：验收标记清空 + requiresReverify 打上，
+ * 于是下一次点合并会落到 NEEDS_REVERIFY（而不是拿旧结论放行）。
+ */
+async function rebaseMergeOnCurrentText(targetChapterId, gate) {
+  const pending = state.pendingReviewDiff;
+  if (!pending) { toast('没有待合并的候选（可能已经合并过）', 'error'); return; }
+  const PL = revisionPlanEngine();
+  const patches = Array.isArray(pending.patches) ? pending.patches : [];
+  if (!PL || typeof PL.rebaseCandidate !== 'function') {
+    toast('补丁模块没有加载：无法在当前正文上重算候选', 'error');
+    return;
+  }
+  if (!patches.length) {
+    toast('这份候选是整章重写（没有逐处补丁），没有锚点可以重放：请回到审稿工作区，对当前正文重新发起修稿', 'error');
+    return;
+  }
+  const rebuilt = PL.rebaseCandidate(gate.currentText || '', patches);
+  if (!rebuilt.ok) {
+    const why = rebuilt.reason === 'ANCHOR_MISMATCH'
+      ? `有 ${(rebuilt.failed || []).length} 处补丁的锚点在当前正文里对不上（${(rebuilt.failed || []).map((f) => f.issue || '未标号').slice(0, 6).join('、')}）`
+      : rebuilt.reason === 'MISSING_POSITION'
+        ? '有补丁缺少位置信息'
+        : rebuilt.reason === 'NO_PATCHES' ? '这份候选没有逐处补丁' : '重放失败';
+    toast(`没有生成新候选：${why}。当前正文没有被改动；请回到审稿工作区对当前正文重新修稿，或选择「明确覆盖」`, 'error');
+    return;
+  }
+  closeMergeDialog();
+  showReviewDiff(gate.currentText || '', rebuilt.text, {
+    chapterId: targetChapterId,
+    baseFingerprint: textFingerprint(gate.currentText || ''),
+    patches, coverage: pending.coverage || [],
+    verification: { verified: false, note: '基于当前正文重放的候选，需重新复验' },
+    notice: '已按当前正文重放改动（重放成功）。这份候选还没有复验结论，需要重新复验后再合并。',
+    closure: pending.closure, finalize: pending.finalize, verifiedHash: '',
+  });
+  // 重放出来的是一份**新**候选：旧验收标记必须清掉（verifiedHash 已传空），
+  // 并且显式要求复验，否则下一次点合并会以"没有候选一致性证据"的口径放行。
+  if (state.pendingReviewDiff) state.pendingReviewDiff.requiresReverify = true;
+  toast('已在当前正文上重放改动；这份候选需要重新复验（不会沿用旧结论）', 'success');
+}
+
+async function mergeReviewDiff(opts = {}) {
   const pending = state.pendingReviewDiff;
   const { newText, chapterId, baseFingerprint, proposalIds, proposalRefs, operationKey } = pending || {};
+  // forceMode = 作者在冲突框里点了「明确覆盖」之后的那一次重入。它只跳过"普通合并"的判断，
+  // 不跳过 CAS（请求里仍带刚读到的基线），也不跳过留痕。
+  const forceMode = opts.forceMode === true;
   // 合并目标 = 差异预览绑定的那一章（不再是"当前打开的章"）。
   const targetChapterId = Number(chapterId) || Number(state.currentChapterId) || null;
   if (!newText || !targetChapterId) return;
@@ -15446,46 +16367,79 @@ async function mergeReviewDiff() {
   // 它也不参与合并的成败判定：正文来自 newText，与编辑器无关。
   // F3（2026-10-06 作者要求）：合并会把这一章正文整段换掉 —— 作者手里若还压着一版没落盘的旧内容，
   // 先问「旧内容是否保存？」（是/否），而不是静默替作者落盘或静默丢掉。两个答案都继续合并。
-  const oldContentDecision = await settleOldContentBeforeOverwrite(targetChapterId).catch(() => '');
-  const editorForMerge = $('#editor-content');
-  const editorIsTarget = Boolean(editorForMerge) && Number(editorForMerge.dataset.chapterId) === targetChapterId;
-  // 作者选了「是」→ 必须真的把那一版落盘；选「否」→ 手里那一版已被丢掉，这次 flush 对它无操作。
-  if (oldContentDecision || editorIsTarget || state.editorSaveInFlight.has(targetChapterId)) {
-    try { await flushEditorSaves(); } catch (_) { /* 落盘失败不阻塞合并 */ }
+  // forceMode（冲突框之后的重入）已经走过这一遍，不再问第二次。
+  if (!forceMode) {
+    const oldContentDecision = await settleOldContentBeforeOverwrite(targetChapterId).catch(() => '');
+    const editorForMerge = $('#editor-content');
+    const editorIsTarget = Boolean(editorForMerge) && Number(editorForMerge.dataset.chapterId) === targetChapterId;
+    // 作者选了「是」→ 必须真的把那一版落盘；选「否」→ 手里那一版已被丢掉，这次 flush 对它无操作。
+    if (oldContentDecision || editorIsTarget || state.editorSaveInFlight.has(targetChapterId)) {
+      try { await flushEditorSaves(); } catch (_) { /* 落盘失败不阻塞合并 */ }
+    }
   }
   try {
-    // ⚠️ 作者裁决（2026-10-06，第二次明确要求）：「合并到正文」**没有任何拦阻** ——
-    // 只要作者点了它，正文就必须写进去（`无论什么时候，只要是用户执行，就直接强制合并到正文`）。
-    // 与 F3「旧内容是否保存？」同一条纪律：可以**告知**、可以**留档**，但绝不**拦操作**。
-    // 被替换掉的那一版由服务端在采纳事务里存进本章历史版本（固定安全底线）→ "覆盖"是可回退的，不是不可逆的。
-    //
-    // 历史（为什么这里曾经会拒绝）：R02.3 曾按"原文指纹不一致就拒绝合并"实现（防止拿旧差异稿覆盖更新的正文）。
-    // 实际代价是作者点了也进不去 —— 空正文的章节必然被误拒（2026-10-06 21:47 报障），
-    // 作者最后只能手工把预览里的段落抄进编辑器，那比"覆盖"更坏：抄写会把旧段落和新段落叠在一起，
-    // 还绕过了"旧稿进历史版本"这条兜底。所以这里只保留**观测**，不再做任何拒绝判断。
-    let baseChanged = false;
-    let baseUnreadable = false;
-    if (baseFingerprint) {
-      try {
-        const current = await revisionBaseArticle(targetChapterId);
-        baseChanged = textFingerprint(current) !== baseFingerprint;
-      } catch (_) { baseUnreadable = true; }
+    // ── P0（2026-10-22）：普通合并不再静默覆盖 ─────────────────────────────────
+    // 历史裁决（2026-10-06）是「点合并就必须写进去」，于是基线比较被降级成一条警告就照样整篇覆盖。
+    // 那条裁决要防的是"作者点了却进不去"；这里保留它的**出口**（作者仍可明确覆盖，一次确认），
+    // 但取消了它的**副作用**（后台改了正文的人不知情地被抹掉）。判据住在 revision-closure.mergeGateOf。
+    const gate = await revisionMergeGate(targetChapterId, pending);
+    if (gate.verdict !== 'OK' && !forceMode) {
+      // 留痕：普通合并被拒是"没写入"，与旧 review_merge_overwrite（准备覆盖）是两件事，别混看。
+      reportClientLogSafe({
+        level: 'warn', kind: 'review_merge_conflict',
+        message: `[修稿合并] 普通合并被基线门禁拒绝（${gate.verdict}）：正文未改动`,
+        context: {
+          work_id: state.workId || null, chapter_id: targetChapterId,
+          verdict: gate.verdict, base_unreadable: gate.unreadable === true,
+          base_fingerprint: baseFingerprint || '', current_fingerprint: gate.unreadable ? '' : textFingerprint(gate.currentText),
+        }
+      });
+      const choice = await showMergeConflictDialog({ gate, pending, chapterId: targetChapterId });
+      if (choice === 'cancel') {
+        toast('已取消本次合并：正文没有被改动（这份修稿仍在，可再次点「合并到正文」）', 'error');
+        return;
+      }
+      if (choice === 'diff') { openMergeConflictDiff(gate, pending, targetChapterId); return; }
+      if (choice === 'rebase') { await rebaseMergeOnCurrentText(targetChapterId, gate); return; }
+      if (choice === 'force') {
+        // 第二个框：覆盖是一个不可轻率的动作，两次确认是产品语义（不是安全边界）。
+        const okForce = await showForceOverwriteConfirm({ gate, chapterId: targetChapterId });
+        if (!okForce) { toast('已取消本次明确覆盖：正文没有被改动', 'error'); return; }
+        await mergeReviewDiff({ forceMode: true });
+        return;
+      }
+      return;
     }
-    if (baseChanged || baseUnreadable) {
-      // 如实留痕：这条路径会整段替换正文，事后排查必须看得到"这一次覆盖了什么原因"。
+    // 到这里的两种情况：门禁通过（普通合并），或作者已确认明确覆盖。
+    // 明确覆盖必须留下**客户端**这条留痕（服务端还会在事务里写一条 adopt_force_overwrite，
+    // 那条才是"真的写进去了"的证据；这条只说明"作者按了覆盖"）。
+    const forced = forceMode || gate.verdict !== 'OK';
+    if (forced) {
       reportClientLogSafe({
         level: 'warn',
         kind: 'review_merge_overwrite',
-        message: baseUnreadable
-          ? '[修稿合并] 合并前读不到这一章正文，仍按作者操作强制写入（覆盖前那一版由服务端存进历史版本）'
-          : '[修稿合并] 本章正文在差异预览之后变过，仍按作者操作强制写入（覆盖前那一版已存进历史版本）',
-        context: { work_id: state.workId || null, chapter_id: targetChapterId, base_unreadable: baseUnreadable }
+        message: gate.verdict === 'BASE_UNREADABLE'
+          ? '[修稿合并] 合并前读不到这一章正文，仍按作者明确覆盖写入（覆盖前那一版由服务端存进历史版本）'
+          : '[修稿合并] 本章正文在差异预览之后变过，作者明确选择覆盖（覆盖前那一版已存进历史版本）',
+        context: {
+          work_id: state.workId || null, chapter_id: targetChapterId,
+          base_unreadable: gate.verdict === 'BASE_UNREADABLE', verdict: gate.verdict,
+        }
       });
     }
     // R03：正文 + 本次勾选的入账提案走**一次**原子采纳（/novel/adopt）：
     // 同一 SQLite 事务里写历史版本、写正文、入账提案、落投影 outbox；任一步失败整次回滚。
     // 旧实现是 chapter_save 之后再发一次 proposals/apply —— 两次请求之间没有原子性，
     // 中途失败会留下"正文已换、提案没入账"的半套状态。
+    const CLM = (typeof globalThis !== 'undefined' && globalThis.NovelRevisionClosure) || null;
+    const payload = CLM && typeof CLM.mergeAdoptPayloadOf === 'function'
+      ? CLM.mergeAdoptPayloadOf({
+        mode: forced ? 'explicit_force' : 'normal',
+        currentHash: gate.currentHash, updatedAt: gate.updatedAt,
+        candidateHash: gate.candidateHash, verifiedCandidateHash: (pending && pending.verifiedContentHash) || '',
+        unresolvedIssueIds: (pending && pending.unresolvedIssueIds) || [],
+      })
+      : { mode: 'normal', expected: gate.currentHash ? { content_hash: gate.currentHash } : {}, unresolved_issue_ids: [] };
     const res = await api('/novel/adopt', {
       method: 'POST',
       body: {
@@ -15496,6 +16450,9 @@ async function mergeReviewDiff() {
         legacy_proposal_refs: Array.isArray(proposalRefs) ? proposalRefs : [],
         operation_key: operationKey || `merge-${targetChapterId}-${Date.now().toString(36)}`,
         adopt_kind: 'review_merge',
+        mode: payload.mode,
+        expected: payload.expected,
+        unresolved_issue_ids: payload.unresolved_issue_ids,
       }
     });
     const adoptedCount = ((res && res.adopt && res.adopt.legacy && (res.adopt.legacy.events || 0) + (res.adopt.legacy.memories || 0)) || 0);
@@ -15517,13 +16474,23 @@ async function mergeReviewDiff() {
       });
     }
     closeModal();
-    // 本次是"强制合并"：正文若在预览之后变过（或读不到），必须如实说出来 —— 不拦，但绝不静默。
-    const overwriteNote = baseUnreadable
-      ? '；⚠️ 合并前没能读到这一章正文，被覆盖的那一版可在「历史版本」里找回'
-      : (baseChanged ? '；⚠️ 这一章正文在差异预览之后被改过，这次用它覆盖了它 —— 覆盖前的那一版已存进本章历史版本' : '');
+    // 这次到底是"合并"还是"明确覆盖"，以**服务端回包**为准（forced_overwrite 是事务内写的审计事实），
+    // 不信客户端自己的判断：如果服务端没把它记成覆盖，就不许在界面上说"覆盖了"。
+    const serverForced = Boolean(res && res.adopt && res.adopt.forced_overwrite) || forced;
+    const pendingIssues = (res && res.adopt && Array.isArray(res.adopt.unresolved_issue_ids))
+      ? res.adopt.unresolved_issue_ids
+      : ((pending && pending.unresolvedIssueIds) || []);
+    const overwriteNote = serverForced
+      ? (gate.verdict === 'BASE_UNREADABLE'
+        ? '；⚠️ 合并前没能读到这一章正文，这次按你的明确覆盖写入，被覆盖的那一版可在「历史版本」里找回'
+        : '；⚠️ 这一章正文在差异预览之后被改过，这次按你的明确覆盖替换了它 —— 覆盖前的那一版已存进本章历史版本')
+      : '';
+    const pendingNote = pendingIssues.length
+      ? `；仍有 ${pendingIssues.length} 条未通过（${pendingIssues.slice(0, 6).join('、')}${pendingIssues.length > 6 ? '…' : ''}）——已采用的只是当前候选，这几条没有被修好`
+      : '';
     toast(elsewhere
-      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}${overwriteNote}${settleNote}）`
-      : `审稿修稿已合并到正文（旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}${overwriteNote}${settleNote}）`, 'success');
+      ? `已合并到《${chapterTitleOf(targetChapterId)}》（你当前看的是另一章，它没有被改动；旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}${overwriteNote}${pendingNote}${settleNote}）`
+      : `审稿修稿已合并到正文（旧稿已存历史版本${adoptedCount ? `；同时入账 ${adoptedCount} 条提案` : ''}${overwriteNote}${pendingNote}${settleNote}）`, 'success');
     // 整页刷新与"合并有没有成功"是两件事：正文此刻已经在库里了。旧实现把刷新和采纳放在同一个
     // try 里，于是刷新途中任何一次 flushSave 失败都会被报成「合并失败：本地内容尚未保存，请先处理
     // 保存冲突」——作者以为没合并，其实早就写进去了（2026-10-05 报障的形状）。
@@ -19122,6 +20089,36 @@ async function handleAction(action, actionEl, e) {
         break;
       }
 
+      // ── P0 合并冲突框的四个出口（2026-10-22）────────────────────────────────
+      // 每个 case 只做一件事：把作者的选择交回给 await 着的 showMergeConflictDialog。
+      // 不在框里直接写库 —— 真正的写入只有一个地方（mergeReviewDiff），否则又会出一份"第二条合并路径"。
+      case 'merge-conflict-cancel':
+      case 'merge-conflict-diff':
+      case 'merge-conflict-rebase':
+      case 'merge-conflict-force': {
+        const wait = state.pendingMergeConflict;
+        if (!wait) { closeMergeDialog(); break; }
+        state.pendingMergeConflict = null;
+        closeMergeDialog();
+        if (action === 'merge-conflict-cancel') wait.resolve('cancel');
+        else if (action === 'merge-conflict-diff') wait.resolve('diff');
+        else if (action === 'merge-conflict-rebase') wait.resolve('rebase');
+        else wait.resolve('force');
+        break;
+      }
+      case 'merge-force-cancel':
+      case 'merge-force-confirm': {
+        const wait = state.pendingMergeForce;
+        if (!wait) { closeMergeDialog(); break; }
+        state.pendingMergeForce = null;
+        closeMergeDialog();
+        wait.resolve(action === 'merge-force-confirm');
+        break;
+      }
+      case 'merge-diff-close':
+        closeMergeDialog();
+        break;
+
       case 'diff-merge': {
         // 合并成功后必须把工作区落到"已合并"那一档：旧实现在工作区里合并完还会停在
         // "尚未语义复验"，作者以为没合并、又点一次（虽然无害，但界面在说谎）。
@@ -19141,6 +20138,8 @@ async function handleAction(action, actionEl, e) {
         if (merged && ctx) {
           ctx.mergedAt = new Date().toISOString();
           ctx.mergedText = mergedText;
+          // 合并时的档位要留住：之后界面才能分清"跳过复验就合并"与"验过、但仍带未通过项"。
+          ctx.mergedStage = stageNow;
           // 只有"全部通过再合并"才算复核过；跳过复验就合并的，如实记为**未复验**。
           ctx.mergedUnverified = !allVerified;
           // 2026-10-18 作者要求：无论走哪条路，正文三份都要留档（审稿前 / 未复验候选 / 已复验候选）。
@@ -19187,6 +20186,25 @@ async function handleAction(action, actionEl, e) {
         break;
       case 'review-export-pending':
         reviewWorkspaceExportPending();
+        break;
+
+      // v1.2.7：未通过项的两个真实出口（复修 / 接受遗留）。
+      // 复修的判据与按钮同源（revision-closure.targetedRepairOf），这里只做调度。
+      case 'review-repair-partial':
+        await runRevisionTargetedRepair({ widen: false });
+        break;
+      case 'review-repair-wide':
+        await runRevisionTargetedRepair({ widen: true });
+        break;
+      case 'review-accept-leftovers':
+        await acceptRevisionLeftovers();
+        break;
+      // v1.2.7 / B2：跨段授权（作者点开范围才生效，撤销也是显式动作）。
+      case 'review-widen':
+        revisionApproveWidening(actionEl.dataset.issue, actionEl.dataset.paragraphs);
+        break;
+      case 'review-widen-clear':
+        revisionClearWidening(actionEl.dataset.issue);
         break;
 
       // 2026-10-18：修稿存档的"查看 / 回退"入口。落到现成的「历史版本」面板：

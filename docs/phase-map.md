@@ -65,11 +65,14 @@
 | **V18** | v1.3.0 UI 方案：单行入口四态 / 四阶段与三维状态 / 覆盖式详情 / 角色可搜索列表 / 多宽度浏览器验收 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **V19** | v1.3.1 写作截断与质检闭环首轮：终止原因贯通 / 质检跳过与截断不冒充完整 / 蓝图门禁最小落点 | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **V20** | 六项审稿漏修与语义闭环（引文底本/证据契约/伪修复判据） | ✅ 可独立回滚 |
+| **V21** | 逐项验收卡死诊断与出口（PARTIAL_CANDIDATE 不再无路可走） | ✅ 可独立回滚 |
+| **P0M** | P0 合并保护：现场冻结 + 基线闸门（普通合并不再静默覆盖） | ✅ 可独立回滚 |
+| **P0Q2** | 复核反例相关性 + 缺字段台账 + 逐项验收子条件 | ✅ 可独立回滚 |
 | **QA1** | 审稿身份链 review.v3（dsh-novel-quality-auditor 阶段 0–1） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **QA2** | 质量审计契约与 API（dsh-novel-quality-auditor 阶段 2） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **QA3** | 独立审计插件与前端入口（dsh-novel-quality-auditor 阶段 3/4/6） | ✅ 可独立回滚 |
 
-**可独立回滚的阶段：U、V、Z4、V1、SE7、SE8、V20、QA3。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
+**可独立回滚的阶段：U、V、Z4、V1、SE7、SE8、V20、V21、P0M、P0Q2、QA3。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
 ## 二、逐阶段明细
 
@@ -1064,7 +1067,7 @@
   - ai/editing/narrative-review.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**只加机制与字段、不改既有模型契约**：修稿补丁 JSON 升到**可选** v2（`schema_version:2` + `span_id` + 逐字 `original`； 旧 `{patches:[{issue,anchor,revised}]}` 仍被接受，走 `salvageLegacyRevisionPatches`）， `PUT /api/novel/review` 追加 additive 返回字段 `structure`/`findings_accepted`/`findings_rejected`/`rejected`， 新增只读端点 `GET /api/novel/revision/selection` 与 `GET /api/novel/revision/comparison`， 新增表 `revision_selections`（契约升 1.22.0），`/api/ai_context` 追加 additive `edit_rules`。 本批做的事：① **E01 补丁执行正确性**（显式 delete、精确跨度、段落级门禁输入、组合核验、失败不扩大为整章重写）； ② **E02 阶段化规则编译**（`rules.mjs` v1.5.0 的 `stage_rules` + `stageRuleFor` + 审计；直连与 Harness 同阶段等价， Harness 侧由 `novel_write_pipeline` 带 `stage=draft` 实现）； ③ **E03 审稿与选择保真**（`structureReviewReport` 引用核验 + 独立选择记录 + 取回按记录收窄）； ④ **E04 叙事诊断**（确定性候选层消费 `scan.mjs`，不复制词表；只给 condense/check，语义层标记 `not_run`）； ⑤ **E05 局部编辑计划**（片段级授权跨度 + 不变量 + 依赖组 + 预算举手）； ⑥ **E06 可解释报告**（逐条改动/校验状态/单处撤销/相对结论守卫/对照视图 + 样本量守卫）； ⑦ **E07 验收运行器**（`scripts/run-narrative-acceptance.mjs`：按退出码判定，产出 e07-run-manifest.json）。 `public/app.js`、`public/index.html`、`server.js`、`ai/editing/rules.mjs`、`harness-plugins/novel-writing/novel-tools.mjs`、 `frontend-test.mjs`、`scripts/ci-offline-checks.mjs`、`.p1-baseline/test-editing-rules.mjs`、`docs/host-contract.*` 与其它阶段共用，故 `rollback = shared`；新增模块、专项套件、冻结样本与交付文档**可单独撤回**（撤回后：`index.html` 去掉两个 `<script>` → 修稿按"协议模块未加载"如实拒绝，不静默降级； 关掉 `edit_rules_enabled` → 生成行为与接入前逐字节一致）。 ⚠️ 已知边界：真实模型语义审稿与文学效果评测未执行（`SKIPPED: paid_evaluation_not_authorized`）， 故交付文档只写"机制已实现、文学效果待评测"。
 - **验收证据**：`docs/narrative-repair/implementation-report.md`、`docs/narrative-repair/test-report.md`、`docs/narrative-repair/e07-run-manifest.json`、`docs/narrative-repair/coverage-report.json`、`docs/narrative-repair/rollback.md`、`scripts/run-narrative-acceptance.mjs`
-- **本阶段认领的文件**（67 个）：
+- **本阶段认领的文件**（68 个）：
   - `.p1-baseline/test-editing-rules.mjs`
   - `.p1-baseline/test-migration-idempotent.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
@@ -1113,6 +1116,7 @@
   - `tests/narrative-repair/16-op-authorization.test.mjs`
   - `tests/narrative-repair/17-review-closure-0317.test.mjs`
   - `tests/narrative-repair/18-six-issue-closure.test.mjs`
+  - `tests/narrative-repair/19-partial-repair-entry.test.mjs`
   - `tests/narrative-repair/fixtures/after.txt`
   - `tests/narrative-repair/fixtures/before.txt`
   - `tests/narrative-repair/fixtures/chapter1-six-issues/after-excerpts.json`
@@ -1783,6 +1787,36 @@
 - **本阶段认领的文件**（1 个）：
   - `docs/v1.2.6-six-issue-closure.md`
 
+### V21 · 逐项验收卡死诊断与出口（PARTIAL_CANDIDATE 不再无路可走）
+
+- **回滚方式**：可独立回滚
+- **说明**：**目的**：把"局部未通过却没有再修入口"拆成五条可核对的根因（next_action 承诺无按钮、自动复修只在两条路径且额度一次性、一个 finding 一个跨度、condense 的 merged_span_approved 从无写入方、改正文即 BASE_STALE），并落地方案 A/B1/C1：复修入口（轮次/预算守卫）、按剩余证据扩范围（同一批 issue，不新增编号）、接受遗留台账；复验额度改为按候选 hash 计。**归属**：代码改动落在既有共享文件（public/app.js、review-workspace.js、revision-closure.js），按 V20 的既有做法不重复认领，以免污染回滚判定；新套件由 SE6 的 tests/narrative-repair/ 前缀覆盖。**边界**：不放开跨段删除/压缩授权（B2 未做）；不改正文写入路径；不新增数据库表。**费用**：全部离线断言零计费（模型输出为夹具，未调用真实模型）。
+- **验收证据**：`docs/review-partial-deadlock-plan-20261022.md`、`tests/narrative-repair/19-partial-repair-entry.test.mjs`
+- **本阶段认领的文件**（1 个）：
+  - `docs/review-partial-deadlock-plan-20261022.md`
+
+### P0M · P0 合并保护：现场冻结 + 基线闸门（普通合并不再静默覆盖）
+
+- **回滚方式**：可独立回滚
+- **说明**：**目的**：把"修稿候选整篇覆盖预览之后的新编辑"从"只写一条警告"改成"事务内拒绝"，并把作者意图拆成 normal / explicit_force 两个请求（后者要二次确认声明 + 事务内审计）。**归属**：新增脚本负责阶段 0 取证（整库快照 + 正文/历史版本/采纳记录/审计日志导出），代码改动在共享文件里（与 V21 同一批函数），回滚按共享处理。**边界**：不改历史版本表结构；不新增数据库表；不带 expected 的老客户端保持原语义。**费用**：全部离线断言零计费（隔离实例 + 假模型输出）。
+- **验收证据**：`.p1-baseline/p0-freeze-scene.mjs`、`.p1-baseline/p0-rollback-drill.mjs`、`docs/quality-audit-p0-merge-protection-plan-20261022.md`
+- **本阶段认领的文件**（3 个）：
+  - `.p1-baseline/p0-freeze-scene.mjs`
+  - `.p1-baseline/p0-rollback-drill.mjs`
+  - `docs/quality-audit-p0-merge-protection-plan-20261022.md`
+
+### P0Q2 · 复核反例相关性 + 缺字段台账 + 逐项验收子条件
+
+- **回滚方式**：可独立回滚
+- **说明**：**目的**：把"拿不相干的原文当反例否掉作者的判断"降级成待人工判断；把"6 条缺字段"变成逐字段可定位台账（含能不能免费修）；把一项问题的验收拆成多条子条件并按固定规则合成。**归属**：新增模块与两个断言脚本在这里认领；契约/协调器/合并/前端的改动共享。**边界**：不改审计状态机、不新增数据库表；relevance 只做降级不做升级（同义词会漏判，宁可少判反例）。**费用**：全部离线断言零计费。
+- **验收证据**：`ai/quality-auditor/relevance.mjs`、`ai/quality-auditor/prop-continuity.mjs`、`scripts/quality-auditor/test-relevance.mjs`、`scripts/quality-auditor/test-acceptance-checks.mjs`、`.p1-baseline/browser-e2e-dialogs.mjs`、`.p1-baseline/real-audit-run.mjs`、`scripts/quality-auditor/set-price-table.mjs`
+- **本阶段认领的文件**（5 个）：
+  - `.p1-baseline/browser-e2e-dialogs.mjs`
+  - `.p1-baseline/real-audit-run.mjs`
+  - `scripts/quality-auditor/set-price-table.mjs`
+  - `scripts/quality-auditor/test-acceptance-checks.mjs`
+  - `scripts/quality-auditor/test-relevance.mjs`
+
 ### QA1 · 审稿身份链 review.v3（dsh-novel-quality-auditor 阶段 0–1）
 
 - **回滚方式**：只能整体回滚
@@ -1803,13 +1837,15 @@
 
 - **回滚方式**：只能整体回滚
 - **阻断原因（推导得出）**：
-  - ai/quality-auditor/provision.mjs 被**生产代码** harness-plugins/dsh-novel-quality-auditor/scripts/install.mjs（QA3）import——撤掉会打断线上路径
-  - ai/quality-auditor/provision.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
-  - ai/quality-auditor/routes.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
-  - ai/quality-auditor/store.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
+  - ai/quality-auditor/contracts.mjs 被**生产代码** scripts/quality-auditor/test-acceptance-checks.mjs（P0Q2）import——撤掉会打断线上路径
+  - ai/quality-auditor/contracts.mjs 被**生产代码** scripts/quality-auditor/test-relevance.mjs（P0Q2）import——撤掉会打断线上路径
+  - ai/quality-auditor/evidence.mjs 被**生产代码** scripts/quality-auditor/test-relevance.mjs（P0Q2）import——撤掉会打断线上路径
+  - ai/quality-auditor/merge-review.mjs 被**生产代码** scripts/quality-auditor/test-relevance.mjs（P0Q2）import——撤掉会打断线上路径
+  - ai/quality-auditor/merge-revision.mjs 被**生产代码** scripts/quality-auditor/test-acceptance-checks.mjs（P0Q2）import——撤掉会打断线上路径
+  - ai/quality-auditor/prop-continuity.mjs 被**生产代码** scripts/quality-auditor/test-relevance.mjs（P0Q2）import——撤掉会打断线上路径
 - **说明**：**目的**：给独立审计建立可观测的账本与鉴权边界。三张旁路表（runs/items/events）承载 run 状态机、一次性 token（只存 hash）、预算、租约与 append-only 事件流；API 分作者通道与 DSH token 通道；状态迁移只走 store.transition 的白名单。**边界**：不改正文、不改既有审稿/修稿表语义、不动 confirmation-resolution 账本。**费用**：CT 套件全部 start:false（外部 runner），零计费。
 - **验收证据**：`scripts/quality-auditor/test-contracts.mjs`、`docs/quality-auditor-architecture.md`
-- **本阶段认领的文件**（22 个）：
+- **本阶段认领的文件**（25 个）：
   - `ai/quality-auditor/budget.mjs`
   - `ai/quality-auditor/contracts.mjs`
   - `ai/quality-auditor/coordinator.mjs`
@@ -1818,7 +1854,9 @@
   - `ai/quality-auditor/merge-review.mjs`
   - `ai/quality-auditor/merge-revision.mjs`
   - `ai/quality-auditor/prompts.mjs`
+  - `ai/quality-auditor/prop-continuity.mjs`
   - `ai/quality-auditor/provision.mjs`
+  - `ai/quality-auditor/relevance.mjs`
   - `ai/quality-auditor/review-integrity.mjs`
   - `ai/quality-auditor/revision-integrity.mjs`
   - `ai/quality-auditor/routes.mjs`
@@ -1826,6 +1864,7 @@
   - `ai/quality-auditor/snapshots.mjs`
   - `ai/quality-auditor/status.mjs`
   - `ai/quality-auditor/store.mjs`
+  - `ai/quality-auditor/usage.mjs`
   - `docs/quality-auditor-architecture.md`
   - `scripts/quality-auditor/harness.mjs`
   - `scripts/quality-auditor/real-host.mjs`
@@ -1875,7 +1914,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**888** 个文件
+- 真实改动集：**901** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

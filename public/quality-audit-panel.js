@@ -26,6 +26,9 @@
   const ISSUE_LABELS = {
     PASS: '验收通过', PARTIAL: '部分修复', FAIL: '复验失败', NEED_CONTEXT: '缺少上下文',
     BLOCKED_SCOPE: '越权/保护区', STALE: '已过期', AWAITING_AUDIT: '等待独立审计',
+    // 审计员说"作者判错了"、但反例与主张不是同一件事 → 这里既不写"通过"也不写"被驳倒"。
+    ADVISORY_NEEDS_REVIEW: '反例待人工判断',
+    COVERED: '已覆盖', DISPUTED: '存在反驳（反例相关）', INVALID_EVIDENCE: '证据不成立',
   };
 
   function runLabel(status) { return RUN_LABELS[String(status || '')] || String(status || '未开始'); }
@@ -62,6 +65,23 @@
     return list.every((i) => String((i && (i.final || i.verdict)) || '').toUpperCase() === 'PASS');
   }
 
+  /**
+   * 「实际花了多少」的显示口径。
+   *
+   * 为什么要有它：审计的真实计费发生在 dsh 侧，本服务看不到 token 用量，
+   * 而旧实现把"没记账"显示成 `实际 ¥0.00` —— 一次真实跑完的审计在界面上等于免费，
+   * 那是谎报（2026-10-22 真实联网演练实测）。现在只有**确知**金额时才算钱，
+   * 其余一律写"未知"，让作者知道"这笔钱记不到账上"。
+   */
+  function chargeText(budget) {
+    const b = budget && typeof budget === 'object' ? budget : {};
+    const known = b.charge_known === true || (Number(b.charged_microunits) > 0);
+    if (!known) return '实际费用未知（dsh 侧未回传用量，不作 0 元记账）';
+    const mu = Number(b.charged_microunits) || 0;
+    if (b.charge_source === 'not_billed_yet') return '实际 ¥0.00（尚未走到付费阶段）';
+    return `实际 ¥${(mu / 1e6).toFixed(2)}`;
+  }
+
   /** 工作区抽屉：coverage / 预算 / 运行状态 / 错误码。 */
   function drawerHtml(run, items) {
     if (!run) return '';
@@ -71,7 +91,7 @@
     return `<div class="quality-audit-drawer">
       <div class="qa-run">${esc(runLabel(run.status))}（${esc(run.kind || '')}）</div>
       <div class="muted">base ${esc(String(run.base_hash || '').slice(0, 20))}${run.candidate_hash ? ` · candidate ${esc(String(run.candidate_hash).slice(0, 20))}` : ''}</div>
-      <div class="muted">预算：授权 ¥${(Number(budget.authorized_microunits || 0) / 1e6).toFixed(2)} · 估算 ¥${(Number(budget.estimated_microunits || 0) / 1e6).toFixed(2)} · 实际 ¥${(Number(budget.charged_microunits || 0) / 1e6).toFixed(2)}</div>
+      <div class="muted">预算：授权 ¥${(Number(budget.authorized_microunits || 0) / 1e6).toFixed(2)} · 估算 ¥${(Number(budget.estimated_microunits || 0) / 1e6).toFixed(2)} · ${chargeText(budget)}</div>
       ${run.error_code ? `<div class="qa-error">错误码：${esc(run.error_code)} ${esc(run.error_detail || '')}</div>` : ''}
       ${rows ? `<ul class="qa-items">${rows}</ul>` : '<div class="muted">尚无逐项结论</div>'}
     </div>`;
@@ -93,7 +113,7 @@
       const verdict = String(i.final || i.verdict || '');
       const cls = verdict === 'PASS' ? 'ok' : (verdict === 'PARTIAL' || verdict === 'NEED_CONTEXT') ? 'warn' : 'bad';
       return `<tr class="qa-row ${cls}"><td>${esc(i.issue_id)}</td><td>${esc(issueLabel(verdict))}</td>`
-        + `<td>${esc(i.final_reason || i.reason || '')}</td></tr>`;
+        + `<td>${esc(i.final_reason || i.reason || '')}${acceptanceLine(i)}</td></tr>`;
     }).join('');
     const c = merged.counts || {};
     const summary = `已选 ${Number(c.selected) || issues.length} · 通过 ${Number(c.pass) || 0} · 部分 ${Number(c.partial) || 0}`
@@ -103,6 +123,73 @@
       + `<table class="qa-table"><thead><tr><th>问题</th><th>终态</th><th>原因</th></tr></thead><tbody>${rows}</tbody></table>`
       + (targets.length ? `<div class="qa-repair">可定向复修：${esc(targets.join('、'))}</div>` : '')
       + `<div class="muted">"补丁已应用"不等于"验收通过"；只有全部 PASS 才显示完成。</div></div>`;
+  }
+
+  const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  /**
+   * 单条终验的**子条件**摘要（§5）。
+   *
+   * 为什么要显示："只解决局部"如果只写原因，作者没法判断"还差哪一条"。
+   * 子条件是逐条判据（群众重复已压缩 / 主角状态可见…），一条不达成就是 PARTIAL——
+   * 把它们列出来，"为什么没通过"才是可执行的，而不是一句形容词。
+   */
+  function acceptanceLine(issue) {
+    const checks = Array.isArray(issue && issue.acceptance_checks) ? issue.acceptance_checks : [];
+    if (!checks.length) return '';
+    const pass = checks.filter((c) => c && c.status === 'PASS').length;
+    const bad = checks.filter((c) => c && c.status !== 'PASS');
+    const declared = String((issue && issue.verdict_declared) || '');
+    const final = String((issue && (issue.final || issue.verdict)) || '');
+    // 模型说 PASS 但子条件不成立 → 必须写明"它的话被降级了"，否则作者会以为是系统算错。
+    const downgrade = (issue && issue.verdict_derived === true && declared && declared !== final)
+      ? `<div class="muted">模型原判 ${escHtml(issueLabel(declared))}，按子条件降为 ${escHtml(issueLabel(final))}</div>`
+      : '';
+    const list = checks.map((c) => `<li>${c.status === 'PASS' ? '✓' : (c.status === 'FAIL' ? '✗' : '?')} `
+      + `${escHtml(c.key)}${c.evidence ? ` — ${escHtml(c.evidence)}` : ''}</li>`).join('');
+    return `<div class="qa-checks"><div class="muted">子条件 ${pass}/${checks.length} 通过`
+      + `${bad.length ? `（未达成：${bad.map((c) => escHtml(c.key)).join('、')}）` : ''}</div>`
+      + `<ul class="qa-check-list">${list}</ul>${downgrade}</div>`;
+  }
+
+  /**
+   * 缺字段台账（§3.2）：一行一条，含 finding / 字段 / 期望与实际 / 能不能免费修。
+   *
+   * 为什么不做成一句"6 条缺字段"：那样作者既不知道缺在哪，也不知道该不该再花一次钱。
+   * 「免费重解析」与「需要模型重新生成」是两种完全不同的处置。
+   */
+  function defectTableHtml(defects, summary) {
+    const list = Array.isArray(defects) ? defects : [];
+    if (!list.length) return '';
+    const resolutionLabel = { FREE_REPARSE: '可免费补齐', PAID_REGENERATE: '需模型重新生成', AUTHOR_CONFIRM: '需作者确认' };
+    const rows = list.map((d) => `<tr class="qa-defect ${d.severity === 'blocker' ? 'bad' : 'warn'}">`
+      + `<td>${escHtml(d.finding_id || '—')}</td><td>${escHtml(d.field_path)}</td>`
+      + `<td>${escHtml(d.expected_type)}</td><td>${escHtml(d.actual_type)}</td>`
+      + `<td>${escHtml(resolutionLabel[d.resolution_path] || d.resolution_path || '')}</td></tr>`).join('');
+    const s = summary || {};
+    const head = s.total
+      ? `<div class="qa-summary">共 ${Number(s.total) || list.length} 处（阻断 ${Number(s.blockers) || 0}）`
+        + `${s.by_resolution ? '：' + Object.entries(s.by_resolution).map(([k, v]) => `${escHtml(resolutionLabel[k] || k)} ${v}`).join(' · ') : ''}</div>`
+      : '';
+    return `<div class="qa-defects">${head}`
+      + `<table class="qa-table"><thead><tr><th>问题</th><th>字段</th><th>期望</th><th>实际</th><th>怎么修</th></tr></thead>`
+      + `<tbody>${rows}</tbody></table>`
+      + `<div class="muted">结构问题不会变成正式修稿问题：补齐这些字段之前，这份结果不进逐项验收。</div></div>`;
+  }
+
+  /**
+   * 反例相关性降级台账（§3.1）：审计员说"作者判错了"，但反例与主张不是同一件事时，
+   * 如实显示"这次不算驳倒"，并给出共享词证据 —— 不悄悄删、也不装作没发生。
+   */
+  function relevanceTableHtml(downgrades) {
+    const list = Array.isArray(downgrades) ? downgrades : [];
+    if (!list.length) return '';
+    const rows = list.map((d) => `<li><b>${escHtml(d.issue_id)}</b> `
+      + `${d.verdict === 'INVALID_RELEVANCE' ? '反例与主张不相干' : '反例与主张关联太弱'}`
+      + `${Array.isArray(d.overlap) && d.overlap.length ? `（共享词：${escHtml(d.overlap.join('、'))}）` : '（无共享词）'}`
+      + `${d.reasons && d.reasons.length ? ` — ${escHtml(d.reasons.join('；'))}` : ''}</li>`).join('');
+    return `<div class="qa-relevance"><div class="qa-summary">这 ${list.length} 条不改判为"作者判错"（按待人工判断处理）</div>`
+      + `<ul>${rows}</ul></div>`;
   }
 
   /**
@@ -120,26 +207,36 @@
    * 审稿报告里的"独立复核"入口条（三态 + 主按钮）。
    * 为什么要单独一块：旧入口只是底部一枚 secondary 小按钮，作者根本注意不到。
    * 这里同时说清"会调用模型、消耗额度"与"需要结构化审稿"两个前提。
-   * @param {{run?:object|null, pluginReady?:boolean, hasStructuredReview?:boolean}} input
+   *
+   * `articleEmpty`（2026-10-22）：独立复核的正文只从**库内本章正文**取，编辑器里有字
+   * 但正文没保存（草稿链「先审稿再应用」）时，点下去必然被服务端拒绝。所以空正文时
+   * 不再给一个"点了才失败"的按钮，而是直接说明出路 —— 少一次付费往返，也少一次误解。
+   * @param {{run?:object|null, pluginReady?:boolean, hasStructuredReview?:boolean, articleEmpty?:boolean}} input
    */
-  function auditEntryHtml({ run = null, pluginReady = true, hasStructuredReview = true } = {}) {
+  function auditEntryHtml({ run = null, pluginReady = true, hasStructuredReview = true, articleEmpty = false } = {}) {
     const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const status = String((run && run.status) || '');
     const terminal = ['COMPLETED', 'MERGED', 'HOST_VERIFIED', 'RESULT_RECEIVED'].includes(status);
     const failing = ['FAILED_CONTRACT', 'FAILED_AUTH', 'FAILED_DSH', 'AUDIT_NOT_SUBMITTED', 'INTERRUPTED', 'STALE', 'CANCELLED'].includes(status);
     const running = ['DSH_STARTED', 'RUNNING', 'BLIND_SUBMITTED', 'COMPARE_RUNNING', 'INPUT_FROZEN', 'CREATED'].includes(status);
+    const emptyBody = articleEmpty === true;
     let headline = '未做独立复核';
     let tone = 'idle';
-    if (running) { headline = `独立复核进行中 · ${runLabel(status)}`; tone = 'busy'; }
+    if (emptyBody && !running) { headline = '本章正文为空，暂时不能独立复核'; tone = 'err'; }
+    else if (running) { headline = `独立复核进行中 · ${runLabel(status)}`; tone = 'busy'; }
     else if (terminal) { headline = `上次独立复核 · ${runLabel(status)}`; tone = 'ok'; }
     else if (failing) { headline = `上次独立复核失败 · ${runLabel(status)}`; tone = 'err'; }
-    const disabled = !pluginReady || running;
-    const btnLabel = running ? '复核进行中…' : (terminal ? '重新复核（盲审→对照）' : '开始独立复核（盲审→对照）');
-    const hint = !pluginReady
-      ? '审计插件未安装：点「安装插件」或到 AI 设置的依赖清单处理'
-      : (!hasStructuredReview
-        ? '当前是旧报告/缺 findings：可以复核，但结论上限是「待核验」'
-        : '会启动一次独立的盲审 + 初审对照，消耗模型额度');
+    const disabled = !pluginReady || running || emptyBody;
+    const btnLabel = emptyBody
+      ? '正文为空，先保存本章'
+      : (running ? '复核进行中…' : (terminal ? '重新复核（盲审→对照）' : '开始独立复核（盲审→对照）'));
+    const hint = emptyBody
+      ? '独立复核只读已保存的正文：先在编辑器保存本章，或从「有未应用的生成稿」取回后再复核（编辑器里没保存的文字不算正文）'
+      : (!pluginReady
+        ? '审计插件未安装：点「安装插件」或到 AI 设置的依赖清单处理'
+        : (!hasStructuredReview
+          ? '当前是旧报告/缺 findings：可以复核，但结论上限是「待核验」'
+          : '会启动一次独立的盲审 + 初审对照，消耗模型额度'));
     return `<div class="qa-entry ${esc(tone)}">
       <div class="qa-entry-main"><b>🔍 ${esc(headline)}</b><div class="muted">${esc(hint)}</div></div>
       <div class="qa-entry-actions">
@@ -171,5 +268,5 @@
     return `<div class="qa-missing-list">${rows}</div><div class="muted">安装后不用重启服务：点「重新检测」即可刷新状态。</div>`;
   }
 
-  return { RUN_LABELS, ISSUE_LABELS, runLabel, issueLabel, summaryLine, allDone, drawerHtml, revisionTableHtml, mergeAllowed, auditEntryHtml, missingDepsHtml };
+  return { RUN_LABELS, ISSUE_LABELS, runLabel, issueLabel, summaryLine, allDone, drawerHtml, revisionTableHtml, mergeAllowed, auditEntryHtml, missingDepsHtml, acceptanceLine, defectTableHtml, relevanceTableHtml, chargeText };
 });

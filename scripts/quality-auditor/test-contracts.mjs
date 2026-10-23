@@ -258,14 +258,56 @@ let revisionToken = '';
     coverage: { resources: [{ name: 'article', ranges: [[0, total]], complete: true }], dimensions: allDims() },
     initial_findings: [
       { issue_id: 'R-0001', verdict: 'COVERED', reason: '时间线矛盾确实存在' },
-      { issue_id: 'R-0002', verdict: 'DISPUTED', reason: '比喻与雨声意象一致，不构成模板句' },
+      // 2026-10-22 起：判 DISPUTED 必须交出反例的逐字引用（§3.1）。这份夹具因此补上 counter_evidence，
+      // 并在下面先测一次"缺它会被拒"——否则这条契约只是写在文档里。
+      {
+        issue_id: 'R-0002', verdict: 'DISPUTED', reason: '比喻与雨声意象一致，不构成模板句',
+        counter_evidence: [{ quote: '雨点砸在窗上，像有人在数数。' }],
+      },
     ],
     new_findings: [],
     verdict: 'COMPLETE_WITH_EVIDENCE',
   };
-  const final = await jfetch(base, `/api/novel/quality-audits/${auditId}/submissions`, {
-    method: 'POST', headers: TH, body: { operation: 'final', payload: finalPayload },
+  // ① 先提交一份"判了 DISPUTED 却没给反例"的结果：必须被拒，且逐字段说清缺什么
+  const noCounter = JSON.parse(JSON.stringify(finalPayload));
+  delete noCounter.initial_findings[1].counter_evidence;
+  const rejected = await jfetch(base, `/api/novel/quality-audits/${auditId}/submissions`, {
+    method: 'POST', headers: TH, body: { operation: 'final', payload: noCounter },
   });
+  const stillCompare = await jfetch(base, `/api/novel/quality-audits/${auditId}`, { headers: TH });
+  check('CT-06c', 'DISPUTED 缺 counter_evidence：422 且带逐字段缺陷；run 不被推进（不留半条账本）',
+    rejected.status === 422 && rejected.data.code === 'AUDIT_CONTRACT_INVALID'
+      && Array.isArray(rejected.data.defects)
+      && rejected.data.defects.some((d) => d.finding_id === 'R-0002'
+        && /counter_evidence/.test(String(d.field_path))
+        && d.severity === 'blocker' && d.resolution_path === 'PAID_REGENERATE')
+      && rejected.data.defect_summary && rejected.data.defect_summary.blockers >= 1
+      && String(stillCompare.data.run.status) === 'COMPARE_RUNNING',
+    JSON.stringify({ status: rejected.status, code: rejected.data.code, run: stillCompare.data.run.status }));
+  // ② 补齐之后再提交：正常进入 RESULT_RECEIVED
+  // 配置一张**可信价目表**，并让 final 提交带上真实用量（模拟 dsh 侧回传）：
+  // 费用结清这条链要么全通、要么明确"未知"，不能停在"永远 0"。
+  {
+    const cdb = openDb();
+    cdb.prepare("INSERT INTO app_settings (key, value) VALUES ('audit_price_table', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(JSON.stringify({ 'deepseek-flash': { input_cny_per_1k: 0.0005, output_cny_per_1k: 0.002 } }));
+    cdb.close();
+  }
+  const final = await jfetch(base, `/api/novel/quality-audits/${auditId}/submissions`, {
+    method: 'POST', headers: TH,
+    body: {
+      operation: 'final', payload: finalPayload,
+      usage: { input_tokens: 1000, output_tokens: 500, model: 'deepseek-flash' },
+    },
+  });
+  {
+    const afterRun = await jfetch(base, `/api/novel/quality-audits/${auditId}`);
+    const b = (afterRun.data && afterRun.data.run && afterRun.data.run.budget) || {};
+    // 1000 tok 入 × ¥0.0005/1k = 0.0005；500 tok 出 × ¥0.002/1k = 0.001 → 合计 ¥0.0015 = 1500 微单位
+    check('CT-06d 提交带真实用量 → 按价目表结清并落账（不再恒为 0）',
+      b.charge_known === true && Number(b.charged_microunits) === 1500 && b.charge_source === 'settled',
+      JSON.stringify(b));
+  }
   const verified = await jfetch(base, `/api/novel/quality-audits/${auditId}/verify`, { method: 'POST', body: {} });
   const merged = await jfetch(base, `/api/novel/quality-audits/${auditId}/merge`, { method: 'POST', body: {} });
   const reviewed = await jfetch(base, `/api/novel/review?chapter_id=${chapterId}`);
@@ -279,6 +321,47 @@ let revisionToken = '';
       && merged.data.review_id > 0
       && reviewed.data.review && reviewed.data.review.id === merged.data.review_id,
     JSON.stringify({ blind: blind.data.status, phase: afterBlind.data.run.phase, final: final.data.status, verified: verified.data.status, merged: merged.data.status }));
+}
+
+// ── CT-00d：费用口径（2026-10-22 真实联网演练发现"实际 ¥0.00"在谎报）────────────
+{
+  const store = await import('../../ai/quality-auditor/store.mjs');
+  const row = (status, charged) => ({
+    id: 'qa_x', kind: 'review', status, budget_authorized_microunits: 2000000,
+    budget_estimated_microunits: 1200000, budget_charged_microunits: charged,
+  });
+  const paidUnknown = store.runToClient(row('RESULT_RECEIVED', 0));
+  const settled = store.runToClient(row('RESULT_RECEIVED', 120000));
+  const notYet = store.runToClient(row('INPUT_FROZEN', 0));
+  const sentinel = store.runToClient(row('COMPLETED', -1));
+  check('CT-00d 实际费用：已付费阶段但没记账 → 未知（null），不再谎报 ¥0.00',
+    paidUnknown.budget.charged_microunits === null && paidUnknown.budget.charge_known === false
+      && paidUnknown.budget.charge_source === 'unknown'
+      && settled.budget.charge_known === true && settled.budget.charged_microunits === 120000
+      && notYet.budget.charge_known === true && notYet.budget.charged_microunits === 0
+      && sentinel.budget.charge_known === false,
+    JSON.stringify({ paid: paidUnknown.budget, settled: settled.budget }));
+}
+
+// ── CT-00e：用量折算（纯函数四态；不按字数猜价格）───────────────────────────────
+{
+  const U = await import('../../ai/quality-auditor/usage.mjs');
+  const none = U.settleChargeFrom({});
+  const noTable = U.settleChargeFrom({ usage: { input_tokens: 1000, output_tokens: 500, model: 'deepseek-flash' } });
+  const withTable = U.settleChargeFrom({
+    usage: { input_tokens: 1000, output_tokens: 500, model: 'deepseek-flash' },
+    priceTable: { 'deepseek-flash': { input_cny_per_1k: 0.0005, output_cny_per_1k: 0.002 } },
+  });
+  const reported = U.settleChargeFrom({ usage: { cost_cny: 0.37 } });
+  const missingModel = U.settleChargeFrom({
+    usage: { input_tokens: 1, output_tokens: 1, model: 'not-in-table' },
+    priceTable: { 'deepseek-flash': { input_cny_per_1k: 1, output_cny_per_1k: 1 } },
+  });
+  check('CT-00e 用量折算：没用量/没价目/型号缺失 → 未知；有价目 → 折算；子进程自报 → 采用并标来源',
+    none.known === false && noTable.known === false && missingModel.known === false
+      && withTable.known === true && withTable.micro_units === 1500 && withTable.source === 'usage_table'
+      && reported.known === true && reported.source === 'reported_cost' && reported.micro_units === 370000,
+    JSON.stringify({ none, noTable, withTable, reported, missingModel }));
 }
 
 // ── CT-06b（方案 CT-06 的另一条）：candidate hash 不一致 → STALE ────────────────

@@ -5,6 +5,115 @@
 
 ---
 
+### 🧩 v1.2.7 追加（未发布 · 2026-10-23 · 修稿选择映射断裂：清单重复项把整章精确修稿挡在门外）
+
+现场：审稿报告有 9 条结构化 finding，但弹窗列出 18 条问题（后 9 条是同义改写的散文行），
+默认全勾选 → 付费修稿前的 `assertSelectionMappable()` 直接 fail-closed
+（`REVIEW_SELECTION_MISSING_FINDING`，缺失 `UNLINKED-10…18`），点一次报一次，整章无法精确修稿。
+
+- **根因一（解析层）**：`structureReviewReport()` 给"额外 issues 行"去重时只比较"派生行是否包含这一行的
+  前 20 字"。模型把同一条问题写两遍（issues 散文 + findings 结构化）时两处措辞几乎从不逐字相同，
+  于是每条被接受的 finding 都多留一条 `id:''` 未链接项，清单条数翻倍。
+  判据改为逐字前缀 **或 2-gram 覆盖率 ≥ 0.25**（同义改写实测 0.33–0.57、不同问题 ≤0.13；
+  短行不做覆盖率判定，宁可保留也不吞掉真问题）。
+- **根因二（展示层）**：未链接项也被默认勾选。现在**结构化报告里无逐字证据的问题置灰、不勾选**
+  （仍显示，并说明"重新审稿生成证据或手动修改"）；没有 findings 的存量报告不置灰，
+  继续走"可人工选择 + 结论上限 NEED_CONTEXT"的兼容路径。闸门本身没有放宽：
+  旧选择/重试路径里若仍带无证据项，照样 fail-closed，并把 `UNLINKED-n` 翻译成作者能对上的序号。
+- **断言**：`tests/narrative-repair/07-review-structure.test.mjs` E03-g/E03-g2（重复项去重、真额外问题保留）；
+  `frontend-test.mjs` 34h/34h2（置灰不勾选、存量报告仍可勾选）。
+- **现场复核**：用活库 review 32 的原始形状（9 条散文 issues + 9 条 findings）重跑
+  `structureReviewReport` → `issues=9`、`unlinked=0`；存量报告靠展示层置灰恢复可用。
+
+### 🛡️ v1.2.7 追加（未发布 · 2026-10-22 · P0 合并保护：普通合并不再静默覆盖）
+
+方案与实施记录见 [quality-audit-p0-merge-protection-plan-20261022.md](quality-audit-p0-merge-protection-plan-20261022.md)。
+现场形状（活库已复算）：修稿候选是几分钟前的整章重写，作者在差异预览之后又改过正文，点「合并到正文」时
+旧实现只写一条 `review_merge_overwrite` 警告就照样整篇覆盖 —— 被覆盖的那版只在历史版本里。
+
+- **服务端基线闸门**（`server.js` `/novel/adopt`）：带 `expected.content_hash` 的采纳在**事务内**比对实际基线，
+  不一致 → `409 REVISION_BASE_STALE`，正文/历史版本/提案/投影 outbox 全都没动。
+  不带基线的老客户端保持原语义（保护只在"声明了基线"时生效，不假装保护过）。
+- **作者意图显式化**：`mode: normal | explicit_force`。明确覆盖要同时带 `force_ack` 与
+  `base_conflict`（缺一个就 409），且仍然比对"确认那一刻"的基线（之后又变 → `REVISION_BASE_CHANGED_AGAIN`）。
+  覆盖成功时回包 `forced_overwrite/base_hash_at_force/unresolved_issue_ids`，并在**同一事务内**
+  写 `app_logs(kind='adopt_force_overwrite')` 审计。
+- **旧结论不给新候选背书**：`candidate_hash !== verified_candidate_hash` → `409 REVISION_VERIFICATION_STALE`。
+- **三个出口**（`public/app.js`）：冲突框给「查看差异 / 在当前正文上重算候选 / 明确覆盖 / 先不合并」；
+  重算走新纯函数 `rebaseCandidate`（锚点逐条核对，对不上就整体失败并点名是哪条，不产出半成品），
+  重算后的候选清掉验收标记并要求复验；明确覆盖是**两个框**（覆盖前那版进历史版本）。
+- **判据住在可断言的地方**：`revision-closure.mergeGateOf` / `mergeAdoptPayloadOf`，前端与测试共用同一份。
+- **一处新引入的坑当场修掉**：`closeModal()` 会顺手清 `pendingReviewDiff`（N6 收口），
+  于是"点查看差异就再也合并不进去"——合并相关弹窗改用 `closeMergeDialog()` 显式保回候选。
+
+证据（零计费）：`.p1-baseline/test-adopt-atomic.mjs` 68/68（新增 M0–M10）、
+`frontend-test.mjs` 全 PASS（新增 MG-01–MG-10，含"普通合并被拒时一个 adopt 都不发"的真跑断言）、
+`test-narrative-repair` 19/19、`ci-offline-checks` 全过、`verify-phase-map` 通过、`check-utf8` 0 非法。
+阶段 0 现场冻结脚本：`.p1-baseline/p0-freeze-scene.mjs`（整库快照 + 正文/历史版本/采纳记录/审计日志导出）。
+**注**：该脚本第一版用 `copyFileSync` 只复制主文件，而库是 WAL 模式 → 快照静默落后一天；
+现已改为 `VACUUM INTO` 并加"导出后读回同一章自检"，另附回退演练 `.p1-baseline/p0-rollback-drill.mjs`（6/6）。
+
+### 🔍 v1.2.7 追加（未发布 · 2026-10-22 · 独立复核误报：不相干的原文不再是"反例"）
+
+方案 §3.1–§3.3 与 §5 的落地（见 [quality-audit-p0-merge-protection-plan-20261022.md](quality-audit-p0-merge-protection-plan-20261022.md) §12）。
+现场形状：初审说"系统首次上线保持克制、没有急着解释自己"，复核对把它判成 DISPUTED，
+理由是"前面的平头男生一直在说话"——主语不同、谓词不同、范围也不同，却被呈现成"作者判错了"。
+
+- **反例相关性**（`ai/quality-auditor/relevance.mjs`，纯函数零计费）：共享词 ≥2 → 真反例；
+  只共享 1 个 → 待人工判断；0 个 → 不相干。不相干/太弱的 DISPUTED 降级为 `ADVISORY_NEEDS_REVIEW`，
+  原始结论仍保留，降级台账写入 `review_relevance_downgrade` 审计事件（主机校验与合并各记一条）。
+  这一层**只降级不升级**：同义词会漏判，宁可少判一个反例，也不凭空多判一个。
+- **DISPUTED 必须交反例**：契约要求 `counter_evidence`（逐字引用），缺了就是阻断级缺陷；提示词同步说明
+  "反例必须与主张是同一件事"。
+- **缺字段可定位**（`contracts.defectsOf`）：每条缺陷含 finding / 字段 / 期望与实际类型 / 来源 / 严重度 /
+  `resolution_path`（免费补齐 / 需模型重生成 / 需作者确认）。校验摘要与台账同源（errors 逐字取自 defects），
+  接口把 `defects` + `defect_summary` 一并回传，界面弹窗按行显示，并写明"结构问题不进逐项验收"。
+- **逐项验收子条件**（`revision-integrity.effectiveVerdictOf`）：一条问题可带多条独立判据
+  （hard/soft/context × PASS/FAIL/UNKNOWN），由固定规则合成：硬失败→FAIL、缺资料→NEED_CONTEXT、
+  软条件失败→PARTIAL、状态缺失→PARTIAL、全过→PASS。模型单独给的那个词不再作数
+  （`verdict_declared` 保留原判、`verdict_derived` 标明终态来自合成）；失败证据进入 `remaining_evidence`。
+- **工作区**（`public/review-workspace.js` + 抽屉）：审计的 `acceptance_checks` 按 issue_id 并进问题行，
+  抽屉里摘要与逐条清单都在；另新增"候选与正式正文的版本关系"三态（同一版 / 预览后更新过 / 已合并）。
+- **费用口径修正 + 结清链路**：真实跑完的审计原先显示"实际 ¥0.00"（该字段从来没有写入方）→
+  现在按证据分档（已知 / 未到付费阶段 / **未知**），并补上真正的写入方：提交时可带 `usage`，
+  服务端按 `app_settings.audit_price_table`（`scripts/quality-auditor/set-price-table.mjs` 配置）
+  折算落账；没有价目就记 `charge_unknown`、保持未知，绝不按字数猜价格。
+- **界面**（`public/quality-audit-panel.js`）：终验表显示"子条件 1/2 通过（未达成：…）"与
+  "模型原判 X，按子条件降为 Y"；新增缺字段台账表与相关性降级说明；`ADVISORY_NEEDS_REVIEW` 有中文标签。
+
+证据（零计费）：新增 `scripts/quality-auditor/test-relevance.mjs`（12 条）与
+`scripts/quality-auditor/test-acceptance-checks.mjs`（10 条），均已进 CI；
+`test-contracts` 19/19（新增 CT-06c）、`frontend-test` 680 条全 PASS（含 QC-60…QC-63）、`test-e2e` 6/6、`verify-id-chain` 14/14。
+
+### 🩹 v1.2.7（未发布 · 2026-10-22 · 逐项验收不再卡死）
+
+作者报：审稿工作区停在「逐项验收」，两条判「只解决局部」之后**没有任何能继续修的路**——
+AI 不再修，也没地方人工改。根因不是模型没修，而是这一档只有合并/导出/返回三条路，
+而统一出口给出的下一步恰恰是 `TARGETED_REPAIR`（承诺了下一步却没有入口）。
+方案与取证见 [review-partial-deadlock-plan-20261022.md](review-partial-deadlock-plan-20261022.md)。
+
+- **复修入口**（`public/review-workspace.js` + `public/app.js`）：`PARTIAL_CANDIDATE` 新增
+  「只复修未通过项（N 条，一次付费调用）」；轮次用尽 / 超预算 / 费用不可核价 / 全是人处理项时
+  **置灰并写清原因**。判据统一在 `revision-closure.targetedRepairOf`，按钮与执行体同一份计算。
+- **剩余证据扩范围**（B1）：复验逐字指出"还在的文字"时，多给一个
+  「按复验剩余证据扩到 N 处再修」——只由作者点按触发，只追加同一批 issue 的目标跨度
+  （不新增问题编号、不自动放宽），旧格式（v1 计划）直接拒绝并说明。
+- **接受遗留**（C1）：「接受 N 条为已知遗留」只记账（`ns_revision_accepted_leftovers:<workId>:<chapterId>`，
+  绑定候选 hash），不改正文、不判通过；合并按钮仍如实写"仍有 N 条未通过"。
+- **复验额度改为按候选版本计**（`verifyAllowanceOf`）：改过候选（含定向复修）自动重开一次，
+  同一份候选不重复付费；合并后仍允许补跑一次（2026-10-18 的行为保留）。
+- **跨段授权（B2，作者显式放开）**：详情抽屉里对未通过项可点「只本段 / 本段起 2 段 / 本段起 3 段」，
+  批准后底栏出现「按已批准范围再修（N 段）」，也可撤销。硬上限：一次 ≤3 段、≤600 字，
+  段落含保护区或必须保留内容一律拒绝（`wideningApprovalOf`）；授权由 Host 记录并重建计划，
+  模型不能自行放宽。旧格式审稿（无结构化跨度）不支持跨段，执行时会说明要重新审稿。
+- **轮次/花费跨轮累计**（`mergeRepairRounds`）：按钮可点多次时不会被"重新数轮次"绕过上限。
+- **抽公共收尾**：`applyRevisionRepairAndRecheck` / `finalizeRevisionRun`，复验后的自动复修与
+  手动复修共用同一份复修/复验/收尾逻辑（不再各写一套）；恢复的运行没有授权跨度时不给假入口。
+
+证据（零计费）：新增 `tests/narrative-repair/19-partial-repair-entry.test.mjs`（V00–V26，27 条）；
+`test-narrative-repair` 19/19 套件、`frontend-test` 全 PASS、`ci-offline-checks` 全 PASS、
+`verify-phase-map` 通过、`check-utf8` 0 非法。
+
 ### 🚀 v1.2.6（2026-10-21 发布）
 
 从 **v1.2.4 增量升级**（中间未单独发版的 v1.2.5 一并包含），不回退任何既有能力；数据与 API 兼容，无需迁移。

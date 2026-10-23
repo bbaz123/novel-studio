@@ -41,11 +41,28 @@ export function runToClient(row) {
     result: row.result_json ? parse(row.result_json, null) : null,
     error_code: row.error_code || '',
     error_detail: row.error_detail || '',
-    budget: {
-      authorized_microunits: Number(row.budget_authorized_microunits) || 0,
-      estimated_microunits: Number(row.budget_estimated_microunits) || 0,
-      charged_microunits: Number(row.budget_charged_microunits) || 0,
-    },
+    budget: (() => {
+      const raw = Number(row.budget_charged_microunits);
+      // 2026-10-22 真实联网演练发现：这个字段**从来没有写入方**，于是所有跑完的审计
+      // 都显示"实际 ¥0.00"——而模型确实被调用过（有 blind/compare 产出）。那是在谎报费用。
+      // 审计的真实计费发生在 dsh 侧（本服务看不到 token 用量），所以这里按**证据**判：
+      //   · >0            → 已结清，已知金额；
+      //   · <0（哨兵 -1） → 明确"未结清/未知"；
+      //   · 0 且状态已过"已付费"阶段 → 缺记账数据，同样是未知（历史上没人写过，0 不代表免费）。
+      //   · 0 且还没走到付费阶段 → 确实还没产生费用。
+      const paidPhases = ['BLIND_SUBMITTED', 'COMPARE_RUNNING', 'RESULT_RECEIVED', 'HOST_VERIFIED', 'MERGED', 'COMPLETED'];
+      const status = String(row.status || '');
+      const known = raw > 0;
+      const settledZero = raw === 0 && !paidPhases.includes(status);
+      return {
+        authorized_microunits: Number(row.budget_authorized_microunits) || 0,
+        estimated_microunits: Number(row.budget_estimated_microunits) || 0,
+        // null = 未知（不编造 0.00）；界面据此显示"实际费用未知"。
+        charged_microunits: known || settledZero ? Math.max(0, raw) : null,
+        charge_known: known || settledZero,
+        charge_source: known ? 'settled' : (settledZero ? 'not_billed_yet' : 'unknown'),
+      };
+    })(),
     attempt: Number(row.attempt) || 0,
     lease_owner: row.lease_owner || '',
     lease_expires_at: row.lease_expires_at || '',
@@ -54,6 +71,35 @@ export function runToClient(row) {
     completed_at: row.completed_at || '',
     terminal: TERMINAL_STATUSES.has(String(row.status)),
   };
+}
+
+/**
+ * 结清一次审计的费用（**这个字段的唯一写入方**）。
+ *
+ * 为什么单独一个函数：`budget_charged_microunits` 之前全仓没有写入方，
+ * 于是默认值 0 被当成"免费"。现在只有拿到真实用量（子进程回传 / 价目表折算）才写它，
+ * 写不成就保持哨兵 -1（未知），读取侧据此显示"实际费用未知"。
+ *
+ * @param {string} id audit_id
+ * @param {{microunits:number, source?:string, detail?:string}} charge
+ * @returns {{ok:boolean, microunits?:number, error?:string}}
+ */
+export function settleCharge(id, charge = {}) {
+  const runId = String(id || '');
+  if (!runId) return { ok: false, error: '缺少 audit_id' };
+  const mu = Number(charge.microunits);
+  // 只接受有限非负数；未知/非法一律不写（保持 -1，读取侧就是"未知"）。
+  if (!Number.isFinite(mu) || mu < 0) return { ok: false, error: 'microunits 非法' };
+  const row = db.prepare('SELECT id FROM quality_audit_runs WHERE id = ?').get(runId);
+  if (!row) return { ok: false, error: '审计不存在' };
+  db.prepare('UPDATE quality_audit_runs SET budget_charged_microunits = ?, updated_at = ? WHERE id = ?')
+    .run(Math.round(mu), new Date().toISOString(), runId);
+  appendEvent(runId, 'charge_settled', {
+    microunits: Math.round(mu),
+    source: String(charge.source || ''),
+    detail: String(charge.detail || '').slice(0, 300),
+  });
+  return { ok: true, microunits: Math.round(mu) };
 }
 
 export function getRun(id) {
