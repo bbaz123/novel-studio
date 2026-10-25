@@ -7187,9 +7187,9 @@ P.traceStopStream();
       && /\.editor-content\s*\{[^}]*min-height:\s*46vh/.test(css),
     'writing-layout / editor-content');
 
-  // 版本安全：只允许增量（v1.2.5 → v1.2.6），不得把既有能力改回去。
+  // 版本安全：只允许增量（v1.2.6 → v1.2.7），不得把既有能力改回去。
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-  check('QC-36 版本声明是 1.2.6（从 1.2.5 增量升级，不回退）', pkg.version === '1.2.6', String(pkg.version));
+  check('QC-36 版本声明是 1.2.7（从 1.2.6 增量升级，不回退）', pkg.version === '1.2.7', String(pkg.version));
   const appSrc = fs.readFileSync(path.join(repoRoot, 'public', 'app.js'), 'utf8');
   const keep = [
     ['自动二次复修上限 2 轮', /REVISION_AUTO_REPAIR_MAX_ROUNDS\s*=\s*2/],
