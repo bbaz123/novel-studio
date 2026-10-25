@@ -2272,6 +2272,12 @@ export const PHASES = [
       '.dsh/plugin-inventory.json',
       '.dsh/frozen-plan.json',
       '.dsh/completion.json',
+      '.dsh/capability-smoke.json',
+      '.dsh/one-click-book-capability-report.md',
+      '方案执行完整流程图.md',
+      '方案执行完整流程图.png',
+      '方案执行插件改造完整方案.md',
+      '方案执行插件调用时序.png',
     ],
     evidence: [
       'docs/one-click-book/task-contract.json',
