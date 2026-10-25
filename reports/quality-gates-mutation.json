@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T10:12:16.072Z",
+  "generated_at": "2026-10-25T10:16:39.766Z",
   "target": "ai/one-click-book/core.mjs",
   "threshold": 0.8,
   "mutation_ran": true,
