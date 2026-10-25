@@ -1,19 +1,19 @@
 {
   "anchor": {
     "schema_version": "1.0.0",
-    "chain_head": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57",
+    "chain_head": "f3e1ad15979d1c572a3b80a7a96b0fc29e5b8b9082eca2c11756fffe3bea6a87",
     "chain_length": 20,
-    "artifact_root_sha256": "918171bf5b65928d743ee4ffbd0879cde8d3e6eccffb51041d0ecb9674d61861",
-    "created_at": "2026-10-25T10:12:15.414Z",
+    "artifact_root_sha256": "2c9ef894b5504745815eff2f8e6a15a181953d5e2a3c631cb0c0bdad552d30a7",
+    "created_at": "2026-10-25T10:37:07.869Z",
     "job_id": "job-1df085112b1a",
     "key_fingerprint": "8d0e237871feed0d9cc963d062e28a7a",
     "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAvavC2P8LbAmTXfI8jcCdu+OD4O+ccazSYitOKNTxzkw=\n-----END PUBLIC KEY-----\n",
-    "signature": "JjAxlASiThhHsKH0u7DYRxwKi1/miFNyAISUUokn96pmyqiz1TTqzL3CxzlMYijay6b6+hpJXJPJLguBEj7xCw==",
+    "signature": "A323uUDjV8nTUccBbUD/4xxOmtj9GMGPEkaG0S8g4OjpuTjRp8OOY6ehq14uRMlHub8AIP1U6LuJd+zd+nPxDg==",
     "time_source": {
-      "local_clock": "2026-10-25T10:12:15.414Z",
+      "local_clock": "2026-10-25T10:37:07.869Z",
       "git": {
-        "head": "d07939c6ce12142c74f230d2263bcf350f9a9dbb",
-        "committed_at": "2026-10-25T16:42:50+08:00",
+        "head": "11a70caf0bc90d71bc241ac2407e201795df86ac",
+        "committed_at": "2026-10-25T18:24:56+08:00",
         "working_tree_dirty": true
       },
       "tsa": {

@@ -14,6 +14,10 @@
     {
       "id": "export_approval",
       "ok": true
+    },
+    {
+      "id": "docx_epub_present",
+      "ok": true
     }
   ],
   "completion": {

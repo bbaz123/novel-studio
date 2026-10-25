@@ -1,6 +1,6 @@
 {
   "job_id": "job-1df085112b1a",
-  "frozen_at": "2026-10-25T10:12:15.119Z",
+  "frozen_at": "2026-10-25T10:37:06.063Z",
   "sources": [
     {
       "id": "SRC-001",
@@ -8,7 +8,7 @@
       "path": "fixtures/ocb/source.md",
       "sha256": "6060dc07c65933612664c685228119c527e4e2317044f1a6313daa5fa6ab2dd9",
       "bytes": 1599,
-      "fetched_at": "2026-10-25T10:12:15.119Z",
+      "fetched_at": "2026-10-25T10:37:06.063Z",
       "location": "whole-document",
       "parse_errors": []
     }

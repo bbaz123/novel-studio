@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T10:12:15.220Z",
+  "generated_at": "2026-10-25T10:37:07.561Z",
   "scope": {
     "what": "一键成书核心流水线 + 增强层（确定性离线生成）",
     "not_included": [
@@ -73,11 +73,7 @@
     "export": {
       "path": "export/book.md",
       "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
-      "unsupported": [
-        "docx",
-        "pdf",
-        "epub"
-      ]
+      "unsupported": []
     },
     "rollback": "删除 book-project/ 或从 versions/ 还原章节；job 状态可 retry"
   }

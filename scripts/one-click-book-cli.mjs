@@ -12,7 +12,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { JobStore, jobStatus, runJob } from '../ai/one-click-book/job.mjs'
+import { JobStore, jobStatus, publishJob, runJob } from '../ai/one-click-book/job.mjs'
 
 function parseArgs(argv) {
   const out = { _: [] }
@@ -28,17 +28,46 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2))
-const root = path.resolve(args.root ?? 'book-project')
+// 多书：--books-dir + --book 指定书根；否则沿用单书 --root。
+const root = args['books-dir'] || args.book
+  ? path.join(path.resolve(args['books-dir'] ?? 'books'), String(args.book ?? 'default'))
+  : path.resolve(args.root ?? 'book-project')
 const store = new JobStore({ root })
 
 if (args.status) {
   const status = jobStatus({ root })
-  process.stdout.write(JSON.stringify({ ok: true, status: status.job?.status ?? null, job: status.job, events: status.events.length, artifacts: status.artifacts.length }, null, 2) + '\n')
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    status: status.job?.status ?? null,
+    job: status.job,
+    progress: status.progress,
+    events: status.events.length,
+    artifacts: status.artifacts.length,
+    deliverable_hash: status.deliverable_hash,
+    export_formats: status.export_formats.map((item) => item.kind),
+    unsupported_formats: status.unsupported_formats,
+  }, null, 2) + '\n')
   process.exit(0)
 }
 if (args.pause) { store.setControl({ paused: true }); process.stdout.write(JSON.stringify({ ok: true, paused: true }) + '\n'); process.exit(0) }
 if (args.resume) { store.setControl({ paused: false }); process.stdout.write(JSON.stringify({ ok: true, paused: false }) + '\n'); process.exit(0) }
 if (args.cancel) { store.setControl({ cancelled: true }); process.stdout.write(JSON.stringify({ ok: true, cancelled: true }) + '\n'); process.exit(0) }
+if (args.publish) {
+  // 发布必须显式绑定交付物 hash；CLI 从当前状态读取，避免人手抄错。
+  const status = jobStatus({ root })
+  if (!status.deliverable_hash) {
+    process.stderr.write('没有可发布的交付物（job 未 COMPLETED）\n')
+    process.exit(3)
+  }
+  try {
+    const result = publishJob({ root, dest: args['publish-dir'], approvals: { publish: true, publish_hash: status.deliverable_hash } })
+    process.stdout.write(JSON.stringify({ ok: true, ...result }, null, 2) + '\n')
+    process.exit(0)
+  } catch (e) {
+    process.stderr.write(`${e.code ?? 'PUBLISH_FAILED'}: ${e.message}\n`)
+    process.exit(4)
+  }
+}
 
 if (!args.brief) {
   process.stderr.write('缺少 --brief <json 文件>\n')

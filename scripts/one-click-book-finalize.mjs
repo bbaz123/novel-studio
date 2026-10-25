@@ -108,6 +108,11 @@ WRITE('reports/quality-gates.json', {
   contracts: { task_contract_errors: contractErrors, chapter_contracts: chapterManifest.chapters.length },
   mutation: { command: 'node scripts/one-click-book-mutation.mjs', passed: mutationReport?.pass === true, score: mutationReport?.score ?? null, killed: mutationReport?.killed ?? null, mutants: mutationReport?.mutants ?? null },
   secret_scan: { hits: secretScan.length },
+  export_formats: {
+    produced: deliverable.artifacts.filter((artifact) => artifact.kind).map((artifact) => ({ kind: artifact.kind, producer: artifact.producer, tool_version: artifact.tool_version })),
+    unsupported: deliverable.unsupported ?? [],
+    ok: ['docx', 'epub'].every((kind) => deliverable.artifacts.some((artifact) => artifact.kind === kind)),
+  },
   evidence_chain: { length: evidence?.chain?.length ?? 0, verified: core.verifyEvidenceChain(evidence?.chain ?? []).ok },
   verdict: gates,
 })
@@ -180,19 +185,29 @@ WRITE('.dsh/completion.json', {
       git_anchor: attestationRec?.anchor?.time_source?.git ?? null,
       tsa: attestationRec?.anchor?.time_source?.tsa ?? null,
     },
+    export_formats: {
+      state: ['docx', 'epub'].every((kind) => deliverable.artifacts.some((artifact) => artifact.kind === kind)) ? 'PASS' : 'FAILED',
+      produced: deliverable.artifacts.filter((artifact) => artifact.kind).map((artifact) => artifact.kind),
+      pdf: deliverable.artifacts.some((artifact) => artifact.kind === 'pdf') ? 'edge-headless-print' : 'UNSUPPORTED',
+    },
+    publish: { state: 'LOCAL_FOLDER_READY', dest: 'NOVELSTUDIO_PUBLISH_DIR 或 book-project/publish/<时间戳>', approval: 'publish_hash 绑定交付物根 hash' },
   },
   degraded: { egress: 'UNSUPPORTED_ONLY_TSA', attest: 'LOCAL_SIGNED_PLUS_GIT_ANCHOR' },
 })
 
+const formatsOk = ['docx', 'epub'].every((kind) => deliverable.artifacts.some((artifact) => artifact.kind === kind))
+const overallOk = gates.ok && recovery.ok && contractErrors.length === 0 && ledgerOk && formatsOk
+
 process.stdout.write(JSON.stringify({
-  ok: gates.ok && recovery.ok && contractErrors.length === 0 && ledgerOk,
+  ok: overallOk,
   acceptance: core.PLAN_ACCEPTANCE.length,
   gates: gates.ok,
   ledger: ledgerOk,
+  formats: formatsOk,
   recovery: recovery.ok,
   contracts: contractErrors.length,
   tests_exit: Number.isFinite(testsExit) ? testsExit : null,
   mutation_score: mutationReport?.score ?? null,
   chapters: chapterManifest.chapters.length,
 }, null, 2) + '\n')
-process.exit(gates.ok && recovery.ok && contractErrors.length === 0 && ledgerOk ? 0 : 1)
+process.exit(overallOk ? 0 : 1)

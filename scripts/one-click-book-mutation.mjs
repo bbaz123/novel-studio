@@ -123,6 +123,34 @@ const MUTANTS = [
       if (v.ok !== false || !v.missing.includes('no-observed-evidence')) process.exit(3);
     })`,
   },
+  {
+    id: 'M11-book-id-validation-disabled',
+    file: 'ai/one-click-book/books.mjs',
+    find: 'if (!isValidBookId(id)) {',
+    replace: 'if (false) {',
+    probe: `import(__MODULE__).then((books) => {
+      let threw = false;
+      try { books.bookRootOf('/tmp/books', '../escape'); } catch { threw = true; }
+      if (!threw) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M12-publish-hash-check-disabled',
+    file: 'ai/one-click-book/job.mjs',
+    find: "if (!deliverable || expected !== approvalHash) {",
+    replace: 'if (!deliverable) {',
+    probe: `Promise.all([import(__MODULE__), import('node:fs'), import('node:os'), import('node:path')]).then(([job, fs, os, path]) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocb-mut-pub-'));
+      fs.mkdirSync(path.join(dir, '.job'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.job/state.json'), JSON.stringify({ job_id: 'j', status: 'COMPLETED', idempotency_key: 'k', brief: {}, approvals: {}, stage_history: [], evidence: [] }));
+      fs.mkdirSync(path.join(dir, 'manifest'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'manifest/deliverable-manifest.json'), JSON.stringify({ schema_version: '1.0.0', artifacts: [{ path: 'export/book.md', sha256: 'abc' }] }));
+      let code = null;
+      try { job.publishJob({ root: dir, approvals: { publish: true, publish_hash: 'wrong' } }); } catch (e) { code = e.code; }
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (code !== 'PUBLISH_HASH_MISMATCH') process.exit(3);
+    })`,
+  },
 ]
 
 const source = fs.readFileSync(CORE, 'utf8')

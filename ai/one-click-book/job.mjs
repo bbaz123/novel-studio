@@ -15,6 +15,7 @@ import path from 'node:path'
 import * as core from './core.mjs'
 import { createEgressGuard } from './egress.mjs'
 import { signChain, verifyAnchor, appendAnchorLog, gitAnchorInfo, defaultKeyDir } from './attest.mjs'
+import { exportAllFormats } from './export/index.mjs'
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'ROLLED_BACK', 'WAITING_CONFIRMATION'])
 const PHASES = ['PREFLIGHT', 'INGESTING', 'NORMALIZED', 'OUTLINED', 'EXEMPLAR_REVIEW', 'DRAFTING', 'QA', 'FULL_REVIEW', 'EXPORT_READY', 'EXPORTING', 'COMPLETED']
@@ -570,11 +571,20 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
     writeJsonRel(root, '.job/pending-approval.json', { job_id: jobId, gate: 'EXPORT', candidate_hash: candidateHash })
     return finish('EXPORT_READY', { pending_approval: 'export', candidate_hash: candidateHash })
   }
-  const exported = { path: 'export/book.md', sha256: candidateHash, bytes: Buffer.byteLength(candidate), unsupported: ['docx', 'pdf', 'epub'], unsupported_reason: '本机无对应导出适配器（方案 §8：标 UNSUPPORTED）' }
+  const exported = { path: 'export/book.md', sha256: candidateHash, bytes: Buffer.byteLength(candidate), unsupported: [], unsupported_reason: null }
   writeRel(root, exported.path, candidate)
+  // DOCX/EPUB 必出；PDF 视本机 Edge 能力（缺则记 UNSUPPORTED，不生成空文件）。
+  const formatResult = exportAllFormats({
+    bookDir: root,
+    title: bible.title,
+    chapters: drafts.map((item) => ({ id: item.chapter.id, title: item.chapter.title, text: item.text })),
+    language: bible.language,
+  })
+  exported.unsupported = formatResult.unsupported.map((item) => item.kind)
+  exported.formats = formatResult.formats
   const approvalRecord = { kind: 'EXPORT', hash: candidateHash, at: new Date().toISOString(), job_id: jobId }
   writeJsonRel(root, '.job/export-approval.json', approvalRecord)
-  record('EXPORTING', { verdict: 'PASS', export_hash: candidateHash })
+  record('EXPORTING', { verdict: 'PASS', export_hash: candidateHash, formats: formatResult.formats.map((item) => item.kind) })
 
   // ── 完成判定：证据齐备 + 门禁通过（AC-14/AC-19 真正接线）──────────────────
   const artifacts = listArtifacts(root).filter((artifact) => !artifact.path.startsWith('.dsh/'))
@@ -582,6 +592,7 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
     { id: 'full_review', ok: reviewOk },
     { id: 'secret_scan', ok: secretHits.length === 0 },
     { id: 'export_approval', ok: approvalRecord.hash === candidateHash },
+    { id: 'docx_epub_present', ok: ['docx', 'epub'].every((kind) => formatResult.formats.some((item) => item.kind === kind)) },
   ]
   const completion = core.completionVerdict({ evidenceRefs: artifacts.map((artifact) => `file:${artifact.path}`), gates, chain: evidence.chain })
   if (!completion.ok) {
@@ -596,6 +607,7 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
     artifacts: [
       ...drafts.map((item) => ({ path: `chapters/${item.chapter.id}/commit.md`, sha256: core.sha256(item.text) })),
       { path: exported.path, sha256: exported.sha256 },
+      ...formatResult.formats.map((item) => ({ path: item.path, sha256: item.sha256, kind: item.kind, producer: item.producer, tool_version: item.tool_version })),
       { path: 'manifest/source-manifest.json', sha256: core.sha256(fs.readFileSync(p(root, 'manifest/source-manifest.json'))) },
     ],
     unsupported: exported.unsupported,
@@ -722,11 +734,26 @@ export function applyPointEdit({ root, chapterId, text, reason = 'point-edit' })
   return { ok: true, graph, requires: ['FULL_REVIEW', 'EXPORT'], rollback: `versions/${chapterId}-${oldHash}.md` }
 }
 
-/** 完成后的发布通道：默认关闭，需要单独审批（方案 publish_default: false）。 */
-export function publishJob({ root, approvals = {} }) {
+/** 交付物根 hash：按 path+sha256 排序拼接，供发布审批绑定。 */
+export function deliverableHash(deliverable) {
+  if (!deliverable || !Array.isArray(deliverable.artifacts)) return null
+  return core.sha256(deliverable.artifacts.map((artifact) => `${artifact.path}:${artifact.sha256}`).sort().join('\n'))
+}
+
+/**
+ * 发布通道（本地目录）：作者选定目的地后实现。
+ * 仍然要求单独的发布审批，且审批与交付物根 hash 绑定——错 hash 一律拒绝。
+ */
+export function publishJob({ root, approvals = {}, dest } = {}) {
   if (approvals.publish !== true) {
     const err = new Error('PUBLISH 默认关闭：需要单独的发布审批（approvals.publish=true 且由作者发起）')
     err.code = 'PUBLISH_DISABLED'
+    throw err
+  }
+  const approvalHash = approvals.publish_hash
+  if (!approvalHash) {
+    const err = new Error('发布审批必须带交付物根 hash（publish_hash）')
+    err.code = 'PUBLISH_HASH_REQUIRED'
     throw err
   }
   const store = new JobStore({ root })
@@ -736,15 +763,45 @@ export function publishJob({ root, approvals = {} }) {
     err.code = 'NOT_COMPLETED'
     throw err
   }
-  const err = new Error('本机没有发布适配器：不生成空发布记录（方案 §8 UNSUPPORTED）')
-  err.code = 'PUBLISH_UNSUPPORTED'
-  throw err
+  const deliverable = core.readJson(p(root, 'manifest/deliverable-manifest.json'), null)
+  const expected = deliverableHash(deliverable)
+  if (!deliverable || expected !== approvalHash) {
+    const err = new Error('交付物 hash 与发布审批不一致（改稿/改产物后旧审批失效）')
+    err.code = 'PUBLISH_HASH_MISMATCH'
+    err.detail = { expected, got: approvalHash }
+    throw err
+  }
+  const target = path.resolve(
+    dest || process.env.NOVELSTUDIO_PUBLISH_DIR || path.join(root, 'publish', new Date().toISOString().replace(/[:.]/g, '-')),
+  )
+  fs.mkdirSync(target, { recursive: true })
+  const files = []
+  for (const artifact of deliverable.artifacts.filter((item) => item.path.startsWith('export/'))) {
+    const source = p(root, artifact.path)
+    const name = path.basename(artifact.path)
+    fs.copyFileSync(source, path.join(target, name))
+    files.push({ name, sha256: core.sha256(fs.readFileSync(path.join(target, name))), source: artifact.path })
+  }
+  const manifest = {
+    schema_version: '1.0.0',
+    job_id: state.job_id,
+    approval_hash: approvalHash,
+    dest: target,
+    files,
+    unsupported: deliverable.unsupported ?? [],
+    at: new Date().toISOString(),
+  }
+  fs.writeFileSync(path.join(target, 'publish-manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
+  store.event('published', { job_id: state.job_id, dest: target, files: files.length })
+  writeJsonRel(root, '.job/publish-audit.json', manifest)
+  return { ok: true, dest: target, files, approval_hash: approvalHash, unsupported: manifest.unsupported }
 }
 
 export function jobStatus({ root }) {
   const store = new JobStore({ root })
   const state = store.state()
   const control = store.control()
+  const deliverable = core.readJson(p(root, 'manifest/deliverable-manifest.json'), null)
   const events = (() => {
     try {
       return fs.readFileSync(store.eventsFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
@@ -760,6 +817,9 @@ export function jobStatus({ root }) {
     events,
     artifacts: listArtifacts(root),
     pending_approval: state?.pending_approval ?? null,
+    export_formats: deliverable?.artifacts?.filter((artifact) => artifact.kind) ?? [],
+    deliverable_hash: deliverableHash(deliverable),
+    unsupported_formats: deliverable?.unsupported ?? [],
   }
 }
 

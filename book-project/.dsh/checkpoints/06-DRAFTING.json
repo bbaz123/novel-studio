@@ -2,51 +2,51 @@
   "schema_version": "1.0.0",
   "job_id": "job-1df085112b1a",
   "stage": "DRAFTING",
-  "at": "2026-10-25T10:12:15.174Z",
+  "at": "2026-10-25T10:37:06.117Z",
   "artifacts": [
     {
       "path": ".dsh/checkpoints/01-PREFLIGHT.json",
-      "sha256": "b0d5bd6a50635e08c623363a17f56abf3be1915b0bbe68adca8e39a8a1a9904d"
+      "sha256": "3d3ed9ef7b436a5d6a76e80787c6d98674e8f08be8a0eea8976667bdd0e1bff4"
     },
     {
       "path": ".dsh/checkpoints/03-NORMALIZED.json",
-      "sha256": "1b1e4582c6f637ebfdbfeca090cfb33bc678549232b29d15061057cbf6d7f5fd"
+      "sha256": "df4e3b8cb75f63b8ff1ff0318dbbe75ec9c0bd805addabf1c3bfd04b6503ab66"
     },
     {
       "path": ".dsh/checkpoints/04-OUTLINED.json",
-      "sha256": "1973bf41f32422a466e0f2ec00bb83ecf9e3c1597e177b35e9695a57b848085b"
+      "sha256": "aeb3beaed61940b31213ea6a36e9ddc201aa870032341cf5c46f30b48eddada1"
     },
     {
       "path": ".dsh/checkpoints/05-EXEMPLAR_REVIEW.json",
-      "sha256": "6d658ae0be147cd2f5c594566ca5af93cac5eea7fe2a4986e823bebe192648ef"
+      "sha256": "62ce7cee285e68de1b9db89bacc5d00077ca3b7c0df069a57bd91b1cb16c95c5"
     },
     {
       "path": ".dsh/checkpoints/06-DRAFTING.json",
-      "sha256": "cba00004a733a9d9ea806942bcb37525e7c3d617ae4b3680070b7d00d455f49b"
+      "sha256": "ba6c5e06ec1609f06b155a8f3a5520204d28794779395c888777b8f42570daaf"
     },
     {
       "path": ".dsh/checkpoints/07-QA.json",
-      "sha256": "5accaa83d5b5119d3f3d136ebecd5571efa258b87b16b27abdf607ee40a8ed74"
+      "sha256": "30685ffe2eb4e22a4ad423c43b5ca99174397fbe82538fadda2848a2085ee841"
     },
     {
       "path": ".dsh/checkpoints/08-FULL_REVIEW.json",
-      "sha256": "f1c98771034117a9b703e05c299440dc59d7e882eef0d26f1a053f2b7068cdcb"
+      "sha256": "be49f476697c6d3526404f94a5dbb772e8bf0a2fbd9b1520c3fa85b03366afa6"
     },
     {
       "path": ".dsh/checkpoints/09-EXPORT_READY.json",
-      "sha256": "ca62aa5b63cf8e0c7e6b76a50f67a8d38d3da40b119f435b80eec08a8088798e"
+      "sha256": "6e125257e76eadc89688875456443ed2eb9f77de6ba16ae5dc44fbba39ac07a5"
     },
     {
       "path": "过程记录.md",
-      "sha256": "7a80e3b06d9232c669bb58fd9bcd55928b78b1053c2be6ae7b3e1da478aa29bc"
+      "sha256": "7fb90dc8c908e2845b4f7a2e488399145cacc3a3f7113028e73aa6d0ef8c4e15"
     },
     {
       "path": "book-bible.json",
-      "sha256": "5abc24495ab8297c065756a544565d146c69b450ef8cf262151bfc1fbab03af2"
+      "sha256": "34354c126e8292607b3d24062e39d1247ccc0b6c50e796b992a9d46dd6c293cc"
     },
     {
       "path": "chapters/001/commit.json",
-      "sha256": "f1054653e95716a3c146bd91105450f516d73664a256fdeb2f7cb835845514e9"
+      "sha256": "4bfa3937046fd0153a564282bfda401494a41cb093257fe5145bd6c1b3d53ecf"
     },
     {
       "path": "chapters/001/commit.md",
@@ -62,11 +62,11 @@
     },
     {
       "path": "chapters/001/review.json",
-      "sha256": "e7fdc2d8f1db27eec965b6ac97cfda3bd6bda50cff401774c11113ee18dee581"
+      "sha256": "3e935c6781821b1587de13cabf5fe9e552b981eb691526a54f524bc0f0047119"
     },
     {
       "path": "chapters/002/commit.json",
-      "sha256": "a94815013e382c7142eb434a7073bb7da50b459b9e95d068721c2f9d878c067c"
+      "sha256": "137c4cc2ecde3cb52f996784411c6e1c3e0515b7e41a7b8c77bb5467dfa0dea6"
     },
     {
       "path": "chapters/002/commit.md",
@@ -82,11 +82,11 @@
     },
     {
       "path": "chapters/002/review.json",
-      "sha256": "a762678ff10c9e3844e5e776d32e6b9b741ac4969dbf5e0505090bb382d653e2"
+      "sha256": "df88e3cca8335c866c406d2a0532b1f80572fc640b3fc6e427402422eb7e21a1"
     },
     {
       "path": "chapters/003/commit.json",
-      "sha256": "32d039cdc584117840555d838d47492e176e53a6bb262f75cc31fb3236574ce4"
+      "sha256": "77a7d6f12ebada90430cb0af03304282c088a1c675ca3fbfd807f6eb504d0478"
     },
     {
       "path": "chapters/003/commit.md",
@@ -102,11 +102,11 @@
     },
     {
       "path": "chapters/003/review.json",
-      "sha256": "b58b963db572bfa0d2789a1d1768b1a8c0583c4231ede90cd01f9d68ff4a68c7"
+      "sha256": "1392cc8bfff17115bc55fc46a3c1cc318cdacc6c9e201bf6929b270bd4dd8af1"
     },
     {
       "path": "chapters/004/commit.json",
-      "sha256": "1d924ad4cc7085bc1dc4b228c871a00f58a90a6d09a15b4452cb2df3170f0b47"
+      "sha256": "b2a84cdbc9658432ae5bd743cf6dd6a749b57b1d8e221bbf702e8db7271a1556"
     },
     {
       "path": "chapters/004/commit.md",
@@ -122,15 +122,15 @@
     },
     {
       "path": "chapters/004/review.json",
-      "sha256": "ff4c84455aedd4721ea12cda68a33070909de0387cccc8d7bb45153fde01e7ec"
+      "sha256": "bacbac5a40bd2d77d8fda49497ce55e06d73ac9cc4f2dc15b79a409f5ee4d362"
     },
     {
       "path": "contract/book-requirements.json",
-      "sha256": "0afb354da962f7bc9c913630a59c1e5edacfa0df512c2f55d5abd341857457a7"
+      "sha256": "7cc6a1019e32bee28a05404c1b0fe1129a04d13e9f752aaa648e526a21ef29f7"
     },
     {
       "path": "contract/task-contract.json",
-      "sha256": "2e443075a0ee05d3561614293083c8b17fc58d89d628e574b29a5aa381db3a0f"
+      "sha256": "593312c3e738d62b490022ba55ce23957a0a03f611ac69ce919a0ef75fa1a58a"
     },
     {
       "path": "export/candidate.md",
@@ -158,7 +158,7 @@
     },
     {
       "path": "manifest/source-manifest.json",
-      "sha256": "93505e41f88f61df1d95aba95a284a4a8faec1a0480bdfe962258c0fe0faae73"
+      "sha256": "4f0e95813dc2f08f988cd1ee84f6c201ba7bfdddd6bebdec2dbff48fe2a1afba"
     },
     {
       "path": "outline/outline.md",
@@ -170,11 +170,11 @@
     },
     {
       "path": "review/full-book-report.json",
-      "sha256": "38d0b9701a7049d8c67fcb453730764a605fce1569f47ba52e2712aa5b926f9c"
+      "sha256": "a2bafe4b30edd872e5c21514c82a5a99b193cbfcb93fa56731091f1a98704352"
     },
     {
       "path": "review/style-traceability.json",
-      "sha256": "00a28c64cf38a587fa6513129425ececab0c3dc9d480d3c261a6e5ef3a1597ae"
+      "sha256": "ca35324810b8f048d3fbf504c1ab499661162b3e390c4733b0dd9cce154e4bd5"
     },
     {
       "path": "sources/normalized/source.txt",

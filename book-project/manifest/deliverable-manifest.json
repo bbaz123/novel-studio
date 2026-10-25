@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "job_id": "job-1df085112b1a",
-  "generated_at": "2026-10-25T10:12:15.219Z",
+  "generated_at": "2026-10-25T10:37:07.558Z",
   "artifacts": [
     {
       "path": "chapters/001/commit.md",
@@ -24,19 +24,36 @@
       "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
     },
     {
+      "path": "export/book.docx",
+      "sha256": "936bbf6fc41dbc2666c363fde9bac75f791880dd1c8baf641db4306778793d58",
+      "kind": "docx",
+      "producer": "zero-dep-ooxml",
+      "tool_version": "novel-studio/one-click-book docx v1"
+    },
+    {
+      "path": "export/book.epub",
+      "sha256": "24afc74c13f2d47c65aa1f04363d0dd35561cd49fab838afd921ef61a287fbfa",
+      "kind": "epub",
+      "producer": "zero-dep-epub",
+      "tool_version": "novel-studio/one-click-book epub v1"
+    },
+    {
+      "path": "export/book.pdf",
+      "sha256": "624f0a049a1b4ec6624690feeaf5106d38234ea865bf09b657bdfdb96d306ae0",
+      "kind": "pdf",
+      "producer": "edge-headless-print",
+      "tool_version": "edge file-mtime:2026-10-22T01:30:47.839Z;size:5452616"
+    },
+    {
       "path": "manifest/source-manifest.json",
-      "sha256": "93505e41f88f61df1d95aba95a284a4a8faec1a0480bdfe962258c0fe0faae73"
+      "sha256": "4f0e95813dc2f08f988cd1ee84f6c201ba7bfdddd6bebdec2dbff48fe2a1afba"
     }
   ],
-  "unsupported": [
-    "docx",
-    "pdf",
-    "epub"
-  ],
+  "unsupported": [],
   "export_approval": {
     "kind": "EXPORT",
     "hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
-    "at": "2026-10-25T10:12:15.211Z",
+    "at": "2026-10-25T10:37:07.542Z",
     "job_id": "job-1df085112b1a"
   }
 }

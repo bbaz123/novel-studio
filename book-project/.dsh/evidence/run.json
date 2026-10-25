@@ -1,21 +1,21 @@
 {
   "job_id": "job-1df085112b1a",
   "chain_length": 20,
-  "chain_head": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57",
+  "chain_head": "f3e1ad15979d1c572a3b80a7a96b0fc29e5b8b9082eca2c11756fffe3bea6a87",
   "artifacts": [
     {
       "path": "过程记录.md",
-      "sha256": "7a80e3b06d9232c669bb58fd9bcd55928b78b1053c2be6ae7b3e1da478aa29bc",
+      "sha256": "7fb90dc8c908e2845b4f7a2e488399145cacc3a3f7113028e73aa6d0ef8c4e15",
       "bytes": 1020
     },
     {
       "path": "book-bible.json",
-      "sha256": "5abc24495ab8297c065756a544565d146c69b450ef8cf262151bfc1fbab03af2",
+      "sha256": "34354c126e8292607b3d24062e39d1247ccc0b6c50e796b992a9d46dd6c293cc",
       "bytes": 586
     },
     {
       "path": "chapters/001/commit.json",
-      "sha256": "f1054653e95716a3c146bd91105450f516d73664a256fdeb2f7cb835845514e9",
+      "sha256": "4bfa3937046fd0153a564282bfda401494a41cb093257fe5145bd6c1b3d53ecf",
       "bytes": 290
     },
     {
@@ -35,12 +35,12 @@
     },
     {
       "path": "chapters/001/review.json",
-      "sha256": "e7fdc2d8f1db27eec965b6ac97cfda3bd6bda50cff401774c11113ee18dee581",
+      "sha256": "3e935c6781821b1587de13cabf5fe9e552b981eb691526a54f524bc0f0047119",
       "bytes": 224
     },
     {
       "path": "chapters/002/commit.json",
-      "sha256": "a94815013e382c7142eb434a7073bb7da50b459b9e95d068721c2f9d878c067c",
+      "sha256": "137c4cc2ecde3cb52f996784411c6e1c3e0515b7e41a7b8c77bb5467dfa0dea6",
       "bytes": 290
     },
     {
@@ -60,12 +60,12 @@
     },
     {
       "path": "chapters/002/review.json",
-      "sha256": "a762678ff10c9e3844e5e776d32e6b9b741ac4969dbf5e0505090bb382d653e2",
+      "sha256": "df88e3cca8335c866c406d2a0532b1f80572fc640b3fc6e427402422eb7e21a1",
       "bytes": 224
     },
     {
       "path": "chapters/003/commit.json",
-      "sha256": "32d039cdc584117840555d838d47492e176e53a6bb262f75cc31fb3236574ce4",
+      "sha256": "77a7d6f12ebada90430cb0af03304282c088a1c675ca3fbfd807f6eb504d0478",
       "bytes": 290
     },
     {
@@ -85,12 +85,12 @@
     },
     {
       "path": "chapters/003/review.json",
-      "sha256": "b58b963db572bfa0d2789a1d1768b1a8c0583c4231ede90cd01f9d68ff4a68c7",
+      "sha256": "1392cc8bfff17115bc55fc46a3c1cc318cdacc6c9e201bf6929b270bd4dd8af1",
       "bytes": 224
     },
     {
       "path": "chapters/004/commit.json",
-      "sha256": "1d924ad4cc7085bc1dc4b228c871a00f58a90a6d09a15b4452cb2df3170f0b47",
+      "sha256": "b2a84cdbc9658432ae5bd743cf6dd6a749b57b1d8e221bbf702e8db7271a1556",
       "bytes": 290
     },
     {
@@ -110,23 +110,38 @@
     },
     {
       "path": "chapters/004/review.json",
-      "sha256": "ff4c84455aedd4721ea12cda68a33070909de0387cccc8d7bb45153fde01e7ec",
+      "sha256": "bacbac5a40bd2d77d8fda49497ce55e06d73ac9cc4f2dc15b79a409f5ee4d362",
       "bytes": 224
     },
     {
       "path": "contract/book-requirements.json",
-      "sha256": "0afb354da962f7bc9c913630a59c1e5edacfa0df512c2f55d5abd341857457a7",
+      "sha256": "7cc6a1019e32bee28a05404c1b0fe1129a04d13e9f752aaa648e526a21ef29f7",
       "bytes": 2292
     },
     {
       "path": "contract/task-contract.json",
-      "sha256": "2e443075a0ee05d3561614293083c8b17fc58d89d628e574b29a5aa381db3a0f",
+      "sha256": "593312c3e738d62b490022ba55ce23957a0a03f611ac69ce919a0ef75fa1a58a",
       "bytes": 6530
+    },
+    {
+      "path": "export/book.docx",
+      "sha256": "936bbf6fc41dbc2666c363fde9bac75f791880dd1c8baf641db4306778793d58",
+      "bytes": 2216
+    },
+    {
+      "path": "export/book.epub",
+      "sha256": "24afc74c13f2d47c65aa1f04363d0dd35561cd49fab838afd921ef61a287fbfa",
+      "bytes": 3593
     },
     {
       "path": "export/book.md",
       "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
       "bytes": 1249
+    },
+    {
+      "path": "export/book.pdf",
+      "sha256": "624f0a049a1b4ec6624690feeaf5106d38234ea865bf09b657bdfdb96d306ae0",
+      "bytes": 56563
     },
     {
       "path": "export/candidate.md",
@@ -160,7 +175,7 @@
     },
     {
       "path": "manifest/source-manifest.json",
-      "sha256": "93505e41f88f61df1d95aba95a284a4a8faec1a0480bdfe962258c0fe0faae73",
+      "sha256": "4f0e95813dc2f08f988cd1ee84f6c201ba7bfdddd6bebdec2dbff48fe2a1afba",
       "bytes": 539
     },
     {
@@ -175,12 +190,12 @@
     },
     {
       "path": "review/full-book-report.json",
-      "sha256": "cf900888dd601422fdbd9f65d9e23b9fca786d49d1fb7aae06d5159967b9b79c",
+      "sha256": "fa6cced1ec0ffc33c8d7b5d12926498454c75cf344948b9a0ae695a8b1b3d442",
       "bytes": 247
     },
     {
       "path": "review/style-traceability.json",
-      "sha256": "5c6ab59ca8785265ae4fa1272cc6528adc9fd25a01566bb67021d8f735211e03",
+      "sha256": "10cd951d5783c774fdef62116f8736df4f7faeb264327a2534e94df7cb6b777b",
       "bytes": 661
     },
     {

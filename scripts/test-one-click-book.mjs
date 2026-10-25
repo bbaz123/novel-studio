@@ -19,7 +19,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import * as core from '../ai/one-click-book/core.mjs'
-import { JobStore, applyPointEdit, jobStatus, progressOf, retryJob, runJob } from '../ai/one-click-book/job.mjs'
+import { JobStore, applyPointEdit, jobStatus, progressOf, publishJob, retryJob, runJob } from '../ai/one-click-book/job.mjs'
+import { exportAllFormats } from '../ai/one-click-book/export/index.mjs'
+import { bookRootOf, createBook, listBooks } from '../ai/one-click-book/books.mjs'
 import { ocbRoot } from '../ai/one-click-book/http.mjs'
 import { createEgressGuard } from '../ai/one-click-book/egress.mjs'
 import { signChain, verifyAnchor } from '../ai/one-click-book/attest.mjs'
@@ -372,6 +374,72 @@ test('AC-18 八部分报告齐全且交付清单 hash 与文件一致', () => {
   for (const artifact of deliverable.artifacts) {
     assert.equal(core.sha256(fs.readFileSync(path.join(root, artifact.path))), artifact.sha256)
   }
+  // 导出格式：markdown + docx + epub 必出；pdf 要么有产物，要么在 unsupported 里如实登记。
+  const kinds = deliverable.artifacts.filter((artifact) => artifact.kind).map((artifact) => artifact.kind)
+  assert.ok(kinds.includes('docx'), 'docx 必须产出')
+  assert.ok(kinds.includes('epub'), 'epub 必须产出')
+  assert.ok(kinds.includes('pdf') || deliverable.unsupported.includes('pdf'), 'pdf 必须产出或被标 UNSUPPORTED')
+  for (const artifact of deliverable.artifacts.filter((item) => item.kind)) {
+    assert.ok(artifact.producer && artifact.tool_version, `${artifact.kind} 缺 producer/tool_version`)
+  }
+})
+
+test('EXPORT 格式：docx/epub 是合法 ZIP，pdf 头部可校验（缺 Edge 时标 UNSUPPORTED）', () => {
+  const dir = reset('export-formats')
+  const result = exportAllFormats({
+    bookDir: path.join(dir, 'book'),
+    title: '格式探针',
+    chapters: [{ id: '001', title: '第一章', text: '# 第一章\n\n第一段。\n第二段。' }],
+  })
+  const byKind = Object.fromEntries(result.formats.map((item) => [item.kind, item]))
+  assert.ok(byKind.docx && byKind.epub)
+  const docx = fs.readFileSync(path.join(dir, 'book', byKind.docx.path))
+  const epub = fs.readFileSync(path.join(dir, 'book', byKind.epub.path))
+  assert.equal(docx.subarray(0, 2).toString('latin1'), 'PK')
+  assert.equal(epub.subarray(0, 2).toString('latin1'), 'PK')
+  if (byKind.pdf) {
+    const pdf = fs.readFileSync(path.join(dir, 'book', byKind.pdf.path))
+    assert.equal(pdf.subarray(0, 5).toString('latin1'), '%PDF-')
+  } else {
+    assert.ok(result.unsupported.some((item) => item.kind === 'pdf'))
+  }
+})
+
+test('PUBLISH 本地目录：无审批/错 hash 拒绝，对 hash 复制产物并写发布清单', () => {
+  const dir = reset('publish')
+  const root = path.join(dir, 'book')
+  runToCompletion({ root, idempotencyKey: 'publish', brief: briefFor(dir) })
+  assert.throws(() => publishJob({ root, approvals: {} }), (error) => error.code === 'PUBLISH_DISABLED')
+  assert.throws(() => publishJob({ root, approvals: { publish: true, publish_hash: 'deadbeef' } }), (error) => error.code === 'PUBLISH_HASH_MISMATCH')
+  const status = jobStatus({ root })
+  assert.ok(status.deliverable_hash, '状态里应暴露交付物 hash')
+  const dest = path.join(dir, 'release')
+  const published = publishJob({ root, dest, approvals: { publish: true, publish_hash: status.deliverable_hash } })
+  assert.equal(published.dest, path.resolve(dest))
+  assert.ok(published.files.length >= 2, '至少发布 markdown 与一种二进制格式')
+  const manifest = core.readJson(path.join(dest, 'publish-manifest.json'))
+  assert.equal(manifest.approval_hash, status.deliverable_hash)
+  for (const file of manifest.files) {
+    assert.equal(core.sha256(fs.readFileSync(path.join(dest, file.name))), file.sha256)
+  }
+})
+
+test('BOOKS 多书：两本书各自推进、互不阻塞，非法 id 被拒', () => {
+  const booksDir = path.join(reset('books'), 'books')
+  const a = core.readJson(path.join(booksDir, 'a', 'x.json'), null)
+  void a
+  const rootA = createBook(booksDir, 'book-a')
+  const rootB = createBook(booksDir, 'book-b')
+  assert.throws(() => bookRootOf(booksDir, '../escape'), (error) => error.code === 'INVALID_BOOK_ID')
+  runJob({ root: rootA, idempotencyKey: 'a', brief: briefFor(booksDir), approvals: {} })
+  const doneB = runToCompletion({ root: rootB, idempotencyKey: 'b', brief: briefFor(booksDir) })
+  assert.equal(doneB.status, 'COMPLETED')
+  assert.equal(new JobStore({ root: rootA }).state().status, 'EXEMPLAR_REVIEW')
+  const list = listBooks(booksDir)
+  assert.deepEqual(list.map((item) => item.book_id), ['book-a', 'book-b'])
+  const byId = Object.fromEntries(list.map((item) => [item.book_id, item.status]))
+  assert.equal(byId['book-a'], 'EXEMPLAR_REVIEW')
+  assert.equal(byId['book-b'], 'COMPLETED')
 })
 
 test('AC-20 来源不足 → FIXING + defect list + repair package（可 retry）', () => {
@@ -396,16 +464,8 @@ test('P2-4 进度与重试可用；publish 默认关闭', () => {
   assert.equal(status.progress.stage, 'EXEMPLAR_REVIEW')
   assert.ok(typeof status.progress.next_action === 'string' && status.progress.next_action.length > 0)
   assert.ok(status.jobs.current?.job_id)
-  assert.throws(() => {
-    const { publishJob } = requirePublish()
-    publishJob({ root, approvals: {} })
-  }, /PUBLISH 默认关闭|publish/)
+  assert.throws(() => publishJob({ root, approvals: {} }), (error) => error.code === 'PUBLISH_DISABLED')
 })
-
-function requirePublish() {
-  // 同步环境里避免顶层循环依赖：这里直接读模块导出。
-  return { publishJob: globalThis.__ocbPublish }
-}
 
 // ══ 出口与锚 ═══════════════════════════════════════════════════════════════
 test('AC-21 出口守卫默认拒绝，白名单放行', () => {
@@ -448,9 +508,6 @@ test('HTTP 根目录解析', () => {
 })
 
 // ── 执行 ────────────────────────────────────────────────────────────────────
-const { publishJob } = await import('../ai/one-click-book/job.mjs')
-globalThis.__ocbPublish = publishJob
-
 for (const { name, fn } of queue) {
   try {
     await fn()

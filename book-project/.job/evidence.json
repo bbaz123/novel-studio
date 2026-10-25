@@ -2,15 +2,15 @@
   "chain": [
     {
       "stage": "PREFLIGHT",
-      "at": "2026-10-25T10:12:14.992Z",
+      "at": "2026-10-25T10:37:05.942Z",
       "verdict": "PASS",
       "budget_cny": 0,
       "prev": "",
-      "hash": "0dea5944551d9443b062bc1257772ba13752dea935bbf45f5c5b554ddcb99cd9"
+      "hash": "1a12a6c361869c15935ba2d2a9ef35bb0c4cc4296ff2f9867663c18ce55a498f"
     },
     {
       "stage": "INGESTING",
-      "at": "2026-10-25T10:12:14.994Z",
+      "at": "2026-10-25T10:37:05.944Z",
       "verdict": "PASS",
       "sources": [
         {
@@ -20,75 +20,75 @@
       ],
       "errors": [],
       "credential_hits": [],
-      "prev": "0dea5944551d9443b062bc1257772ba13752dea935bbf45f5c5b554ddcb99cd9",
-      "hash": "352f726bac8788f57071fbbeea712f383c06a7415f6fd80ab1efce4c0b154b57"
+      "prev": "1a12a6c361869c15935ba2d2a9ef35bb0c4cc4296ff2f9867663c18ce55a498f",
+      "hash": "32e5bcb33e3dbb77fb99e79bfb4364649167554877733ecdafae90933e2f3ec8"
     },
     {
       "stage": "NORMALIZED",
-      "at": "2026-10-25T10:12:14.999Z",
+      "at": "2026-10-25T10:37:05.948Z",
       "verdict": "PASS",
       "bytes": 575,
-      "prev": "352f726bac8788f57071fbbeea712f383c06a7415f6fd80ab1efce4c0b154b57",
-      "hash": "0b6a3e75af6d983188c852cdfb9802b6bb00bca767f8578887bb5ea10c3d5661"
+      "prev": "32e5bcb33e3dbb77fb99e79bfb4364649167554877733ecdafae90933e2f3ec8",
+      "hash": "fe1491c9f5fca64234c1c07e8a25961618ab2d7716d67a0d79b45fea928dbb6e"
     },
     {
       "stage": "OUTLINED",
-      "at": "2026-10-25T10:12:15.024Z",
+      "at": "2026-10-25T10:37:05.972Z",
       "verdict": "PASS",
       "chapters": 4,
-      "prev": "0b6a3e75af6d983188c852cdfb9802b6bb00bca767f8578887bb5ea10c3d5661",
-      "hash": "4710aa56cd75b95fd7c8ce55bc26d4a640f4d35658260c7045f0f0b6ae167578"
+      "prev": "fe1491c9f5fca64234c1c07e8a25961618ab2d7716d67a0d79b45fea928dbb6e",
+      "hash": "23277af76502625330249cb6666157202b96ca01f2fcf4b0c861cd762774dd9a"
     },
     {
       "stage": "EXEMPLAR_REVIEW",
-      "at": "2026-10-25T10:12:15.039Z",
+      "at": "2026-10-25T10:37:05.985Z",
       "verdict": "PASS",
       "chapter": "001",
-      "prev": "4710aa56cd75b95fd7c8ce55bc26d4a640f4d35658260c7045f0f0b6ae167578",
-      "hash": "7f47624d0ca1dfd97857941795549bc7ba487e3c47ffbefed8a564a67bec2d58"
+      "prev": "23277af76502625330249cb6666157202b96ca01f2fcf4b0c861cd762774dd9a",
+      "hash": "92b8b1b5ea7eb33a8817ed193d94f0013ad6bda32b71d22ef0bc5e3681a1e994"
     },
     {
       "stage": "DRAFTING",
-      "at": "2026-10-25T10:12:15.049Z",
+      "at": "2026-10-25T10:37:05.994Z",
       "verdict": "PASS",
       "chapters": 4,
-      "prev": "7f47624d0ca1dfd97857941795549bc7ba487e3c47ffbefed8a564a67bec2d58",
-      "hash": "864f06c540ea5b61ee9a337bace700b46810d034738842691cdc348e05c02de6"
+      "prev": "92b8b1b5ea7eb33a8817ed193d94f0013ad6bda32b71d22ef0bc5e3681a1e994",
+      "hash": "af4267c76f9cd772b94a6780f6c41339f9e9d4aa3d233cc34e116817a36d8d13"
     },
     {
       "stage": "QA",
-      "at": "2026-10-25T10:12:15.057Z",
+      "at": "2026-10-25T10:37:06.002Z",
       "verdict": "PASS",
-      "prev": "864f06c540ea5b61ee9a337bace700b46810d034738842691cdc348e05c02de6",
-      "hash": "b52524a1d650b666093eb7cf4d96130152a43f396e22fd74ae1e8cc746798aac"
+      "prev": "af4267c76f9cd772b94a6780f6c41339f9e9d4aa3d233cc34e116817a36d8d13",
+      "hash": "2d6addcea4147eb6f0c966c32d987b7176a4d2c87dcc0d456d227462cca230b7"
     },
     {
       "stage": "FULL_REVIEW",
-      "at": "2026-10-25T10:12:15.075Z",
+      "at": "2026-10-25T10:37:06.020Z",
       "verdict": "PASS",
       "ledger_events": 10,
-      "prev": "b52524a1d650b666093eb7cf4d96130152a43f396e22fd74ae1e8cc746798aac",
-      "hash": "3857bfa75fb52a56aa12c1a4a71af90b705600a849a520634030b06364bdc525"
+      "prev": "2d6addcea4147eb6f0c966c32d987b7176a4d2c87dcc0d456d227462cca230b7",
+      "hash": "beab4ca86b6748633153813433d3a3af0c338f97d60513dc1cfafd7961284f04"
     },
     {
       "stage": "EXPORT_READY",
-      "at": "2026-10-25T10:12:15.097Z",
+      "at": "2026-10-25T10:37:06.041Z",
       "verdict": "PENDING_APPROVAL",
       "candidate_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
-      "prev": "3857bfa75fb52a56aa12c1a4a71af90b705600a849a520634030b06364bdc525",
-      "hash": "a67f45c55497379f2e505f7c2a6da6712a6d985400b701c14fdf8e7049dba42a"
+      "prev": "beab4ca86b6748633153813433d3a3af0c338f97d60513dc1cfafd7961284f04",
+      "hash": "3d86ee51f74208682128f0905bba6ee89ffed6137601a4892513d9ebfed9e203"
     },
     {
       "stage": "PREFLIGHT",
-      "at": "2026-10-25T10:12:15.110Z",
+      "at": "2026-10-25T10:37:06.054Z",
       "verdict": "PASS",
       "budget_cny": 0,
-      "prev": "a67f45c55497379f2e505f7c2a6da6712a6d985400b701c14fdf8e7049dba42a",
-      "hash": "efc619ba25b30832655c142c78624329ef31f8a4ed6499a26f3f0c6245044bae"
+      "prev": "3d86ee51f74208682128f0905bba6ee89ffed6137601a4892513d9ebfed9e203",
+      "hash": "32767532fa4064020896eefa4df10f503184cc5a52a6ebd862b283521d258e71"
     },
     {
       "stage": "INGESTING",
-      "at": "2026-10-25T10:12:15.119Z",
+      "at": "2026-10-25T10:37:06.063Z",
       "verdict": "PASS",
       "sources": [
         {
@@ -98,82 +98,87 @@
       ],
       "errors": [],
       "credential_hits": [],
-      "prev": "efc619ba25b30832655c142c78624329ef31f8a4ed6499a26f3f0c6245044bae",
-      "hash": "41fc28fefd6c1c8d04b32edf1f87e959175b99cc519d96fc7035e2a2f3c84be8"
+      "prev": "32767532fa4064020896eefa4df10f503184cc5a52a6ebd862b283521d258e71",
+      "hash": "a7dccb7b618e08cf05978ac00619e51b4e74af9eceeec44aea04f135cf41c431"
     },
     {
       "stage": "NORMALIZED",
-      "at": "2026-10-25T10:12:15.123Z",
+      "at": "2026-10-25T10:37:06.067Z",
       "verdict": "PASS",
       "bytes": 575,
-      "prev": "41fc28fefd6c1c8d04b32edf1f87e959175b99cc519d96fc7035e2a2f3c84be8",
-      "hash": "c4f4da3653c4a9de0674ba24fd7fede036ba77b04af4ddabafdd3f835b8d9863"
+      "prev": "a7dccb7b618e08cf05978ac00619e51b4e74af9eceeec44aea04f135cf41c431",
+      "hash": "2042c0864f54907323d2acf1ee2934bb4b7c27e0f5f0aa816412d5850a762383"
     },
     {
       "stage": "OUTLINED",
-      "at": "2026-10-25T10:12:15.145Z",
+      "at": "2026-10-25T10:37:06.088Z",
       "verdict": "PASS",
       "chapters": 4,
-      "prev": "c4f4da3653c4a9de0674ba24fd7fede036ba77b04af4ddabafdd3f835b8d9863",
-      "hash": "66f2681ea5694819b551ff6e03a15c15ff25353bd246efbd4ab4a9cee5803dca"
+      "prev": "2042c0864f54907323d2acf1ee2934bb4b7c27e0f5f0aa816412d5850a762383",
+      "hash": "140a4579b3d42a0436ba515112cf399bb4d3513adba2244771207c2339aeb9e9"
     },
     {
       "stage": "EXEMPLAR_REVIEW",
-      "at": "2026-10-25T10:12:15.167Z",
+      "at": "2026-10-25T10:37:06.109Z",
       "verdict": "PASS",
       "chapter": "001",
-      "prev": "66f2681ea5694819b551ff6e03a15c15ff25353bd246efbd4ab4a9cee5803dca",
-      "hash": "b74a0b2d93134ada2583d754d12bd608b4c8afbe4cabce86744497a65f27c3de"
+      "prev": "140a4579b3d42a0436ba515112cf399bb4d3513adba2244771207c2339aeb9e9",
+      "hash": "f96d55c24c03c9367fa35963ca98b07d4898778cf4f6a45895770954e2185f32"
     },
     {
       "stage": "DRAFTING",
-      "at": "2026-10-25T10:12:15.174Z",
+      "at": "2026-10-25T10:37:06.117Z",
       "verdict": "PASS",
       "chapters": 4,
-      "prev": "b74a0b2d93134ada2583d754d12bd608b4c8afbe4cabce86744497a65f27c3de",
-      "hash": "ed17ff6f27a7870ee7d3db2bbc78a9b238ad5cad3fb7ea99dd77b4fe0989c6f8"
+      "prev": "f96d55c24c03c9367fa35963ca98b07d4898778cf4f6a45895770954e2185f32",
+      "hash": "7dc8a355372dcad28ba2e498ed94dbc946359a9b5cb558370a87575ca50ba394"
     },
     {
       "stage": "QA",
-      "at": "2026-10-25T10:12:15.185Z",
+      "at": "2026-10-25T10:37:06.130Z",
       "verdict": "PASS",
-      "prev": "ed17ff6f27a7870ee7d3db2bbc78a9b238ad5cad3fb7ea99dd77b4fe0989c6f8",
-      "hash": "5d68be953cbbd08d04e9176c5c1a1280dd01173e0cff4f4e4a6dcbb9dc84f30f"
+      "prev": "7dc8a355372dcad28ba2e498ed94dbc946359a9b5cb558370a87575ca50ba394",
+      "hash": "9e32f7885f729684b2ad2611faa7aabed7b6e75e43a150d4909ab2075ca7cea0"
     },
     {
       "stage": "FULL_REVIEW",
-      "at": "2026-10-25T10:12:15.198Z",
+      "at": "2026-10-25T10:37:06.146Z",
       "verdict": "PASS",
       "ledger_events": 10,
-      "prev": "5d68be953cbbd08d04e9176c5c1a1280dd01173e0cff4f4e4a6dcbb9dc84f30f",
-      "hash": "d0b93e77f8b77408ad868af965445e171f6f783790a27f90b5484f7918800607"
+      "prev": "9e32f7885f729684b2ad2611faa7aabed7b6e75e43a150d4909ab2075ca7cea0",
+      "hash": "05e8c52796f3ea97400375bf9a669047c0120072e9975a2952f171606076a1e9"
     },
     {
       "stage": "EXPORTING",
-      "at": "2026-10-25T10:12:15.211Z",
+      "at": "2026-10-25T10:37:07.544Z",
       "verdict": "PASS",
       "export_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
-      "prev": "d0b93e77f8b77408ad868af965445e171f6f783790a27f90b5484f7918800607",
-      "hash": "0986f4fbc08a0d6c96551860e9d787d0072b1f579e6521848ea3688d23a3a617"
+      "formats": [
+        "docx",
+        "epub",
+        "pdf"
+      ],
+      "prev": "05e8c52796f3ea97400375bf9a669047c0120072e9975a2952f171606076a1e9",
+      "hash": "2e08a9a7460c699d0158bfb3c71f91d1857f7f763dd67930b791c86b99d18dcc"
     },
     {
       "stage": "EGRESS",
-      "at": "2026-10-25T10:12:15.220Z",
+      "at": "2026-10-25T10:37:07.561Z",
       "policy": "deny-by-default",
       "allowlist": [],
       "attempts": 0,
       "allowed": 0,
       "denied": 0,
-      "prev": "0986f4fbc08a0d6c96551860e9d787d0072b1f579e6521848ea3688d23a3a617",
-      "hash": "22621df4ba0a477f6bfb671fa356831b56c4cc36e1c4877ae22eead0c6e37bfd"
+      "prev": "2e08a9a7460c699d0158bfb3c71f91d1857f7f763dd67930b791c86b99d18dcc",
+      "hash": "3ad214b5ba07fca6a7a81c4cd309c1e2408acdc88298ecd3da7984ede0d376f7"
     },
     {
       "stage": "COMPLETED",
-      "at": "2026-10-25T10:12:15.222Z",
+      "at": "2026-10-25T10:37:07.563Z",
       "verdict": "PASS",
       "export_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
-      "prev": "22621df4ba0a477f6bfb671fa356831b56c4cc36e1c4877ae22eead0c6e37bfd",
-      "hash": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57"
+      "prev": "3ad214b5ba07fca6a7a81c4cd309c1e2408acdc88298ecd3da7984ede0d376f7",
+      "hash": "f3e1ad15979d1c572a3b80a7a96b0fc29e5b8b9082eca2c11756fffe3bea6a87"
     }
   ],
   "verified": {
