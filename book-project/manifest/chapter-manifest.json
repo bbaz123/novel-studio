@@ -1,0 +1,45 @@
+{
+  "job_id": "job-1df085112b1a",
+  "chapters": [
+    {
+      "id": "001",
+      "title": "春：第一本被救活的书",
+      "draft_sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b",
+      "qa_ok": true,
+      "findings": 0,
+      "source_refs": [
+        "SRC-001"
+      ]
+    },
+    {
+      "id": "002",
+      "title": "夏：浆糊、棉线与一张借书卡",
+      "draft_sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8",
+      "qa_ok": true,
+      "findings": 0,
+      "source_refs": [
+        "SRC-001"
+      ]
+    },
+    {
+      "id": "003",
+      "title": "秋：把顺序记下来",
+      "draft_sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec",
+      "qa_ok": true,
+      "findings": 0,
+      "source_refs": [
+        "SRC-001"
+      ]
+    },
+    {
+      "id": "004",
+      "title": "冬：修复不是复原",
+      "draft_sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7",
+      "qa_ok": true,
+      "findings": 0,
+      "source_refs": [
+        "SRC-001"
+      ]
+    }
+  ]
+}

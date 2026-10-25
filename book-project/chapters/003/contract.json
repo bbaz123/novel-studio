@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0.0",
+  "job_id": "job-1df085112b1a",
+  "id": "003",
+  "title": "秋：把顺序记下来",
+  "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 3 节）",
+  "must_include": [
+    "秋天的任务是拆装。"
+  ],
+  "source_refs": [
+    "SRC-001"
+  ],
+  "word_range": [
+    61,
+    208
+  ],
+  "depends_on": [
+    "002"
+  ],
+  "ledger_delta": {
+    "terminology": [
+      {
+        "term": "秋天的任务是拆装。",
+        "first_seen": "003"
+      }
+    ],
+    "timeline": [
+      {
+        "at": "003",
+        "event": "第 3 节"
+      }
+    ],
+    "foreshadow": []
+  }
+}

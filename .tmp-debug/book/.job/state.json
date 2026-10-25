@@ -1,0 +1,124 @@
+{
+  "job_id": "job-22879e7c4d1c",
+  "idempotency_key": "dbg",
+  "status": "FIXING",
+  "stage_history": [
+    "RECEIVED",
+    "PREFLIGHT",
+    "INGESTING",
+    "OUTLINED",
+    "EXEMPLAR_REVIEW",
+    "DRAFTING",
+    "QA",
+    "FULL_REVIEW",
+    "EXPORTING",
+    "FIXING"
+  ],
+  "brief": {
+    "book_kind": "k",
+    "goal": "g",
+    "title": "t",
+    "sources": [
+      ".tmp-debug\\s.md"
+    ],
+    "style_notes": []
+  },
+  "created_at": "2026-10-25T05:01:19.390Z",
+  "updated_at": "2026-10-25T05:01:19.423Z",
+  "approvals": {
+    "exemplar": true,
+    "full_review": true,
+    "export": true
+  },
+  "evidence": [
+    {
+      "stage": "PREFLIGHT",
+      "at": "2026-10-25T05:01:19.396Z",
+      "verdict": "PASS",
+      "budget_cny": null,
+      "prev": "",
+      "hash": "d620185d5aa0d600f60e6a1fc84c210032563ddb347500abd7fac5ee6fc955a5"
+    },
+    {
+      "stage": "INGESTING",
+      "at": "2026-10-25T05:01:19.405Z",
+      "verdict": "NORMALIZED",
+      "artifacts": [
+        {
+          "path": "manifest/source-manifest.json",
+          "sha256": "429dab21b51e4bbb919179b029263a4e6b66308f48e3ee09ac4f236d317e159d",
+          "bytes": 526
+        },
+        {
+          "path": "sources/normalized/source.txt",
+          "sha256": "a5593a5772acf9a3dbd8f73edac6bd8f83273cc278afba48cd3aca1ab7021f19",
+          "bytes": 729
+        }
+      ],
+      "sources": [
+        {
+          "id": "SRC-001",
+          "sha256": "35747a3b3ec6c43646436a0285fabcdcaff430ef75eb962925d26bef3c460b87"
+        }
+      ],
+      "prev": "d620185d5aa0d600f60e6a1fc84c210032563ddb347500abd7fac5ee6fc955a5",
+      "hash": "471377a797258d769a8ddb94f9644af119e420095c321dcd5eb3005e6f852d59"
+    },
+    {
+      "stage": "OUTLINED",
+      "at": "2026-10-25T05:01:19.413Z",
+      "verdict": "PASS",
+      "artifacts": [
+        {
+          "path": "book-bible.json",
+          "sha256": "c47228727697bcdb73ae99a919c72f0ad6cfbc1b75239ace27b66d0c0a33c668",
+          "bytes": 288
+        },
+        {
+          "path": "outline/outline.md",
+          "sha256": "e4229c065fc769b76764bbf8965cd389b642de96ef6e0f0f5ad33e86e9c475a5",
+          "bytes": 103
+        }
+      ],
+      "chapters": 3,
+      "prev": "471377a797258d769a8ddb94f9644af119e420095c321dcd5eb3005e6f852d59",
+      "hash": "32b9a9ced195f6b72a2126c2190bb29fd0dcda2b93c657a97f3af078f3f69eb0"
+    },
+    {
+      "stage": "EXEMPLAR_REVIEW",
+      "at": "2026-10-25T05:01:19.416Z",
+      "verdict": "PASS",
+      "draft": {
+        "path": "chapters/001/draft.md",
+        "sha256": "c94676debd2621d62515eabb2e77fdb51d6abdfda14ef3cfd7083ed90119a9fc",
+        "bytes": 263
+      },
+      "prev": "32b9a9ced195f6b72a2126c2190bb29fd0dcda2b93c657a97f3af078f3f69eb0",
+      "hash": "644bb46830f1b47296768d99c10beeac38fbc4a1568749f7b480a4ecac2053ac"
+    },
+    {
+      "stage": "DRAFTING",
+      "at": "2026-10-25T05:01:19.422Z",
+      "verdict": "FIXING",
+      "defect": {
+        "chapter": "002",
+        "code": "INSUFFICIENT_SOURCE",
+        "detail": {
+          "chapterId": "002",
+          "available": 70,
+          "required": 80
+        }
+      },
+      "prev": "644bb46830f1b47296768d99c10beeac38fbc4a1568749f7b480a4ecac2053ac",
+      "hash": "397bcbde39d65b2ac565131307ffbf3a459d8393fafd3e2ca2fd60cca727c108"
+    }
+  ],
+  "ledgers": {
+    "terminology": [],
+    "timeline": [],
+    "foreshadow": []
+  },
+  "memory_state": "ABSENT",
+  "chime_state": "ABSENT",
+  "blocked_reason": "INSUFFICIENT_SOURCE"
+}

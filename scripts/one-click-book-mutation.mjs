@@ -1,0 +1,114 @@
+#!/usr/bin/env node
+/**
+ * mutation gate（方案 §5.4 / AC-15 的等价实现）。
+ *
+ * 为什么必须真的跑：覆盖率只能证明行被执行过，不能证明断言抓得住错误。
+ * 这里对变更域逻辑做 5 处定点变异，每处配一条针对性探针；
+ * 探针在变异后必须**失败**（killed），否则该变异体存活 → 分数下降 → 门禁不通过。
+ */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+
+const REPO = process.cwd()
+const CORE = path.join(REPO, 'ai/one-click-book/core.mjs')
+const OUT = path.join(REPO, 'reports/quality-gates-mutation.json')
+const THRESHOLD = 0.8
+
+const MUTANTS = [
+  {
+    id: 'M1-placeholder-severity',
+    find: "if (PLACEHOLDER_RE.test(text)) findings.push({ code: 'PLACEHOLDER', severity: 'critical'",
+    replace: "if (PLACEHOLDER_RE.test(text)) findings.push({ code: 'PLACEHOLDER', severity: 'low'",
+    probe: `import(${JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs'))}).then((core) => {
+      const qa = core.qaChapter({ chapter: { id: '001', title: 'T', must_include: [], word_range: [0, 999] }, text: '# T\\n\\n这里有 {{占位}}。', bible: {} });
+      if (qa.ok !== false) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M2-quality-gate-invert',
+    find: 'return { ok: failures.length === 0, failures }',
+    replace: 'return { ok: failures.length !== 0, failures }',
+    probe: `import(${JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs'))}).then((core) => {
+      const v = core.evaluateQualityGates({ mutationRan: false, testsPassed: true, securityPassed: true, evidenceChainOk: true });
+      if (v.ok !== false) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M3-word-short-check-removed',
+    find: "if (count < chapter.word_range[0]) findings.push({ code: 'WORD_TOO_SHORT'",
+    replace: "if (false) findings.push({ code: 'WORD_TOO_SHORT'",
+    probe: `import(${JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs'))}).then((core) => {
+      const qa = core.qaChapter({ chapter: { id: '001', title: 'T', must_include: [], word_range: [100, 200] }, text: '# T\\n\\n短。', bible: {} });
+      if (qa.ok !== false) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M4-export-approval-removed',
+    find: 'if (!approvals?.export) {',
+    replace: 'if (false) {',
+    probe: `import(${JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs'))}).then((core) => {
+      let threw = false;
+      try { core.exportBook({ bookDir: process.cwd(), title: 'T', chapters: [], approvals: {} }); } catch { threw = true; }
+      if (!threw) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M5-chain-prev-check-removed',
+    find: 'if (entry.prev !== prev) return { ok: false, index: i, reason: \'prev-mismatch\' }',
+    replace: 'if (false) return { ok: false, index: i, reason: \'prev-mismatch\' }',
+    probe: `import(${JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs'))}).then((core) => {
+      let chain = core.appendEvidence([], { stage: 'A' });
+      chain = [{ ...chain[0], prev: 'bogus' }];
+      if (core.verifyEvidenceChain(chain).ok !== false) process.exit(3);
+    })`,
+  },
+]
+
+const source = fs.readFileSync(CORE, 'utf8')
+const results = []
+for (const mutant of MUTANTS) {
+  if (!source.includes(mutant.find)) {
+    results.push({ id: mutant.id, verdict: 'INVALID_MUTANT', reason: '变异点未找到（源码已变，需同步更新 mutation 定义）' })
+    continue
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocb-mut-'))
+  const target = path.join(dir, 'core.mjs')
+  fs.writeFileSync(target, source.replace(mutant.find, mutant.replace))
+  const probe = mutant.probe.replaceAll(
+    JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs')),
+    JSON.stringify(target),
+  )
+  let killed = false
+  let detail = ''
+  try {
+    execFileSync(process.execPath, ['-e', probe], { stdio: 'pipe', timeout: 30_000 })
+  } catch (e) {
+    killed = e.status !== 0
+    detail = String(e.stderr ?? e.message).slice(0, 200)
+  }
+  fs.rmSync(dir, { recursive: true, force: true })
+  results.push({ id: mutant.id, verdict: killed ? 'KILLED' : 'SURVIVED', detail })
+}
+
+const killed = results.filter((item) => item.verdict === 'KILLED').length
+const invalid = results.filter((item) => item.verdict === 'INVALID_MUTANT').length
+const score = results.length === 0 ? 0 : killed / results.length
+const report = {
+  schema_version: '1.0.0',
+  generated_at: new Date().toISOString(),
+  target: 'ai/one-click-book/core.mjs',
+  threshold: THRESHOLD,
+  mutation_ran: true,
+  mutants: results.length,
+  killed,
+  invalid,
+  score: Number(score.toFixed(3)),
+  pass: invalid === 0 && score >= THRESHOLD,
+  results,
+}
+fs.mkdirSync(path.dirname(OUT), { recursive: true })
+fs.writeFileSync(OUT, JSON.stringify(report, null, 2) + '\n')
+process.stdout.write(JSON.stringify({ ok: report.pass, score: report.score, killed, mutants: results.length, invalid }) + '\n')
+process.exit(report.pass ? 0 : 1)

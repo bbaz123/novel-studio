@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0.0",
+  "job_id": "job-22879e7c4d1c",
+  "id": "003",
+  "title": "第三章的收束",
+  "goal": "g（第 3 节）",
+  "must_include": [
+    "三周后，图书馆换了新的借还系统。"
+  ],
+  "source_refs": [
+    "SRC-001"
+  ],
+  "word_range": [
+    80,
+    159
+  ],
+  "depends_on": [
+    "002"
+  ],
+  "ledger_delta": {
+    "terminology": [
+      {
+        "term": "三周后，图书馆换了新的借还系统。",
+        "first_seen": "003"
+      }
+    ],
+    "timeline": [
+      {
+        "at": "003",
+        "event": "第 3 节"
+      }
+    ],
+    "foreshadow": []
+  }
+}

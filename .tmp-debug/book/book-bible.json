@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0.0",
+  "title": "t",
+  "book_kind": "k",
+  "goal": "g",
+  "language": "zh-CN",
+  "audience": "通用读者",
+  "style_guide": {
+    "notes": [],
+    "must_not_write": []
+  },
+  "must_write": [],
+  "created_at": "2026-10-25T05:01:19.405Z",
+  "chapter_count": 3
+}

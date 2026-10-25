@@ -1,0 +1,10 @@
+{
+  "job_id": "job-1df085112b1a",
+  "ok": true,
+  "checks": {
+    "toc_match": true,
+    "provenance_covered": true
+  },
+  "findings": [],
+  "at": "2026-10-25T05:02:29.365Z"
+}

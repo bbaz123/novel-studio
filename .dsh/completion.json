@@ -1,0 +1,23 @@
+{
+  "plan_id": "plan-52d26b8b5f43",
+  "completed_at": "2026-10-25T05:03:07.673Z",
+  "job_id": "job-1df085112b1a",
+  "status": "COMPLETED",
+  "chapter_count": 4,
+  "export": {
+    "path": "export/book.md",
+    "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+  },
+  "acceptance": 20,
+  "gates": true,
+  "recovery": true,
+  "unsupported_exports": [
+    "docx",
+    "pdf",
+    "epub"
+  ],
+  "degraded": {
+    "egress": "DEGRADED（无 deny-default 出口守卫；本流水线零网络访问）",
+    "attest": "本地哈希链（非外部时间戳）"
+  }
+}

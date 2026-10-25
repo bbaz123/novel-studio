@@ -1,0 +1,31 @@
+{
+  "job_id": "job-1df085112b1a",
+  "generated_at": "2026-10-25T05:02:29.379Z",
+  "artifacts": [
+    {
+      "path": "chapters/001/commit.md",
+      "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b"
+    },
+    {
+      "path": "chapters/002/commit.md",
+      "sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8"
+    },
+    {
+      "path": "chapters/003/commit.md",
+      "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec"
+    },
+    {
+      "path": "chapters/004/commit.md",
+      "sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7"
+    },
+    {
+      "path": "export/book.md",
+      "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+    }
+  ],
+  "unsupported": [
+    "docx",
+    "pdf",
+    "epub"
+  ]
+}

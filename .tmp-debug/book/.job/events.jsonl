@@ -1,0 +1,6 @@
+{"at":"2026-10-25T05:01:19.395Z","type":"job_created","job_id":"job-22879e7c4d1c"}
+{"at":"2026-10-25T05:01:19.405Z","type":"normalized","job_id":"job-22879e7c4d1c","sources":1}
+{"at":"2026-10-25T05:01:19.413Z","type":"outlined","job_id":"job-22879e7c4d1c","chapters":3}
+{"at":"2026-10-25T05:01:19.416Z","type":"exemplar_drafted","job_id":"job-22879e7c4d1c","chapter":"001"}
+{"at":"2026-10-25T05:01:19.419Z","type":"chapter_committed","job_id":"job-22879e7c4d1c","chapter":"001","sha256":"c94676debd2621d62515eabb2e77fdb51d6abdfda14ef3cfd7083ed90119a9fc"}
+{"at":"2026-10-25T05:01:19.422Z","type":"drafting_blocked","job_id":"job-22879e7c4d1c","chapter":"002","code":"INSUFFICIENT_SOURCE"}

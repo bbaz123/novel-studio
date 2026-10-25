@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0.0",
+  "job_id": "job-1df085112b1a",
+  "id": "004",
+  "title": "冬：修复不是复原",
+  "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 4 节）",
+  "must_include": [
+    "冬天读者来取书。"
+  ],
+  "source_refs": [
+    "SRC-001"
+  ],
+  "word_range": [
+    67,
+    220
+  ],
+  "depends_on": [
+    "003"
+  ],
+  "ledger_delta": {
+    "terminology": [
+      {
+        "term": "冬天读者来取书。",
+        "first_seen": "004"
+      }
+    ],
+    "timeline": [
+      {
+        "at": "004",
+        "event": "第 4 节"
+      }
+    ],
+    "foreshadow": []
+  }
+}

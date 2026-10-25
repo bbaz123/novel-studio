@@ -1,0 +1,426 @@
+{
+  "job_id": "job-1df085112b1a",
+  "idempotency_key": "cli-旧书修复室的四季",
+  "status": "COMPLETED",
+  "stage_history": [
+    "RECEIVED",
+    "PREFLIGHT",
+    "INGESTING",
+    "OUTLINED",
+    "EXEMPLAR_REVIEW",
+    "DRAFTING",
+    "QA",
+    "FULL_REVIEW",
+    "EXPORTING",
+    "COMPLETED"
+  ],
+  "brief": {
+    "book_kind": "纪实随笔集",
+    "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界",
+    "title": "旧书修复室的四季",
+    "language": "zh-CN",
+    "audience": "对纸质书与手艺感兴趣的普通读者",
+    "style_notes": [
+      "句子要短",
+      "不要使用感叹号",
+      "避免抒情过度"
+    ],
+    "must_not_write": [
+      "叹号堆叠",
+      "绝对化断言"
+    ],
+    "sources": [
+      "fixtures/ocb/source.md"
+    ],
+    "budget_cny": 0
+  },
+  "created_at": "2026-10-25T05:02:29.327Z",
+  "updated_at": "2026-10-25T05:02:29.385Z",
+  "approvals": {
+    "exemplar": true,
+    "full_review": true,
+    "export": true
+  },
+  "evidence": [
+    {
+      "stage": "PREFLIGHT",
+      "at": "2026-10-25T05:02:29.333Z",
+      "verdict": "PASS",
+      "budget_cny": 0,
+      "prev": "",
+      "hash": "b98e23840c6f08f8729532f35106adcd88b2c1849f946bb4baf272e14514554b"
+    },
+    {
+      "stage": "INGESTING",
+      "at": "2026-10-25T05:02:29.340Z",
+      "verdict": "NORMALIZED",
+      "artifacts": [
+        {
+          "path": "manifest/source-manifest.json",
+          "sha256": "e9074307bbbfe706ec0f3e482b32ba9f153bd875ba1f156ed01398752fb06031",
+          "bytes": 539
+        },
+        {
+          "path": "sources/normalized/source.txt",
+          "sha256": "e360d2aeeb9666a81bf93b8f5257c27332b6621e1905186c6cdc9feab3c621ca",
+          "bytes": 1615
+        }
+      ],
+      "sources": [
+        {
+          "id": "SRC-001",
+          "sha256": "6060dc07c65933612664c685228119c527e4e2317044f1a6313daa5fa6ab2dd9"
+        }
+      ],
+      "prev": "b98e23840c6f08f8729532f35106adcd88b2c1849f946bb4baf272e14514554b",
+      "hash": "8794338a0b45558a4480d17df88146db6855af5a28e655a7b022716f2f20d2b3"
+    },
+    {
+      "stage": "OUTLINED",
+      "at": "2026-10-25T05:02:29.350Z",
+      "verdict": "PASS",
+      "artifacts": [
+        {
+          "path": "book-bible.json",
+          "sha256": "ed8267da25603bcfec8044bfeb14d98e7fa664cf61f981b002596657c775e179",
+          "bytes": 586
+        },
+        {
+          "path": "outline/outline.md",
+          "sha256": "520310b7591410b6c473826c3bc1c41f880ebab7541d147b21e58334bdb398e8",
+          "bytes": 179
+        }
+      ],
+      "chapters": 4,
+      "prev": "8794338a0b45558a4480d17df88146db6855af5a28e655a7b022716f2f20d2b3",
+      "hash": "23a39c36b00e824b953ea83636568411164272f9d4c214c5fab6c20d42f7e92d"
+    },
+    {
+      "stage": "EXEMPLAR_REVIEW",
+      "at": "2026-10-25T05:02:29.353Z",
+      "verdict": "PASS",
+      "draft": {
+        "path": "chapters/001/draft.md",
+        "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b",
+        "bytes": 308
+      },
+      "prev": "23a39c36b00e824b953ea83636568411164272f9d4c214c5fab6c20d42f7e92d",
+      "hash": "f71164322d50e9663a0ee9e5cd3d003b2f84a3abe480e6564250b2ca9ffc340d"
+    },
+    {
+      "stage": "DRAFTING",
+      "at": "2026-10-25T05:02:29.358Z",
+      "verdict": "DRAFT_OK",
+      "chapter": "002",
+      "prev": "f71164322d50e9663a0ee9e5cd3d003b2f84a3abe480e6564250b2ca9ffc340d",
+      "hash": "8ae58e9f38e4b34d3ed7f447c7486abcb03ceb22a5fe1bc27f5146c247bf0322"
+    },
+    {
+      "stage": "DRAFTING",
+      "at": "2026-10-25T05:02:29.360Z",
+      "verdict": "DRAFT_OK",
+      "chapter": "003",
+      "prev": "8ae58e9f38e4b34d3ed7f447c7486abcb03ceb22a5fe1bc27f5146c247bf0322",
+      "hash": "49ccf1418d5a4b918b5983faedb23d4fd4c204ecdf601057db6301efb9e0ea9c"
+    },
+    {
+      "stage": "DRAFTING",
+      "at": "2026-10-25T05:02:29.362Z",
+      "verdict": "DRAFT_OK",
+      "chapter": "004",
+      "prev": "49ccf1418d5a4b918b5983faedb23d4fd4c204ecdf601057db6301efb9e0ea9c",
+      "hash": "d633596ae59018d96a39b8cbdd5e721ca891632166a32285895376d7ad4a5627"
+    },
+    {
+      "stage": "QA",
+      "at": "2026-10-25T05:02:29.364Z",
+      "verdict": "PASS",
+      "failures": [],
+      "prev": "d633596ae59018d96a39b8cbdd5e721ca891632166a32285895376d7ad4a5627",
+      "hash": "2fe05715a478adc2ee0faa7c7f902696e94fb86da1c1436f9c5a8e294af4b494"
+    },
+    {
+      "stage": "FULL_REVIEW",
+      "at": "2026-10-25T05:02:29.368Z",
+      "verdict": "PASS",
+      "findings": [],
+      "prev": "2fe05715a478adc2ee0faa7c7f902696e94fb86da1c1436f9c5a8e294af4b494",
+      "hash": "e7d322004d7195a7a3c151fffa27f3158dc5866eaca0adbe9fe43c65648a3b4f"
+    },
+    {
+      "stage": "COMPLETED",
+      "at": "2026-10-25T05:02:29.384Z",
+      "verdict": "PASS",
+      "deliverable": {
+        "path": "manifest/deliverable-manifest.json",
+        "sha256": "591903a9c237ff27617f0af88de5d3dd9ee5a2e58dda685f4d8a41ddd7c00336",
+        "bytes": 832
+      },
+      "prev": "e7d322004d7195a7a3c151fffa27f3158dc5866eaca0adbe9fe43c65648a3b4f",
+      "hash": "6a497d30c6e431b945f7d722eaf19a8fb031c80e3bd6ecee0ab131835e35aa9b"
+    }
+  ],
+  "ledgers": {
+    "terminology": [],
+    "timeline": [],
+    "foreshadow": []
+  },
+  "memory_state": "ABSENT",
+  "chime_state": "ABSENT",
+  "export": {
+    "path": "export/book.md",
+    "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+    "bytes": 1249,
+    "unsupported": [
+      "docx",
+      "pdf",
+      "epub"
+    ],
+    "unsupported_reason": "本机无对应导出适配器（方案 §8：标 UNSUPPORTED，不生成空文件）"
+  },
+  "deliverable": {
+    "job_id": "job-1df085112b1a",
+    "generated_at": "2026-10-25T05:02:29.379Z",
+    "artifacts": [
+      {
+        "path": "chapters/001/commit.md",
+        "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b"
+      },
+      {
+        "path": "chapters/002/commit.md",
+        "sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8"
+      },
+      {
+        "path": "chapters/003/commit.md",
+        "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec"
+      },
+      {
+        "path": "chapters/004/commit.md",
+        "sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7"
+      },
+      {
+        "path": "export/book.md",
+        "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+      }
+    ],
+    "unsupported": [
+      "docx",
+      "pdf",
+      "epub"
+    ]
+  },
+  "review": {
+    "ok": true,
+    "checks": {
+      "toc_match": true,
+      "provenance_covered": true
+    },
+    "findings": []
+  },
+  "style": [
+    {
+      "note": "句子要短",
+      "chapters": [],
+      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
+      "ok": true
+    },
+    {
+      "note": "不要使用感叹号",
+      "chapters": [],
+      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
+      "ok": true
+    },
+    {
+      "note": "避免抒情过度",
+      "chapters": [],
+      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
+      "ok": true
+    }
+  ],
+  "chapter_manifest": {
+    "job_id": "job-1df085112b1a",
+    "chapters": [
+      {
+        "id": "001",
+        "title": "春：第一本被救活的书",
+        "draft_sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b",
+        "qa_ok": true,
+        "findings": 0,
+        "source_refs": [
+          "SRC-001"
+        ]
+      },
+      {
+        "id": "002",
+        "title": "夏：浆糊、棉线与一张借书卡",
+        "draft_sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8",
+        "qa_ok": true,
+        "findings": 0,
+        "source_refs": [
+          "SRC-001"
+        ]
+      },
+      {
+        "id": "003",
+        "title": "秋：把顺序记下来",
+        "draft_sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec",
+        "qa_ok": true,
+        "findings": 0,
+        "source_refs": [
+          "SRC-001"
+        ]
+      },
+      {
+        "id": "004",
+        "title": "冬：修复不是复原",
+        "draft_sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7",
+        "qa_ok": true,
+        "findings": 0,
+        "source_refs": [
+          "SRC-001"
+        ]
+      }
+    ]
+  },
+  "bible": {
+    "schema_version": "1.0.0",
+    "title": "旧书修复室的四季",
+    "book_kind": "纪实随笔集",
+    "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界",
+    "language": "zh-CN",
+    "audience": "对纸质书与手艺感兴趣的普通读者",
+    "style_guide": {
+      "notes": [
+        "句子要短",
+        "不要使用感叹号",
+        "避免抒情过度"
+      ],
+      "must_not_write": [
+        "叹号堆叠",
+        "绝对化断言"
+      ]
+    },
+    "must_write": [],
+    "created_at": "2026-10-25T05:02:29.341Z"
+  },
+  "outline": {
+    "chapters": [
+      {
+        "id": "001",
+        "title": "春：第一本被救活的书",
+        "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 1 节）",
+        "must_include": [
+          "修复室在西楼二层，窗外是一排樟树。"
+        ],
+        "source_refs": [
+          "SRC-001"
+        ],
+        "word_range": [
+          83,
+          253
+        ],
+        "depends_on": [],
+        "section_index": 0
+      },
+      {
+        "id": "002",
+        "title": "夏：浆糊、棉线与一张借书卡",
+        "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 2 节）",
+        "must_include": [
+          "夏天要换浆糊。"
+        ],
+        "source_refs": [
+          "SRC-001"
+        ],
+        "word_range": [
+          73,
+          231
+        ],
+        "depends_on": [
+          "001"
+        ],
+        "section_index": 1
+      },
+      {
+        "id": "003",
+        "title": "秋：把顺序记下来",
+        "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 3 节）",
+        "must_include": [
+          "秋天的任务是拆装。"
+        ],
+        "source_refs": [
+          "SRC-001"
+        ],
+        "word_range": [
+          61,
+          208
+        ],
+        "depends_on": [
+          "002"
+        ],
+        "section_index": 2
+      },
+      {
+        "id": "004",
+        "title": "冬：修复不是复原",
+        "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 4 节）",
+        "must_include": [
+          "冬天读者来取书。"
+        ],
+        "source_refs": [
+          "SRC-001"
+        ],
+        "word_range": [
+          67,
+          220
+        ],
+        "depends_on": [
+          "003"
+        ],
+        "section_index": 3
+      }
+    ],
+    "sections": [
+      {
+        "title": "春：第一本被救活的书",
+        "body": "\n修复室在西楼二层，窗外是一排樟树。春天的湿气最伤纸，开门的第一件事是通风，第二件事才是开灯。\n老周说，霉斑不是敌人，急着除掉霉斑才是。他先把书放进恒温箱，让水分慢慢退，三天后再碰浆糊。\n我问他为什么不用除霉剂。他说，药能杀死霉，也能把纸边的纤维一起带走，剩下的只是看起来干净的书。\n\n",
+        "keyPoints": [
+          "春：第一本被救活的书"
+        ],
+        "sourceIds": [
+          "SRC-001"
+        ]
+      },
+      {
+        "title": "夏：浆糊、棉线与一张借书卡",
+        "body": "\n夏天要换浆糊。小麦淀粉煮到半透明，凉到不烫手，才能上纸。\n他教我把补纸的纤维对齐，宁可少补一寸，也不要多贴一层。多贴的那一层，五十年后会把原件揭下来。\n有一本旧书里夹着一张借书卡，最后一次借阅是四十年前。老周把卡按原样放回去，说这也是书的一部分。\n\n",
+        "keyPoints": [
+          "夏：浆糊、棉线与一张借书卡"
+        ],
+        "sourceIds": [
+          "SRC-001"
+        ]
+      },
+      {
+        "title": "秋：把顺序记下来",
+        "body": "\n秋天的任务是拆装。一本线装书拆开有几十个算子，顺序一乱，誊抄的年月就丢了。\n老周用铅笔在无酸纸上画位置，每一撮都编号。他不相信记忆，只相信编号。\n我负责拍照存档。照片按编号命名，原件按编号码放，谁也不先动谁。\n\n",
+        "keyPoints": [
+          "秋：把顺序记下来"
+        ],
+        "sourceIds": [
+          "SRC-001"
+        ]
+      },
+      {
+        "title": "冬：修复不是复原",
+        "body": "\n冬天读者来取书。那本书已经能翻开，纸色还是旧的，边角留着补过的痕迹。\n读者问，能不能修得看不出补过。老周说，看不出来不等于修得好，看得出来也不等于修得坏。\n他说，修复的目标不是让它变新，是让它还能读，并且让下一个人知道哪里动过。\n",
+        "keyPoints": [
+          "冬：修复不是复原"
+        ],
+        "sourceIds": [
+          "SRC-001"
+        ]
+      }
+    ]
+  }
+}

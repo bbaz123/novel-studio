@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "job_id": "job-1df085112b1a",
+  "id": "001",
+  "title": "春：第一本被救活的书",
+  "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界（第 1 节）",
+  "must_include": [
+    "修复室在西楼二层，窗外是一排樟树。"
+  ],
+  "source_refs": [
+    "SRC-001"
+  ],
+  "word_range": [
+    83,
+    253
+  ],
+  "depends_on": [],
+  "ledger_delta": {
+    "terminology": [
+      {
+        "term": "修复室在西楼二层，窗外是一排樟树。",
+        "first_seen": "001"
+      }
+    ],
+    "timeline": [
+      {
+        "at": "001",
+        "event": "第 1 节"
+      }
+    ],
+    "foreshadow": [
+      {
+        "id": "FS-001",
+        "opened": "001",
+        "closed": null
+      }
+    ]
+  }
+}
