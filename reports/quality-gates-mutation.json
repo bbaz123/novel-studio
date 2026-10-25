@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T05:03:07.280Z",
+  "generated_at": "2026-10-25T08:08:48.943Z",
   "target": "ai/one-click-book/core.mjs",
   "threshold": 0.8,
   "mutation_ran": true,
-  "mutants": 5,
-  "killed": 5,
+  "mutants": 7,
+  "killed": 7,
   "invalid": 0,
   "score": 1,
   "pass": true,
@@ -13,27 +13,37 @@
     {
       "id": "M1-placeholder-severity",
       "verdict": "KILLED",
-      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
     },
     {
       "id": "M2-quality-gate-invert",
       "verdict": "KILLED",
-      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
     },
     {
       "id": "M3-word-short-check-removed",
       "verdict": "KILLED",
-      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
     },
     {
       "id": "M4-export-approval-removed",
       "verdict": "KILLED",
-      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
     },
     {
       "id": "M5-chain-prev-check-removed",
       "verdict": "KILLED",
-      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
+    },
+    {
+      "id": "M6-egress-check-disabled",
+      "verdict": "KILLED",
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
+    },
+    {
+      "id": "M7-attest-signature-always-true",
+      "verdict": "KILLED",
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
     }
   ]
 }

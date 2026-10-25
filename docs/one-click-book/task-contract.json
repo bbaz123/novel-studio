@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "plan_id": "plan-52d26b8b5f43",
-  "amended_at": "2026-10-25T05:03:07.383Z",
+  "amended_at": "2026-10-25T08:08:49.047Z",
   "amendment": {
     "by": "owner (a1941)",
     "at": "2026-10-25T12:57:28+08:00",
@@ -200,6 +200,40 @@
       "evidence": [
         "defect-list.json",
         "repair-package.json"
+      ]
+    },
+    {
+      "id": "AC-21",
+      "requirement": "出口默认拒绝：无白名单时出站被拒且留审计",
+      "test": "egress deny probe",
+      "evidence": [
+        "egress.summary policy=deny-by-default",
+        ".job/egress.jsonl"
+      ]
+    },
+    {
+      "id": "AC-22",
+      "requirement": "被拒时不发起底层请求（不是先发后拦）",
+      "test": "egress fetch spy",
+      "evidence": [
+        "fetchImpl 调用次数 0"
+      ]
+    },
+    {
+      "id": "AC-23",
+      "requirement": "证据链签名可验证，改链或改签名即被检出",
+      "test": "attest tamper probe",
+      "evidence": [
+        ".job/attestation.json",
+        "verifyAnchor checks"
+      ]
+    },
+    {
+      "id": "AC-24",
+      "requirement": "完整 job 产出可验证锚与锚点日志（TSA 记 UNSUPPORTED）",
+      "test": "attest e2e",
+      "evidence": [
+        ".dsh/anchors/anchor-log.jsonl"
       ]
     }
   ],

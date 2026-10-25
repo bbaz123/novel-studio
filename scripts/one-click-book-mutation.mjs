@@ -64,22 +64,52 @@ const MUTANTS = [
       if (core.verifyEvidenceChain(chain).ok !== false) process.exit(3);
     })`,
   },
+  {
+    id: 'M6-egress-check-disabled',
+    file: 'ai/one-click-book/egress.mjs',
+    find: 'if (!ok) throw new EgressDeniedError(host)',
+    replace: 'if (false) throw new EgressDeniedError(host)',
+    probe: `import(__MODULE__).then((mod) => {
+      const guard = mod.createEgressGuard({});
+      let threw = false;
+      try { guard.check('https://example.com'); } catch { threw = true; }
+      if (!threw) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M7-attest-signature-always-true',
+    file: 'ai/one-click-book/attest.mjs',
+    find: 'checks.signature = verify(null,',
+    replace: 'checks.signature = true || verify(null,',
+    probe: `Promise.all([import(__MODULE__), import('node:os'), import(__CORE__)]).then(([attest, os, core]) => {
+      const keyDir = os.tmpdir() + '/ocb-mut-keys-' + Date.now();
+      let chain = core.appendEvidence([], { stage: 'A' });
+      const anchor = attest.signChain({ chain, keyDir, meta: {} });
+      const bad = { ...anchor, signature: Buffer.from('nope').toString('base64') };
+      const v = attest.verifyAnchor({ anchor: bad, chain });
+      if (v.checks.signature !== false || v.ok !== false) process.exit(3);
+    })`,
+  },
 ]
 
 const source = fs.readFileSync(CORE, 'utf8')
 const results = []
 for (const mutant of MUTANTS) {
-  if (!source.includes(mutant.find)) {
+  // 每个变异体可以指定自己的目标文件；默认 core.mjs。
+  const moduleFile = mutant.file ? path.join(REPO, mutant.file) : CORE
+  const moduleSource = fs.readFileSync(moduleFile, 'utf8')
+  if (!moduleSource.includes(mutant.find)) {
     results.push({ id: mutant.id, verdict: 'INVALID_MUTANT', reason: '变异点未找到（源码已变，需同步更新 mutation 定义）' })
     continue
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocb-mut-'))
-  const target = path.join(dir, 'core.mjs')
-  fs.writeFileSync(target, source.replace(mutant.find, mutant.replace))
-  const probe = mutant.probe.replaceAll(
-    JSON.stringify(path.join(REPO, 'ai/one-click-book/core.mjs')),
-    JSON.stringify(target),
-  )
+  const target = path.join(dir, path.basename(moduleFile))
+  fs.writeFileSync(target, moduleSource.replace(mutant.find, mutant.replace))
+  const probe = mutant.probe
+    .replaceAll('__CORE__', JSON.stringify(CORE))
+    .replaceAll(JSON.stringify(CORE), JSON.stringify(target))
+    .replaceAll(JSON.stringify(moduleFile), JSON.stringify(target))
+    .replaceAll('__MODULE__', JSON.stringify(target))
   let killed = false
   let detail = ''
   try {

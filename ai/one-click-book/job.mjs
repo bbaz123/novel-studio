@@ -9,6 +9,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import * as core from './core.mjs'
+import { createEgressGuard } from './egress.mjs'
+import { signChain, verifyAnchor, appendAnchorLog, gitAnchorInfo, defaultKeyDir } from './attest.mjs'
 
 const STAGE_ORDER = ['PREFLIGHT', 'INGESTING', 'OUTLINED', 'EXEMPLAR_REVIEW', 'DRAFTING', 'QA', 'FULL_REVIEW', 'EXPORTING']
 
@@ -129,6 +131,12 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
   // 记忆/提示音是可选外部能力：它们失败只能 DEGRADED，不能改变 verdict（方案 §8、AC-10/AC-11）。
   const memory = probeAdapter(options.memoryClient)
   const chime = probeAdapter(options.chimeClient)
+  // 出口守卫 deny-by-default：本流水线不发起任何出站；守卫存在的意义是让“意外的出站”
+  // 当场失败并留审计，而不是等发布之后才被发现。
+  const egress = createEgressGuard({
+    allowlist: Array.isArray(brief?.allow_hosts) ? brief.allow_hosts : [],
+    auditFile: path.join(root, '.job/egress.jsonl'),
+  })
 
   const record = (stage, data) => {
     evidence.chain = core.appendEvidence(evidence.chain, { stage, at: new Date().toISOString(), ...data })
@@ -407,11 +415,32 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
     unsupported: exported.unsupported,
   }
   const deliverableWrite = writeJsonRel(root, 'manifest/deliverable-manifest.json', deliverable)
-  const report = core.buildEightPartReport(buildReportInput({ drafts, review, style, exported, secretHits, bible }))
+  const egressSummary = egress.summary()
+  record('EGRESS', egressSummary)
+  const report = core.buildEightPartReport(buildReportInput({ drafts, review, style, exported, secretHits, bible, egress: egressSummary }))
   writeJsonRel(root, 'reports/eight-part-report.json', report)
-  writeJsonRel(root, '.job/evidence.json', { chain: evidence.chain, verified: core.verifyEvidenceChain(evidence.chain) })
   record('COMPLETED', { verdict: 'PASS', deliverable: deliverableWrite })
-  store.event('completed', { job_id: jobId, export_sha256: exported.sha256 })
+  // 先写证据（含 COMPLETED 这一环）再签名：否则磁盘上的链比被签的链短一环，验证会自相矛盾。
+  writeJsonRel(root, '.job/evidence.json', { chain: evidence.chain, verified: core.verifyEvidenceChain(evidence.chain) })
+
+  // ── attest：签名证据链头 + 仓库锚（git 历史是证据目录之外的第二时间边界）──────
+  const keyDir = options.attestKeyDir ?? process.env.OCB_ATTEST_KEYDIR ?? defaultKeyDir()
+  const anchor = signChain({
+    chain: evidence.chain,
+    keyDir,
+    meta: {
+      job_id: jobId,
+      artifact_root_sha256: core.sha256(JSON.stringify(deliverable)),
+      git: gitAnchorInfo(root),
+    },
+  })
+  const anchorFile = path.join(root, '.dsh/anchors', `${anchor.chain_head.slice(0, 16)}.json`)
+  writeJsonRel(root, path.relative(root, anchorFile).replace(/\\/g, '/'), anchor)
+  appendAnchorLog(path.join(root, '.dsh/anchors'), anchor)
+  const attestation = verifyAnchor({ anchor, chain: evidence.chain })
+  writeJsonRel(root, '.job/attestation.json', { anchor, verification: attestation })
+
+  store.event('completed', { job_id: jobId, export_sha256: exported.sha256, anchor: anchor.chain_head })
   return finish('COMPLETED', {
     export: exported,
     deliverable,
@@ -420,6 +449,8 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
     chapter_manifest: chapterManifest,
     bible,
     outline,
+    egress: egressSummary,
+    attestation: { anchor, verification: attestation },
   })
 }
 
@@ -486,7 +517,7 @@ function writeJsonlDelta(root, rel, items) {
   fs.writeFileSync(abs, (items ?? []).map((item) => JSON.stringify(item) + '\n').join(''))
 }
 
-function buildReportInput({ drafts, review, style, exported, secretHits, bible }) {
+function buildReportInput({ drafts, review, style, exported, secretHits, bible, egress }) {
   return {
     scope: {
       what: '一键成书核心流水线 + 增强层（确定性离线生成）',
@@ -499,14 +530,21 @@ function buildReportInput({ drafts, review, style, exported, secretHits, bible }
       forbidden: '禁止 DRAFTING→COMPLETED 直跳；失败只能进 FIXING/BLOCKED',
       generation: '抽取式组装（不调用模型，零计费，可离线复现）',
     },
-    changes: { files: ['ai/one-click-book/core.mjs', 'ai/one-click-book/job.mjs', 'ai/one-click-book/http.mjs', 'public/one-click-book.js', 'server.js', 'public/index.html'] },
+    changes: { files: ['ai/one-click-book/core.mjs', 'ai/one-click-book/job.mjs', 'ai/one-click-book/http.mjs', 'ai/one-click-book/egress.mjs', 'ai/one-click-book/attest.mjs', 'public/one-click-book.js', 'server.js', 'public/index.html'] },
     tests: {
       verifier: 'scripts/test-one-click-book.mjs',
-      acceptance: 'AC-01..AC-20 逐条断言',
+      acceptance: 'AC-01..AC-24 逐条断言（含出口守卫与证据锚）',
     },
     security: {
       secret_scan: { hits: secretHits.length, patterns: ['aws-access-key', 'openai-style-key', 'private-key-block', 'password-assignment'] },
-      egress: 'DEGRADED：本机无 deny-default 出口守卫，流水线不做任何网络访问',
+      egress: {
+        policy: egress?.policy ?? 'deny-by-default',
+        allowlist: egress?.allowlist ?? [],
+        attempts: egress?.attempts ?? 0,
+        denied: egress?.denied ?? 0,
+        note: '本流水线零出站；守卫让任何意外出站当场失败并写入 .job/egress.jsonl',
+      },
+      attestation: '证据链 Ed25519 分离签名 + 仓库锚（.dsh/anchors/anchor-log.jsonl 随 git 提交）；第三方 TSA 记 UNSUPPORTED（需出站与授权）',
       approval: 'EXPORT 必须显式审批',
     },
     performance: { mode: 'offline', model_calls: 0, chapters: drafts.length },

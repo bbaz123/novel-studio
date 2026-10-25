@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T05:02:29.381Z",
+  "generated_at": "2026-10-25T08:08:38.678Z",
   "scope": {
     "what": "一键成书核心流水线 + 增强层（确定性离线生成）",
     "not_included": [
@@ -21,6 +21,8 @@
       "ai/one-click-book/core.mjs",
       "ai/one-click-book/job.mjs",
       "ai/one-click-book/http.mjs",
+      "ai/one-click-book/egress.mjs",
+      "ai/one-click-book/attest.mjs",
       "public/one-click-book.js",
       "server.js",
       "public/index.html"
@@ -28,7 +30,7 @@
   },
   "tests": {
     "verifier": "scripts/test-one-click-book.mjs",
-    "acceptance": "AC-01..AC-20 逐条断言"
+    "acceptance": "AC-01..AC-24 逐条断言（含出口守卫与证据锚）"
   },
   "security": {
     "secret_scan": {
@@ -40,7 +42,14 @@
         "password-assignment"
       ]
     },
-    "egress": "DEGRADED：本机无 deny-default 出口守卫，流水线不做任何网络访问",
+    "egress": {
+      "policy": "deny-by-default",
+      "allowlist": [],
+      "attempts": 0,
+      "denied": 0,
+      "note": "本流水线零出站；守卫让任何意外出站当场失败并写入 .job/egress.jsonl"
+    },
+    "attestation": "证据链 Ed25519 分离签名 + 仓库锚（.dsh/anchors/anchor-log.jsonl 随 git 提交）；第三方 TSA 记 UNSUPPORTED（需出站与授权）",
     "approval": "EXPORT 必须显式审批"
   },
   "performance": {

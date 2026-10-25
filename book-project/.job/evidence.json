@@ -2,20 +2,20 @@
   "chain": [
     {
       "stage": "PREFLIGHT",
-      "at": "2026-10-25T05:02:29.333Z",
+      "at": "2026-10-25T08:08:38.629Z",
       "verdict": "PASS",
       "budget_cny": 0,
       "prev": "",
-      "hash": "b98e23840c6f08f8729532f35106adcd88b2c1849f946bb4baf272e14514554b"
+      "hash": "bcc5bbe79d717bc9d90d684126ade2a15320b804a56aed6e10e0c2b3865ed990"
     },
     {
       "stage": "INGESTING",
-      "at": "2026-10-25T05:02:29.340Z",
+      "at": "2026-10-25T08:08:38.637Z",
       "verdict": "NORMALIZED",
       "artifacts": [
         {
           "path": "manifest/source-manifest.json",
-          "sha256": "e9074307bbbfe706ec0f3e482b32ba9f153bd875ba1f156ed01398752fb06031",
+          "sha256": "80b173cc0275938b4d1e69a629af83e95afc2e71cc6eb04ddda0ad7a0ca0ab09",
           "bytes": 539
         },
         {
@@ -30,17 +30,17 @@
           "sha256": "6060dc07c65933612664c685228119c527e4e2317044f1a6313daa5fa6ab2dd9"
         }
       ],
-      "prev": "b98e23840c6f08f8729532f35106adcd88b2c1849f946bb4baf272e14514554b",
-      "hash": "8794338a0b45558a4480d17df88146db6855af5a28e655a7b022716f2f20d2b3"
+      "prev": "bcc5bbe79d717bc9d90d684126ade2a15320b804a56aed6e10e0c2b3865ed990",
+      "hash": "8a22557067d10e89ac79c6bbe48abb2af05e26c579a07aa039d0b9c05df3d603"
     },
     {
       "stage": "OUTLINED",
-      "at": "2026-10-25T05:02:29.350Z",
+      "at": "2026-10-25T08:08:38.646Z",
       "verdict": "PASS",
       "artifacts": [
         {
           "path": "book-bible.json",
-          "sha256": "ed8267da25603bcfec8044bfeb14d98e7fa664cf61f981b002596657c775e179",
+          "sha256": "3acec2913d09d6c4d5ab53bb8eaeb0774611fb4f5f2b880cf903f2c4effc486b",
           "bytes": 586
         },
         {
@@ -50,64 +50,87 @@
         }
       ],
       "chapters": 4,
-      "prev": "8794338a0b45558a4480d17df88146db6855af5a28e655a7b022716f2f20d2b3",
-      "hash": "23a39c36b00e824b953ea83636568411164272f9d4c214c5fab6c20d42f7e92d"
+      "prev": "8a22557067d10e89ac79c6bbe48abb2af05e26c579a07aa039d0b9c05df3d603",
+      "hash": "aca1b03c92f66d742e10be95362b3ef3e24e27ed16e7b66bb0eabe3926eee9ef"
     },
     {
       "stage": "EXEMPLAR_REVIEW",
-      "at": "2026-10-25T05:02:29.353Z",
+      "at": "2026-10-25T08:08:38.649Z",
       "verdict": "PASS",
       "draft": {
         "path": "chapters/001/draft.md",
         "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b",
         "bytes": 308
       },
-      "prev": "23a39c36b00e824b953ea83636568411164272f9d4c214c5fab6c20d42f7e92d",
-      "hash": "f71164322d50e9663a0ee9e5cd3d003b2f84a3abe480e6564250b2ca9ffc340d"
+      "prev": "aca1b03c92f66d742e10be95362b3ef3e24e27ed16e7b66bb0eabe3926eee9ef",
+      "hash": "981af0f95171f158c4124d31128791d82b3c760bdc6523885065a2b255c821c5"
     },
     {
       "stage": "DRAFTING",
-      "at": "2026-10-25T05:02:29.358Z",
+      "at": "2026-10-25T08:08:38.654Z",
       "verdict": "DRAFT_OK",
       "chapter": "002",
-      "prev": "f71164322d50e9663a0ee9e5cd3d003b2f84a3abe480e6564250b2ca9ffc340d",
-      "hash": "8ae58e9f38e4b34d3ed7f447c7486abcb03ceb22a5fe1bc27f5146c247bf0322"
+      "prev": "981af0f95171f158c4124d31128791d82b3c760bdc6523885065a2b255c821c5",
+      "hash": "ca918efe92009168b2127af1827f65585ec42e2a72d13009565f808021a9ef0d"
     },
     {
       "stage": "DRAFTING",
-      "at": "2026-10-25T05:02:29.360Z",
+      "at": "2026-10-25T08:08:38.658Z",
       "verdict": "DRAFT_OK",
       "chapter": "003",
-      "prev": "8ae58e9f38e4b34d3ed7f447c7486abcb03ceb22a5fe1bc27f5146c247bf0322",
-      "hash": "49ccf1418d5a4b918b5983faedb23d4fd4c204ecdf601057db6301efb9e0ea9c"
+      "prev": "ca918efe92009168b2127af1827f65585ec42e2a72d13009565f808021a9ef0d",
+      "hash": "a72bf9434eadc918b0a79c39a2d72c62c87c5127c3265f256bfc33c2027d928c"
     },
     {
       "stage": "DRAFTING",
-      "at": "2026-10-25T05:02:29.362Z",
+      "at": "2026-10-25T08:08:38.660Z",
       "verdict": "DRAFT_OK",
       "chapter": "004",
-      "prev": "49ccf1418d5a4b918b5983faedb23d4fd4c204ecdf601057db6301efb9e0ea9c",
-      "hash": "d633596ae59018d96a39b8cbdd5e721ca891632166a32285895376d7ad4a5627"
+      "prev": "a72bf9434eadc918b0a79c39a2d72c62c87c5127c3265f256bfc33c2027d928c",
+      "hash": "01258f819d4ec2992f1473e5cd550febcfc0047de223c44b41defafb927cb081"
     },
     {
       "stage": "QA",
-      "at": "2026-10-25T05:02:29.364Z",
+      "at": "2026-10-25T08:08:38.661Z",
       "verdict": "PASS",
       "failures": [],
-      "prev": "d633596ae59018d96a39b8cbdd5e721ca891632166a32285895376d7ad4a5627",
-      "hash": "2fe05715a478adc2ee0faa7c7f902696e94fb86da1c1436f9c5a8e294af4b494"
+      "prev": "01258f819d4ec2992f1473e5cd550febcfc0047de223c44b41defafb927cb081",
+      "hash": "a961d32299a894b23d3ea74abfee835b289ad21eb58b3d662e97e4ef22db6dc0"
     },
     {
       "stage": "FULL_REVIEW",
-      "at": "2026-10-25T05:02:29.368Z",
+      "at": "2026-10-25T08:08:38.665Z",
       "verdict": "PASS",
       "findings": [],
-      "prev": "2fe05715a478adc2ee0faa7c7f902696e94fb86da1c1436f9c5a8e294af4b494",
-      "hash": "e7d322004d7195a7a3c151fffa27f3158dc5866eaca0adbe9fe43c65648a3b4f"
+      "prev": "a961d32299a894b23d3ea74abfee835b289ad21eb58b3d662e97e4ef22db6dc0",
+      "hash": "522871512e9426edaa14fc937251acf8dd739042442e7635978ef927ea6a6376"
+    },
+    {
+      "stage": "EGRESS",
+      "at": "2026-10-25T08:08:38.678Z",
+      "policy": "deny-by-default",
+      "allowlist": [],
+      "attempts": 0,
+      "allowed": 0,
+      "denied": 0,
+      "prev": "522871512e9426edaa14fc937251acf8dd739042442e7635978ef927ea6a6376",
+      "hash": "c4584801b9e225128cad6592934a26f8cec0301d9fb14cccec00afcf16ef4fff"
+    },
+    {
+      "stage": "COMPLETED",
+      "at": "2026-10-25T08:08:38.680Z",
+      "verdict": "PASS",
+      "deliverable": {
+        "path": "manifest/deliverable-manifest.json",
+        "sha256": "8106bfff5336ff22b8c53f0af83675fc09c31dde1e3f4ea75799343c37762e10",
+        "bytes": 832
+      },
+      "prev": "c4584801b9e225128cad6592934a26f8cec0301d9fb14cccec00afcf16ef4fff",
+      "hash": "7dbf3834a6185947477f444888648f322658015f6bd37e1f5cfe9ecd5fd949b1"
     }
   ],
   "verified": {
     "ok": true,
-    "index": 9
+    "index": 11
   }
 }

@@ -1927,15 +1927,20 @@
   - ai/one-click-book/http.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**目的**：一次触发、可恢复、带门禁的成书流水线；增强层增加来源回指、章节契约、一致性账本、独立复审与证据链。**生成方式**：抽取式确定性组装（零模型调用、零计费），所以可离线复现；不新增事实。**回滚**：删 `ai/one-click-book/`、`book-project/`、`fixtures/ocb/`、`docs/one-click-book/` 与本组报告，再撤 `server.js` 的路由块与 `index.html` 的一行 script。**边界**：docx/pdf/epub 标 UNSUPPORTED（无适配器时不伪造成功）；不自动发布。
 - **验收证据**：`docs/one-click-book/task-contract.json`、`docs/one-click-book/book-requirements.json`、`reports/quality-gates.json`、`reports/recovery-test.json`、`book-project/.job/evidence.json`、`book-project/manifest/deliverable-manifest.json`
-- **本阶段认领的文件**（65 个）：
+- **本阶段认领的文件**（70 个）：
   - `.dsh/capability-smoke.json`
   - `.dsh/completion.json`
   - `.dsh/frozen-plan.json`
   - `.dsh/one-click-book-capability-report.md`
   - `.dsh/plugin-inventory.json`
+  - `ai/one-click-book/attest.mjs`
   - `ai/one-click-book/core.mjs`
+  - `ai/one-click-book/egress.mjs`
   - `ai/one-click-book/http.mjs`
   - `ai/one-click-book/job.mjs`
+  - `book-project/.dsh/anchors/7dbf3834a6185947.json`
+  - `book-project/.dsh/anchors/anchor-log.jsonl`
+  - `book-project/.job/attestation.json`
   - `book-project/.job/control.json`
   - `book-project/.job/events.jsonl`
   - `book-project/.job/evidence.json`
@@ -1996,7 +2001,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**973** 个文件
+- 真实改动集：**978** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

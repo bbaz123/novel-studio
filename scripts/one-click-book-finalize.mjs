@@ -64,6 +64,10 @@ const acceptance = [
   ['AC-18', '八部分报告、交付清单、hash 完整一致', 'delivery manifest', ['reports/eight-part-report.json', 'deliverable hash 复核']],
   ['AC-19', '模型自报、普通日志和 OpenViking 记忆不算完成证据', 'self-report spoof', ['completionVerdict 断言']],
   ['AC-20', '失败必须产生修复包并回到对应 gate', 'failure-repair loop', ['defect-list.json', 'repair-package.json']],
+  ['AC-21', '出口默认拒绝：无白名单时出站被拒且留审计', 'egress deny probe', ['egress.summary policy=deny-by-default', '.job/egress.jsonl']],
+  ['AC-22', '被拒时不发起底层请求（不是先发后拦）', 'egress fetch spy', ['fetchImpl 调用次数 0']],
+  ['AC-23', '证据链签名可验证，改链或改签名即被检出', 'attest tamper probe', ['.job/attestation.json', 'verifyAnchor checks']],
+  ['AC-24', '完整 job 产出可验证锚与锚点日志（TSA 记 UNSUPPORTED）', 'attest e2e', ['.dsh/anchors/anchor-log.jsonl']],
 ].map(([id, requirement, test, evidenceList]) => ({ id, requirement, test, evidence: evidenceList }))
 
 const contractErrors = core.validateAcceptance(acceptance)
@@ -141,11 +145,16 @@ const testsExit = Number.parseInt(process.env.OCB_TESTS_EXIT ?? '', 10)
 const mutationReport = core.readJson(path.join(REPO, 'reports/quality-gates-mutation.json'), null)
 const testsOk = Number.isFinite(testsExit) && testsExit === 0
 const secretScan = core.scanSecrets(fs.readFileSync(path.join(ROOT, 'export/book.md'), 'utf8'))
+// 两项补充能力必须由真实产物判定，不能只看“代码里有这个文件”。
+const attestationRec = core.readJson(path.join(ROOT, '.job/attestation.json'), null)
+const attestationOk = attestationRec?.verification?.ok === true
+const egressRec = status.job?.egress ?? null
+const egressOk = egressRec?.policy === 'deny-by-default' && Array.isArray(egressRec?.allowlist) && egressRec.allowlist.length === 0
 const gates = core.evaluateQualityGates({
   mutationRan: mutationReport?.mutation_ran === true,
   mutationScore: mutationReport?.score ?? 0,
   testsPassed: testsOk,
-  securityPassed: secretScan.length === 0,
+  securityPassed: secretScan.length === 0 && attestationOk && egressOk,
   evidenceChainOk: core.verifyEvidenceChain(evidence?.chain ?? []).ok,
 })
 write('reports/quality-gates.json', {
@@ -156,6 +165,20 @@ write('reports/quality-gates.json', {
     exit_code: Number.isFinite(testsExit) ? testsExit : null,
     ok: testsOk,
     note: '由执行器 shell 真实运行并传入退出码；本脚本内 spawn 被沙箱拒绝（EPERM），不伪造',
+  },
+  egress: {
+    policy: egressRec?.policy ?? null,
+    allowlist: egressRec?.allowlist ?? null,
+    attempts: egressRec?.attempts ?? null,
+    denied: egressRec?.denied ?? null,
+    ok: egressOk,
+  },
+  attestation: {
+    ok: attestationOk,
+    chain_head: attestationRec?.anchor?.chain_head ?? null,
+    checks: attestationRec?.verification?.checks ?? null,
+    tsa: attestationRec?.anchor?.time_source?.tsa?.state ?? null,
+    git_anchor: attestationRec?.anchor?.time_source?.git ?? null,
   },
   mutation: {
     command: 'node scripts/one-click-book-mutation.mjs',
@@ -212,7 +235,25 @@ write('.dsh/completion.json', {
   gates: gates.ok,
   recovery: recovery.ok,
   unsupported_exports: deliverable.unsupported,
-  degraded: { egress: 'DEGRADED（无 deny-default 出口守卫；本流水线零网络访问）', attest: '本地哈希链（非外部时间戳）' },
+  capabilities: {
+    egress_deny_default: {
+      state: egressOk ? 'PASS' : 'FAILED',
+      policy: egressRec?.policy ?? null,
+      allowlist: egressRec?.allowlist ?? null,
+      attempts: egressRec?.attempts ?? null,
+      audit: '.job/egress.jsonl',
+    },
+    evidence_attest: {
+      state: attestationOk ? 'PASS_LOCAL_ANCHOR' : 'FAILED',
+      chain_head: attestationRec?.anchor?.chain_head ?? null,
+      chain_length: attestationRec?.anchor?.chain_length ?? null,
+      signature: attestationRec?.verification?.checks?.signature ?? null,
+      git_anchor: attestationRec?.anchor?.time_source?.git ?? null,
+      tsa: attestationRec?.anchor?.time_source?.tsa ?? null,
+      note: '第三方时间戳（RFC3161/OpenTimestamps）需出站与授权，当前记 UNSUPPORTED；已用 Ed25519 分离签名 + git 仓库锚',
+    },
+  },
+  degraded: { egress: 'UNSUPPORTED_ONLY_TSA', attest: 'LOCAL_SIGNED_PLUS_GIT_ANCHOR' },
 })
 
 process.stdout.write(JSON.stringify({

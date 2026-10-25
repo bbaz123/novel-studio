@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T05:03:07.385Z",
+  "generated_at": "2026-10-25T08:08:49.048Z",
   "brief": {
     "book_kind": "纪实随笔集",
     "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界",
@@ -40,7 +40,7 @@
       ]
     },
     "must_write": [],
-    "created_at": "2026-10-25T05:02:29.341Z",
+    "created_at": "2026-10-25T08:08:38.638Z",
     "chapter_count": 4
   },
   "sources": [
@@ -98,7 +98,7 @@
   },
   "deliverables": {
     "job_id": "job-1df085112b1a",
-    "generated_at": "2026-10-25T05:02:29.379Z",
+    "generated_at": "2026-10-25T08:08:38.677Z",
     "artifacts": [
       {
         "path": "chapters/001/commit.md",

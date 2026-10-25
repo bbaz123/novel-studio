@@ -11,6 +11,8 @@ import path from 'node:path'
 import * as core from '../ai/one-click-book/core.mjs'
 import { JobStore, jobStatus, runJob } from '../ai/one-click-book/job.mjs'
 import { ocbRoot } from '../ai/one-click-book/http.mjs'
+import { createEgressGuard } from '../ai/one-click-book/egress.mjs'
+import { signChain, verifyAnchor } from '../ai/one-click-book/attest.mjs'
 
 const REPO = process.cwd()
 const TMP = path.join(REPO, '.tmp-ocb-test')
@@ -388,6 +390,73 @@ test('ACCEPTANCE acceptance id 唯一性与映射完整性', () => {
 test('HTTP ocbRoot 尊重环境变量', () => {
   assert.equal(ocbRoot({ NOVELSTUDIO_OCB_ROOT: 'D:/x/book' }), path.resolve('D:/x/book'))
   assert.equal(ocbRoot({}), path.join(process.cwd(), 'book-project'))
+})
+
+// ── 出口守卫（AC-21/AC-22）──────────────────────────────────────────────────
+test('AC-21 出口守卫默认拒绝：无白名单时任何主机被拒', () => {
+  const guard = createEgressGuard({})
+  assert.throws(() => guard.check('https://example.com'), /出站被拒绝/)
+  assert.throws(() => guard.check('example.com'), /出站被拒绝/)
+  const summary = guard.summary()
+  assert.equal(summary.policy, 'deny-by-default')
+  assert.equal(summary.denied, 2)
+  assert.equal(summary.allowed, 0)
+})
+
+test('AC-21b 显式白名单内的主机放行，白名单外仍拒绝', () => {
+  const guard = createEgressGuard({ allowlist: ['example.com'] })
+  assert.equal(guard.check('https://example.com/path'), true)
+  assert.throws(() => guard.check('https://evil.example.org'), /出站被拒绝/)
+  const summary = guard.summary()
+  assert.equal(summary.allowed, 1)
+  assert.equal(summary.denied, 1)
+  assert.deepEqual(summary.allowlist, ['example.com'])
+})
+
+test('AC-22 被拒时底层 fetch 不会被调用（不是先发后拦）', async () => {
+  let called = 0
+  const guard = createEgressGuard({ fetchImpl: async () => { called += 1; return { ok: true } } })
+  await assert.rejects(() => guard.fetch('https://example.com'), /出站被拒绝/)
+  assert.equal(called, 0)
+  const allowed = createEgressGuard({ allowlist: ['example.com'], fetchImpl: async () => { called += 1; return { ok: true } } })
+  await allowed.fetch('https://example.com')
+  assert.equal(called, 1)
+})
+
+// ── 证据锚（AC-23/AC-24）───────────────────────────────────────────────────
+test('AC-23 证据链签名可验证；改链或改签名即被检出', () => {
+  const keyDir = path.join(TMP, 'attest-keys')
+  let chain = []
+  chain = core.appendEvidence(chain, { stage: 'A', verdict: 'PASS' })
+  chain = core.appendEvidence(chain, { stage: 'B', verdict: 'PASS' })
+  const anchor = signChain({ chain, keyDir, meta: { job_id: 't', artifact_root_sha256: core.sha256('x') } })
+  assert.equal(verifyAnchor({ anchor, chain }).ok, true)
+
+  const tamperedChain = chain.map((entry, i) => (i === 0 ? { ...entry, verdict: 'FAIL' } : entry))
+  const tampered = verifyAnchor({ anchor, chain: tamperedChain })
+  assert.equal(tampered.ok, false)
+  // 改中间一环时链头不变，所以判据必须是链内自校验，而不是只比链头。
+  assert.equal(tampered.checks.chain_integrity, false)
+
+  const badSig = { ...anchor, signature: Buffer.from('nope').toString('base64') }
+  assert.equal(verifyAnchor({ anchor: badSig, chain }).ok, false)
+})
+
+test('AC-24 完整 job 产出可验证锚 + 出口守卫摘要 + 锚点日志', () => {
+  const dir = reset('ac24')
+  const root = path.join(dir, 'book')
+  const keyDir = path.join(dir, 'keys')
+  const result = runJob({ root, idempotencyKey: 'ac24', brief: briefFor(dir), approvals: OK_APPROVALS, options: { attestKeyDir: keyDir } })
+  assert.equal(result.status, 'COMPLETED')
+  assert.equal(result.egress.policy, 'deny-by-default')
+  assert.deepEqual(result.egress.allowlist, [])
+  assert.equal(result.egress.attempts, 0)
+  assert.equal(result.attestation.verification.ok, true)
+  const log = fs.readFileSync(path.join(root, '.dsh/anchors/anchor-log.jsonl'), 'utf8').trim().split('\n')
+  assert.ok(log.length >= 1)
+  const anchorEntry = JSON.parse(log[log.length - 1])
+  assert.equal(anchorEntry.chain_head, result.attestation.anchor.chain_head)
+  assert.equal(anchorEntry.time_source.tsa.state, 'UNSUPPORTED')
 })
 
 // ── 清理与汇总 ──────────────────────────────────────────────────────────────
