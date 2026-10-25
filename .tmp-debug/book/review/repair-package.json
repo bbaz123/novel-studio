@@ -1,8 +1,0 @@
-{
-  "job_id": "job-22879e7c4d1c",
-  "action": "add_source_material",
-  "hint": "来源不足以覆盖该章契约；补充材料或缩小 word_range 后从 DRAFTING 重进",
-  "defect_refs": [
-    "002"
-  ]
-}

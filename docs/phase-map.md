@@ -71,6 +71,7 @@
 | **QA1** | 审稿身份链 review.v3（dsh-novel-quality-auditor 阶段 0–1） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **QA2** | 质量审计契约与 API（dsh-novel-quality-auditor 阶段 2） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 | **QA3** | 独立审计插件与前端入口（dsh-novel-quality-auditor 阶段 3/4/6） | ✅ 可独立回滚 |
+| **OCB** | 一键成书（核心流水线 + 增强层，离线确定性） | ⚠️ 与其它阶段共享文件或被生产代码 import，只能整体回滚 |
 
 **可独立回滚的阶段：U、V、Z4、V1、SE7、SE8、V20、V21、P0M、P0Q2、QA3。**其余阶段要么与别的阶段改在同一批代码里，要么被生产代码 import——**要回滚就一起回滚**，或用 `.p6-cutover/snapshot.mjs` 的整体快照。
 
@@ -1204,7 +1205,7 @@
   - ai/writing/scopes.mjs 被**生产代码** ai/writing/policy.mjs（SE4/SE5）import——撤掉会打断线上路径
 - **说明**：**只补归属、不碰文件**：这些是 SE1–SE8 各批留下的一次性探针/实验脚本、语料转储、验收报告与方案稿，从未被任何阶段条目认领，于是阶段映射的【完整性】一项长期报红灯。 本条目把真实改动集里剩余的每一项都逐条列明归属与性质，使「每个改动都可回滚」覆盖全仓。 复算方式：`node .p1-baseline/verify-phase-map.mjs`（其【1. 完整性】应由红灯转绿）。 ⚠️ 这些文件本身未被改动，撤回本条目不会影响它们；反过来撤掉它们也不影响任何阶段。 ⚠️ 刻意用逐条清单而不是目录通配：通配会把将来新增的文件也一并认领，而「谁改了它、怎么回滚」必须逐项说得清。
 - **验收证据**：`docs/review-closure-118/test-report.md`
-- **本阶段认领的文件**（135 个）：
+- **本阶段认领的文件**（113 个）：
   - `.p1-baseline/_split-own-diff-20261006.mjs`
   - `.p1-baseline/ch121-current.txt`
   - `.p1-baseline/ch121-v48-manual.txt`
@@ -1283,15 +1284,7 @@
   - `.p1-baseline/verify-ch121-untouched.mjs`
   - `.p1-baseline/verify-ch121-untouched2.mjs`
   - `.p1-baseline/verify-thinking-heartbeat-20261002.mjs`
-  - `01.md`
   - `AGENTS.md`
-  - `DSH Verification Gate 插件.md`
-  - `Novel-Studio_AI味与设定漂移优化方案.md`
-  - `Novel-Studio_修稿前后问题整合与Safe-Editing修改方案.md`
-  - `Novel-Studio_第二轮生成质量验收与优化方案.md`
-  - `Novel_Studio_0731审稿修稿增补方案.md`
-  - `Novel_Studio_AI写作截断与质检闭环_修复方案.md`
-  - `Novel_Studio_v118_0317专项修改方案.md`
   - `ai/writing/compile.mjs`
   - `ai/writing/scopes.mjs`
   - `docs/0731增补方案-执行与交付报告.md`
@@ -1325,21 +1318,7 @@
   - `docs/save-incident-20261002.md`
   - `docs/spawn-eperm-20261002.md`
   - `docs/wiring-fix-20261008.md`
-  - `novel-studio 深度审计与缺陷修复报告生成提示词.md`
-  - `novel_studio_architecture_gap_audit.md`
-  - `novel_studio_codex_full_delivery_prompt_v2.md`
   - `scripts/cleanup-stale-blueprints-20261006.mjs`
-  - `ui方案.md`
-  - `ui方案提示词.md`
-  - `待办事项-文件整理.md`
-  - `待办事项-知识库.md`
-  - `待办事项，为工作台加入待办.md`
-  - `插件制作方案_完整实现版.md`
-  - `方案.md`
-  - `架构重构.md`
-  - `缺点及修复报告.codex版本-20261001-1623.md`
-  - `缺陷修复.md`
-  - `缺陷问题及对应解决办法.md`
 
 ### NS0 · NSDSH S00–S02：冻结真实基线、建立阶段门禁与行为表征（2026-10-15 起）
 
@@ -1353,12 +1332,11 @@
   - ai/extraction/coverage.mjs 被**生产代码** ai/story-state/temporal/extraction.mjs（Z3/TT）import——撤掉会打断线上路径
 - **说明**：**目的**：让后续每一批改造都对着真实工作区，并且每一步都有可执行的阶段门禁。 本阶段只新增文档/脚本/测试与四处配套改动，**不改任何业务行为**。 产物：`docs/nsdsh/baseline.md`（版本与来源清单、F01–F12 逐条核对、新增确认的 D1–D6、 既有能力清单、S00–S18 真实状态、改动前门禁基线与执行环境事实）、`docs/nsdsh/adr-001-boundaries.md`（允许/禁止改动的范围、上游固定提交取哪条线、 与本地规则冲突时的处置）、`docs/nsdsh/PLAN.md`（仓库内执行版计划）。 ⚠️ 阶段台账类门禁（本文件）内部要起 git 子进程（execFileSync），在 DSH 文件沙箱里会以 `spawnSync git EPERM` 失败——必须在普通终端执行；沙箱内跑不了就标 BLOCKED，不得标 PASS。 ⚠️ 本条目自身在改动集里：改完必须跑 `node .p1-baseline/verify-phase-map.mjs --write` 重新生成 `docs/phase-map.md`，否则第 4 项对账会报"已过期"。
 - **验收证据**：`docs/nsdsh/PLAN.md`、`docs/nsdsh/baseline.md`、`docs/nsdsh/adr-001-boundaries.md`
-- **本阶段认领的文件**（128 个）：
+- **本阶段认领的文件**（126 个）：
   - `.github/workflows/nsdsh-runtime-matrix.yml`
   - `.gitignore`
   - `.p1-baseline/verify-phase-map.mjs`
   - `.p6-cutover/snapshot.mjs`
-  - `DSH_Auto_Plan_Executor_完整开发与双插件联调方案.md`
   - `ai/extraction/coverage.mjs`
   - `ai/extraction/digest.mjs`
   - `ai/extraction/prompt-schema.mjs`
@@ -1481,7 +1459,6 @@
   - `vendor/dsh/PROVENANCE.md`
   - `vendor/dsh/runtime-manifest.json`
   - `vendor/dsh/verify-vendor.mjs`
-  - `修改方案10.15.md`
 
 ### V12 · v1.2.0 修复（P01–P16）：授权边界 / 写入原子性 / 入口安全 / 启动就绪 / 异步一致性
 
@@ -1495,7 +1472,7 @@
   - 文件 ai/story-state/temporal/analysis.mjs 同时属于 Z3/TT/V12——改动改在同一批代码里，撤不干净
 - **说明**：**目的**：按方案 §8 的顺序消除 P01–P16 的授权、原子性、启动与异步缺陷，并为每项修复建立可离线复现的断言（不依赖真实 LLM / 作者私有数据）。P14 只测量不改（结论见 docs/v1.2.0-p16-p14-decisions.md）；P17 按方案为 P3 非阻塞，本轮不做。**费用**：全部检查零计费。
 - **验收证据**：`docs/v1.2.0-1018-fix-report.md`、`docs/v1.2.0-p16-p14-decisions.md`、`.p1-baseline/test-1018-hardening.mjs`
-- **本阶段认领的文件**（27 个）：
+- **本阶段认领的文件**（26 个）：
   - `.p1-baseline/test-1018-ai-privacy-limits.mjs`
   - `.p1-baseline/test-1018-ai-provider-boundary.mjs`
   - `.p1-baseline/test-1018-analysis-fencing.mjs`
@@ -1507,7 +1484,6 @@
   - `.p1-baseline/test-1018-projection-outbox.mjs`
   - `.p1-baseline/test-1018-startup-readiness.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
-  - `10.18修复.md`
   - `ai/db-migration-failfast.mjs`
   - `ai/http/origin.mjs`
   - `ai/http/validation.mjs`
@@ -1536,7 +1512,7 @@
   - db.js 被 .p1-baseline/test-library-index.mjs（验收工具，Z6）import——撤掉会让该工具失效
 - **说明**：**目的**：把"审稿发现问题 → 精确授权 → 局部修稿 → 逐条验收 → 定向复修 → 候选确认 → 作者写回"闭成可复核的事实链，并明确三种"完成"（补丁已应用 / 问题经语义验收解决 / 作者批准入库）。**边界**：自动二次复修与自动写回仍默认关闭（NOVELSTUDIO_REVISION_CLOSURE=diagnostics）；分段修稿仍走 v1 单热点计划（R-30 显式 SKIP）；DSH 自动方案插件侧的触发/双插件联调不在本仓库（R-24/25/26 SKIP）。**费用**：全部离线检查零计费；语义复验只在作者点按钮时发生一次付费调用。
 - **验收证据**：`docs/v1.2.1-revision-closure.md`、`.p1-baseline/test-1019-revision-closure.mjs`、`.p1-baseline/test-1019-receipt-http.mjs`
-- **本阶段认领的文件**（24 个）：
+- **本阶段认领的文件**（23 个）：
   - `.p1-baseline/test-1019-closure.mjs`
   - `.p1-baseline/test-1019-findings.mjs`
   - `.p1-baseline/test-1019-plan-multi.mjs`
@@ -1544,7 +1520,6 @@
   - `.p1-baseline/test-1019-revision-closure.mjs`
   - `.p1-baseline/test-1019-semantic.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
-  - `Novel_Studio_v1.2.1_审稿修稿质量闭环与DSH联动改造方案 (1).md`
   - `db.js`
   - `docs/phase-map.md`
   - `docs/v1.2.1-revision-closure.md`
@@ -1608,12 +1583,11 @@
   - 文件 docs/v1.2.4-review-workspace.md 同时属于 V15/V16——改动改在同一批代码里，撤不干净
 - **说明**：**目的**：把"8 项全选 → 每项有可定位的编辑任务 → 精确安全修稿 → 逐项复验 → 失败项定向复修 → 明确阻塞原因 → 在不挤压写作台的独立空间展示"落成可复核的事实链。**边界**：不改变作者一次性写回审批、保护区、蓝图/伏笔、预算门禁；语义复验仍是作者显式触发的付费动作；P0E/P0F 只是视图层级拆分，不动数据库与时态语义。**费用**：全部离线检查零计费（模型输出在测试里是注入的）。
 - **验收证据**：`artifacts/v124/env-report.md`、`docs/v1.2.4-review-workspace.md`、`.p1-baseline/test-1024-chapter-fixtures.mjs`、`.p1-baseline/test-1025-finalize.mjs`
-- **本阶段认领的文件**（21 个）：
+- **本阶段认领的文件**（20 个）：
   - `.p1-baseline/browser-acceptance-v124.mjs`
   - `.p1-baseline/test-1024-chapter-fixtures.mjs`
   - `.p1-baseline/test-1025-finalize.mjs`
   - `.p1-baseline/verify-phase-map.mjs`
-  - `Novel_Studio_v1.2.4_完整优化升级实施方案.md`
   - `README.md`
   - `artifacts/v124/env-report.md`
   - `docs/CHANGELOG.md`
@@ -1792,18 +1766,16 @@
 - **回滚方式**：可独立回滚
 - **说明**：**目的**：把"局部未通过却没有再修入口"拆成五条可核对的根因（next_action 承诺无按钮、自动复修只在两条路径且额度一次性、一个 finding 一个跨度、condense 的 merged_span_approved 从无写入方、改正文即 BASE_STALE），并落地方案 A/B1/C1：复修入口（轮次/预算守卫）、按剩余证据扩范围（同一批 issue，不新增编号）、接受遗留台账；复验额度改为按候选 hash 计。**归属**：代码改动落在既有共享文件（public/app.js、review-workspace.js、revision-closure.js），按 V20 的既有做法不重复认领，以免污染回滚判定；新套件由 SE6 的 tests/narrative-repair/ 前缀覆盖。**边界**：不放开跨段删除/压缩授权（B2 未做）；不改正文写入路径；不新增数据库表。**费用**：全部离线断言零计费（模型输出为夹具，未调用真实模型）。
 - **验收证据**：`docs/review-partial-deadlock-plan-20261022.md`、`tests/narrative-repair/19-partial-repair-entry.test.mjs`
-- **本阶段认领的文件**（1 个）：
-  - `docs/review-partial-deadlock-plan-20261022.md`
+- **本阶段认领的文件**（0 个）：
 
 ### P0M · P0 合并保护：现场冻结 + 基线闸门（普通合并不再静默覆盖）
 
 - **回滚方式**：可独立回滚
 - **说明**：**目的**：把"修稿候选整篇覆盖预览之后的新编辑"从"只写一条警告"改成"事务内拒绝"，并把作者意图拆成 normal / explicit_force 两个请求（后者要二次确认声明 + 事务内审计）。**归属**：新增脚本负责阶段 0 取证（整库快照 + 正文/历史版本/采纳记录/审计日志导出），代码改动在共享文件里（与 V21 同一批函数），回滚按共享处理。**边界**：不改历史版本表结构；不新增数据库表；不带 expected 的老客户端保持原语义。**费用**：全部离线断言零计费（隔离实例 + 假模型输出）。
 - **验收证据**：`.p1-baseline/p0-freeze-scene.mjs`、`.p1-baseline/p0-rollback-drill.mjs`、`docs/quality-audit-p0-merge-protection-plan-20261022.md`
-- **本阶段认领的文件**（3 个）：
+- **本阶段认领的文件**（2 个）：
   - `.p1-baseline/p0-freeze-scene.mjs`
   - `.p1-baseline/p0-rollback-drill.mjs`
-  - `docs/quality-audit-p0-merge-protection-plan-20261022.md`
 
 ### P0Q2 · 复核反例相关性 + 缺字段台账 + 逐项验收子条件
 
@@ -1912,9 +1884,77 @@
   - `harness-plugins/dsh-novel-quality-auditor/verify/manifest.json`
   - `public/quality-audit-panel.js`
 
+### OCB · 一键成书（核心流水线 + 增强层，离线确定性）
+
+- **回滚方式**：只能整体回滚
+- **阻断原因（推导得出）**：
+  - ai/one-click-book/http.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
+- **说明**：**目的**：一次触发、可恢复、带门禁的成书流水线；增强层增加来源回指、章节契约、一致性账本、独立复审与证据链。**生成方式**：抽取式确定性组装（零模型调用、零计费），所以可离线复现；不新增事实。**回滚**：删 `ai/one-click-book/`、`book-project/`、`fixtures/ocb/`、`docs/one-click-book/` 与本组报告，再撤 `server.js` 的路由块与 `index.html` 的一行 script。**边界**：docx/pdf/epub 标 UNSUPPORTED（无适配器时不伪造成功）；不自动发布。
+- **验收证据**：`docs/one-click-book/task-contract.json`、`docs/one-click-book/book-requirements.json`、`reports/quality-gates.json`、`reports/recovery-test.json`、`book-project/.job/evidence.json`、`book-project/manifest/deliverable-manifest.json`
+- **本阶段认领的文件**（59 个）：
+  - `.dsh/completion.json`
+  - `.dsh/frozen-plan.json`
+  - `.dsh/plugin-inventory.json`
+  - `ai/one-click-book/core.mjs`
+  - `ai/one-click-book/http.mjs`
+  - `ai/one-click-book/job.mjs`
+  - `book-project/.job/control.json`
+  - `book-project/.job/events.jsonl`
+  - `book-project/.job/evidence.json`
+  - `book-project/.job/index.json`
+  - `book-project/.job/input-snapshot.json`
+  - `book-project/.job/secret-scan.json`
+  - `book-project/.job/state.json`
+  - `book-project/book-bible.json`
+  - `book-project/chapters/001/commit.json`
+  - `book-project/chapters/001/commit.md`
+  - `book-project/chapters/001/contract.json`
+  - `book-project/chapters/001/draft.md`
+  - `book-project/chapters/001/review.json`
+  - `book-project/chapters/002/commit.json`
+  - `book-project/chapters/002/commit.md`
+  - `book-project/chapters/002/contract.json`
+  - `book-project/chapters/002/draft.md`
+  - `book-project/chapters/002/review.json`
+  - `book-project/chapters/003/commit.json`
+  - `book-project/chapters/003/commit.md`
+  - `book-project/chapters/003/contract.json`
+  - `book-project/chapters/003/draft.md`
+  - `book-project/chapters/003/review.json`
+  - `book-project/chapters/004/commit.json`
+  - `book-project/chapters/004/commit.md`
+  - `book-project/chapters/004/contract.json`
+  - `book-project/chapters/004/draft.md`
+  - `book-project/chapters/004/review.json`
+  - `book-project/export/book.md`
+  - `book-project/ledgers/facts.jsonl`
+  - `book-project/ledgers/foreshadow.jsonl`
+  - `book-project/ledgers/terminology.jsonl`
+  - `book-project/ledgers/timeline.jsonl`
+  - `book-project/manifest/chapter-manifest.json`
+  - `book-project/manifest/deliverable-manifest.json`
+  - `book-project/manifest/source-manifest.json`
+  - `book-project/outline/outline.md`
+  - `book-project/reports/eight-part-report.json`
+  - `book-project/review/full-book-report.json`
+  - `book-project/review/style-traceability.json`
+  - `book-project/sources/normalized/source.txt`
+  - `docs/one-click-book/book-requirements.json`
+  - `docs/one-click-book/task-contract.json`
+  - `fixtures/ocb/brief.json`
+  - `fixtures/ocb/source.md`
+  - `public/one-click-book.js`
+  - `reports/quality-gates-mutation.json`
+  - `reports/quality-gates.json`
+  - `reports/recovery-test.json`
+  - `scripts/one-click-book-cli.mjs`
+  - `scripts/one-click-book-finalize.mjs`
+  - `scripts/one-click-book-mutation.mjs`
+  - `scripts/test-one-click-book.mjs`
+
 ## 三、归属核对
 
-- 真实改动集：**901** 个文件
+- 真实改动集：**931** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

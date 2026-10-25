@@ -2279,7 +2279,9 @@ export const PHASES = [
       'book-project/.job/evidence.json',
       'book-project/manifest/deliverable-manifest.json',
     ],
-    rollback: 'independent',
+    // 推导=shared：server.js 生产代码 import 了 ai/one-click-book/http.mjs，撤掉会打断线上路由；
+    // 声明必须与推导一致，否则清单会“看起来可独立回滚”。
+    rollback: 'shared',
     note: '**目的**：一次触发、可恢复、带门禁的成书流水线；增强层增加来源回指、章节契约、一致性账本、独立复审与证据链。'
       + '**生成方式**：抽取式确定性组装（零模型调用、零计费），所以可离线复现；不新增事实。'
       + '**回滚**：删 `ai/one-click-book/`、`book-project/`、`fixtures/ocb/`、`docs/one-click-book/` 与本组报告，再撤 `server.js` 的路由块与 `index.html` 的一行 script。'
