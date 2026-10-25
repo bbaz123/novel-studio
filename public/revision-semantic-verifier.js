@@ -434,10 +434,24 @@
       if (!Number.isFinite(s) || !Number.isFinite(e) || s === e) return false;
       return baseText.slice(s, e) === textOf(p.original);
     });
+    // 「改在哪」单独成为一档结论（2026-10-23）：只有"改了，但没改到本条证据"才叫 WRONG_TARGET。
+    // 为什么不能只用 reason_code：报告里 `UNRELATED_CHANGE` 与 `PARTIAL`/`ANCHOR_NOT_EDITED`
+    // 是两条不同轴（改错位置 vs 没改完），作者要能一眼看出是"补丁打偏"还是"只做了一半"。
+    // 偏移不可证明（分段片内偏移、占位 0,0）时不判 WRONG_TARGET，标 UNPROVEN —— 不猜。
+    let targetVerdict = 'NO_EDIT';
+    let evidenceHitCount = 0;
+    if (issuePatches.length) {
+      if (editableQuotes.length && locatedPatches.length === issuePatches.length) {
+        const hits = locatedPatches.filter((p) => overlapsEvidence(p, baseText, editableQuotes));
+        evidenceHitCount = hits.length;
+        targetVerdict = hits.length ? 'ON_TARGET' : 'WRONG_TARGET';
+      } else {
+        targetVerdict = 'UNPROVEN';
+      }
+    }
     if (editableQuotes.length && issuePatches.length && locatedPatches.length === issuePatches.length) {
-      const hit = locatedPatches.filter((p) => overlapsEvidence(p, baseText, editableQuotes));
-      pushCheck(checks, '补丁必须落在本问题的证据上（改动不是无关片段）', hit.length > 0,
-        [`补丁 ${locatedPatches.length} 处，命中证据的 ${hit.length} 处`],
+      pushCheck(checks, '补丁必须落在本问题的证据上（改动不是无关片段）', evidenceHitCount > 0,
+        [`补丁 ${locatedPatches.length} 处，命中证据的 ${evidenceHitCount} 处`],
         { code: 'UNRELATED_CHANGE', hard: true });
     }
 
@@ -504,7 +518,7 @@
       }
     }
 
-    return { checks, failed: checks.filter((c) => !c.passed), needContext, conditionResults: cond.results };
+    return { checks, failed: checks.filter((c) => !c.passed), needContext, conditionResults: cond.results, targetVerdict, evidenceHitCount };
   }
 
   /** 语义层结果归一化：接受字符串、`{status}` 或 `{verdict}`，其余一律 not_run（不猜通过）。 */
@@ -588,6 +602,16 @@
     //     声称改了却没有 diff / 越过授权 / 底稿变了）是**字面事实**，模型说"我改了"不能覆盖它；
     //   · 软判断（模板句是否仍有伤害、篇幅是否可接受）与语义结论冲突时，仍然交人复核。
     const hardFailed = d.failed.filter((c) => c && c.hard === true);
+    // 「改在哪」的确定性结论来自 deterministicChecks（同一份重叠计算），这里只消费，不重算。
+    const targetVerdict = d.targetVerdict || 'NO_EDIT';
+    // 多子条件只完成一部分（2026-10-23）：R-0001 有"删流程总结"与"删人生总结"两个硬条件，
+    // 只改其一不再是"完全没修"（FAIL），也不该被读成"改好了"。判 PARTIAL 的前提是：
+    //   · 确实有补丁且真实改了字（actualChange）—— 一个字没动仍然 FAIL；
+    //   · 硬失败**只来自声明的子条件**（锚点/保留项/越权/底稿这类字面事实仍按 FAIL 处理）。
+    const declaredConditions = Array.isArray(d.conditionResults) ? d.conditionResults : [];
+    const condPassed = declaredConditions.filter((r) => r && r.status === 'PASS').length;
+    const hardNonCondition = hardFailed.filter((c) => !c.condition);
+    const partialConditions = hardFailed.length > 0 && hardNonCondition.length === 0 && condPassed > 0 && actualChange === true;
     const semanticFailed = sem.status === 'fail';
     const semanticPassed = sem.status === 'pass';
     const semanticPartial = sem.status === 'partial';
@@ -606,14 +630,24 @@
         : `这条问题需要外部资料（角色卡/词条/时点）核对后才能判定：${external.evidence.join('；')}`
           + '。不得往正文生硬补写来凑数字，也不得直接改角色卡数据库';
     } else if (hardFailed.length) {
-      verdict = VERDICT.FAIL;
-      // Q04 形态：既有"锚点没动"又有"改到别处"时，报告真正的原因是**改错了位置**。
-      const unrelated = hardFailed.find((c) => c.code === 'UNRELATED_CHANGE');
-      reasonCode = (unrelated && problemType === 'MULTI_SPEAKER_FUNCTION')
-        ? 'UNRELATED_CHANGE'
-        : (hardFailed[0].code || 'DETERMINISTIC_FAILED');
-      reason = `确定性硬检查未通过：${hardFailed.map((c) => c.criterion).slice(0, 3).join('；')}`
-        + (semanticPassed ? '（语义层判通过，但这是字面事实，不能覆盖）' : '');
+      // 子条件部分通过、部分未过：这是"做了一半"的结论，不是"根本没改"。
+      if (partialConditions) {
+        verdict = VERDICT.PARTIAL;
+        reasonCode = hardFailed[0].code || 'CONDITION_PARTIAL';
+        reason = `多条件只完成一部分：${hardFailed.map((c) => c.criterion).slice(0, 3).join('；')}`
+          + `（已通过 ${condPassed} 个声明的子条件）；未通过项保留在 unresolved_conditions`;
+      } else {
+        verdict = VERDICT.FAIL;
+        // Q04 形态：既有"锚点没动"又有"改到别处"时，报告真正的原因是**改错了位置**。
+        // 2026-10-23：只要 target_verdict 判定为 WRONG_TARGET，原因码就用 UNRELATED_CHANGE，
+        // 不再要求 problem_type 恰好是 MULTI_SPEAKER_FUNCTION（R-0003 是 LOCAL_PHRASE 形态）。
+        const unrelated = hardFailed.find((c) => c.code === 'UNRELATED_CHANGE');
+        reasonCode = (unrelated && (problemType === 'MULTI_SPEAKER_FUNCTION' || targetVerdict === 'WRONG_TARGET'))
+          ? 'UNRELATED_CHANGE'
+          : (hardFailed[0].code || 'DETERMINISTIC_FAILED');
+        reason = `确定性硬检查未通过：${hardFailed.map((c) => c.criterion).slice(0, 3).join('；')}`
+          + (semanticPassed ? '（语义层判通过，但这是字面事实，不能覆盖）' : '');
+      }
     } else if (deterministicFailed && (semanticPassed || semanticPartial)) {
       // 两层冲突：不选"看起来更好"的那一层，交人复核（方案 §5.4）。
       // 语义说"部分修复"时，确定性软失败也在说"没全好"，两者方向一致但都不能算 PASS。
@@ -674,6 +708,11 @@
       confidence: sem.confidence || 'medium',
       // §7.1/§7.3：机器可读的"到底动没动"与"剩余证据"，供工作区与回执复核。
       actual_change: actualChange,
+      // 「改在哪」独立轴（2026-10-23）：NO_EDIT / ON_TARGET / WRONG_TARGET / UNPROVEN。
+      // 它是**结论维度**，不替换 final_status（状态机与回执契约保持不变）：
+      // WRONG_TARGET ≈ final_status=UNRESOLVED + reason_code=UNRELATED_CHANGE + target_verdict=WRONG_TARGET。
+      target_verdict: targetVerdict,
+      evidence_hit_count: Number(d.evidenceHitCount) || 0,
       patch_ids: issuePatches.map((p, i) => textOf(p.patch_id || p.span_id) || `P${i + 1}`),
       evidence_ids: evidenceRows.map((e) => e.id),
       // 2026-10-21：细粒度子条件结果（PASS/FAIL/SKIP）——"这条问题还差哪一个条件"必须可读，

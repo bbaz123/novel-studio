@@ -34,6 +34,9 @@ import { editingRuleCatalog, resolveEditingSelection, editingSelectionToSettings
 import { scanEditing } from './ai/editing/scan.mjs';
 // E03：审稿报告的结构化与**引用核验**（复用 E04 的判定，不另写一套）。
 import { structureReviewReport, resolveReviewQuoteBase } from './ai/editing/narrative-review.mjs';
+// 2026-10-23：审稿底本指纹（`base_hash` 与修稿快照同算法；另存 sha256 强摘要）。
+// 唯一实现放在 review-hash.mjs，服务端与离线断言共用，避免"两份哈希算法漂移"。
+import { resolveBaseHash, derivedBaseHash } from './ai/editing/review-hash.mjs';
 // E04：叙事诊断的**确定性候选层**（复用 scanEditing 的统计，不复制它的判据）。
 import { narrativeCandidateSignals } from './ai/editing/narrative-scan.mjs';
 // R09：作者样文 → 结构化文风档案 → 三级作者意图。样文是**数据不是事实**：
@@ -4562,6 +4565,11 @@ function getLatestReview(chapterId) {  const row = prepare('SELECT * FROM chapte
   // raw_text 属于原始 payload（归一化报告可能不带它），界面回看要用。
   if (!report.raw_text && rawReport.raw_text) report.raw_text = rawReport.raw_text;
   if (!report.base_text && rawReport.base_text) report.base_text = rawReport.base_text;
+  // 2026-10-23：归一化视图只保 `base_hash`，指纹的其余字段在 raw payload 里。
+  // 不回填就会在第二次读取时丢掉 `base_sha256/alg/source`，让"底本身份"看起来只有半套。
+  for (const k of ['base_hash', 'base_hash_alg', 'base_sha256', 'base_hash_source', 'base_hash_computed']) {
+    if (!report[k] && rawReport[k]) report[k] = rawReport[k];
+  }
   return {
     id: row.id, chapter_id: row.chapter_id, report, checklist, status: row.status,
     created_at: row.created_at, dismissed: Number(row.dismissed) || 0,
@@ -4592,6 +4600,9 @@ function reviewForClient(review) {
     integrity: report.integrity && typeof report.integrity === 'object' ? report.integrity : null,
     review_hash: asString(report.review_hash, ''),
     link_mode: asString(report.link_mode, ''),
+    // 2026-10-23：底本指纹。老报告没存 hash 时**只在回包里派生**（state=derived），
+    // 不重写历史行；缺底本时如实 state=missing，界面不得把它读成"与当前正文一致"。
+    ...derivedBaseHash(report),
   };
 }
 
@@ -9706,12 +9717,25 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
     const chapterText = htmlToPlain((chapter && chapter.content) || '');
     const reviewedBaseText = asString(body.base_text, '') || asString(report && report.base_text, '');
     const quoteBase = resolveReviewQuoteBase({ reviewedText: reviewedBaseText, chapterText });
+    // 2026-10-23（现场：review#32 的 base_hash 为空）：保存审稿时必须把"审的是哪一版底本"写下来。
+    // 口径与修稿计划一致（fnv1a32+len，前端无法同步 sha256），另存 sha256 作强摘要。
+    // 调用方显式给了 hash 就保留，但**算出来不一致要留痕**（不静默二选一）。
+    const baseHashes = resolveBaseHash({ provided: asString(body.base_hash, ''), quoteBaseText: quoteBase ? quoteBase.text : '' });
     const structured = structureReviewReport(report, {
       text: quoteBase.text,
       quoteBase,
-      baseHash: asString(body.base_hash, ''),
+      baseHash: baseHashes.base_hash,
+      baseHashSource: baseHashes.source,
       snapshotId: asString(body.snapshot_id, ''),
     });
+    // 指纹与来源随报告一起落库：老报告没有这些字段时按"缺失"读，而不是假装一致。
+    structured.base_hash = baseHashes.base_hash;
+    structured.base_hash_alg = baseHashes.base_hash_alg;
+    structured.base_sha256 = baseHashes.base_sha256;
+    structured.base_hash_source = baseHashes.source;
+    structured.base_hash_mismatch = baseHashes.base_hash_mismatch === true;
+    structured.base_hash_computed = baseHashes.base_hash_computed || '';
+    structured.quote_base_source = quoteBase ? quoteBase.source : '';
     // 2026-10-18（报障）：把"AI 审稿时实际看到的那篇正文"随报告存下。修稿流程中断/刷新后，
     // 前端可以拿它继续修稿，而不是因为"当前章节正文取不到"就报"没有正文"。
     // 只存正文快照（优先调用方传入，退回本章当前纯文本），不存模型原始输出。
@@ -9756,6 +9780,12 @@ async function handleStoryStateRoute({ segments, method, query, req, res }) {
       // 不得合并进 consistency_conflicts（那会把建议说成结论）。
       consistency_advisories: structured.consistency && Array.isArray(structured.consistency.advisories)
         ? structured.consistency.advisories.length : 0,
+      // 2026-10-23：底本指纹随回执返回（界面/修稿可据此判定"审的是不是当前这一版"）。
+      base_hash: structured.base_hash || '',
+      base_hash_alg: structured.base_hash_alg || '',
+      base_sha256: structured.base_sha256 || '',
+      base_hash_source: structured.base_hash_source || '',
+      base_hash_mismatch: structured.base_hash_mismatch === true,
     });
   }
   // ── E03：修稿选择记录（独立于"当前勾选状态"，用于复核与补丁越权判定） ──

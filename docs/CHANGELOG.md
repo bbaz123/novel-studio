@@ -5,6 +5,38 @@
 
 ---
 
+### 🧭 v1.2.7 追加（未发布 · 2026-10-23 · 本轮复审判据：无关反例 / 改错位置 / 多条件半修）
+
+现场（活库 `chapter_reviews#32`）：9 条 finding 全缺 `kind/suggested_action/reading_cost` → 全部降级
+`hypothesis`、`auto_eligible=0`；报告同时给出两条「优点需加限定」，反例却分别是
+「他左前方一个中年男人一直在打电话…」与「…从正门一直拖到马路牙子。」——两处都只因一个字面「一直」成立。
+
+- **无关反例不再当证据**（`ai/editing/narrative-review.mjs`）：解释性只认因果/说明连接词（去掉 `一直/从小就`）；
+  心理句必须带心理动词，且剥掉引号里的台词；优点族改为「否定词 + 8 字内 + 那一类」；
+  `only_once` 反例必须与优点共享话题。限定建议带 `support_relation=contradicts`，被筛掉的进
+  `suppressed_qualifications`（`irrelevant|unknown` + 理由），界面单列「反例候选未确认关联（非结论）」。
+  活库只读重算：2 条无关反例 → 0 条限定建议 + 2 条留痕；`他从小觉得…` 这类真反例仍命中。
+- **改错位置成为独立维度**（`public/revision-semantic-verifier.js` / `revision-finalize.js` / `review-workspace.js`）：
+  新增 `target_verdict = NO_EDIT | ON_TARGET | WRONG_TARGET | UNPROVEN`，随行落库并在工作区显示
+  「改错位置（未通过）」。**不改** `final_status` 五值枚举：`WRONG_TARGET` 表达为
+  `UNRESOLVED + reason_code=UNRELATED_CHANGE + target_verdict=WRONG_TARGET`，回执与既有套件不漂移。
+- **多子条件只做一半 ⇒ PARTIAL**：硬失败**只来自声明的子条件**、至少一个子条件 PASS、且确有真实改动时落
+  `PARTIAL`（未通过项进 `unresolved_conditions`）；锚点仍在 / 保留项丢失 / 越权 / 底稿变化仍是 `FAIL`。
+- **审稿底本指纹落库**（作者选定 C 项）：新模块 `ai/editing/review-hash.mjs`（fnv1a32+len 与前端
+  `snapshot.body_hash` 同算法 + `sha256` 强摘要）。`PUT /novel/review` 以 **被审底本** `quoteBase.text`
+  计算（调用方给的值保留、不一致写 `base_hash_mismatch`）；201 回执带 `base_hash/base_sha256/来源`；
+  `GET /novel/review` 对老报告**只派生不重写**（`stored/derived/missing` 三态）；
+  `structureReviewReport` 的所有返回路径都透传 `base_hash/source`。现场 review#32 只读派生
+  `fnv1a:a0cd1c56:4771` / `sha256:ea618411…`（与导出的 before.txt 一致）。
+- **断言**：新增 `tests/narrative-repair/20-review-round-20261023.test.mjs`（A01–A37，零计费）与
+  夹具 `tests/narrative-repair/fixtures/review-20261023/`；已接入 `scripts/test-narrative-repair.mjs`
+  与 `scripts/ci-offline-checks.mjs`。结果：20/20 套件、`frontend-test` ALL PASS、
+  `test-1019-semantic` 19/19（Y-01b 断言同步收紧）、`check-utf8` 0 非法；
+  `ci-offline-checks` 51/78（27 条未通过与本轮改动前基线完全相同，为沙箱 `spawn EPERM` 等既有失败）。
+- **边界**：未跑 HTTP/DB/浏览器端到端矩阵、DSH 审计真实联调与备份恢复演练（沙箱/需停写窗口）；
+  `base_hash` 已实现到服务端保存/回读代码与纯函数断言，但 HTTP 真跑仍属 NOT_RUN（不声称接口已验证）；不写正式正文。详见
+  [2026-10-23 核验记录](narrative-repair/2026-10-23-review-round-validation.md)。
+
 ### 🧩 v1.2.7 追加（未发布 · 2026-10-23 · 修稿选择映射断裂：清单重复项把整章精确修稿挡在门外）
 
 现场：审稿报告有 9 条结构化 finding，但弹窗列出 18 条问题（后 9 条是同义改写的散文行），

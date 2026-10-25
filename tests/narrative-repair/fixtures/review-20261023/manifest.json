@@ -1,0 +1,23 @@
+{
+  "created": "2026-10-23T12:33:51.068Z",
+  "round": "2026-10-23",
+  "issue": "作者本轮 R-0001..R-0009",
+  "note": "逐字片段夹具，非完整章原文；完整 before/after 全文存于 data/（gitignored）并按 sha256 归档",
+  "files": {
+    "before.txt": "8a4ca287a4f9c406331bb21a7bacc81e73ad82039ac3d6bb9e6c1ed663f5d5d5",
+    "after.txt": "2d23d5c32c0933c41645663fe558e9fe0ae36326ba19e63d631d3a37f85b92d5",
+    "review-report.json": "aa128f1c7a905ea37bb9b5cb6d2fa922ad35fef44c9578db72eaed2dc2ea3909"
+  },
+  "findings": 9,
+  "expected": {
+    "R-0001": "FAIL",
+    "R-0002": "PARTIAL",
+    "R-0003": "WRONG_TARGET",
+    "R-0004": "FAIL",
+    "R-0005": "FAIL",
+    "R-0006": "PASS",
+    "R-0007": "FAIL",
+    "R-0008": "BLOCKED",
+    "R-0009": "FAIL"
+  }
+}

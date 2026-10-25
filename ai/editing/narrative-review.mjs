@@ -418,7 +418,14 @@ const ABSOLUTE_CLAIM = [
   { re: /(从没|从未|从来没有|一处也没有|毫无|没有任何)/, kind: 'never' },
   { re: /零(解释|重复|说明|遗漏|解释性)/, kind: 'zero' },
 ];
-const EXPLANATION_RE = /(所以|是因为|原因是|因为|于是|这才|原来|从小就|一直|说明|意味着|其实|归根到底|毕竟)/;
+const EXPLANATION_RE = /(所以|是因为|原因是|因为|于是|这才|原来|说明|意味着|其实|归根到底|毕竟)/;
+// 2026-10-23（本轮真实报告复审误报）：`一直/从小就` 不是"解释性连接词"，只是时间/频度副词。
+// 活库 review#32 的两条「优点需加限定」都只因一个字面「一直」成立：
+//   · 「他左前方一个中年男人一直在打电话…」被判成"心理总结反例"；
+//   · 「…从正门一直拖到马路牙子」被判成"解释性反例"。
+// 现在解释性句子只认因果/说明连接词；心理句另由 PSYCH_RE 判定（**必须带心理动词**，
+// 只说"一直在打电话/一直拖到"不算心理句）。
+const PSYCH_RE = /(他|她|我)[^。！？\n]{0,10}(觉得|明白|知道|记得|意识到|回想起|心想|认为|想着)/;
 const STOP = new Set([
   '没有', '不再', '完全', '彻底', '根本', '重复', '解释', '一个', '一种', '这一', '那也', '但是', '因为',
   '所以', '问题', '优点', '后面', '这里', '那里', '处理', '写得', '可以', '这个', '那个', '什么', '怎么',
@@ -460,11 +467,37 @@ function sharesTopicLoose(a, b) {
   for (const g of topicGrams(b)) if (A.has(g)) return true;
   return false;
 }
-/** 取正文里第一句含"解释性连接词"的句子（作为反例引用；找不到就返回空串，不编造）。 */
+/**
+ * 取正文里第一句可作为"解释/自我说明"反例的句子（找不到返回空串，不编造）。
+ *
+ * 2026-10-23：判断**叙述**里有没有解释，不能只看因果连接词 ——「他从小就觉得，
+ * 人拿到一样东西时手会先紧一下。」没有"因为/所以"，但它是明确的自我解释。
+ * 因此这里认两类：因果/说明连接词，或带心理动词的自我说明句；台词与副词不算。
+ */
 function explanationExample(text) {
   const ss = String(text || '').split(/(?<=[。！？…])/).map((s) => s.trim()).filter(Boolean);
-  for (const s of ss) if (EXPLANATION_RE.test(s)) return s;
+  for (const s of ss) {
+    const nar = narrationOf(s);
+    if (EXPLANATION_RE.test(nar) || PSYCH_RE.test(nar)) return s;
+  }
   return '';
+}
+
+/**
+ * 去掉引号里的台词（2026-10-23）。
+ *
+ * 为什么必须去掉：活库 review#32 里「他头也没抬：“知道了！”」曾因台词中的「知道」
+ * 被当作"心理句"，用来反驳"这段没有心理总结"。角色**说出来**的话不是叙述者的心理描写，
+ * 也不属于"正文有没有解释性旁白"这个判断。只去引号内容，不改原句、不猜指代。
+ */
+function narrationOf(sentence) {
+  return String(sentence || '')
+    .replace(/“[^”]*”/g, '')
+    // 台词可能在句号/感叹号处被切断：本片段只拿到开引号（「他头也没抬：“知道了！」），
+    // 收尾引号在下一片段里。未闭合的开引号要一路剥到句尾，否则台词词会被当成叙述。
+    .replace(/“[^”]*$/g, '')
+    .replace(/^”+/, '')
+    .trim();
 }
 
 /**
@@ -477,10 +510,18 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
   const conflicts = [];
   const advisories = [];
   const qualifications = [];
+  // 被筛掉的"候选反例"必须留痕：否则作者只看到"这条没加限定"，却不知道工具曾拿一句
+  // 不相干的话试过。support_relation 与 quality-auditor 的 relevance 口径一致：
+  // contradicts（可呈现）/ irrelevant（不相干）/ unknown（缺少可核对的反例）。
+  const suppressed = [];
   /** 声称"某类东西不存在"时必须能指出的对应正文反例（`probe` 在正文里找得到才算数）。 */
   const ABSENT_FAMILIES = [
-    { family: 'explanation', claim: /(解释|说明|交代)/, probe: EXPLANATION_RE, what: '解释性句子' },
-    { family: 'psychology', claim: /(内心独白|内心活动|心理|自我说明|自言自语)/, probe: /(他|她|我)[^。！？\n]{0,12}(从小|一直|觉得|明白|想|知道|记得)/, what: '内心/自我解释句' },
+    // 2026-10-23：claim 必须真的是"**叙述里**没有解释/心理句"（否定词直接修饰那一类），
+    // 而不是长句里随便出现"解释/心理"。活库 review#32 的第三条优点写的是
+    // 「与大厅里仍在叫号的广播**互不解释**」——那是"彼此不说明"，不是"没有解释性叙述"，
+    // 旧实现按子串命中，于是拿排队句当反例。
+    { family: 'explanation', claim: /(没有|毫无|不再有|零)[^，。；！？]{0,8}(解释|说明|交代)/, probe: EXPLANATION_RE, what: '解释性句子' },
+    { family: 'psychology', claim: /(没有|毫无|不再有|零)[^，。；！？]{0,8}(心理|内心|独白|自我说明|自言自语)/, probe: PSYCH_RE, what: '内心/自我解释句' },
   ];
   // ── 2026-03-17（v118 0317 专项 §5 · V118-09）：绝对局限措辞要**限定**，不删句 ──────
   //    事故形态：报告称"林清雪只给动作、没有内心独白"，而正文仍有
@@ -502,24 +543,53 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
       if (!fam.claim.test(s)) continue;
       if (limit.family && !limit.family.test(s)) continue;
       const hit = (String(text || '').split(/(?<=[。！？…])/).map((x) => x.trim()).filter(Boolean))
-        .find((sentence) => fam.probe.test(sentence));
+        .find((sentence) => fam.probe.test(narrationOf(sentence)));
       if (hit) { quote = hit; family = fam.family; break; }
     }
     if (!quote && limit.kind === 'only_once') {
       // "唯一一次"这类**穷尽**断言：指出正文里其他同类流程段作为反例（可逐字复核）。
       const hit = (String(text || '').split(/(?<=[。！？…])/).map((x) => x.trim()).filter(Boolean))
         .find((sentence) => /(走上|上台|按|测|流程)/.test(sentence) && !s.includes(sentence));
-      if (hit) { quote = hit; family = 'only_once'; }
+      if (hit && sharesTopic(s, hit)) {
+        quote = hit;
+        family = 'only_once';
+      } else if (hit) {
+        // 只是"同章另一段流程"，与这条优点没有共同话题：不能据此说"唯一一次"被驳倒。
+        suppressed.push({
+          code: 'strengths_qualification_suppressed', type: 'strength_vs_body',
+          strength: s, family: 'only_once', candidate_evidence: hit, support_relation: 'irrelevant',
+          reason: '候选反例与这条优点没有共同话题（不在谈同一件事）：不得呈现成"正文反例"',
+        });
+        continue;
+      }
     }
-    if (!quote) continue;
+    if (!quote) {
+      if (limit.kind !== 'only_once') {
+        // 有绝对措辞，但正文里找不到可核对的同类句子：结论需要语义判断，
+        // 本层**不猜、也不把"找不到"当成通过**，只如实记一条待核验。
+        suppressed.push({
+          code: 'strengths_qualification_suppressed', type: 'strength_vs_body',
+          strength: s, family: family || 'unclassified', candidate_evidence: '', support_relation: 'unknown',
+          reason: '缺少可核对的同类正文反例：是否成立需语义判断，本层不据此要求加限定',
+        });
+      }
+      continue;
+    }
+    const note = family === 'explanation'
+      ? '这条优点宣称"没有解释/说明"，而正文里有因果/说明性连接词：请把优点限定到它真正覆盖的范围。'
+      : (family === 'psychology'
+        ? '这条优点宣称"没有心理/内心句"，而正文里有带心理动词的句子：请把优点限定到它真正覆盖的段落。'
+        : '这条优点使用"唯一/只有一次"这类穷尽措辞，而正文里还有同类流程：请限定为"本章最完整的一次"之类。');
     qualifications.push({
       code: 'strengths_needs_qualification',
       type: 'strength_vs_body',
       strength: s,
       family,
       evidence: quote,
-      note: `这条优点的绝对措辞（${limit.kind}）与正文反例并存：请限定为"动作有效，另有少量自我解释"`
-        + '这类表述。**不要因此删掉整条优点评价**，也不要机械删正文句子。',
+      // 2026-10-23：只有能指出"同一话题上的反例"才给 contradicts；其余在 suppressed 里可见。
+      support_relation: 'contradicts',
+      method: family === 'only_once' ? 'topic_overlap' : 'family_instance',
+      note: note + ' **不要因此删掉整条优点评价**，也不要机械删正文句子。',
     });
   }
   for (const s of S) {
@@ -530,11 +600,11 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
     if (/解释|说明|交代/.test(s)) {
       const example = explanationExample(text);
       if (example) {
-        const marker = (EXPLANATION_RE.exec(example) || [''])[0];
+        const marker = (EXPLANATION_RE.exec(example) || PSYCH_RE.exec(example) || [''])[0];
         conflicts.push({
           type: 'strength_vs_body', claim: claim.kind, strength: s, issue: '', evidence: example,
-          reason: `优点宣称"${/完全没有/.test(s) ? '完全没有解释' : '没有解释'}"，正文里却存在解释性句子`
-            + `（连接词「${marker}」）：应限定措辞或单列候选，不能同时给出互相否认的绝对断言`,
+          reason: `优点宣称"${/完全没有/.test(s) ? '完全没有解释' : '没有解释'}"，正文里却存在解释性/自我说明句`
+            + `${marker ? `（${marker}）` : ''}：应限定措辞或单列候选，不能同时给出互相否认的绝对断言`,
         });
         continue;
       }
@@ -557,10 +627,13 @@ export function checkReportConsistency({ strengths = [], issues = [], text = '' 
     advisories,
     // 2026-03-17 新增：绝对局限措辞的**限定建议**（不改 status、不删句，只要求核对）。
     strength_qualifications: qualifications,
+    // 2026-10-23：被筛掉的候选反例（不可呈现成"正文反例"），author 仍可核对。
+    suppressed_qualifications: suppressed,
     checked_strengths: S.length,
     note: 'status=needs_calibration 只在**可确证**的情况给出（绝对措辞 × 正文反例，证据是那句原文）；'
       + `优点与问题的话题重叠只进 advisories 供人工核对，不改变 status —— 因为字面重叠无法证明语义矛盾。`
-      + `绝对局限措辞（唯一/完全没有）另进 strength_qualifications：只给"加限定"的建议与正文反例，不删句。`,
+      + `绝对局限措辞（唯一/完全没有）另进 strength_qualifications：只给"加限定"的建议与正文反例，不删句；`
+      + '不相干/无同类反例的候选进 suppressed_qualifications（support_relation=irrelevant|unknown），不计入"需加限定"。',
   };
 }
 
@@ -618,6 +691,10 @@ export function structureReviewReport(report = {}, ctx = {}) {
           chapter_empty: ctx.quoteBase.chapter_empty === true,
         }
         : null,
+      // 2026-10-23：底本指纹必须**每条返回路径**都带上（旧口径报告也要能对上"审的是哪一版"）。
+      // 这里只透传 ctx，不自己算 —— 算法唯一实现住在 ai/editing/review-hash.mjs（服务端算好后传入）。
+      base_hash: String(ctx.baseHash || ''),
+      base_hash_source: String(ctx.baseHashSource || ''),
     };
   };
   let rawFindings = report.findings;

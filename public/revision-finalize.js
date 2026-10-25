@@ -236,6 +236,8 @@
       canon_conflict: rows.filter((r) => r.final_status === FINAL.CANON_CONFLICT).length,
       semantic_not_run: rows.filter((r) => r.semantic_status === 'not_run').length,
       patch_applied: rows.filter((r) => r.patch_count > 0).length,
+      // 2026-10-23：补丁打偏的条目单独计数（它不是 PASS，也不是"没改"）。
+      wrong_target: rows.filter((r) => r.target_verdict === 'WRONG_TARGET').length,
       coverage_complete: coverageState.complete,
       coverage_missing: coverageState.missing.length,
       coverage_pending: coverageState.pending.length,
@@ -379,6 +381,9 @@
         // v1.2.5（方案 §7.1）：机器可读地区分"完全未修改"与"改了但问题仍在"。
         // actual_change 只看真实 patch 的 before/after，不看模型自述，也不看补丁条数。
         actual_change: v ? v.actual_change === true : false,
+        // 2026-10-23：改错位置（WRONG_TARGET）与"没改"必须分开显示。它不改变 final_status，
+        // 而是作为独立维度随行落库，供工作区/回执核对"补丁打偏了"。
+        target_verdict: v ? textOf(v.target_verdict) : 'NO_EDIT',
         patch_ids: v && Array.isArray(v.patch_ids) ? v.patch_ids.map(String) : [],
         evidence_ids: v && Array.isArray(v.evidence_ids) ? v.evidence_ids.map(String) : [],
         remaining_evidence: v && Array.isArray(v.remaining_evidence) ? v.remaining_evidence : [],

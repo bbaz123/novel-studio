@@ -142,6 +142,8 @@ export const CHECKS = [
   { name: '六项审稿漏修与语义闭环（N01–N36：半修/漏修/改错位置/跨资料未核验 + 分母/复修/终验，零计费）', cmd: ['tests/narrative-repair/18-six-issue-closure.test.mjs'], why: 'Q01 只删「四行」必须 PARTIAL；Q03 原文未动必须 FAIL（模型谎报 pass 也不行）；Q04 只删动作词必须 UNRELATED_CHANGE；Q05 待外部核验不得改正文凑数字；Q06 旁人提普通大学不算主角决定；已 PASS 项不被后续复修冲掉' },
   // 《逐项验收卡死》2026-10-22：判"只解决局部"之后必须还有可执行的下一步。
   { name: '逐项验收卡死出口（V00–V39：复修入口/轮次预算守卫/剩余证据扩范围/已知遗留/复验额度按候选版本，零计费）', cmd: ['tests/narrative-repair/19-partial-repair-entry.test.mjs'], why: 'PARTIAL_CANDIDATE 不得只有合并/导出/返回三条路：复修按钮必须存在并写明条数与付费口径；轮次用尽/超预算/全是人处理项时必须置灰且写清原因；复验额度必须按候选 hash 给（改过候选就能验、同一份不重复付费）；「接受遗留」只记账不得判通过' },
+  // 2026-10-23 本轮审稿回放：9 条问题的终态 / 改错位置 / 多子条件只做一半 / 无关反例。
+  { name: '本轮审稿—修稿—终验回放（A01–A37：9 条逐项终态/改错位置/半修/底稿 hash/无关反例，零计费）', cmd: ['tests/narrative-repair/20-review-round-20261023.test.mjs'], why: 'R-0001 原句未动不得 PASS；R-0002 只删一处太阳 ⇒ PARTIAL；R-0003 只删「羡慕」⇒ WRONG_TARGET + UNRELATED_CHANGE；R-0005 只删短信 ⇒ FAIL、只压评定单 ⇒ PASS；R-0009 模型谎称 PASS 也必须 FAIL；「一直在打电话/一直拖到」不得被当作解释或心理反例；审稿底本指纹与前端快照同算法、老报告读时派生不重写' },
   { name: '编码检查判据自检（含阴性对照）', cmd: ['.p1-baseline/check-utf8.mjs', '--self-test'], why: '中文仓库的编码纪律' },
   // dsh-novel-quality-auditor 阶段 1（2026-10-21）：审稿 issue 身份链 ID-01…ID-13。
   // 单独成条的原因：它是后续所有"精确修复/逐项终验"的前提，失败必须能一眼归因，

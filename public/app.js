@@ -12249,7 +12249,14 @@ function reportConsistencyHtml(consistency) {
   const notFound = (quoteAudit && Array.isArray(quoteAudit.items))
     ? quoteAudit.items.filter((i) => i && i.found === false) : [];
   const qualifications = (c && Array.isArray(c.strength_qualifications)) ? c.strength_qualifications : [];
-  if (!conflicts.length && !advisories.length && !notFound.length && !qualifications.length) return '';
+  // 2026-10-23：只有 support_relation=contradicts（或旧数据没写该字段）才进"需加限定"；
+  // 被筛掉的候选反例由数据层放进 suppressed_qualifications，界面只作"建议核对"，不当作结论。
+  const contested = qualifications.filter((q) => !q || q.support_relation == null || q.support_relation === 'contradicts');
+  const suppressedQuals = [
+    ...qualifications.filter((q) => q && q.support_relation && q.support_relation !== 'contradicts'),
+    ...((c && Array.isArray(c.suppressed_qualifications)) ? c.suppressed_qualifications : []),
+  ];
+  if (!conflicts.length && !advisories.length && !notFound.length && !contested.length && !suppressedQuals.length) return '';
   const blocks = [];
   if (notFound.length) {
     // 只**指出**引号内容没有逐字出处，不猜模型想引哪一句（猜错比不报更坏），也不删整条优点。
@@ -12260,14 +12267,24 @@ function reportConsistencyHtml(consistency) {
       + '<div class="redline-scan warn">只核验**用引号表示逐字原文**的地方；不带引号的概括与文学分析不参与核验，'
       + '不会因此被要求附原话。</div>' + items);
   }
-  if (qualifications.length) {
+  if (contested.length) {
     // §5：绝对局限措辞的**限定建议** —— 只要求核对措辞，**不删整条优点、也不机械删正文句子**。
-    const items = qualifications.slice(0, 3).map((q) => `<div class="review-item">✏️ 优点「${esc(String(q.strength || '').slice(0, 50))}」`
+    const items = contested.slice(0, 3).map((q) => `<div class="review-item">✏️ 优点「${esc(String(q.strength || '').slice(0, 50))}」`
       + '用了绝对措辞，而正文里有反例：'
       + `<div class="muted">${esc(String(q.evidence || '').slice(0, 80))}</div>`
       + '<div class="muted">建议限定为它真正覆盖的范围（例如"动作有效，另有少量自我解释"）。本条只提示加限定，不删优点评语。</div></div>').join('');
-    blocks.push(`<div class="ref-group-title">优点需加限定（${qualifications.length} 处）</div>`
+    blocks.push(`<div class="ref-group-title">优点需加限定（${contested.length} 处）</div>`
       + '<div class="redline-scan">这些优点本身可能成立，需要改的只是那个绝对断言。</div>' + items);
+  }
+  if (suppressedQuals.length) {
+    // 2026-10-23：候选反例与优点不在谈同一件事（irrelevant）或找不到可核对反例（unknown）时，
+    // **不得**呈现成"正文反例"。这里如实列出候选与理由，供作者核对工具是不是判错了。
+    const items = suppressedQuals.slice(0, 2).map((q) => `<div class="review-item">🔎 优点「${esc(String(q.strength || '').slice(0, 46))}」`
+      + `的候选反例「${esc(String(q.candidate_evidence || q.evidence || '（无）').slice(0, 60))}」`
+      + `${q.support_relation === 'irrelevant' ? '与这条优点没有共同话题' : '未确认是同类证据'}：`
+      + `${esc(String(q.reason || '').slice(0, 60))}</div>`).join('');
+    blocks.push(`<div class="ref-group-title">反例候选未确认关联（${suppressedQuals.length} 处，非结论）</div>`
+      + '<div class="redline-scan">这些候选反例**不计入**"需加限定"；请核对是否真的在同一件事上说话。</div>' + items);
   }
   if (conflicts.length) {
     const items = conflicts.slice(0, 3).map((c) => `<div class="review-item issue">⚠️ 优点「${esc(String(c.strength || '').slice(0, 60))}」`

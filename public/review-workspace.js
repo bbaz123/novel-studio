@@ -64,6 +64,14 @@
     { id: 'full', label: '全文' },
   ];
 
+  /** 「改在哪」独立轴（2026-10-23）：补丁打偏与"没改"必须分开显示。 */
+  const TARGET_LABEL = {
+    NO_EDIT: '未改动',
+    ON_TARGET: '改在证据上',
+    WRONG_TARGET: '改错位置',
+    UNPROVEN: '位置未证实',
+  };
+
   const textOf = (x) => String(x == null ? '' : x);
 
   function statusOf(status) {
@@ -305,6 +313,11 @@
     }
     return rows.map((r, i) => {
       const st = statusOf(r.final_status);
+      // 「改错位置」不是"没通过"的同义词：作者需要一眼看出补丁打偏了，而不是以为没修。
+      const target = textOf(r.target_verdict);
+      const stShown = (target === 'WRONG_TARGET' && textOf(r.final_status) === 'UNRESOLVED')
+        ? { text: '改错位置（未通过）', tone: 'bad' }
+        : st;
       const id = textOf(r.issue_id);
       const dims = dimensionsOf(r);
       return {
@@ -314,8 +327,10 @@
         ordinal: /^\d+$/.test(id) ? String(Number(id)) : String(i + 1),
         title: textOf(r.title) || `问题 ${id}`,
         status: r.final_status,
-        status_text: st.text,
-        tone: st.tone,
+        status_text: stShown.text,
+        tone: stShown.tone,
+        target_verdict: target,
+        target_text: TARGET_LABEL[target] || '',
         reason_code: textOf(r.reason_code),
         reason: textOf(r.reason),
         // 详情抽屉需要的字段必须原样透传：列表投影曾把它们裁掉，导致抽屉里

@@ -71,6 +71,9 @@ export const NARRATIVE_REPAIR_TESTS = [
   // 《逐项验收卡死》2026-10-22：V00–V39（复修入口 / 轮次预算守卫 / 剩余证据扩范围 /
   // 已知遗留 / 复验额度按候选版本）。这套断言直接管"判了局部之后还有没有下一步"。
   'tests/narrative-repair/19-partial-repair-entry.test.mjs',
+  // 2026-10-23 本轮审稿回放（A01–A37）：9 条问题逐条终态 / 改错位置 / 部分子条件 /
+  // 底稿 hash / 工作区显示 / 报告"优点需加限定"的无关反例筛选 / 审稿底本指纹（A30–A37）。
+  'tests/narrative-repair/20-review-round-20261023.test.mjs',
 ];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i >= 0 ? process.argv[i + 1] : ''; })();

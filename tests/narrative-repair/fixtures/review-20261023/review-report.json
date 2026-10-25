@@ -1,0 +1,259 @@
+{
+  "schema_version": "review.v3",
+  "source": "2026-10-23 作者本轮审稿（R-0001～R-0009）的逐字片段，非完整章原文",
+  "issues": [
+    { "id": "R-0001", "text": "叙述者提前总结三步流程，并把颜色决定人生的结论整句说完" },
+    { "id": "R-0002", "text": "排队转场靠同一套节拍反复使用，时间口径不齐" },
+    { "id": "R-0003", "text": "三段匿名群众反应在证明同一件事" },
+    { "id": "R-0004", "text": "“像是已经试过好几次了”与一次性觉醒检测相抵" },
+    { "id": "R-0005", "text": "结果信息在窗口、评定单、短信里逐字重列三次" },
+    { "id": "R-0006", "text": "“这一行”与“底下那行小字”指代打结" },
+    { "id": "R-0007", "text": "“刚才在队伍里排他前面的那个胖子”前文没有这个人" },
+    { "id": "R-0008", "text": "一个上午两个A级，与A级稀缺度设定有张力" },
+    { "id": "R-0009", "text": "直播屏上的等级对照整行列出，前文已由场景建立" }
+  ],
+  "findings": [
+    {
+      "id": "R-0001",
+      "title": "叙述者抢先说完三步流程与颜色决定人生",
+      "kind": "narrative",
+      "verdict": "confirmed",
+      "suggested_action": "condense",
+      "reading_cost": "让读者失去自己摸出等级＝人生分层的空间",
+      "type": "repetition",
+      "severity": "medium",
+      "problem_type": "REDUNDANCY",
+      "explanation": "广播已经交代流程，叙述又用一句总结复述，并提前把结论说穿。",
+      "rationale": "同一信息被说了两遍，且第二遍替读者下了结论。",
+      "counterevidence": "若这一段的目标就是尽快交代规则、后文不再演示，则重复可接受。",
+      "evidence": [
+        { "quote": "交表，按掌，等结果，全程不超过三分钟。", "role": "reference", "span_id": "r1-ref" },
+        { "quote": "流程其实只有三步：交表，把左手按在石板上，等石头亮", "role": "candidate_edit", "span_id": "r1-e1" },
+        { "quote": "后面的人生大致就按那个颜色排下去——念什么学校、进不进防卫体系、家里人是哭还是笑", "role": "candidate_edit", "span_id": "r1-e2" }
+      ],
+      "acceptance": {
+        "rule": "修后三步流程只在广播里出现一次，叙述不再提前直陈颜色→人生的结论。",
+        "preserve": ["广场上的广播一遍遍循环：“交表，按掌，等结果，全程不超过三分钟。”"],
+        "conditions": [
+          { "id": "R-0001.C1", "kind": "residual_terms_absent", "terms": ["流程其实只有三步"], "severity": "hard" },
+          { "id": "R-0001.C2", "kind": "residual_terms_absent", "terms": ["后面的人生大致就按那个颜色排下去"], "severity": "hard" },
+          { "id": "R-0001.C3", "kind": "preserve_terms", "terms": ["交表，按掌，等结果"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0002",
+      "title": "排队段推进靠同一套节拍反复使用",
+      "kind": "wording",
+      "verdict": "confirmed",
+      "suggested_action": "condense",
+      "reading_cost": "转场显得机械，时间刻度也对不上",
+      "type": "repetition",
+      "severity": "medium",
+      "problem_type": "LOCAL_PHRASE",
+      "explanation": "“队伍往前挪”反复作为节拍，太阳位置又连续当时钟。",
+      "rationale": "同一功能用了两套手段重复标记。",
+      "counterevidence": "排队本身就是等待，重复也可能是有意的滞留感。",
+      "evidence": [
+        { "quote": "队伍往前挪。他看了一上午", "role": "candidate_edit", "span_id": "r2-e1" },
+        { "quote": "队伍往前挪了七八步，再停五六分钟。", "role": "candidate_edit", "span_id": "r2-e2" },
+        { "quote": "太阳升高了一截", "role": "candidate_edit", "span_id": "r2-e3" }
+      ],
+      "acceptance": {
+        "rule": "修后“队伍往前挪”不再反复作为换段节拍，时间刻度只保留一处。",
+        "preserve": [],
+        "conditions": [
+          { "id": "R-0002.C1", "kind": "residual_terms_absent", "terms": ["队伍往前挪。"], "severity": "hard" },
+          { "id": "R-0002.C2", "kind": "residual_terms_absent", "terms": ["太阳升高了一截"], "severity": "hard" },
+          { "id": "R-0002.C3", "kind": "residual_terms_absent", "terms": ["他看了一上午"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0003",
+      "title": "三段匿名群众反应在证明同一件事",
+      "kind": "narrative",
+      "verdict": "confirmed",
+      "suggested_action": "condense",
+      "reading_cost": "同一道理被反复演示，读者被喂结论",
+      "type": "repetition",
+      "severity": "medium",
+      "problem_type": "LOCAL_PHRASE",
+      "explanation": "马尾女生的两次自我打气功能重复，应压到一处。",
+      "rationale": "同一人物的同一焦虑连说两遍。",
+      "counterevidence": "两次打气也可能表现她越说越慌，是有意的人物节奏。",
+      "evidence": [
+        { "quote": "对同伴说：“你肯定青绿。”", "role": "candidate_edit", "span_id": "r3-e1" },
+        { "quote": "她嘴里又重复着“青绿青绿”", "role": "candidate_edit", "span_id": "r3-e2" },
+        { "quote": "C级进防卫体系，毕业就有工资", "role": "reference", "span_id": "r3-ref" }
+      ],
+      "acceptance": {
+        "rule": "马尾女生的两次自我打气压到一处；C级与D级的现实后果两段保留。",
+        "preserve": ["C级进防卫体系，毕业就有工资"],
+        "conditions": [
+          { "id": "R-0003.C1", "kind": "residual_terms_absent", "terms": ["你肯定青绿", "青绿青绿"], "severity": "hard" },
+          { "id": "R-0003.C2", "kind": "preserve_terms", "terms": ["C级进防卫体系"], "severity": "hard" },
+          { "id": "R-0003.C3", "kind": "residual_terms_absent", "terms": ["声音里带着点羡慕"], "severity": "risk" }
+        ]
+      }
+    },
+    {
+      "id": "R-0004",
+      "title": "“像是已经试过好几次了”与一次性检测相抵",
+      "kind": "wording",
+      "verdict": "confirmed",
+      "suggested_action": "replace",
+      "reading_cost": "读者会以为检测可以反复试，动摇世界观",
+      "type": "canon",
+      "severity": "low",
+      "problem_type": "LOCAL_PHRASE",
+      "explanation": "比喻暗示此人多次检测，与一次性规则相抵。",
+      "rationale": "“试过好几次”直接指向重复检测。",
+      "counterevidence": "“像是”只是比喻，可能只表现他动作熟练。",
+      "evidence": [
+        { "quote": "一个高个子男生走上去，手按在石板上的动作很随意，像是已经试过好几次了。", "role": "candidate_edit", "span_id": "r4-e1" }
+      ],
+      "acceptance": {
+        "rule": "不再出现暗示检测可反复的字面，从容姿态仍读得出来。",
+        "preserve": ["手按在石板上的动作很随意"],
+        "conditions": [
+          { "id": "R-0004.C1", "kind": "residual_terms_absent", "terms": ["像是已经试过好几次了"], "severity": "hard" },
+          { "id": "R-0004.C2", "kind": "preserve_terms", "terms": ["手按在石板上的动作很随意"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0005",
+      "title": "结果信息在窗口、评定单、短信里逐字重列三次",
+      "kind": "fact",
+      "verdict": "confirmed",
+      "suggested_action": "condense",
+      "reading_cost": "同一串结果被念三遍，情绪被手续细节稀释",
+      "type": "repetition",
+      "severity": "medium",
+      "problem_type": "REDUNDANCY",
+      "explanation": "窗口宣读、评定单重印、短信再写一遍，同一信息三次。",
+      "rationale": "评定单完整重印结论，与窗口和短信重复。",
+      "counterevidence": "评定单是官方档案，重印可能是有意的实体感。",
+      "evidence": [
+        { "quote": "D级，暗黄色，无战斗能力。建议方向——普通职业。", "role": "reference", "span_id": "r5-ref-window" },
+        { "quote": "评定单上印得规规整整：姓名岳宸炎，学校江陵三中，检测结果D级·无战斗能力，建议方向普通职业。", "role": "candidate_edit", "span_id": "r5-e1" },
+        { "quote": "测完了，D级，无战斗能力，普通职业方向。", "role": "reference", "span_id": "r5-ref-sms" }
+      ],
+      "acceptance": {
+        "rule": "同一串结果最多两次：窗口一次、短信一次；评定单只保留纸的实体细节。",
+        "preserve": [
+          "D级，暗黄色，无战斗能力。建议方向——普通职业。",
+          "测完了，D级，无战斗能力，普通职业方向。"
+        ],
+        "conditions": [
+          { "id": "R-0005.C1", "kind": "preserve_terms", "terms": ["D级，暗黄色，无战斗能力。建议方向——普通职业。"], "severity": "hard" },
+          { "id": "R-0005.C2", "kind": "residual_terms_absent", "terms": ["评定单上印得规规整整：姓名岳宸炎", "检测结果D级·无战斗能力", "建议方向普通职业。"], "severity": "hard" },
+          { "id": "R-0005.C3", "kind": "preserve_terms", "terms": ["测完了，D级，无战斗能力，普通职业方向。"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0006",
+      "title": "“这一行”与“底下那行小字”指代打结",
+      "kind": "wording",
+      "verdict": "confirmed",
+      "suggested_action": "replace",
+      "reading_cost": "读者要回读才知道先后看了哪一行",
+      "type": "style",
+      "severity": "low",
+      "problem_type": "LOCAL_PHRASE",
+      "explanation": "先看“这一行”又看“底下那行小字”，两只可能指同一行。",
+      "rationale": "指代不唯一，造成重复阅读。",
+      "counterevidence": "",
+      "evidence": [
+        { "quote": "他把这一行看了两遍，又去看底下那行小字。", "role": "candidate_edit", "span_id": "r6-e1" },
+        { "quote": "本结果全国有效，可登录觉醒者协会官网查询。", "role": "reference", "span_id": "r6-ref" }
+      ],
+      "acceptance": {
+        "rule": "阅读对象唯一，不再先看小字再看同一行小字。",
+        "preserve": ["本结果全国有效"],
+        "conditions": [
+          { "id": "R-0006.C1", "kind": "residual_terms_absent", "terms": ["这一行看了两遍", "底下那行小字"], "severity": "hard" },
+          { "id": "R-0006.C2", "kind": "preserve_terms", "terms": ["本结果全国有效"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0007",
+      "title": "“刚才在队伍里排他前面的那个胖子”前文没有这个人",
+      "kind": "narrative",
+      "verdict": "confirmed",
+      "suggested_action": "replace",
+      "reading_cost": "读者想不起是谁，对话的宽慰功能被身份问号打断",
+      "type": "continuity",
+      "severity": "low",
+      "problem_type": "LOCAL_PHRASE",
+      "explanation": "胖子用“刚才排前面”作为识别依据，但前文没有铺垫。",
+      "rationale": "关键识别依据在读者记忆里不存在。",
+      "counterevidence": "队伍里本来可以有没被单独写过的人。",
+      "evidence": [
+        { "quote": "是刚才在队伍里排他前面的那个胖子", "role": "candidate_edit", "span_id": "r7-e1" },
+        { "quote": "D级也能过。", "role": "reference", "span_id": "r7-ref" }
+      ],
+      "acceptance": {
+        "rule": "胖子的出现有本段内可见依据，不再声称前文写过。",
+        "preserve": ["D级也能过。"],
+        "conditions": [
+          { "id": "R-0007.C1", "kind": "preserve_terms", "terms": ["D级也能过。"], "severity": "hard" },
+          { "id": "R-0007.C2", "kind": "residual_terms_absent", "terms": ["刚才在队伍里排他前面的那个胖子"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0008",
+      "title": "一个上午两个A级，与A级稀缺度设定有张力",
+      "kind": "narrative",
+      "verdict": "hypothesis",
+      "suggested_action": "keep",
+      "reading_cost": "稀缺度被稀释，A级的震撼变弱",
+      "type": "canon",
+      "severity": "medium",
+      "problem_type": "OTHER",
+      "explanation": "蓝图上A级稀缺，本章同厅两个A级，需作者与世界观定夺。",
+      "rationale": "等级稀缺度与出场密度存在张力。",
+      "counterevidence": "异常本身可能就是本章要展示的钩子。",
+      "evidence": [
+        { "quote": "李拓，A级，火焰法师。", "role": "reference", "span_id": "r8-e1" },
+        { "quote": "A级，风暴掌控者。", "role": "reference", "span_id": "r8-e2" }
+      ],
+      "acceptance": {
+        "rule": "由作者决定是否保留两个A级；未批准时正文一个字不改。",
+        "preserve": ["李拓，A级，火焰法师。", "A级，风暴掌控者。"],
+        "conditions": [
+          { "id": "R-0008.C1", "kind": "preserve_terms", "terms": ["李拓，A级，火焰法师。"], "severity": "hard" }
+        ]
+      }
+    },
+    {
+      "id": "R-0009",
+      "title": "直播屏上的等级对照整行列出",
+      "kind": "wording",
+      "verdict": "confirmed",
+      "suggested_action": "condense",
+      "reading_cost": "信息密度过高，读者被表格砸中",
+      "type": "repetition",
+      "severity": "low",
+      "problem_type": "LOCAL_PHRASE",
+      "explanation": "五档颜色整表列出，前文场景已经建立部分对应。",
+      "rationale": "整表是说明文，不是场景。",
+      "counterevidence": "为S级光柱那一幕提供刻度，整表也可能是有意的世界观交代。",
+      "evidence": [
+        { "quote": "右边在轮播等级说明：暗黄D、青绿C、浅蓝B、金红A、光柱冲天S。", "role": "candidate_edit", "span_id": "r9-e1" }
+      ],
+      "acceptance": {
+        "rule": "对照屏只保留为S级那一幕提供刻度的内容，或整表删除。",
+        "preserve": ["左边是全国觉醒日直播", "右边在轮播等级说明"],
+        "conditions": [
+          { "id": "R-0009.C1", "kind": "residual_terms_absent", "terms": ["暗黄D、青绿C、浅蓝B、金红A、光柱冲天S"], "severity": "hard" },
+          { "id": "R-0009.C2", "kind": "preserve_terms", "terms": ["左边是全国觉醒日直播", "光柱冲天"], "severity": "hard" }
+        ]
+      }
+    }
+  ]
+}

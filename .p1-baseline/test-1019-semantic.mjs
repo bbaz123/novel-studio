@@ -139,10 +139,14 @@ const coverage = (status = 'patched') => ({ issue_id: 'R-0001', status });
     coverage: coverage('patched'), invariants: { must_keep: [] },
     semantic: { status: 'pass', reason: '模型自报已修好' },
   });
+  // 2026-10-23：本用例同时满足"锚点原句仍在"与"补丁打在别处"。新增 target_verdict 维度后，
+  // 原因码取 UNRELATED_CHANGE（改错位置是根因），但两种原因码都只允许 UNRESOLVED ——
+  // 这里把**断言收紧**为"必须是这两种之一，且必须同时标成 WRONG_TARGET"，不是放宽。
   check('Y-01b 硬事实 fail（锚点原句还在）+ 语义 pass → UNRESOLVED（字面事实不被一句话覆盖）',
     conflict.verdict === 'fail' && conflict.final_status === 'UNRESOLVED'
-      && conflict.reason_code === 'ANCHOR_NOT_EDITED',
-    JSON.stringify({ code: conflict.reason_code, final: conflict.final_status }));
+      && ['ANCHOR_NOT_EDITED', 'UNRELATED_CHANGE'].includes(conflict.reason_code)
+      && conflict.target_verdict === 'WRONG_TARGET',
+    JSON.stringify({ code: conflict.reason_code, final: conflict.final_status, target: conflict.target_verdict }));
   check('Y-02 冲突时 final_status 不是 ISSUE_VERIFIED',
     conflict.final_status !== 'ISSUE_VERIFIED' && softConflict.final_status !== 'ISSUE_VERIFIED',
     JSON.stringify([conflict.final_status, softConflict.final_status]));

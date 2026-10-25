@@ -1238,6 +1238,8 @@ export const PHASES = [
       'public/revision-plan.js',
       'ai/editing/narrative-scan.mjs',
       'ai/editing/narrative-review.mjs',
+      // 2026-10-23：审稿底本指纹（fnv1a32+len + sha256），服务端与离线断言共用。
+      'ai/editing/review-hash.mjs',
       // —— 本批新增的测试、冻结样本与交付文档（可独立撤回）——
       'tests/narrative-repair/',
       'docs/narrative-repair/',

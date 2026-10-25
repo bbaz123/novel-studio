@@ -1,0 +1,98 @@
+{
+  "probe": "P0_CAPABILITY_SMOKE",
+  "plan_id": "plan-52d26b8b5f43",
+  "requires_source": "dsh-one-click-book.plan.yaml / additional_required_capabilities",
+  "method": "逐个 provider 名做安装清单与组合树检索，再用可观测命令/文档取证；无法取证者不得记 PASS。",
+  "capabilities": [
+    {
+      "id": "isolation.worktree",
+      "required": true,
+      "on_missing": "BLOCK",
+      "providers_checked": ["native_dsh", "dsh-task-worktree", "worktree-mgr", "@dsh-cc/tool-git-worktree"],
+      "providers_found": [],
+      "verdict": "PARTIAL",
+      "evidence": [
+        "git worktree add --detach .dsh/probe/wt HEAD -> 成功，HEAD=9a145db，工作树可见 AGENTS.md/README.md",
+        "git worktree add --detach C:/Users/a1941/Desktop/DeepSeek/.ocb-wt-probe HEAD -> fatal: could not create leading directories of '.../.ocb-wt-probe/.git': Permission denied（DSH 文件沙箱 workspace-write 边界）",
+        "profile 依赖清单无 worktree 类插件；DSH packages 列表无 worktree 包"
+      ],
+      "impact": "只能在主工作区目录内部创建 worktree；plan.agent_contract 要求 main_workspace_write=forbidden，二者在只靠本机沙箱时互斥"
+    },
+    {
+      "id": "contract.schema_validator",
+      "required": true,
+      "on_missing": "BLOCK",
+      "providers_checked": ["native_dsh", "dsh-acceptance", "dsh-agent-contract", "dsh-harness-core"],
+      "providers_found": [],
+      "verdict": "MISSING",
+      "evidence": [
+        "profile 依赖清单不含任何 schema/acceptance/contract 插件",
+        "DSH 打包源码 packages 目录无 schema/acceptance/agent-contract/harness-core 包",
+        "DSH 的 schemastery 只校验插件配置，不校验任意 artifact JSON Schema"
+      ],
+      "impact": "G1 契约门（schema_valid、acceptance_ids_unique 等）没有可委托的校验器；需自实现或引入等价能力"
+    },
+    {
+      "id": "network.egress_deny_default",
+      "required": true,
+      "on_missing": "BLOCK",
+      "providers_checked": ["native_dsh", "dsh-egress-guard"],
+      "providers_found": [],
+      "verdict": "MISSING",
+      "evidence": [
+        "packages/sandbox/sandbox/README.md:167 - File effects are the whole policy vocabulary — the seam expresses no network, process, syscall, device, or credential restrictions",
+        "packages/sandbox/sandbox-policy/README.md:148 - network and process policy are outside its vocabulary",
+        "profile 未安装 egress 类插件；本会话 web_fetch/web_search 工具可用（默认允许出站）"
+      ],
+      "impact": "与 security.network=deny_default、allowed_hosts=[] 直接冲突；AC 要求的外部访问控制无从取证"
+    },
+    {
+      "id": "secrets.broker_or_read_block",
+      "required": true,
+      "on_missing": "BLOCK",
+      "providers_checked": ["native_dsh", "dsh-sensitive-guard", "secrets_broker"],
+      "providers_found": ["credentials-local（本机文件凭据存储，非 broker）"],
+      "verdict": "PARTIAL",
+      "evidence": [
+        "dsh-operation-security README：EXPORT/PUBLISH 额外做凭据扫描（按文件名规则，见已知边界 10）",
+        "DSH packages/credentials/credentials-local 为 file-backed 凭据存储；授权包 dsh-authorization 负责人类引导式取凭据，不隔离 Agent 环境",
+        "无敏感守卫插件；凭据读取阻断（read_block）无实现证据"
+      ],
+      "impact": "可做导出前扫描，但 security.secrets=broker_only 与“阻断凭据读取”无法成立"
+    },
+    {
+      "id": "evidence.tamper_evident",
+      "required_for": "one_click_book_plus and EXPORT/PUBLISH",
+      "on_missing": "DEGRADED_AND_BLOCK_EXPORT_UNLESS_APPROVED",
+      "providers_checked": ["native_dsh", "dsh-attest-chain"],
+      "providers_found": [],
+      "verdict": "MISSING",
+      "evidence": [
+        "dsh-plugin-verification 记录证据索引与 workspaceFingerprint(sha256)，但无哈希链/签名/attest 结构",
+        "未安装 dsh-attest-chain；DSH 源码无 evidence/attest 包"
+      ],
+      "impact": "增强层与导出的 hash_chain 要求无法满足 → 按计划应 DEGRADED 并阻断导出，除非人类明确批准"
+    },
+    {
+      "id": "quality.mutation_or_semantic_adversarial_gate",
+      "required_for": "implementation and validators",
+      "on_missing": "BLOCK",
+      "providers_checked": ["native_dsh", "dsh-engineering-suite", "dsh-plugin-hub-mutation-gate"],
+      "providers_found": [],
+      "verdict": "MISSING",
+      "evidence": [
+        "DSH 源码仅有 .agents/notes/proposed/testing/2026-06-11-mutation-testing.md（提案，未实现）",
+        "对 Desktop/DeepSeek 下插件目录检索 mutation gate / mutation_score 无实现命中",
+        "profile 未安装 dsh-engineering-suite 或 mutation gate 插件"
+      ],
+      "impact": "G3 的 mutation_gate（required: true，missing_run_is_failure: true）无法运行 → 按计划直接失败"
+    }
+  ],
+  "g0": {
+    "verdict": "FAIL",
+    "blocking_capabilities": ["network.egress_deny_default", "quality.mutation_or_semantic_adversarial_gate", "contract.schema_validator"],
+    "degraded_capabilities": ["isolation.worktree", "secrets.broker_or_read_block", "evidence.tamper_evident"],
+    "plan_required_action": "STOP_AND_REPORT（P0 on_failure: BLOCK_AND_REPORT）",
+    "reason": "3 项 required:true 能力 MISSING、2 项 PARTIAL；G0_preflight 的 required_additional_capabilities_pass 无法成立"
+  }
+}
