@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -37,13 +37,24 @@ const arg = (name, dflt) => {
 };
 const sep = process.argv.indexOf('--');
 if (sep < 0 || sep === process.argv.length - 1) {
-  console.error('用法: node scripts/ci-isolated-run.mjs [--port 3738] [--data <目录>] [--keep] -- <命令> [参数...]');
+  console.error('用法: node scripts/ci-isolated-run.mjs [--port 3738] [--data <目录>] [--keep] [--egress-guard] -- <命令> [参数...]');
+  console.error('  --egress-guard  给所有 Node 子进程加出口沙箱（默认拒绝非白名单出站，回环放行）');
   process.exit(2);
 }
 const PORT = Number(arg('--port', '3738')) || 3738;
 const KEEP = process.argv.includes('--keep');
 const DATA_DIR = path.resolve(arg('--data', path.join(os.tmpdir(), `novel-studio-ci-${PORT}-${process.pid}`)));
 const CMD = process.argv.slice(sep + 1);
+
+// 出口沙箱（宿主编排层的 sandbox 半边）：`--egress-guard` 或 NOVELSTUDIO_EGRESS_GUARD=1 时，
+// 给所有 Node 子进程加 `--import` 预加载，在业务代码之前拒绝非白名单出站。
+// 只影响 Node 进程；外部 curl 之类由插件半边（harness-plugins/novel-writing/egress-guard.mjs）在工具层拦。
+const EGRESS_GUARD = process.argv.includes('--egress-guard') || process.env.NOVELSTUDIO_EGRESS_GUARD === '1';
+if (EGRESS_GUARD) {
+  const preload = path.join(HERE, '..', 'harness-plugins', 'novel-writing', 'sandbox', 'install.mjs');
+  // Windows 下 `--import` 只认 URL，不认盘符路径（实测 ERR_UNSUPPORTED_ESM_URL_SCHEME）。
+  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`].filter(Boolean).join(' ');
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 

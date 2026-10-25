@@ -2263,6 +2263,7 @@ export const PHASES = [
       'scripts/one-click-book-finalize.mjs',
       'scripts/one-click-book-mutation.mjs',
       'scripts/test-one-click-book.mjs',
+      'scripts/test-ocb-egress.mjs',
       'public/one-click-book.js',
       'docs/one-click-book/',
       'book-project/',

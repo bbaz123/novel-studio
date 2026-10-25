@@ -89,7 +89,7 @@
   - 文件 harness-plugins/novel-writing/capabilities.mjs 同时属于 P0/L/Z6/NS0/V13——改动改在同一批代码里，撤不干净
 - **说明**：harness.js 同时被 P4/P6 改过；profile 本身的回滚是卸掉 novel profile 与 bundle 接线（install-profile.mjs 反向操作）。
 - **验收证据**：`.p0-recon/README.md`、`.p0-recon/verify-harness-profile.mjs`、`.p0-recon/compare-composed.mjs`、`.p0-recon/novel.p3.txt`、`.p0-recon/capture-dsh-request.mjs`
-- **本阶段认领的文件**（39 个）：
+- **本阶段认领的文件**（42 个）：
   - `.p0-recon/.gitignore`
   - `.p0-recon/README.md`
   - `.p0-recon/capture-dsh-request.mjs`
@@ -120,6 +120,7 @@
   - `harness-plugins/novel-writing/agent.cordis.yml`
   - `harness-plugins/novel-writing/capabilities.mjs`
   - `harness-plugins/novel-writing/cordis.patch.yml`
+  - `harness-plugins/novel-writing/egress-guard.mjs`
   - `harness-plugins/novel-writing/headless-cordis.patch.yml`
   - `harness-plugins/novel-writing/install-profile.mjs`
   - `harness-plugins/novel-writing/install.ps1`
@@ -127,6 +128,8 @@
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
   - `harness-plugins/novel-writing/profile.mjs`
+  - `harness-plugins/novel-writing/sandbox/egress-preload.mjs`
+  - `harness-plugins/novel-writing/sandbox/install.mjs`
   - `harness-plugins/novel-writing/test/smoke.mjs`
   - `harness.js`
 
@@ -750,7 +753,7 @@
   - ai/context/layers.mjs 被 .p1-baseline/test-assembler.mjs（验收工具，P2）import——撤掉会让该工具失效
 - **说明**：**不能单独回滚**：`ai/library/` 被 server.js（P2–P5/Z2/Z3/PI）与 openviking-sync.js 直接 import， 且层规格 / 来源校验 / 登记表分别改在 ai/context/layers.mjs（P1/Z2/Z3）、ai/openviking/recall-meta.mjs（R）、db.js（P5/Z3）里。 本轮全部为附加式：新增门控层 `library`（默认关闭；`library_enabled=0` 的作品 assembled/manifest 与接入前**逐字节一致**， 见 `.p1-baseline/verify-library-identity.mjs` 的 4/4）、新增登记表 `library_docs`（纯 CREATE TABLE IF NOT EXISTS，旧 46 张表零改动）、 新增 7 条端点与工具 `novel_library`（写操作模型侧 403）。 关闭开关即恢复旧行为，不需要动数据。 证据链：离线 `.p1-baseline/test-library-import.mjs`（34/34，隔离实例 + OV stub）与 `test-ov-recall-boundary.mjs`（54/54，含资料根用例）； 真机 `.p1-baseline/verify-library-realmachine.mjs`（18/18，真实 OV v0.4.21 + 隔离实例，写共享资料根 3 篇后清理，根零残留）； 契约见 docs/host-contract.md §20；调用链见 docs/openviking-call-map.md 链 C。
 - **验收证据**：`docs/host-contract.md`、`.p1-baseline/test-library-import.mjs`、`.p1-baseline/verify-library-identity.mjs`、`.p1-baseline/verify-library-realmachine.result.json`、`.p1-baseline/probe-library-p0.result.json`、`.p1-baseline/test-ov-recall-boundary.mjs`、`docs/openviking-call-map.md`
-- **本阶段认领的文件**（38 个）：
+- **本阶段认领的文件**（41 个）：
   - `.p1-baseline/library-identity-before.json`
   - `.p1-baseline/probe-library-p0.mjs`
   - `.p1-baseline/probe-library-p0.result.json`
@@ -778,6 +781,7 @@
   - `harness-plugins/novel-writing/agent.cordis.yml`
   - `harness-plugins/novel-writing/capabilities.mjs`
   - `harness-plugins/novel-writing/cordis.patch.yml`
+  - `harness-plugins/novel-writing/egress-guard.mjs`
   - `harness-plugins/novel-writing/headless-cordis.patch.yml`
   - `harness-plugins/novel-writing/install-profile.mjs`
   - `harness-plugins/novel-writing/install.ps1`
@@ -785,6 +789,8 @@
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
   - `harness-plugins/novel-writing/profile.mjs`
+  - `harness-plugins/novel-writing/sandbox/egress-preload.mjs`
+  - `harness-plugins/novel-writing/sandbox/install.mjs`
   - `harness-plugins/novel-writing/test/smoke.mjs`
   - `openviking-sync.js`
   - `scripts/ci-offline-checks.mjs`
@@ -802,7 +808,7 @@
   - ai/novel-index/store.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**不能单独回滚**：新模块 `ai/direction.mjs` / `ai/retrieval-stats.mjs` / `ai/novel-index/` 被 server.js / openviking-sync.js / db.js 直接 import， 且行为改动落在与 L / R / PI / Z5 共享的文件里（含 `ai/library/library-index.mjs`，归 L 的 `ai/library/` 前缀）。 本轮全部为**附加式**：direction 只是**检索数据**（不解析其中的指令、不写作品、不新增任何规划 / 裁决模型调用）； 资料索引（`library_index` + 可选 FTS5）与小说资产索引（12 张 `novel_index_*`）默认关闭（`library_index_enabled=0` / `novel_index_enabled=0`）， 关闭时 `retrieval_stats.index_queries.total=0`，assembled / manifest / context_id 与 1.11.0 逐字节一致 （`.p1-baseline/verify-library-identity.mjs` 4/4、`test-direction-retrieval.mjs` 的 E5 用例）。 检索计划并发查多个索引，但**先汇总后装配**——只给 buildNovelContext 准备输入，不新增编排层、不绕过唯一装配器； `retrieval_stats` 把「资料召回次数」与「索引查询次数」分开统计（任何消费方不得合并）。 ⚠️ E5 为**保守落地**：计划开启不改变既有层内容（assembled 与关闭时逐字节一致），只增加审计字段； 「用索引替代全量读取」按梯队后续推进，未声称已达成。 自审（同日）：召回微缓存命中时把本次 searches/index_queries/timings 归零（缓存命中不是一次检索）、空查询不写微缓存（恢复旧行为）、 FTS 候选改为先按 bm25 排序再截断并修正 lexical_score 方向、finalize 输出补 request_id——都有对应断言。 终审补修：计划缓存命中不把上一次的 by_index 重复计入本次（只记 cached，「索引查询次数」= 本次实际发生的次数；E6b/6.1/7.4）、 request_id 截断改按码点（不撕裂代理对；C0.6）——同样各有断言。 证据链：`.p1-baseline/test-retrieval-plan.mjs`（65/65）、`.p1-baseline/test-direction-retrieval.mjs`（47/47）、 `.p1-baseline/test-library-index.mjs`（19/19）、docs/host-contract.md 的 1.12.0 行。
 - **验收证据**：`.p1-baseline/test-direction-retrieval.mjs`、`.p1-baseline/test-retrieval-plan.mjs`、`docs/host-contract.md`
-- **本阶段认领的文件**（34 个）：
+- **本阶段认领的文件**（37 个）：
   - `.p1-baseline/bench-library-index.mjs`
   - `.p1-baseline/test-direction-retrieval.mjs`
   - `.p1-baseline/test-library-index.mjs`
@@ -825,6 +831,7 @@
   - `harness-plugins/novel-writing/agent.cordis.yml`
   - `harness-plugins/novel-writing/capabilities.mjs`
   - `harness-plugins/novel-writing/cordis.patch.yml`
+  - `harness-plugins/novel-writing/egress-guard.mjs`
   - `harness-plugins/novel-writing/headless-cordis.patch.yml`
   - `harness-plugins/novel-writing/install-profile.mjs`
   - `harness-plugins/novel-writing/install.ps1`
@@ -832,6 +839,8 @@
   - `harness-plugins/novel-writing/package.json`
   - `harness-plugins/novel-writing/plugin.json`
   - `harness-plugins/novel-writing/profile.mjs`
+  - `harness-plugins/novel-writing/sandbox/egress-preload.mjs`
+  - `harness-plugins/novel-writing/sandbox/install.mjs`
   - `harness-plugins/novel-writing/test/smoke.mjs`
   - `openviking-sync.js`
   - `public/app.js`
@@ -1927,7 +1936,7 @@
   - ai/one-click-book/http.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**目的**：一次触发、可恢复、带门禁的成书流水线；增强层增加来源回指、章节契约、一致性账本、独立复审与证据链。**生成方式**：抽取式确定性组装（零模型调用、零计费），所以可离线复现；不新增事实。**回滚**：删 `ai/one-click-book/`、`book-project/`、`fixtures/ocb/`、`docs/one-click-book/` 与本组报告，再撤 `server.js` 的路由块与 `index.html` 的一行 script。**边界**：docx/pdf/epub 标 UNSUPPORTED（无适配器时不伪造成功）；不自动发布。
 - **验收证据**：`docs/one-click-book/task-contract.json`、`docs/one-click-book/book-requirements.json`、`reports/quality-gates.json`、`reports/recovery-test.json`、`book-project/.job/evidence.json`、`book-project/manifest/deliverable-manifest.json`
-- **本阶段认领的文件**（70 个）：
+- **本阶段认领的文件**（72 个）：
   - `.dsh/capability-smoke.json`
   - `.dsh/completion.json`
   - `.dsh/frozen-plan.json`
@@ -1983,6 +1992,7 @@
   - `book-project/review/style-traceability.json`
   - `book-project/sources/normalized/source.txt`
   - `docs/one-click-book/book-requirements.json`
+  - `docs/one-click-book/egress-host-layer.md`
   - `docs/one-click-book/task-contract.json`
   - `fixtures/ocb/brief.json`
   - `fixtures/ocb/source.md`
@@ -1993,6 +2003,7 @@
   - `scripts/one-click-book-cli.mjs`
   - `scripts/one-click-book-finalize.mjs`
   - `scripts/one-click-book-mutation.mjs`
+  - `scripts/test-ocb-egress.mjs`
   - `scripts/test-one-click-book.mjs`
   - `方案执行完整流程图.md`
   - `方案执行完整流程图.png`
@@ -2001,7 +2012,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**978** 个文件
+- 真实改动集：**983** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

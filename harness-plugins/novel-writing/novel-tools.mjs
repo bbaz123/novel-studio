@@ -39,6 +39,8 @@ const DEFAULT_BASE = 'http://127.0.0.1:3737'
 // S09（修 F11）：工具能力边界是**机器可检查**的表，不是靠每个工具自觉。
 // 表里没有的工具一律失败关闭；AUTHOR_CONFIRM 类必须带作者的一次性 approval_id。
 import { assertModelCallable, capabilityOf, CAPABILITY } from './capabilities.mjs'
+// 宿主层出口守卫：与 sandbox/egress-preload.mjs（进程内那半边）配对使用。
+import { installEgressGuard } from './egress-guard.mjs'
 
 const textOutput = {
   schema: {
@@ -51,6 +53,25 @@ const textOutput = {
 }
 
 export function apply(ctx, config) {
+  // 宿主层出口守卫（deny-by-default，对应方案 network.egress_deny_default）：
+  // 覆盖 web_fetch / web_search / shell 里的 curl 这类“绕开业务代码”的出口。
+  // 默认开启，本机回环始终允许；`egress.enabled=false` 可关闭。挂载失败不阻断插件激活。
+  let egressGuard = { installed: false, reason: 'not-attempted' }
+  try {
+    egressGuard = installEgressGuard(ctx, {
+      ...(config?.egress ?? {}),
+      enabled: config?.egress?.enabled !== false,
+    })
+  } catch (e) {
+    egressGuard = { installed: false, reason: `install-failed: ${String(e?.message || e)}` }
+  }
+  // 只做观察用途：Cordis 的 ctx 是代理，个别版本不允许挂任意属性，失败不影响守卫本身。
+  try {
+    ctx.egressGuard = egressGuard
+  } catch {
+    /* 挂不上就只保留日志里的 installed 状态 */
+  }
+
   // N-01 配套：任务启动器注入的 NOVELSTUDIO_BASE_URL 优先于安装时写入的 config.baseUrl，
   // 保证多实例（如冒烟/隔离环境使用其他端口）时 novel_* 工具回连发起任务的那一个实例，
   // 而不是安装时硬编码的端口（否则会把测试实例的 AI 入账写进主库）。
