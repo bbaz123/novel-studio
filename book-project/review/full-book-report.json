@@ -5,6 +5,11 @@
     "toc_match": true,
     "provenance_covered": true
   },
+  "ledger": {
+    "ok": true,
+    "chapters": 4,
+    "events": 10
+  },
   "findings": [],
-  "at": "2026-10-25T08:08:38.662Z"
+  "at": "2026-10-25T10:12:15.195Z"
 }

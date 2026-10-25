@@ -46,19 +46,33 @@ if (!args.brief) {
 }
 const brief = JSON.parse(fs.readFileSync(path.resolve(args.brief), 'utf8'))
 if (args.sources) brief.sources = String(args.sources).split(',').map((item) => path.resolve(item.trim()))
-const approvals = {
+const idempotencyKey = args.key ?? `cli-${brief.title ?? brief.goal ?? 'book'}`
+const baseApprovals = {
   exemplar: Boolean(args['approve-exemplar']),
   full_review: Boolean(args['approve-full']),
-  export: Boolean(args['approve-export']),
 }
-const idempotencyKey = args.key ?? `cli-${brief.title ?? brief.goal ?? 'book'}`
-const result = runJob({ root, idempotencyKey, brief, approvals })
+
+// 导出走两段：先跑到 EXPORT_READY 拿到候选稿 hash，再用同一次“批准”放行。
+// 这样审批天然绑定到具体候选稿；CLI 也顺便把“无 hash 的批准”挡在门外。
+let result = runJob({ root, idempotencyKey, brief, approvals: baseApprovals })
+if (args['approve-export'] && result.status === 'EXPORT_READY') {
+  const hash = result.state?.pending_export_hash
+  if (!hash) {
+    process.stderr.write('EXPORT_READY 但没有 pending_export_hash，拒绝自动批准\n')
+    process.exit(3)
+  }
+  result = runJob({ root, idempotencyKey, brief, approvals: { ...baseApprovals, export: true } })
+}
 process.stdout.write(JSON.stringify({
   ok: result.status === 'COMPLETED',
   job_id: result.jobId,
   status: result.status,
+  stage_history: result.state?.stage_history ?? null,
+  pending_export_hash: result.state?.pending_export_hash ?? null,
   export: result.export ?? null,
   deliverable: result.deliverable ?? null,
   review: result.review ?? null,
+  ledger: result.ledger ?? null,
+  completion: result.completion ?? null,
 }, null, 2) + '\n')
 process.exit(result.status === 'COMPLETED' ? 0 : 1)

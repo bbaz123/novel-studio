@@ -1,28 +1,39 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T08:08:49.434Z",
+  "generated_at": "2026-10-25T10:12:21.260Z",
   "steps": {
-    "paused_state": {
-      "status": "PAUSED",
-      "expected": "PAUSED",
-      "ok": true
+    "process_1_stop": {
+      "exit": 1,
+      "status": "FULL_REVIEW"
     },
-    "resumed": {
-      "status": "COMPLETED",
-      "expected": "COMPLETED",
-      "ok": true
+    "process_2_resume": {
+      "exit": 1,
+      "status": "EXPORT_READY"
     },
-    "replay_idempotent": {
-      "status": "COMPLETED",
-      "same_commit_hash": true,
-      "ok": true
+    "process_3_complete": {
+      "exit": 0,
+      "status": "COMPLETED"
     },
     "cancelled": {
-      "status": "CANCELLED",
-      "expected": "CANCELLED",
-      "ok": true
+      "status": "CANCELLED"
     },
-    "rollback_entrypoint": "versions/ + .job/state.json（resume 幂等）"
+    "replay_idempotent": {
+      "stage_history": [
+        "RECEIVED",
+        "PREFLIGHT",
+        "INGESTING",
+        "NORMALIZED",
+        "OUTLINED",
+        "EXEMPLAR_REVIEW",
+        "DRAFTING",
+        "QA",
+        "FULL_REVIEW",
+        "EXPORT_READY",
+        "EXPORTING",
+        "COMPLETED"
+      ],
+      "committed": 13
+    }
   },
   "ok": true
 }

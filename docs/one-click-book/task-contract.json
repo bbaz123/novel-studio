@@ -1,30 +1,8 @@
 {
   "schema_version": "1.0.0",
   "plan_id": "plan-52d26b8b5f43",
-  "amended_at": "2026-10-25T08:08:49.047Z",
-  "amendment": {
-    "by": "owner (a1941)",
-    "at": "2026-10-25T12:57:28+08:00",
-    "change": "取消 agent_contract.allowed_paths 白名单；其余门禁、证据与审批要求不变",
-    "reason": "原白名单（src/app/packages）与本仓库实际结构不符，实现无法落地"
-  },
-  "workspace": {
-    "mode": "isolated_detached_worktree",
-    "path": ".dsh/worktrees/one-click-book",
-    "base_revision": "9a145dbfe8a67fee74fe66dca4cd38d1989630ce",
-    "main_workspace_write": "forbidden（产品文件只在 worktree 改动）"
-  },
-  "allowed_paths": [
-    "<全部路径>（owner 已取消白名单）"
-  ],
-  "forbidden_actions": [
-    "modify_acceptance_criteria",
-    "delete_or_weaken_assertions",
-    "claim_pass_without_exit_code",
-    "publish_without_approval",
-    "read_or_emit_secrets",
-    "bypass_a_gate_or_ledger"
-  ],
+  "job_id": "job-1df085112b1a",
+  "generated_at": "2026-10-25T10:12:15.136Z",
   "acceptance": [
     {
       "id": "AC-01",
@@ -37,7 +15,7 @@
     },
     {
       "id": "AC-02",
-      "requirement": "越过 white-list 的写入被拒绝并回滚",
+      "requirement": "越过 allowed_paths 的写入被拒绝并回滚",
       "test": "path escape probe",
       "evidence": [
         "PATH_ESCAPE 断言",
@@ -49,8 +27,8 @@
       "requirement": "前置 gate 未通过不能推进",
       "test": "state transition negative tests",
       "evidence": [
-        "assertTransition/assertNoSkip 断言",
-        "transition_trace"
+        "stage_history 真实序列断言",
+        "assertTransition/assertNoSkip"
       ]
     },
     {
@@ -59,7 +37,8 @@
       "test": "chapter completeness",
       "evidence": [
         "chapter-manifest.json",
-        "commit.json"
+        "commit.json",
+        "ledgers/*.jsonl"
       ]
     },
     {
@@ -94,7 +73,7 @@
       "requirement": "draft 与 commit 分离，未 commit 不得交付",
       "test": "staging-vs-commit",
       "evidence": [
-        "assertCommitted",
+        "assertCommitted 生产调用",
         "deliverable-manifest.json"
       ]
     },
@@ -104,7 +83,8 @@
       "test": "crash/restart replay",
       "evidence": [
         "resume_noop 事件",
-        "commit hash 不变"
+        "commit hash 不变",
+        "子进程重启测试"
       ]
     },
     {
@@ -130,7 +110,8 @@
       "test": "approval/hash mismatch and secret injection",
       "evidence": [
         "EXPORT_READY 断言",
-        "SECRET_FOUND 断言"
+        "SECRET_FOUND",
+        "APPROVAL_HASH_MISMATCH"
       ]
     },
     {
@@ -138,8 +119,9 @@
       "requirement": "插件变更先 DPIP 且版本/commit pin",
       "test": "plugin lifecycle negative tests",
       "evidence": [
-        ".dsh/plugin-inventory.json",
-        "模块不触碰 pluginManager"
+        "模块不触碰插件生命周期",
+        "HTTP 无插件端点",
+        "宿主 DPIP 外部证据"
       ]
     },
     {
@@ -147,8 +129,8 @@
       "requirement": "缺 diff/命令/退出码/快照/审批/trace 证据不得 DONE",
       "test": "evidence completeness",
       "evidence": [
-        "verifyEvidenceChain",
-        "completionVerdict"
+        "completionVerdict 生产调用",
+        "verifyEvidenceChain"
       ]
     },
     {
@@ -172,7 +154,8 @@
       "requirement": "定点修改显示下游影响、保留旧版并可回滚",
       "test": "impact and rollback",
       "evidence": [
-        "impactGraph 断言",
+        "POST /chapters/:id/edit",
+        "impact graph",
         "versions/"
       ]
     },
@@ -190,7 +173,7 @@
       "requirement": "模型自报、普通日志和 OpenViking 记忆不算完成证据",
       "test": "self-report spoof",
       "evidence": [
-        "completionVerdict 断言"
+        "completionVerdict 拒绝无证据完成"
       ]
     },
     {
@@ -237,83 +220,33 @@
       ]
     }
   ],
-  "acceptance_errors": [],
-  "status_machine": {
-    "states": [
-      "RECEIVED",
-      "PREFLIGHT",
-      "INGESTING",
-      "NORMALIZED",
-      "OUTLINED",
-      "EXEMPLAR_REVIEW",
-      "DRAFTING",
-      "QA",
-      "FULL_REVIEW",
-      "EXPORTING",
-      "EXPORT_READY",
-      "COMPLETED",
-      "BLOCKED",
-      "FAILED",
-      "FIXING",
-      "ROLLED_BACK",
-      "CANCELLED"
-    ],
-    "transitions": [
-      [
-        "RECEIVED",
-        "PREFLIGHT"
-      ],
-      [
-        "PREFLIGHT",
-        "INGESTING"
-      ],
-      [
-        "INGESTING",
-        "NORMALIZED"
-      ],
-      [
-        "NORMALIZED",
-        "OUTLINED"
-      ],
-      [
-        "OUTLINED",
-        "EXEMPLAR_REVIEW"
-      ],
-      [
-        "EXEMPLAR_REVIEW",
-        "DRAFTING"
-      ],
-      [
-        "DRAFTING",
-        "QA"
-      ],
-      [
-        "QA",
-        "FULL_REVIEW"
-      ],
-      [
-        "FULL_REVIEW",
-        "EXPORT_READY"
-      ],
-      [
-        "EXPORT_READY",
-        "EXPORTING"
-      ],
-      [
-        "EXPORTING",
-        "COMPLETED"
-      ]
-    ],
-    "failure_states": [
-      "BLOCKED",
-      "FAILED",
-      "CANCELLED",
-      "ROLLED_BACK"
-    ]
-  },
+  "accepted_paths": "owner 于 2026-10-25T12:57+08:00 取消白名单；实现落点受 resolveInside 约束",
+  "forbidden_actions": [
+    "modify_acceptance_criteria",
+    "delete_or_weaken_assertions",
+    "claim_pass_without_exit_code",
+    "publish_without_approval",
+    "read_or_emit_credentials",
+    "bypass_a_gate_or_ledger"
+  ],
   "budgets": {
     "max_cost_cents": 200,
-    "actual_cost_cents": 0,
-    "model_calls": 0
-  }
+    "actual_cost_cents": 0
+  },
+  "source_policy": {
+    "forbidden": [
+      "dotfile",
+      "secrets/",
+      "credentials/",
+      ".env"
+    ],
+    "credential_scan": "ingest-time"
+  },
+  "mirrored_from": "book-project/contract/task-contract.json",
+  "amendment": {
+    "by": "owner (a1941)",
+    "at": "2026-10-25T12:57:28+08:00",
+    "change": "取消 agent_contract.allowed_paths 白名单；其余门禁、证据与审批要求不变"
+  },
+  "acceptance_errors": []
 }

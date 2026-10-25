@@ -20,16 +20,19 @@
   "ledger_delta": {
     "terminology": [
       {
-        "term": "冬天读者来取书。",
-        "first_seen": "004"
+        "term": "冬天读者来取书。"
       }
     ],
     "timeline": [
       {
-        "at": "004",
         "event": "第 4 节"
       }
     ],
-    "foreshadow": []
+    "foreshadow": [
+      {
+        "id": "FS-001",
+        "closed": "004"
+      }
+    ]
   }
 }

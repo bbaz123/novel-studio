@@ -20,13 +20,11 @@
   "ledger_delta": {
     "terminology": [
       {
-        "term": "秋天的任务是拆装。",
-        "first_seen": "003"
+        "term": "秋天的任务是拆装。"
       }
     ],
     "timeline": [
       {
-        "at": "003",
         "event": "第 3 节"
       }
     ],

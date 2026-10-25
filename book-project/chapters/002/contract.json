@@ -20,13 +20,11 @@
   "ledger_delta": {
     "terminology": [
       {
-        "term": "夏天要换浆糊。",
-        "first_seen": "002"
+        "term": "夏天要换浆糊。"
       }
     ],
     "timeline": [
       {
-        "at": "002",
         "event": "第 2 节"
       }
     ],

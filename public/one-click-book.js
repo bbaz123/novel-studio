@@ -43,16 +43,33 @@
     return `状态：${job.status}｜job ${job.job_id}${pending}`
   }
 
+  let lastStatus = null
+
   async function refresh() {
     try {
       const data = await call('/status')
+      lastStatus = data
       const line = document.getElementById('ocb-state')
       if (line) line.textContent = stateLine(data.job)
+      // 方案要求的“当前阶段/已完成章节/阻塞原因/下一步”必须看得见，而不是只有一句状态。
+      const progress = document.getElementById('ocb-progress')
+      if (progress) {
+        const p = data.progress || {}
+        progress.textContent = `阶段：${p.stage || '-'}｜章节：${p.chapters_done ?? 0}/${p.chapters_total ?? 0}`
+          + (p.blocked_reason ? `｜阻塞：${p.blocked_reason}` : '')
+          + `｜下一步：${p.next_action || '-'}`
+      }
       const artifacts = document.getElementById('ocb-artifacts')
       if (artifacts) {
         artifacts.textContent = data.artifacts.length === 0
           ? '产物：无'
           : `产物：${data.artifacts.length} 个（最近：${data.artifacts.slice(-1)[0].path}）`
+      }
+      const exportBtn = document.getElementById('ocb-approve-export')
+      if (exportBtn) {
+        exportBtn.textContent = data.pending_approval === 'export' && data.job?.pending_export_hash
+          ? `批准导出（${data.job.pending_export_hash.slice(0, 8)}）`
+          : '批准导出'
       }
       return data
     } catch (e) {
@@ -80,11 +97,40 @@
 
   async function approve(kind) {
     try {
-      const data = await call('/approve', { method: 'POST', body: JSON.stringify({ kind }) })
+      const payload = { kind }
+      // 导出审批与候选稿 hash 绑定：没拿到 hash 就不发“裸批准”。
+      if (kind === 'export') {
+        const hash = lastStatus?.job?.pending_export_hash
+        if (!hash) {
+          log('当前没有待审批的候选稿 hash：先点“开始”跑到 EXPORT_READY')
+          return
+        }
+        payload.hash = hash
+      }
+      const data = await call('/approve', { method: 'POST', body: JSON.stringify(payload) })
       log(`已批准 ${kind}：${data.status}`)
       await refresh()
     } catch (e) {
       log(`审批失败：${e.message}`)
+    }
+  }
+
+  async function retry() {
+    try {
+      const data = await call('/retry', { method: 'POST', body: '{}' })
+      log(`重试：${data.status}`)
+      await refresh()
+    } catch (e) {
+      log(`重试失败：${e.message}`)
+    }
+  }
+
+  async function publish() {
+    try {
+      await call('/publish', { method: 'POST', body: '{}' })
+      log('已发布')
+    } catch (e) {
+      log(`发布被拒：${e.message}`)
     }
   }
 
@@ -119,13 +165,18 @@
       el('input', { id: 'ocb-kind', placeholder: '书籍类型（必填，如：随笔集）', style: 'width:100%;margin:4px 0;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px' }),
       el('input', { id: 'ocb-goal', placeholder: '目标（必填）', style: 'width:100%;margin:4px 0;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px' }),
       el('textarea', { id: 'ocb-sources', placeholder: '来源文件绝对路径，一行一个（.md/.txt）', rows: '3', style: 'width:100%;margin:4px 0;padding:6px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px' }),
-      el('div', { id: 'ocb-state', text: '状态：未开始', style: 'margin:8px 0;color:#9da7b3' }),
+      el('div', { id: 'ocb-state', text: '状态：未开始', style: 'margin:8px 0 2px;color:#9da7b3' }),
+      el('div', { id: 'ocb-progress', text: '阶段：-｜章节：0/0｜下一步：-', style: 'margin-bottom:6px;color:#8b949e;font-size:12px' }),
       el('div', { id: 'ocb-artifacts', text: '产物：无', style: 'margin-bottom:8px;color:#9da7b3' }),
       el('div', {}, [
         el('button', { text: '开始', onclick: start, style: 'margin:2px;padding:6px 10px' }),
         el('button', { text: '批准范例章', onclick: () => approve('exemplar'), style: 'margin:2px;padding:6px 10px' }),
         el('button', { text: '批准全书复审', onclick: () => approve('full_review'), style: 'margin:2px;padding:6px 10px' }),
-        el('button', { text: '批准导出', onclick: () => approve('export'), style: 'margin:2px;padding:6px 10px' }),
+        el('button', { id: 'ocb-approve-export', text: '批准导出', onclick: () => approve('export'), style: 'margin:2px;padding:6px 10px' }),
+      ]),
+      el('div', {}, [
+        el('button', { text: '重试', onclick: retry, style: 'margin:2px;padding:6px 10px' }),
+        el('button', { text: '发布（默认关闭）', onclick: publish, style: 'margin:2px;padding:6px 10px' }),
       ]),
       el('div', {}, [
         el('button', { text: '暂停', onclick: () => control('pause'), style: 'margin:2px;padding:6px 10px' }),

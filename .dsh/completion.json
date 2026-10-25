@@ -1,16 +1,46 @@
 {
   "plan_id": "plan-52d26b8b5f43",
-  "completed_at": "2026-10-25T08:08:49.604Z",
+  "completed_at": "2026-10-25T10:12:21.460Z",
   "job_id": "job-1df085112b1a",
   "status": "COMPLETED",
+  "stage_history": [
+    "RECEIVED",
+    "PREFLIGHT",
+    "INGESTING",
+    "NORMALIZED",
+    "OUTLINED",
+    "EXEMPLAR_REVIEW",
+    "DRAFTING",
+    "QA",
+    "FULL_REVIEW",
+    "EXPORT_READY",
+    "EXPORTING",
+    "COMPLETED"
+  ],
+  "acceptance": 24,
   "chapter_count": 4,
   "export": {
     "path": "export/book.md",
     "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
   },
-  "acceptance": 24,
+  "export_approval": {
+    "kind": "EXPORT",
+    "hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+    "at": "2026-10-25T10:12:15.211Z",
+    "job_id": "job-1df085112b1a"
+  },
   "gates": true,
+  "ledger": {
+    "facts": 4,
+    "terminology": 4,
+    "timeline": 4,
+    "foreshadow": 2
+  },
   "recovery": true,
+  "attestation": {
+    "ok": true,
+    "chain_head": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57"
+  },
   "unsupported_exports": [
     "docx",
     "pdf",
@@ -20,25 +50,20 @@
     "egress_deny_default": {
       "state": "PASS",
       "policy": "deny-by-default",
-      "allowlist": [],
-      "attempts": 0,
-      "audit": ".job/egress.jsonl"
+      "allowlist": []
     },
     "evidence_attest": {
       "state": "PASS_LOCAL_ANCHOR",
-      "chain_head": "7dbf3834a6185947477f444888648f322658015f6bd37e1f5cfe9ecd5fd949b1",
-      "chain_length": 11,
       "signature": true,
       "git_anchor": {
-        "head": "37596c1efec3d9ab9ddd95dfd64b12711c3f9c0c",
-        "committed_at": "2026-10-25T13:14:31+08:00",
+        "head": "d07939c6ce12142c74f230d2263bcf350f9a9dbb",
+        "committed_at": "2026-10-25T16:42:50+08:00",
         "working_tree_dirty": true
       },
       "tsa": {
         "state": "UNSUPPORTED",
         "reason": "RFC3161/OpenTimestamps 需要出站，而 export 路径 exit 守卫默认拒绝；启用需先加入白名单并取得授权"
-      },
-      "note": "第三方时间戳（RFC3161/OpenTimestamps）需出站与授权，当前记 UNSUPPORTED；已用 Ed25519 分离签名 + git 仓库锚"
+      }
     }
   },
   "degraded": {

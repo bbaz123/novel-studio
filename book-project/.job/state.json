@@ -6,11 +6,13 @@
     "RECEIVED",
     "PREFLIGHT",
     "INGESTING",
+    "NORMALIZED",
     "OUTLINED",
     "EXEMPLAR_REVIEW",
     "DRAFTING",
     "QA",
     "FULL_REVIEW",
+    "EXPORT_READY",
     "EXPORTING",
     "COMPLETED"
   ],
@@ -34,218 +36,189 @@
     ],
     "budget_cny": 0
   },
-  "created_at": "2026-10-25T08:08:38.624Z",
-  "updated_at": "2026-10-25T08:08:38.882Z",
   "approvals": {
     "exemplar": true,
     "full_review": true,
     "export": true
   },
+  "attempts": 0,
+  "created_at": "2026-10-25T10:12:14.987Z",
+  "updated_at": "2026-10-25T10:12:15.420Z",
   "evidence": [
     {
       "stage": "PREFLIGHT",
-      "at": "2026-10-25T08:08:38.629Z",
+      "at": "2026-10-25T10:12:14.992Z",
       "verdict": "PASS",
       "budget_cny": 0,
       "prev": "",
-      "hash": "bcc5bbe79d717bc9d90d684126ade2a15320b804a56aed6e10e0c2b3865ed990"
+      "hash": "0dea5944551d9443b062bc1257772ba13752dea935bbf45f5c5b554ddcb99cd9"
     },
     {
       "stage": "INGESTING",
-      "at": "2026-10-25T08:08:38.637Z",
-      "verdict": "NORMALIZED",
-      "artifacts": [
-        {
-          "path": "manifest/source-manifest.json",
-          "sha256": "80b173cc0275938b4d1e69a629af83e95afc2e71cc6eb04ddda0ad7a0ca0ab09",
-          "bytes": 539
-        },
-        {
-          "path": "sources/normalized/source.txt",
-          "sha256": "e360d2aeeb9666a81bf93b8f5257c27332b6621e1905186c6cdc9feab3c621ca",
-          "bytes": 1615
-        }
-      ],
+      "at": "2026-10-25T10:12:14.994Z",
+      "verdict": "PASS",
       "sources": [
         {
           "id": "SRC-001",
           "sha256": "6060dc07c65933612664c685228119c527e4e2317044f1a6313daa5fa6ab2dd9"
         }
       ],
-      "prev": "bcc5bbe79d717bc9d90d684126ade2a15320b804a56aed6e10e0c2b3865ed990",
-      "hash": "8a22557067d10e89ac79c6bbe48abb2af05e26c579a07aa039d0b9c05df3d603"
+      "errors": [],
+      "credential_hits": [],
+      "prev": "0dea5944551d9443b062bc1257772ba13752dea935bbf45f5c5b554ddcb99cd9",
+      "hash": "352f726bac8788f57071fbbeea712f383c06a7415f6fd80ab1efce4c0b154b57"
+    },
+    {
+      "stage": "NORMALIZED",
+      "at": "2026-10-25T10:12:14.999Z",
+      "verdict": "PASS",
+      "bytes": 575,
+      "prev": "352f726bac8788f57071fbbeea712f383c06a7415f6fd80ab1efce4c0b154b57",
+      "hash": "0b6a3e75af6d983188c852cdfb9802b6bb00bca767f8578887bb5ea10c3d5661"
     },
     {
       "stage": "OUTLINED",
-      "at": "2026-10-25T08:08:38.646Z",
+      "at": "2026-10-25T10:12:15.024Z",
       "verdict": "PASS",
-      "artifacts": [
-        {
-          "path": "book-bible.json",
-          "sha256": "3acec2913d09d6c4d5ab53bb8eaeb0774611fb4f5f2b880cf903f2c4effc486b",
-          "bytes": 586
-        },
-        {
-          "path": "outline/outline.md",
-          "sha256": "520310b7591410b6c473826c3bc1c41f880ebab7541d147b21e58334bdb398e8",
-          "bytes": 179
-        }
-      ],
       "chapters": 4,
-      "prev": "8a22557067d10e89ac79c6bbe48abb2af05e26c579a07aa039d0b9c05df3d603",
-      "hash": "aca1b03c92f66d742e10be95362b3ef3e24e27ed16e7b66bb0eabe3926eee9ef"
+      "prev": "0b6a3e75af6d983188c852cdfb9802b6bb00bca767f8578887bb5ea10c3d5661",
+      "hash": "4710aa56cd75b95fd7c8ce55bc26d4a640f4d35658260c7045f0f0b6ae167578"
     },
     {
       "stage": "EXEMPLAR_REVIEW",
-      "at": "2026-10-25T08:08:38.649Z",
+      "at": "2026-10-25T10:12:15.039Z",
       "verdict": "PASS",
-      "draft": {
-        "path": "chapters/001/draft.md",
-        "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b",
-        "bytes": 308
-      },
-      "prev": "aca1b03c92f66d742e10be95362b3ef3e24e27ed16e7b66bb0eabe3926eee9ef",
-      "hash": "981af0f95171f158c4124d31128791d82b3c760bdc6523885065a2b255c821c5"
+      "chapter": "001",
+      "prev": "4710aa56cd75b95fd7c8ce55bc26d4a640f4d35658260c7045f0f0b6ae167578",
+      "hash": "7f47624d0ca1dfd97857941795549bc7ba487e3c47ffbefed8a564a67bec2d58"
     },
     {
       "stage": "DRAFTING",
-      "at": "2026-10-25T08:08:38.654Z",
-      "verdict": "DRAFT_OK",
-      "chapter": "002",
-      "prev": "981af0f95171f158c4124d31128791d82b3c760bdc6523885065a2b255c821c5",
-      "hash": "ca918efe92009168b2127af1827f65585ec42e2a72d13009565f808021a9ef0d"
-    },
-    {
-      "stage": "DRAFTING",
-      "at": "2026-10-25T08:08:38.658Z",
-      "verdict": "DRAFT_OK",
-      "chapter": "003",
-      "prev": "ca918efe92009168b2127af1827f65585ec42e2a72d13009565f808021a9ef0d",
-      "hash": "a72bf9434eadc918b0a79c39a2d72c62c87c5127c3265f256bfc33c2027d928c"
-    },
-    {
-      "stage": "DRAFTING",
-      "at": "2026-10-25T08:08:38.660Z",
-      "verdict": "DRAFT_OK",
-      "chapter": "004",
-      "prev": "a72bf9434eadc918b0a79c39a2d72c62c87c5127c3265f256bfc33c2027d928c",
-      "hash": "01258f819d4ec2992f1473e5cd550febcfc0047de223c44b41defafb927cb081"
+      "at": "2026-10-25T10:12:15.049Z",
+      "verdict": "PASS",
+      "chapters": 4,
+      "prev": "7f47624d0ca1dfd97857941795549bc7ba487e3c47ffbefed8a564a67bec2d58",
+      "hash": "864f06c540ea5b61ee9a337bace700b46810d034738842691cdc348e05c02de6"
     },
     {
       "stage": "QA",
-      "at": "2026-10-25T08:08:38.661Z",
+      "at": "2026-10-25T10:12:15.057Z",
       "verdict": "PASS",
-      "failures": [],
-      "prev": "01258f819d4ec2992f1473e5cd550febcfc0047de223c44b41defafb927cb081",
-      "hash": "a961d32299a894b23d3ea74abfee835b289ad21eb58b3d662e97e4ef22db6dc0"
+      "prev": "864f06c540ea5b61ee9a337bace700b46810d034738842691cdc348e05c02de6",
+      "hash": "b52524a1d650b666093eb7cf4d96130152a43f396e22fd74ae1e8cc746798aac"
     },
     {
       "stage": "FULL_REVIEW",
-      "at": "2026-10-25T08:08:38.665Z",
+      "at": "2026-10-25T10:12:15.075Z",
       "verdict": "PASS",
-      "findings": [],
-      "prev": "a961d32299a894b23d3ea74abfee835b289ad21eb58b3d662e97e4ef22db6dc0",
-      "hash": "522871512e9426edaa14fc937251acf8dd739042442e7635978ef927ea6a6376"
+      "ledger_events": 10,
+      "prev": "b52524a1d650b666093eb7cf4d96130152a43f396e22fd74ae1e8cc746798aac",
+      "hash": "3857bfa75fb52a56aa12c1a4a71af90b705600a849a520634030b06364bdc525"
+    },
+    {
+      "stage": "EXPORT_READY",
+      "at": "2026-10-25T10:12:15.097Z",
+      "verdict": "PENDING_APPROVAL",
+      "candidate_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+      "prev": "3857bfa75fb52a56aa12c1a4a71af90b705600a849a520634030b06364bdc525",
+      "hash": "a67f45c55497379f2e505f7c2a6da6712a6d985400b701c14fdf8e7049dba42a"
+    },
+    {
+      "stage": "PREFLIGHT",
+      "at": "2026-10-25T10:12:15.110Z",
+      "verdict": "PASS",
+      "budget_cny": 0,
+      "prev": "a67f45c55497379f2e505f7c2a6da6712a6d985400b701c14fdf8e7049dba42a",
+      "hash": "efc619ba25b30832655c142c78624329ef31f8a4ed6499a26f3f0c6245044bae"
+    },
+    {
+      "stage": "INGESTING",
+      "at": "2026-10-25T10:12:15.119Z",
+      "verdict": "PASS",
+      "sources": [
+        {
+          "id": "SRC-001",
+          "sha256": "6060dc07c65933612664c685228119c527e4e2317044f1a6313daa5fa6ab2dd9"
+        }
+      ],
+      "errors": [],
+      "credential_hits": [],
+      "prev": "efc619ba25b30832655c142c78624329ef31f8a4ed6499a26f3f0c6245044bae",
+      "hash": "41fc28fefd6c1c8d04b32edf1f87e959175b99cc519d96fc7035e2a2f3c84be8"
+    },
+    {
+      "stage": "NORMALIZED",
+      "at": "2026-10-25T10:12:15.123Z",
+      "verdict": "PASS",
+      "bytes": 575,
+      "prev": "41fc28fefd6c1c8d04b32edf1f87e959175b99cc519d96fc7035e2a2f3c84be8",
+      "hash": "c4f4da3653c4a9de0674ba24fd7fede036ba77b04af4ddabafdd3f835b8d9863"
+    },
+    {
+      "stage": "OUTLINED",
+      "at": "2026-10-25T10:12:15.145Z",
+      "verdict": "PASS",
+      "chapters": 4,
+      "prev": "c4f4da3653c4a9de0674ba24fd7fede036ba77b04af4ddabafdd3f835b8d9863",
+      "hash": "66f2681ea5694819b551ff6e03a15c15ff25353bd246efbd4ab4a9cee5803dca"
+    },
+    {
+      "stage": "EXEMPLAR_REVIEW",
+      "at": "2026-10-25T10:12:15.167Z",
+      "verdict": "PASS",
+      "chapter": "001",
+      "prev": "66f2681ea5694819b551ff6e03a15c15ff25353bd246efbd4ab4a9cee5803dca",
+      "hash": "b74a0b2d93134ada2583d754d12bd608b4c8afbe4cabce86744497a65f27c3de"
+    },
+    {
+      "stage": "DRAFTING",
+      "at": "2026-10-25T10:12:15.174Z",
+      "verdict": "PASS",
+      "chapters": 4,
+      "prev": "b74a0b2d93134ada2583d754d12bd608b4c8afbe4cabce86744497a65f27c3de",
+      "hash": "ed17ff6f27a7870ee7d3db2bbc78a9b238ad5cad3fb7ea99dd77b4fe0989c6f8"
+    },
+    {
+      "stage": "QA",
+      "at": "2026-10-25T10:12:15.185Z",
+      "verdict": "PASS",
+      "prev": "ed17ff6f27a7870ee7d3db2bbc78a9b238ad5cad3fb7ea99dd77b4fe0989c6f8",
+      "hash": "5d68be953cbbd08d04e9176c5c1a1280dd01173e0cff4f4e4a6dcbb9dc84f30f"
+    },
+    {
+      "stage": "FULL_REVIEW",
+      "at": "2026-10-25T10:12:15.198Z",
+      "verdict": "PASS",
+      "ledger_events": 10,
+      "prev": "5d68be953cbbd08d04e9176c5c1a1280dd01173e0cff4f4e4a6dcbb9dc84f30f",
+      "hash": "d0b93e77f8b77408ad868af965445e171f6f783790a27f90b5484f7918800607"
+    },
+    {
+      "stage": "EXPORTING",
+      "at": "2026-10-25T10:12:15.211Z",
+      "verdict": "PASS",
+      "export_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+      "prev": "d0b93e77f8b77408ad868af965445e171f6f783790a27f90b5484f7918800607",
+      "hash": "0986f4fbc08a0d6c96551860e9d787d0072b1f579e6521848ea3688d23a3a617"
     },
     {
       "stage": "EGRESS",
-      "at": "2026-10-25T08:08:38.678Z",
+      "at": "2026-10-25T10:12:15.220Z",
       "policy": "deny-by-default",
       "allowlist": [],
       "attempts": 0,
       "allowed": 0,
       "denied": 0,
-      "prev": "522871512e9426edaa14fc937251acf8dd739042442e7635978ef927ea6a6376",
-      "hash": "c4584801b9e225128cad6592934a26f8cec0301d9fb14cccec00afcf16ef4fff"
+      "prev": "0986f4fbc08a0d6c96551860e9d787d0072b1f579e6521848ea3688d23a3a617",
+      "hash": "22621df4ba0a477f6bfb671fa356831b56c4cc36e1c4877ae22eead0c6e37bfd"
     },
     {
       "stage": "COMPLETED",
-      "at": "2026-10-25T08:08:38.680Z",
+      "at": "2026-10-25T10:12:15.222Z",
       "verdict": "PASS",
-      "deliverable": {
-        "path": "manifest/deliverable-manifest.json",
-        "sha256": "8106bfff5336ff22b8c53f0af83675fc09c31dde1e3f4ea75799343c37762e10",
-        "bytes": 832
-      },
-      "prev": "c4584801b9e225128cad6592934a26f8cec0301d9fb14cccec00afcf16ef4fff",
-      "hash": "7dbf3834a6185947477f444888648f322658015f6bd37e1f5cfe9ecd5fd949b1"
-    }
-  ],
-  "ledgers": {
-    "terminology": [],
-    "timeline": [],
-    "foreshadow": []
-  },
-  "memory_state": "ABSENT",
-  "chime_state": "ABSENT",
-  "export": {
-    "path": "export/book.md",
-    "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
-    "bytes": 1249,
-    "unsupported": [
-      "docx",
-      "pdf",
-      "epub"
-    ],
-    "unsupported_reason": "本机无对应导出适配器（方案 §8：标 UNSUPPORTED，不生成空文件）"
-  },
-  "deliverable": {
-    "job_id": "job-1df085112b1a",
-    "generated_at": "2026-10-25T08:08:38.677Z",
-    "artifacts": [
-      {
-        "path": "chapters/001/commit.md",
-        "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b"
-      },
-      {
-        "path": "chapters/002/commit.md",
-        "sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8"
-      },
-      {
-        "path": "chapters/003/commit.md",
-        "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec"
-      },
-      {
-        "path": "chapters/004/commit.md",
-        "sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7"
-      },
-      {
-        "path": "export/book.md",
-        "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
-      }
-    ],
-    "unsupported": [
-      "docx",
-      "pdf",
-      "epub"
-    ]
-  },
-  "review": {
-    "ok": true,
-    "checks": {
-      "toc_match": true,
-      "provenance_covered": true
-    },
-    "findings": []
-  },
-  "style": [
-    {
-      "note": "句子要短",
-      "chapters": [],
-      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
-      "ok": true
-    },
-    {
-      "note": "不要使用感叹号",
-      "chapters": [],
-      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
-      "ok": true
-    },
-    {
-      "note": "避免抒情过度",
-      "chapters": [],
-      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
-      "ok": true
+      "export_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+      "prev": "22621df4ba0a477f6bfb671fa356831b56c4cc36e1c4877ae22eead0c6e37bfd",
+      "hash": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57"
     }
   ],
   "chapter_manifest": {
@@ -293,6 +266,115 @@
       }
     ]
   },
+  "committed": [
+    "001",
+    "002",
+    "003",
+    "004",
+    "001",
+    "002",
+    "003",
+    "004"
+  ],
+  "pending_export_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+  "memory_state": "ABSENT",
+  "chime_state": "ABSENT",
+  "progress": {
+    "stage": "COMPLETED",
+    "chapters_done": 8,
+    "chapters_total": 4,
+    "blocked_reason": null,
+    "next_action": "导出物已生成；如需发布请单独审批（默认关闭）"
+  },
+  "pending_approval": "export",
+  "candidate_hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+  "export": {
+    "path": "export/book.md",
+    "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+    "bytes": 1249,
+    "unsupported": [
+      "docx",
+      "pdf",
+      "epub"
+    ],
+    "unsupported_reason": "本机无对应导出适配器（方案 §8：标 UNSUPPORTED）"
+  },
+  "deliverable": {
+    "schema_version": "1.0.0",
+    "job_id": "job-1df085112b1a",
+    "generated_at": "2026-10-25T10:12:15.219Z",
+    "artifacts": [
+      {
+        "path": "chapters/001/commit.md",
+        "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b"
+      },
+      {
+        "path": "chapters/002/commit.md",
+        "sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8"
+      },
+      {
+        "path": "chapters/003/commit.md",
+        "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec"
+      },
+      {
+        "path": "chapters/004/commit.md",
+        "sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7"
+      },
+      {
+        "path": "export/book.md",
+        "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+      },
+      {
+        "path": "manifest/source-manifest.json",
+        "sha256": "93505e41f88f61df1d95aba95a284a4a8faec1a0480bdfe962258c0fe0faae73"
+      }
+    ],
+    "unsupported": [
+      "docx",
+      "pdf",
+      "epub"
+    ],
+    "export_approval": {
+      "kind": "EXPORT",
+      "hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+      "at": "2026-10-25T10:12:15.211Z",
+      "job_id": "job-1df085112b1a"
+    }
+  },
+  "review": {
+    "ok": true,
+    "checks": {
+      "toc_match": true,
+      "provenance_covered": true
+    },
+    "findings": []
+  },
+  "ledger": {
+    "ok": true,
+    "findings": [],
+    "chapters": 4,
+    "events": 10
+  },
+  "style": [
+    {
+      "note": "句子要短",
+      "chapters": [],
+      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
+      "ok": true
+    },
+    {
+      "note": "不要使用感叹号",
+      "chapters": [],
+      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
+      "ok": true
+    },
+    {
+      "note": "避免抒情过度",
+      "chapters": [],
+      "reason": "未采用：来源材料中没有对应表述，强行改写会引入无来源主张",
+      "ok": true
+    }
+  ],
   "bible": {
     "schema_version": "1.0.0",
     "title": "旧书修复室的四季",
@@ -312,7 +394,7 @@
       ]
     },
     "must_write": [],
-    "created_at": "2026-10-25T08:08:38.638Z"
+    "created_at": "2026-10-25T10:12:15.133Z"
   },
   "outline": {
     "chapters": [
@@ -444,19 +526,19 @@
   "attestation": {
     "anchor": {
       "schema_version": "1.0.0",
-      "chain_head": "7dbf3834a6185947477f444888648f322658015f6bd37e1f5cfe9ecd5fd949b1",
-      "chain_length": 11,
-      "artifact_root_sha256": "f46d529f2b74a309f5b44d7ded3e46e43b9f6de77af7efadcf701ab5ef8eb273",
-      "created_at": "2026-10-25T08:08:38.876Z",
+      "chain_head": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57",
+      "chain_length": 20,
+      "artifact_root_sha256": "918171bf5b65928d743ee4ffbd0879cde8d3e6eccffb51041d0ecb9674d61861",
+      "created_at": "2026-10-25T10:12:15.414Z",
       "job_id": "job-1df085112b1a",
       "key_fingerprint": "8d0e237871feed0d9cc963d062e28a7a",
       "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAvavC2P8LbAmTXfI8jcCdu+OD4O+ccazSYitOKNTxzkw=\n-----END PUBLIC KEY-----\n",
-      "signature": "rmiKNpREPkiVsseYyY5mArcU2NDNLPWZQResKhhEL0fcY3qUteYALcvRGuklTFB0AG9mqz8PEpEjaEOW+NU9Cg==",
+      "signature": "JjAxlASiThhHsKH0u7DYRxwKi1/miFNyAISUUokn96pmyqiz1TTqzL3CxzlMYijay6b6+hpJXJPJLguBEj7xCw==",
       "time_source": {
-        "local_clock": "2026-10-25T08:08:38.876Z",
+        "local_clock": "2026-10-25T10:12:15.414Z",
         "git": {
-          "head": "37596c1efec3d9ab9ddd95dfd64b12711c3f9c0c",
-          "committed_at": "2026-10-25T13:14:31+08:00",
+          "head": "d07939c6ce12142c74f230d2263bcf350f9a9dbb",
+          "committed_at": "2026-10-25T16:42:50+08:00",
           "working_tree_dirty": true
         },
         "tsa": {
@@ -476,5 +558,9 @@
       },
       "problems": []
     }
+  },
+  "completion": {
+    "ok": true,
+    "missing": []
   }
 }

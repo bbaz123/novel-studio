@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T08:08:49.052Z",
+  "generated_at": "2026-10-25T10:12:20.360Z",
   "tests": {
     "command": "node scripts/test-one-click-book.mjs",
     "exit_code": 0,
@@ -11,12 +11,12 @@
     "policy": "deny-by-default",
     "allowlist": [],
     "attempts": 0,
-    "denied": 0,
     "ok": true
   },
   "attestation": {
     "ok": true,
-    "chain_head": "7dbf3834a6185947477f444888648f322658015f6bd37e1f5cfe9ecd5fd949b1",
+    "chain_head": "a1df0c91d381252ed60d8c00635e2207472ea4e716c0ec86f7178e0a6ec86b57",
+    "chain_length": 20,
     "checks": {
       "shape": true,
       "chain_integrity": true,
@@ -26,23 +26,36 @@
     },
     "tsa": "UNSUPPORTED",
     "git_anchor": {
-      "head": "37596c1efec3d9ab9ddd95dfd64b12711c3f9c0c",
-      "committed_at": "2026-10-25T13:14:31+08:00",
+      "head": "d07939c6ce12142c74f230d2263bcf350f9a9dbb",
+      "committed_at": "2026-10-25T16:42:50+08:00",
       "working_tree_dirty": true
     }
+  },
+  "ledger": {
+    "counts": {
+      "facts": 4,
+      "terminology": 4,
+      "timeline": 4,
+      "foreshadow": 2
+    },
+    "ok": true
+  },
+  "contracts": {
+    "task_contract_errors": [],
+    "chapter_contracts": 4
   },
   "mutation": {
     "command": "node scripts/one-click-book-mutation.mjs",
     "passed": true,
     "score": 1,
-    "killed": 7,
-    "mutants": 7
+    "killed": 10,
+    "mutants": 10
   },
   "secret_scan": {
     "hits": 0
   },
   "evidence_chain": {
-    "length": 11,
+    "length": 20,
     "verified": true
   },
   "verdict": {

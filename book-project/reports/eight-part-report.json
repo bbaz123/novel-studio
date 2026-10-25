@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T08:08:38.678Z",
+  "generated_at": "2026-10-25T10:12:15.220Z",
   "scope": {
     "what": "一键成书核心流水线 + 增强层（确定性离线生成）",
     "not_included": [
@@ -14,7 +14,8 @@
   "design": {
     "state_machine": "RECEIVED→PREFLIGHT→INGESTING→NORMALIZED→OUTLINED→EXEMPLAR_REVIEW→DRAFTING→QA→FULL_REVIEW→EXPORT_READY→EXPORTING→COMPLETED",
     "forbidden": "禁止 DRAFTING→COMPLETED 直跳；失败只能进 FIXING/BLOCKED",
-    "generation": "抽取式组装（不调用模型，零计费，可离线复现）"
+    "generation": "抽取式组装（不调用模型，零计费，可离线复现）",
+    "history": "stage_history 只追加真实发生的阶段（P1-1 修复）"
   },
   "changes": {
     "files": [
@@ -30,27 +31,30 @@
   },
   "tests": {
     "verifier": "scripts/test-one-click-book.mjs",
-    "acceptance": "AC-01..AC-24 逐条断言（含出口守卫与证据锚）"
+    "acceptance": "AC-01..AC-24"
   },
   "security": {
     "secret_scan": {
       "hits": 0,
+      "ingest_time": true,
       "patterns": [
         "aws-access-key",
         "openai-style-key",
         "private-key-block",
-        "password-assignment"
+        "password-assignment",
+        "token-assignment",
+        "high-entropy-token"
       ]
     },
+    "source_policy": "拒绝 dotfile / secrets / credentials / .env 命名，单文件 8MB、总量 32MB，非 UTF-8 阻断",
     "egress": {
       "policy": "deny-by-default",
       "allowlist": [],
       "attempts": 0,
-      "denied": 0,
-      "note": "本流水线零出站；守卫让任何意外出站当场失败并写入 .job/egress.jsonl"
+      "denied": 0
     },
-    "attestation": "证据链 Ed25519 分离签名 + 仓库锚（.dsh/anchors/anchor-log.jsonl 随 git 提交）；第三方 TSA 记 UNSUPPORTED（需出站与授权）",
-    "approval": "EXPORT 必须显式审批"
+    "attestation": "Ed25519 分离签名 + 仓库锚；第三方 TSA 记 UNSUPPORTED",
+    "approval": "EXPORT 审批与候选稿 sha256 绑定"
   },
   "performance": {
     "mode": "offline",
@@ -63,6 +67,8 @@
   },
   "risks_and_handoff": {
     "full_review_ok": true,
+    "ledger_ok": true,
+    "ledger_events": 10,
     "style_notes_traced": 3,
     "export": {
       "path": "export/book.md",
@@ -73,6 +79,6 @@
         "epub"
       ]
     },
-    "rollback": "删除 book-project/ 或从 versions/ 还原章节；job 状态可 resume"
+    "rollback": "删除 book-project/ 或从 versions/ 还原章节；job 状态可 retry"
   }
 }

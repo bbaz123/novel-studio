@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
-  "generated_at": "2026-10-25T08:08:48.943Z",
+  "generated_at": "2026-10-25T10:12:16.072Z",
   "target": "ai/one-click-book/core.mjs",
   "threshold": 0.8,
   "mutation_ran": true,
-  "mutants": 7,
-  "killed": 7,
+  "mutants": 10,
+  "killed": 10,
   "invalid": 0,
   "score": 1,
   "pass": true,
@@ -42,6 +42,21 @@
     },
     {
       "id": "M7-attest-signature-always-true",
+      "verdict": "KILLED",
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
+    },
+    {
+      "id": "M8-ingest-credential-scan-disabled",
+      "verdict": "KILLED",
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
+    },
+    {
+      "id": "M9-forbidden-dotfile-disabled",
+      "verdict": "KILLED",
+      "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
+    },
+    {
+      "id": "M10-completion-evidence-check-disabled",
       "verdict": "KILLED",
       "detail": "node:internal/modules/esm/load:193\r\n    throw new ERR_UNSUPPORTED_ESM_URL_SCHEME(parsed, schemes);\r\n          ^\r\n\r\nError [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, and n"
     }

@@ -18,21 +18,18 @@
   "ledger_delta": {
     "terminology": [
       {
-        "term": "修复室在西楼二层，窗外是一排樟树。",
-        "first_seen": "001"
+        "term": "修复室在西楼二层，窗外是一排樟树。"
       }
     ],
     "timeline": [
       {
-        "at": "001",
         "event": "第 1 节"
       }
     ],
     "foreshadow": [
       {
         "id": "FS-001",
-        "opened": "001",
-        "closed": null
+        "opened": "001"
       }
     ]
   }

@@ -1,0 +1,27 @@
+{
+  "job_id": "job-1df085112b1a",
+  "status": "COMPLETED",
+  "acceptance": 24,
+  "gates": [
+    {
+      "id": "full_review",
+      "ok": true
+    },
+    {
+      "id": "secret_scan",
+      "ok": true
+    },
+    {
+      "id": "export_approval",
+      "ok": true
+    }
+  ],
+  "completion": {
+    "ok": true,
+    "missing": []
+  },
+  "export": {
+    "path": "export/book.md",
+    "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+  }
+}

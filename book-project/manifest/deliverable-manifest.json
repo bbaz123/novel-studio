@@ -1,6 +1,7 @@
 {
+  "schema_version": "1.0.0",
   "job_id": "job-1df085112b1a",
-  "generated_at": "2026-10-25T08:08:38.677Z",
+  "generated_at": "2026-10-25T10:12:15.219Z",
   "artifacts": [
     {
       "path": "chapters/001/commit.md",
@@ -21,11 +22,21 @@
     {
       "path": "export/book.md",
       "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+    },
+    {
+      "path": "manifest/source-manifest.json",
+      "sha256": "93505e41f88f61df1d95aba95a284a4a8faec1a0480bdfe962258c0fe0faae73"
     }
   ],
   "unsupported": [
     "docx",
     "pdf",
     "epub"
-  ]
+  ],
+  "export_approval": {
+    "kind": "EXPORT",
+    "hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+    "at": "2026-10-25T10:12:15.211Z",
+    "job_id": "job-1df085112b1a"
+  }
 }

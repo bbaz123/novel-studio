@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto'
 export const STATES = [
   'RECEIVED', 'PREFLIGHT', 'INGESTING', 'NORMALIZED', 'OUTLINED',
   'EXEMPLAR_REVIEW', 'DRAFTING', 'QA', 'FULL_REVIEW',
-  'EXPORTING', 'EXPORT_READY', 'COMPLETED',
+  'EXPORT_READY', 'EXPORTING', 'COMPLETED',
   'BLOCKED', 'FAILED', 'FIXING', 'ROLLED_BACK', 'CANCELLED',
 ]
 
@@ -241,45 +241,122 @@ export function validateBrief(brief) {
   }
 }
 
-// ── 秘密扫描（AC-12 / security.secrets）──────────────────────────────────────
+// ── 凭据扫描（AC-12 / security.secrets）──────────────────────────────────────
+/**
+ * 扫描口径按“真实运维写入习惯”扩展：审计里 `API_TOKEN=abcd1234efgh5678` 这一行
+ * 在旧版 4 条规则下零命中、被原样导出（2026-10-25 审查 P1-2）。这里加两类判据：
+ *   1. 带 TOKEN/KEY/CREDENTIAL 字样的赋值；
+ *   2. 高熵串（长度 ≥32、同时含大写/小写/数字），覆盖无关键字的随机凭据。
+ */
 export const SECRET_PATTERNS = [
   { label: 'aws-access-key', re: /AKIA[0-9A-Z]{16}/g },
-  { label: 'openai-style-key', re: /sk-[A-Za-z0-9]{20,}/g },
+  { label: 'openai-style-key', re: /sk-[A-Za-z0-9_-]{16,}/g },
   { label: 'private-key-block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
-  { label: 'password-assignment', re: /(?:password|passwd|secret)\s*[:=]\s*['"][^'"]{6,}['"]/gi },
+  { label: 'password-assignment', re: /(?:password|passwd|secret)\s*[:=]\s*['"]?[^'"\s]{6,}/gi },
+  { label: 'token-assignment', re: /\b[A-Z0-9_]*(?:TOKEN|API_?KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL)\b\s*[:=]\s*['"]?[A-Za-z0-9_-]{8,}/g },
 ]
+
+const ENTROPY_TOKEN_RE = /[A-Za-z0-9_-]{32,}/g
+
+export function looksHighEntropy(token) {
+  if (typeof token !== 'string' || token.length < 32) return false
+  const hasUpper = /[A-Z]/.test(token)
+  const hasLower = /[a-z]/.test(token)
+  const hasDigit = /[0-9]/.test(token)
+  return hasUpper && hasLower && hasDigit
+}
 
 export function scanSecrets(text) {
   const hits = []
+  const source = String(text ?? '')
   for (const { label, re } of SECRET_PATTERNS) {
     re.lastIndex = 0
     let match
-    while ((match = re.exec(text)) !== null) {
+    while ((match = re.exec(source)) !== null) {
       hits.push({ label, sample: `${match[0].slice(0, 8)}…`, index: match.index })
       if (hits.length > 50) return hits
     }
   }
+  ENTROPY_TOKEN_RE.lastIndex = 0
+  let token
+  while ((token = ENTROPY_TOKEN_RE.exec(source)) !== null) {
+    if (!looksHighEntropy(token[0])) continue
+    hits.push({ label: 'high-entropy-token', sample: `${token[0].slice(0, 8)}…`, index: token.index })
+    if (hits.length > 50) return hits
+  }
   return hits
 }
 
+// ── 来源策略：禁止读取凭据类文件（方案 forbidden_paths）───────────────────────
+const FORBIDDEN_SEGMENTS = new Set(['secrets', 'secret', 'credentials', 'credential', '.env', 'private'])
+
+export function forbiddenSourceReason(filePath) {
+  const base = path.basename(String(filePath))
+  if (base.startsWith('.')) return 'dotfile'
+  const segments = String(filePath).split(/[\\/]/).map((part) => part.toLowerCase())
+  if (segments.some((part) => FORBIDDEN_SEGMENTS.has(part))) return 'forbidden-segment'
+  if (/(secret|credential|passwd|password|apikey|api[-_]key|token)/i.test(base)) return 'forbidden-name'
+  return null
+}
+
+export const SOURCE_LIMITS = { maxFileBytes: 8 * 1024 * 1024, maxTotalBytes: 32 * 1024 * 1024 }
+
 // ── 来源导入与规范化（AC-07 / BOOK-BASE-002）────────────────────────────────
-export function ingestSources(sourcePaths) {
+export function ingestSources(sourcePaths, options = {}) {
+  const limits = { ...SOURCE_LIMITS, ...(options.limits ?? {}) }
   const entries = []
   const unsupported = []
   const errors = []
+  const credentialHits = []
   const parts = []
+  let totalBytes = 0
   for (const [i, sourcePath] of sourcePaths.entries()) {
     const ext = path.extname(sourcePath).toLowerCase()
     const id = `SRC-${String(i + 1).padStart(3, '0')}`
+    const forbidden = forbiddenSourceReason(sourcePath)
+    if (forbidden) {
+      errors.push({ id, path: sourcePath, code: 'FORBIDDEN_SOURCE_PATH', reason: forbidden })
+      continue
+    }
     if (!SUPPORTED_SOURCE_EXT.includes(ext)) {
       unsupported.push({ id, path: sourcePath, ext, state: 'UNSUPPORTED' })
       continue
     }
-    let raw = ''
+    let size = 0
     try {
-      raw = fs.readFileSync(sourcePath, 'utf8')
+      size = fs.statSync(sourcePath).size
     } catch (e) {
       errors.push({ id, path: sourcePath, code: 'READ_FAILED', detail: String(e?.message || e) })
+      continue
+    }
+    if (size > limits.maxFileBytes) {
+      errors.push({ id, path: sourcePath, code: 'SOURCE_TOO_LARGE', detail: `${size} > ${limits.maxFileBytes}` })
+      continue
+    }
+    totalBytes += size
+    if (totalBytes > limits.maxTotalBytes) {
+      errors.push({ id, path: sourcePath, code: 'SOURCE_TOTAL_TOO_LARGE', detail: `${totalBytes} > ${limits.maxTotalBytes}` })
+      continue
+    }
+    let buffer
+    try {
+      buffer = fs.readFileSync(sourcePath)
+    } catch (e) {
+      errors.push({ id, path: sourcePath, code: 'READ_FAILED', detail: String(e?.message || e) })
+      continue
+    }
+    let raw
+    try {
+      raw = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+    } catch {
+      errors.push({ id, path: sourcePath, code: 'SOURCE_NOT_UTF8' })
+      continue
+    }
+    const hits = scanSecrets(raw)
+    if (hits.length > 0) {
+      // 关键顺序：先扫再写正文。旧实现把扫描放在导出前，敏感内容已经进了草稿（审查 P1-2）。
+      credentialHits.push(...hits.map((hit) => ({ ...hit, source: id })))
+      errors.push({ id, path: sourcePath, code: 'CREDENTIAL_IN_SOURCE', detail: hits.map((h) => h.label).join(',') })
       continue
     }
     const normalized = normalizeText(raw)
@@ -295,7 +372,14 @@ export function ingestSources(sourcePaths) {
     })
     parts.push(`<!-- ${id} -->\n${normalized}`)
   }
-  return { entries, unsupported, errors, text: parts.join('\n\n'), normalized_state: errors.length === 0 ? 'NORMALIZED' : 'BLOCKED' }
+  return {
+    entries,
+    unsupported,
+    errors,
+    credential_hits: credentialHits,
+    text: parts.join('\n\n'),
+    normalized_state: errors.length === 0 ? 'NORMALIZED' : 'BLOCKED',
+  }
 }
 
 export function normalizeText(raw) {
@@ -561,6 +645,132 @@ export function exportBook({ bookDir, title, chapters, approvals, secretHits }) 
   }
 }
 
+// ── 账本一致性（PS-27 / AC-04）──────────────────────────────────────────────
+/**
+ * 旧实现的账本只有两行“来源登记”，`timeline.jsonl`/`foreshadow.jsonl` 是 0 字节——
+ * 每章 contract 里写着的 ledger_delta 从未落账（2026-10-25 审查 P2-1）。
+ * 这里把“账本 → 审查结论”的判据固定下来，章节提交后按 delta 追加事件，再统一复核。
+ */
+export function reviewLedgers({ chapters = [], events = [], minEventsPerChapter = 1 } = {}) {
+  const findings = []
+  const byChapter = new Map()
+  for (const event of events) {
+    const key = event.chapter ?? 'unknown'
+    if (!byChapter.has(key)) byChapter.set(key, [])
+    byChapter.get(key).push(event)
+  }
+  for (const chapter of chapters) {
+    const rows = byChapter.get(chapter.id) ?? []
+    if (rows.length < minEventsPerChapter) {
+      findings.push({ code: 'LEDGER_EMPTY_CHAPTER', severity: 'high', detail: `${chapter.id} 只有 ${rows.length} 条账本事件` })
+    }
+  }
+  const open = new Map()
+  for (const event of events) {
+    if (event.kind === 'foreshadow_open' && event.id) open.set(event.id, event.chapter)
+    if (event.kind === 'foreshadow_close' && event.id) open.delete(event.id)
+  }
+  for (const [id, chapter] of open) {
+    findings.push({ code: 'FORESHADOW_UNRESOLVED', severity: 'medium', detail: `${id} 在 ${chapter} 打开后未回收` })
+  }
+  const timeline = events.filter((event) => event.kind === 'timeline').map((event) => Number(event.chapter)).filter(Number.isFinite)
+  for (let i = 1; i < timeline.length; i += 1) {
+    if (timeline[i] < timeline[i - 1]) {
+      findings.push({ code: 'TIMELINE_INVERTED', severity: 'high', detail: `${timeline[i - 1]} → ${timeline[i]}` })
+      break
+    }
+  }
+  const formsByTerm = new Map()
+  for (const event of events) {
+    if (event.kind !== 'terminology' || !event.term) continue
+    const form = event.form ?? event.term
+    if (formsByTerm.has(event.term) && formsByTerm.get(event.term) !== form) {
+      findings.push({ code: 'TERM_DRIFT', severity: 'high', detail: `${event.term}: ${formsByTerm.get(event.term)} vs ${form}` })
+    }
+    formsByTerm.set(event.term, form)
+  }
+  return { ok: findings.filter((f) => f.severity !== 'low').length === 0, findings, chapters: chapters.length, events: events.length }
+}
+
+// ── 验收清单（唯一来源：脚本与文档都从这里取，防止两处写法漂移）────────────────
+export const PLAN_ACCEPTANCE = [
+  ['AC-01', '缺 book_kind/goal/source 只能 WAITING_CONFIRMATION', 'missing-input negative test', ['confirmation-export.json', 'state=WAITING_CONFIRMATION']],
+  ['AC-02', '越过 allowed_paths 的写入被拒绝并回滚', 'path escape probe', ['PATH_ESCAPE 断言', 'resolveInside']],
+  ['AC-03', '前置 gate 未通过不能推进', 'state transition negative tests', ['stage_history 真实序列断言', 'assertTransition/assertNoSkip']],
+  ['AC-04', '每章都有契约/正文/摘要/来源映射/账本增量/验证回执', 'chapter completeness', ['chapter-manifest.json', 'commit.json', 'ledgers/*.jsonl']],
+  ['AC-05', '范例章批准前不得批量写章', 'exemplar lock', ['EXEMPLAR_REVIEW 状态断言', '无 chapters/002/draft.md']],
+  ['AC-06', '全章 review 未完成不得 finalize/export', 'full-review lock', ['FULL_REVIEW 状态断言', '无 export/book.md']],
+  ['AC-07', '来源缺失、事实冲突、引用断裂必须 BLOCK', 'provenance and contradiction probes', ['PROVENANCE_BROKEN', 'TOC_MISMATCH']],
+  ['AC-08', 'draft 与 commit 分离，未 commit 不得交付', 'staging-vs-commit', ['assertCommitted 生产调用', 'deliverable-manifest.json']],
+  ['AC-09', '重启可恢复且不重复写入', 'crash/restart replay', ['resume_noop 事件', 'commit hash 不变', '子进程重启测试']],
+  ['AC-10', 'OpenViking 不可用只能 DEGRADED', 'service outage', ['memory_state=DEGRADED']],
+  ['AC-11', 'turn-chime 失败不影响 verdict', 'chime failure injection', ['chime_state=DEGRADED', 'review.ok 不变']],
+  ['AC-12', 'EXPORT/PUBLISH 必须审批且秘密扫描通过', 'approval/hash mismatch and secret injection', ['EXPORT_READY 断言', 'SECRET_FOUND', 'APPROVAL_HASH_MISMATCH']],
+  ['AC-13', '插件变更先 DPIP 且版本/commit pin', 'plugin lifecycle negative tests', ['模块不触碰插件生命周期', 'HTTP 无插件端点', '宿主 DPIP 外部证据']],
+  ['AC-14', '缺 diff/命令/退出码/快照/审批/trace 证据不得 DONE', 'evidence completeness', ['completionVerdict 生产调用', 'verifyEvidenceChain']],
+  ['AC-15', 'mutation/adversarial gate 未运行即失败', 'gate bypass', ['reports/quality-gates-mutation.json']],
+  ['AC-16', '每条风格意见有章节落点或未采用理由', 'style traceability', ['review/style-traceability.json']],
+  ['AC-17', '定点修改显示下游影响、保留旧版并可回滚', 'impact and rollback', ['POST /chapters/:id/edit', 'impact graph', 'versions/']],
+  ['AC-18', '八部分报告、交付清单、hash 完整一致', 'delivery manifest', ['reports/eight-part-report.json', 'deliverable hash 复核']],
+  ['AC-19', '模型自报、普通日志和 OpenViking 记忆不算完成证据', 'self-report spoof', ['completionVerdict 拒绝无证据完成']],
+  ['AC-20', '失败必须产生修复包并回到对应 gate', 'failure-repair loop', ['defect-list.json', 'repair-package.json']],
+  ['AC-21', '出口默认拒绝：无白名单时出站被拒且留审计', 'egress deny probe', ['egress.summary policy=deny-by-default', '.job/egress.jsonl']],
+  ['AC-22', '被拒时不发起底层请求（不是先发后拦）', 'egress fetch spy', ['fetchImpl 调用次数 0']],
+  ['AC-23', '证据链签名可验证，改链或改签名即被检出', 'attest tamper probe', ['.job/attestation.json', 'verifyAnchor checks']],
+  ['AC-24', '完整 job 产出可验证锚与锚点日志（TSA 记 UNSUPPORTED）', 'attest e2e', ['.dsh/anchors/anchor-log.jsonl']],
+].map(([id, requirement, test, evidence]) => ({ id, requirement, test, evidence }))
+
+export const SCHEMAS = {
+  'task-contract': {
+    type: 'object',
+    additionalProperties: true,
+    required: ['schema_version', 'plan_id', 'acceptance'],
+    properties: {
+      schema_version: { type: 'string' },
+      plan_id: { type: 'string' },
+      acceptance: {
+        type: 'array',
+        minItems: 20,
+        items: {
+          type: 'object',
+          additionalProperties: true,
+          required: ['id', 'requirement', 'test', 'evidence'],
+          properties: {
+            id: { type: 'string', pattern: '^AC-\\d+$' },
+            requirement: { type: 'string' },
+            test: { type: 'string' },
+            evidence: { type: 'array', minItems: 1 },
+          },
+        },
+      },
+    },
+  },
+  'chapter-contract': {
+    type: 'object',
+    additionalProperties: true,
+    required: ['schema_version', 'id', 'title', 'goal', 'must_include', 'source_refs', 'word_range'],
+    properties: {
+      schema_version: { type: 'string' },
+      id: { type: 'string', pattern: '^\\d{3}$' },
+      title: { type: 'string' },
+      goal: { type: 'string' },
+      must_include: { type: 'array', minItems: 1 },
+      source_refs: { type: 'array' },
+      word_range: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' } },
+    },
+  },
+  'deliverable': {
+    type: 'object',
+    additionalProperties: true,
+    required: ['schema_version', 'artifacts'],
+    properties: {
+      schema_version: { type: 'string' },
+      artifacts: { type: 'array', minItems: 1, items: { type: 'object', required: ['path', 'sha256'] } },
+    },
+  },
+}
+
+
 // ── 八部分报告（PS-32..PS-39 / AC-18）───────────────────────────────────────
 export const REPORT_SECTIONS = ['scope', 'design', 'changes', 'tests', 'security', 'performance', 'cost', 'risks_and_handoff']
 
@@ -613,4 +823,11 @@ export function assertCommitted({ bookDir, chapterIds }) {
     throw err
   }
   return true
+}
+
+/** G1 契约校验入口：schema 来自本文件 SCHEMAS，生成即校验。 */
+export function validateContract(name, value) {
+  const schema = SCHEMAS[name]
+  if (!schema) return [`unknown-schema:${name}`]
+  return validateSchema(schema, value)
 }

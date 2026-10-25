@@ -1,0 +1,245 @@
+{
+  "schema_version": "1.0.0",
+  "plan_id": "plan-52d26b8b5f43",
+  "job_id": "job-1df085112b1a",
+  "generated_at": "2026-10-25T10:12:15.136Z",
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "requirement": "缺 book_kind/goal/source 只能 WAITING_CONFIRMATION",
+      "test": "missing-input negative test",
+      "evidence": [
+        "confirmation-export.json",
+        "state=WAITING_CONFIRMATION"
+      ]
+    },
+    {
+      "id": "AC-02",
+      "requirement": "越过 allowed_paths 的写入被拒绝并回滚",
+      "test": "path escape probe",
+      "evidence": [
+        "PATH_ESCAPE 断言",
+        "resolveInside"
+      ]
+    },
+    {
+      "id": "AC-03",
+      "requirement": "前置 gate 未通过不能推进",
+      "test": "state transition negative tests",
+      "evidence": [
+        "stage_history 真实序列断言",
+        "assertTransition/assertNoSkip"
+      ]
+    },
+    {
+      "id": "AC-04",
+      "requirement": "每章都有契约/正文/摘要/来源映射/账本增量/验证回执",
+      "test": "chapter completeness",
+      "evidence": [
+        "chapter-manifest.json",
+        "commit.json",
+        "ledgers/*.jsonl"
+      ]
+    },
+    {
+      "id": "AC-05",
+      "requirement": "范例章批准前不得批量写章",
+      "test": "exemplar lock",
+      "evidence": [
+        "EXEMPLAR_REVIEW 状态断言",
+        "无 chapters/002/draft.md"
+      ]
+    },
+    {
+      "id": "AC-06",
+      "requirement": "全章 review 未完成不得 finalize/export",
+      "test": "full-review lock",
+      "evidence": [
+        "FULL_REVIEW 状态断言",
+        "无 export/book.md"
+      ]
+    },
+    {
+      "id": "AC-07",
+      "requirement": "来源缺失、事实冲突、引用断裂必须 BLOCK",
+      "test": "provenance and contradiction probes",
+      "evidence": [
+        "PROVENANCE_BROKEN",
+        "TOC_MISMATCH"
+      ]
+    },
+    {
+      "id": "AC-08",
+      "requirement": "draft 与 commit 分离，未 commit 不得交付",
+      "test": "staging-vs-commit",
+      "evidence": [
+        "assertCommitted 生产调用",
+        "deliverable-manifest.json"
+      ]
+    },
+    {
+      "id": "AC-09",
+      "requirement": "重启可恢复且不重复写入",
+      "test": "crash/restart replay",
+      "evidence": [
+        "resume_noop 事件",
+        "commit hash 不变",
+        "子进程重启测试"
+      ]
+    },
+    {
+      "id": "AC-10",
+      "requirement": "OpenViking 不可用只能 DEGRADED",
+      "test": "service outage",
+      "evidence": [
+        "memory_state=DEGRADED"
+      ]
+    },
+    {
+      "id": "AC-11",
+      "requirement": "turn-chime 失败不影响 verdict",
+      "test": "chime failure injection",
+      "evidence": [
+        "chime_state=DEGRADED",
+        "review.ok 不变"
+      ]
+    },
+    {
+      "id": "AC-12",
+      "requirement": "EXPORT/PUBLISH 必须审批且秘密扫描通过",
+      "test": "approval/hash mismatch and secret injection",
+      "evidence": [
+        "EXPORT_READY 断言",
+        "SECRET_FOUND",
+        "APPROVAL_HASH_MISMATCH"
+      ]
+    },
+    {
+      "id": "AC-13",
+      "requirement": "插件变更先 DPIP 且版本/commit pin",
+      "test": "plugin lifecycle negative tests",
+      "evidence": [
+        "模块不触碰插件生命周期",
+        "HTTP 无插件端点",
+        "宿主 DPIP 外部证据"
+      ]
+    },
+    {
+      "id": "AC-14",
+      "requirement": "缺 diff/命令/退出码/快照/审批/trace 证据不得 DONE",
+      "test": "evidence completeness",
+      "evidence": [
+        "completionVerdict 生产调用",
+        "verifyEvidenceChain"
+      ]
+    },
+    {
+      "id": "AC-15",
+      "requirement": "mutation/adversarial gate 未运行即失败",
+      "test": "gate bypass",
+      "evidence": [
+        "reports/quality-gates-mutation.json"
+      ]
+    },
+    {
+      "id": "AC-16",
+      "requirement": "每条风格意见有章节落点或未采用理由",
+      "test": "style traceability",
+      "evidence": [
+        "review/style-traceability.json"
+      ]
+    },
+    {
+      "id": "AC-17",
+      "requirement": "定点修改显示下游影响、保留旧版并可回滚",
+      "test": "impact and rollback",
+      "evidence": [
+        "POST /chapters/:id/edit",
+        "impact graph",
+        "versions/"
+      ]
+    },
+    {
+      "id": "AC-18",
+      "requirement": "八部分报告、交付清单、hash 完整一致",
+      "test": "delivery manifest",
+      "evidence": [
+        "reports/eight-part-report.json",
+        "deliverable hash 复核"
+      ]
+    },
+    {
+      "id": "AC-19",
+      "requirement": "模型自报、普通日志和 OpenViking 记忆不算完成证据",
+      "test": "self-report spoof",
+      "evidence": [
+        "completionVerdict 拒绝无证据完成"
+      ]
+    },
+    {
+      "id": "AC-20",
+      "requirement": "失败必须产生修复包并回到对应 gate",
+      "test": "failure-repair loop",
+      "evidence": [
+        "defect-list.json",
+        "repair-package.json"
+      ]
+    },
+    {
+      "id": "AC-21",
+      "requirement": "出口默认拒绝：无白名单时出站被拒且留审计",
+      "test": "egress deny probe",
+      "evidence": [
+        "egress.summary policy=deny-by-default",
+        ".job/egress.jsonl"
+      ]
+    },
+    {
+      "id": "AC-22",
+      "requirement": "被拒时不发起底层请求（不是先发后拦）",
+      "test": "egress fetch spy",
+      "evidence": [
+        "fetchImpl 调用次数 0"
+      ]
+    },
+    {
+      "id": "AC-23",
+      "requirement": "证据链签名可验证，改链或改签名即被检出",
+      "test": "attest tamper probe",
+      "evidence": [
+        ".job/attestation.json",
+        "verifyAnchor checks"
+      ]
+    },
+    {
+      "id": "AC-24",
+      "requirement": "完整 job 产出可验证锚与锚点日志（TSA 记 UNSUPPORTED）",
+      "test": "attest e2e",
+      "evidence": [
+        ".dsh/anchors/anchor-log.jsonl"
+      ]
+    }
+  ],
+  "accepted_paths": "owner 于 2026-10-25T12:57+08:00 取消白名单；实现落点受 resolveInside 约束",
+  "forbidden_actions": [
+    "modify_acceptance_criteria",
+    "delete_or_weaken_assertions",
+    "claim_pass_without_exit_code",
+    "publish_without_approval",
+    "read_or_emit_credentials",
+    "bypass_a_gate_or_ledger"
+  ],
+  "budgets": {
+    "max_cost_cents": 200,
+    "actual_cost_cents": 0
+  },
+  "source_policy": {
+    "forbidden": [
+      "dotfile",
+      "secrets/",
+      "credentials/",
+      ".env"
+    ],
+    "credential_scan": "ingest-time"
+  }
+}

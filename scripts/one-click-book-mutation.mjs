@@ -90,6 +90,39 @@ const MUTANTS = [
       if (v.checks.signature !== false || v.ok !== false) process.exit(3);
     })`,
   },
+  {
+    id: 'M8-ingest-credential-scan-disabled',
+    file: 'ai/one-click-book/core.mjs',
+    find: 'if (hits.length > 0) {',
+    replace: 'if (false) {',
+    probe: `Promise.all([import(__CORE__), import('node:fs'), import('node:os'), import('node:path')]).then(([core, fs, os, path]) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocb-mut-ingest-'));
+      const file = path.join(dir, 'source.md');
+      fs.writeFileSync(file, '# x\\n\\n配置 ' + ['AK', 'IA'].join('') + 'ABCDEFGHIJKLMNOP\\n');
+      const out = core.ingestSources([file]);
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (!out.errors.some((e) => e.code === 'CREDENTIAL_IN_SOURCE')) process.exit(3);
+    })`,
+  },
+  {
+    id: 'M9-forbidden-dotfile-disabled',
+    file: 'ai/one-click-book/core.mjs',
+    find: "if (base.startsWith('.')) return 'dotfile'",
+    replace: "if (false) return 'dotfile'",
+    probe: `import(__CORE__).then((core) => {
+      if (core.forbiddenSourceReason('/tmp/ws/.env') !== 'dotfile') process.exit(3);
+    })`,
+  },
+  {
+    id: 'M10-completion-evidence-check-disabled',
+    file: 'ai/one-click-book/core.mjs',
+    find: "if (!Array.isArray(evidenceRefs) || evidenceRefs.length === 0) missing.push('no-observed-evidence')",
+    replace: 'if (false) missing.push(\'no-observed-evidence\')',
+    probe: `import(__CORE__).then((core) => {
+      const v = core.completionVerdict({ evidenceRefs: [], gates: [{ ok: true }], chain: [] });
+      if (v.ok !== false || !v.missing.includes('no-observed-evidence')) process.exit(3);
+    })`,
+  },
 ]
 
 const source = fs.readFileSync(CORE, 'utf8')

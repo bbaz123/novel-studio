@@ -1,0 +1,184 @@
+{
+  "schema_version": "1.0.0",
+  "job_id": "job-1df085112b1a",
+  "stage": "OUTLINED",
+  "at": "2026-10-25T10:12:15.145Z",
+  "artifacts": [
+    {
+      "path": ".dsh/checkpoints/01-PREFLIGHT.json",
+      "sha256": "b0d5bd6a50635e08c623363a17f56abf3be1915b0bbe68adca8e39a8a1a9904d"
+    },
+    {
+      "path": ".dsh/checkpoints/03-NORMALIZED.json",
+      "sha256": "1b1e4582c6f637ebfdbfeca090cfb33bc678549232b29d15061057cbf6d7f5fd"
+    },
+    {
+      "path": ".dsh/checkpoints/04-OUTLINED.json",
+      "sha256": "e318191eaeedcabb236b21c22f911ec54afc1aafeaaa4629286c3cc82985b060"
+    },
+    {
+      "path": ".dsh/checkpoints/05-EXEMPLAR_REVIEW.json",
+      "sha256": "5d7638da3734f638e00770730eab1fc212e23b11778185a644b5d471f4c36933"
+    },
+    {
+      "path": ".dsh/checkpoints/06-DRAFTING.json",
+      "sha256": "cba00004a733a9d9ea806942bcb37525e7c3d617ae4b3680070b7d00d455f49b"
+    },
+    {
+      "path": ".dsh/checkpoints/07-QA.json",
+      "sha256": "5accaa83d5b5119d3f3d136ebecd5571efa258b87b16b27abdf607ee40a8ed74"
+    },
+    {
+      "path": ".dsh/checkpoints/08-FULL_REVIEW.json",
+      "sha256": "f1c98771034117a9b703e05c299440dc59d7e882eef0d26f1a053f2b7068cdcb"
+    },
+    {
+      "path": ".dsh/checkpoints/09-EXPORT_READY.json",
+      "sha256": "ca62aa5b63cf8e0c7e6b76a50f67a8d38d3da40b119f435b80eec08a8088798e"
+    },
+    {
+      "path": "过程记录.md",
+      "sha256": "7a80e3b06d9232c669bb58fd9bcd55928b78b1053c2be6ae7b3e1da478aa29bc"
+    },
+    {
+      "path": "book-bible.json",
+      "sha256": "5abc24495ab8297c065756a544565d146c69b450ef8cf262151bfc1fbab03af2"
+    },
+    {
+      "path": "chapters/001/commit.json",
+      "sha256": "f1054653e95716a3c146bd91105450f516d73664a256fdeb2f7cb835845514e9"
+    },
+    {
+      "path": "chapters/001/commit.md",
+      "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b"
+    },
+    {
+      "path": "chapters/001/contract.json",
+      "sha256": "f1167b11c275e404a6c1936f07b0582850bb00ba9200451ed61d357e4f44b9bd"
+    },
+    {
+      "path": "chapters/001/draft.md",
+      "sha256": "dac218c110b73ee04ff352ecc570d87c394d1ded71311f3673d9b0ee9da3c29b"
+    },
+    {
+      "path": "chapters/001/review.json",
+      "sha256": "518a119047516b8f5215984204e69421502fde5585525a4fbf552d0e3b88d405"
+    },
+    {
+      "path": "chapters/002/commit.json",
+      "sha256": "a94815013e382c7142eb434a7073bb7da50b459b9e95d068721c2f9d878c067c"
+    },
+    {
+      "path": "chapters/002/commit.md",
+      "sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8"
+    },
+    {
+      "path": "chapters/002/contract.json",
+      "sha256": "da09cf67d2b99a466325da698b96615b0361a17093c3699833cd4ade91b865a6"
+    },
+    {
+      "path": "chapters/002/draft.md",
+      "sha256": "e889fd6eeec5b3c043b61d7c474899376d0e8d410649a0644df073c0cfb646c8"
+    },
+    {
+      "path": "chapters/002/review.json",
+      "sha256": "54f8ca51c31dda90b97a454e22cc4056a4b4e590a9684724507aeac4c08b27b3"
+    },
+    {
+      "path": "chapters/003/commit.json",
+      "sha256": "32d039cdc584117840555d838d47492e176e53a6bb262f75cc31fb3236574ce4"
+    },
+    {
+      "path": "chapters/003/commit.md",
+      "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec"
+    },
+    {
+      "path": "chapters/003/contract.json",
+      "sha256": "dec1f947aedd2dad565e2e81db98c7318abc90c72ea31a869332004618dd7595"
+    },
+    {
+      "path": "chapters/003/draft.md",
+      "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec"
+    },
+    {
+      "path": "chapters/003/review.json",
+      "sha256": "3218676b67051196f8f2cae5f169a1cdead0512742889b3d66d72c2d29fb3e6a"
+    },
+    {
+      "path": "chapters/004/commit.json",
+      "sha256": "1d924ad4cc7085bc1dc4b228c871a00f58a90a6d09a15b4452cb2df3170f0b47"
+    },
+    {
+      "path": "chapters/004/commit.md",
+      "sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7"
+    },
+    {
+      "path": "chapters/004/contract.json",
+      "sha256": "6b002ea20038ef8763f3fcfd27dca8360e5738d106cde5bee0f31ee96e8c794c"
+    },
+    {
+      "path": "chapters/004/draft.md",
+      "sha256": "3719c46c656b113bce0620a2fc53d45b4e0034dec1ee7341b45e3ac5643f73f7"
+    },
+    {
+      "path": "chapters/004/review.json",
+      "sha256": "e772b9b33c3a2b16b41420f2828742da6aabea2c299c787ea8f9674c89db28ed"
+    },
+    {
+      "path": "contract/book-requirements.json",
+      "sha256": "0afb354da962f7bc9c913630a59c1e5edacfa0df512c2f55d5abd341857457a7"
+    },
+    {
+      "path": "contract/task-contract.json",
+      "sha256": "2e443075a0ee05d3561614293083c8b17fc58d89d628e574b29a5aa381db3a0f"
+    },
+    {
+      "path": "export/candidate.md",
+      "sha256": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0"
+    },
+    {
+      "path": "ledgers/facts.jsonl",
+      "sha256": "b32d40f9c676c0d7747ced5c8e227be1e0c5aa61693688e705da323667b03e6b"
+    },
+    {
+      "path": "ledgers/foreshadow.jsonl",
+      "sha256": "a6b401e076638b0e35cc7e5de07014f76818de840276c0b43224c81dc9278ea0"
+    },
+    {
+      "path": "ledgers/terminology.jsonl",
+      "sha256": "ba4d07eca0ea4d5895025fb58300b7fbe08dd6119bf5fa3dd18a653c2b1b97f2"
+    },
+    {
+      "path": "ledgers/timeline.jsonl",
+      "sha256": "9cc684e93b6d6e2dde174f29eb1301e7c3d24c76e3632548955eba71897a50fa"
+    },
+    {
+      "path": "manifest/chapter-manifest.json",
+      "sha256": "5c8bf9eb472e8415f6755a9a75bee4a80c19a2481e715ad0d5dbf7707f12ad17"
+    },
+    {
+      "path": "manifest/source-manifest.json",
+      "sha256": "93505e41f88f61df1d95aba95a284a4a8faec1a0480bdfe962258c0fe0faae73"
+    },
+    {
+      "path": "outline/outline.md",
+      "sha256": "520310b7591410b6c473826c3bc1c41f880ebab7541d147b21e58334bdb398e8"
+    },
+    {
+      "path": "README.md",
+      "sha256": "6de783157bb61bf696c8c735493a293e8d316eb6caa15d39621b9a55078cb27a"
+    },
+    {
+      "path": "review/full-book-report.json",
+      "sha256": "38d0b9701a7049d8c67fcb453730764a605fce1569f47ba52e2712aa5b926f9c"
+    },
+    {
+      "path": "review/style-traceability.json",
+      "sha256": "00a28c64cf38a587fa6513129425ececab0c3dc9d480d3c261a6e5ef3a1597ae"
+    },
+    {
+      "path": "sources/normalized/source.txt",
+      "sha256": "e360d2aeeb9666a81bf93b8f5257c27332b6621e1905186c6cdc9feab3c621ca"
+    }
+  ]
+}

@@ -21,6 +21,8 @@ export class EgressDeniedError extends Error {
   }
 }
 
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0'])
+
 function hostOf(target) {
   if (target instanceof URL) return target.hostname.toLowerCase()
   const text = String(target)
@@ -62,7 +64,8 @@ export function createEgressGuard(options = {}) {
     /** 只判定，不发起请求；被拒即抛。 */
     check(target) {
       const host = hostOf(target)
-      const ok = allowed.has(host)
+      // 本机回环始终放行：工坊自己的服务就在 127.0.0.1，把它拦掉等于把产品打死。
+      const ok = LOOPBACK.has(host) || allowed.has(host)
       record({ kind: 'check', host, ok })
       if (!ok) throw new EgressDeniedError(host)
       return true
