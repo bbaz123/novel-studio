@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-10-25T05:03:07.388Z",
+  "tests": {
+    "command": "node scripts/test-one-click-book.mjs",
+    "exit_code": 0,
+    "ok": true,
+    "note": "由执行器 shell 真实运行并传入退出码；本脚本内 spawn 被沙箱拒绝（EPERM），不伪造"
+  },
+  "mutation": {
+    "command": "node scripts/one-click-book-mutation.mjs",
+    "passed": true,
+    "score": 1,
+    "killed": 5,
+    "mutants": 5
+  },
+  "secret_scan": {
+    "hits": 0
+  },
+  "evidence_chain": {
+    "length": 9,
+    "verified": true
+  },
+  "verdict": {
+    "ok": true,
+    "failures": []
+  }
+}

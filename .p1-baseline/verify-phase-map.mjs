@@ -2253,6 +2253,42 @@ export const PHASES = [
       + '**边界**：不写正文、不碰 confirmation ledger、不改 system-prompt personaPrefix。'
       + '**费用**：工具测试对本地 HTTP stub，零计费。',
   },
+  {
+    id: 'OCB',
+    title: '一键成书（核心流水线 + 增强层，离线确定性）',
+    files: [
+      'ai/one-click-book/',
+      'fixtures/ocb/',
+      'scripts/one-click-book-cli.mjs',
+      'scripts/one-click-book-finalize.mjs',
+      'scripts/one-click-book-mutation.mjs',
+      'scripts/test-one-click-book.mjs',
+      'public/one-click-book.js',
+      'docs/one-click-book/',
+      'book-project/',
+      'reports/quality-gates.json',
+      'reports/quality-gates-mutation.json',
+      'reports/recovery-test.json',
+      '.dsh/plugin-inventory.json',
+      '.dsh/frozen-plan.json',
+      '.dsh/completion.json',
+    ],
+    evidence: [
+      'docs/one-click-book/task-contract.json',
+      'docs/one-click-book/book-requirements.json',
+      'reports/quality-gates.json',
+      'reports/recovery-test.json',
+      'book-project/.job/evidence.json',
+      'book-project/manifest/deliverable-manifest.json',
+    ],
+    // 推导=shared：server.js 生产代码 import 了 ai/one-click-book/http.mjs，撤掉会打断线上路由；
+    // 声明必须与推导一致，否则清单会“看起来可独立回滚”。
+    rollback: 'shared',
+    note: '**目的**：一次触发、可恢复、带门禁的成书流水线；增强层增加来源回指、章节契约、一致性账本、独立复审与证据链。'
+      + '**生成方式**：抽取式确定性组装（零模型调用、零计费），所以可离线复现；不新增事实。'
+      + '**回滚**：删 `ai/one-click-book/`、`book-project/`、`fixtures/ocb/`、`docs/one-click-book/` 与本组报告，再撤 `server.js` 的路由块与 `index.html` 的一行 script。'
+      + '**边界**：docx/pdf/epub 标 UNSUPPORTED（无适配器时不伪造成功）；不自动发布。',
+  },
 ];
 
 /** 末段 `*` 通配 + 目录前缀 + 精确路径。 */

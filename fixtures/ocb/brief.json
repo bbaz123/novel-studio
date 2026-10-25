@@ -1,0 +1,11 @@
+{
+  "book_kind": "纪实随笔集",
+  "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界",
+  "title": "旧书修复室的四季",
+  "language": "zh-CN",
+  "audience": "对纸质书与手艺感兴趣的普通读者",
+  "style_notes": ["句子要短", "不要使用感叹号", "避免抒情过度"],
+  "must_not_write": ["叹号堆叠", "绝对化断言"],
+  "sources": ["fixtures/ocb/source.md"],
+  "budget_cny": 0
+}

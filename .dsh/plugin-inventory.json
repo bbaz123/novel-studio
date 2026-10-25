@@ -5,72 +5,235 @@
   "profile": "desktop",
   "dsh_home": "C:\\Users\\a1941\\.dsh",
   "composed_tree": "C:\\Users\\a1941\\.dsh\\profiles\\desktop\\cordis.yml",
-  "layers_defined_by_plan": ["L1_package_installable", "L2_profile_bundle_mounted", "L3_loader_inventory_entry", "L4_registered_capability", "L5_readonly_smoke"],
+  "layers_defined_by_plan": [
+    "L1_package_installable",
+    "L2_profile_bundle_mounted",
+    "L3_loader_inventory_entry",
+    "L4_registered_capability",
+    "L5_readonly_smoke"
+  ],
   "probe_note": "L1/L2/L3 由宿主机文件与组合树读取；L4 由本会话真实可见的工具/钩子判定；L5 只用只读或无破坏性调用，无法只读验证者显式记 SKIPPED，不记为 PASS。",
   "plugins": [
     {
       "id": "dsh-plugin-auto-plan-executor",
       "declared_version": "0.1.0",
-      "L1": {"result": "PASS", "name": "dsh-plugin-auto-plan-executor", "version": "0.1.0", "main": "lib/index.js", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-auto-plan-executor"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1372 - id: auto-plan-executor / name: dsh-plugin-auto-plan-executor"},
-      "L4": {"result": "PASS", "tools": ["auto_plan_status", "auto_plan_task", "auto_plan_step", "auto_plan_finish", "auto_plan_gate"]},
-      "L5": {"result": "PASS", "smoke": "auto_plan_status -> found=true, plan_id=plan-52d26b8b5f43, stage=SNAPSHOTTED, steps=80"}
+      "L1": {
+        "result": "PASS",
+        "name": "dsh-plugin-auto-plan-executor",
+        "version": "0.1.0",
+        "main": "lib/index.js",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-auto-plan-executor"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1372 - id: auto-plan-executor / name: dsh-plugin-auto-plan-executor"
+      },
+      "L4": {
+        "result": "PASS",
+        "tools": [
+          "auto_plan_status",
+          "auto_plan_task",
+          "auto_plan_step",
+          "auto_plan_finish",
+          "auto_plan_gate"
+        ]
+      },
+      "L5": {
+        "result": "PASS",
+        "smoke": "auto_plan_status -> found=true, plan_id=plan-52d26b8b5f43, stage=SNAPSHOTTED, steps=80"
+      }
     },
     {
       "id": "dsh-plugin-verification",
       "declared_version": "0.1.0",
-      "L1": {"result": "PASS", "name": "dsh-plugin-verification", "version": "0.1.0", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-plugin-verification"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1298 - id: verification-gate / name: dsh-plugin-verification (mode: enforce)"},
-      "L4": {"result": "PASS", "tools": ["verification_run", "verification_status", "verification_finalize"]},
-      "L5": {"result": "PASS", "smoke": "verification_status -> state=working, gate=needs_evidence, technicalAcceptance=not_verified"}
+      "L1": {
+        "result": "PASS",
+        "name": "dsh-plugin-verification",
+        "version": "0.1.0",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-plugin-verification"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1298 - id: verification-gate / name: dsh-plugin-verification (mode: enforce)"
+      },
+      "L4": {
+        "result": "PASS",
+        "tools": [
+          "verification_run",
+          "verification_status",
+          "verification_finalize"
+        ]
+      },
+      "L5": {
+        "result": "PASS",
+        "smoke": "verification_status -> state=working, gate=needs_evidence, technicalAcceptance=not_verified"
+      }
     },
     {
       "id": "dsh-plugin-confirmation-resolution",
       "declared_version": "1.1.0",
-      "L1": {"result": "PASS", "name": "dsh-plugin-confirmation-resolution", "version": "1.1.0", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-confirmation-resolution"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1230 - id: confirmation-resolution / name: dsh-plugin-confirmation-resolution"},
-      "L4": {"result": "PASS", "tools": ["confirmation_resolution", "confirmation_resolution_v2"], "note": "auto_plan_status 报告 CONFIRMATION_TOOLS: V1+V2"},
-      "L5": {"result": "SKIPPED", "reason": "该插件没有只读动作；register/decide/complete 都会写会话账本，按 P0 只读约束不做探针"}
+      "L1": {
+        "result": "PASS",
+        "name": "dsh-plugin-confirmation-resolution",
+        "version": "1.1.0",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-confirmation-resolution"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1230 - id: confirmation-resolution / name: dsh-plugin-confirmation-resolution"
+      },
+      "L4": {
+        "result": "PASS",
+        "tools": [
+          "confirmation_resolution",
+          "confirmation_resolution_v2"
+        ],
+        "note": "auto_plan_status 报告 CONFIRMATION_TOOLS: V1+V2"
+      },
+      "L5": {
+        "result": "SKIPPED",
+        "reason": "该插件没有只读动作；register/decide/complete 都会写会话账本，按 P0 只读约束不做探针"
+      }
     },
     {
       "id": "dsh-operation-security",
       "declared_version": "0.1.0",
-      "L1": {"result": "PASS", "name": "dsh-operation-security", "version": "0.1.0", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-operation-security"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1382 - id: operation-security-desktop / name: dsh-operation-security"},
-      "L4": {"result": "PARTIAL", "tools": [], "hooks": ["tools/pre-execute", "ctx.tools.guard()"], "note": "无对外工具，能力在钩子层，无法从工具注册表读到"},
-      "L5": {"result": "PASS", "smoke": "~/.dsh/operation-security/audit.jsonl 按调用追加（末尾两条为 pwsh 与 ops_bash 的审计行），pre-execute 钩子在本会话真实执行"}
+      "L1": {
+        "result": "PASS",
+        "name": "dsh-operation-security",
+        "version": "0.1.0",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-operation-security"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1382 - id: operation-security-desktop / name: dsh-operation-security"
+      },
+      "L4": {
+        "result": "PARTIAL",
+        "tools": [],
+        "hooks": [
+          "tools/pre-execute",
+          "ctx.tools.guard()"
+        ],
+        "note": "无对外工具，能力在钩子层，无法从工具注册表读到"
+      },
+      "L5": {
+        "result": "PASS",
+        "smoke": "~/.dsh/operation-security/audit.jsonl 按调用追加（末尾两条为 pwsh 与 ops_bash 的审计行），pre-execute 钩子在本会话真实执行"
+      }
     },
     {
       "id": "dsh-self-plugin-manager",
       "declared_version": "0.1.0",
-      "L1": {"result": "PASS", "name": "dsh-self-plugin-manager", "version": "0.1.0", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-self-plugin-manager"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1363 - id: self-plugin-manager / name: dsh-self-plugin-manager"},
-      "L4": {"result": "PARTIAL", "tools": [], "note": "能力在设置页客户端 surface；Agent 侧无法读注册表验证 UI 页签"},
-      "L5": {"result": "SKIPPED", "reason": "安装/升级/回滚会真实改动 profile，不是只读冒烟；按 P0 与 DPIP 约束不做"}
+      "L1": {
+        "result": "PASS",
+        "name": "dsh-self-plugin-manager",
+        "version": "0.1.0",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-self-plugin-manager"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1363 - id: self-plugin-manager / name: dsh-self-plugin-manager"
+      },
+      "L4": {
+        "result": "PARTIAL",
+        "tools": [],
+        "note": "能力在设置页客户端 surface；Agent 侧无法读注册表验证 UI 页签"
+      },
+      "L5": {
+        "result": "SKIPPED",
+        "reason": "安装/升级/回滚会真实改动 profile，不是只读冒烟；按 P0 与 DPIP 约束不做"
+      }
     },
     {
       "id": "dsh-openviking-autostart",
       "declared_version": "0.1.0",
-      "L1": {"result": "PASS", "name": "dsh-openviking-autostart", "version": "0.1.0", "main": "lib/index.mjs", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-openviking-autostart"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1275 - id: openviking-autostart / name: dsh-openviking-autostart (enabled: true, readyTimeoutMs: 30000)"},
-      "L4": {"result": "PASS", "hooks": ["agent/created"], "inject": ["openvikingMemory"], "note": "注入点存在，MCP 记忆工具本会话可用"},
-      "L5": {"result": "PASS", "smoke": "logFile 末行 2026-10-25T04:40:59.594Z source=resume outcome=started waitedMs=24326 endpoint=http://localhost:1933；同秒 3 条 joined"}
+      "L1": {
+        "result": "PASS",
+        "name": "dsh-openviking-autostart",
+        "version": "0.1.0",
+        "main": "lib/index.mjs",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-openviking-autostart"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1275 - id: openviking-autostart / name: dsh-openviking-autostart (enabled: true, readyTimeoutMs: 30000)"
+      },
+      "L4": {
+        "result": "PASS",
+        "hooks": [
+          "agent/created"
+        ],
+        "inject": [
+          "openvikingMemory"
+        ],
+        "note": "注入点存在，MCP 记忆工具本会话可用"
+      },
+      "L5": {
+        "result": "PASS",
+        "smoke": "logFile 末行 2026-10-25T04:40:59.594Z source=resume outcome=started waitedMs=24326 endpoint=http://localhost:1933；同秒 3 条 joined"
+      }
     },
     {
       "id": "dsh-turn-chime",
       "pkg_name": "@local/dsh-turn-chime",
       "declared_version": "1.0.0",
-      "L1": {"result": "PASS", "name": "@local/dsh-turn-chime", "version": "1.0.0", "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-sound-notify/bundle"},
-      "L2": {"result": "PASS", "dsh_bundle": true, "cordis_patch": true},
-      "L3": {"result": "PASS", "evidence": "cordis.yml:1293 - id: turn-chime / name: @local/dsh-turn-chime"},
-      "L4": {"result": "PASS", "hooks": ["turn stop"], "note": "无工具，只在回合结束触发"},
-      "L5": {"result": "PASS", "smoke": "chime.log: 2026-10-25T04:40:32.034Z activated；2026-10-25T04:41:59.779Z turn-stopping played session=session-2922ba0c-235a-4b51-82fa-8747b706805a"}
+      "L1": {
+        "result": "PASS",
+        "name": "@local/dsh-turn-chime",
+        "version": "1.0.0",
+        "link": "C:/Users/a1941/Desktop/DeepSeek/dsh-sound-notify/bundle"
+      },
+      "L2": {
+        "result": "PASS",
+        "dsh_bundle": true,
+        "cordis_patch": true
+      },
+      "L3": {
+        "result": "PASS",
+        "evidence": "cordis.yml:1293 - id: turn-chime / name: @local/dsh-turn-chime"
+      },
+      "L4": {
+        "result": "PASS",
+        "hooks": [
+          "turn stop"
+        ],
+        "note": "无工具，只在回合结束触发"
+      },
+      "L5": {
+        "result": "PASS",
+        "smoke": "chime.log: 2026-10-25T04:40:32.034Z activated；2026-10-25T04:41:59.779Z turn-stopping played session=session-2922ba0c-235a-4b51-82fa-8747b706805a"
+      }
     }
   ],
   "summary": {

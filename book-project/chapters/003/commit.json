@@ -1,0 +1,13 @@
+{
+  "chapter": "003",
+  "sha256": "af8572810fe67a64c92f6361768812a245aeb4bb6fc021344fbec695cf4cc0ec",
+  "qa_ok": true,
+  "source_map": [
+    {
+      "id": "SRC-001",
+      "location": "whole-document"
+    }
+  ],
+  "approved_at": "2026-10-25T05:02:29.372Z",
+  "job_id": "job-1df085112b1a"
+}

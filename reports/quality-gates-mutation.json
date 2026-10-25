@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-10-25T05:03:07.280Z",
+  "target": "ai/one-click-book/core.mjs",
+  "threshold": 0.8,
+  "mutation_ran": true,
+  "mutants": 5,
+  "killed": 5,
+  "invalid": 0,
+  "score": 1,
+  "pass": true,
+  "results": [
+    {
+      "id": "M1-placeholder-severity",
+      "verdict": "KILLED",
+      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+    },
+    {
+      "id": "M2-quality-gate-invert",
+      "verdict": "KILLED",
+      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+    },
+    {
+      "id": "M3-word-short-check-removed",
+      "verdict": "KILLED",
+      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+    },
+    {
+      "id": "M4-export-approval-removed",
+      "verdict": "KILLED",
+      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+    },
+    {
+      "id": "M5-chain-prev-check-removed",
+      "verdict": "KILLED",
+      "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe EPERM"
+    }
+  ]
+}

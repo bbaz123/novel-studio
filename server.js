@@ -84,6 +84,8 @@ import { parsePositiveInteger as parsePosInt, likeContainsPattern } from './ai/h
 import { checkWriteOrigin, isLocalHostname } from './ai/http/origin.mjs';
 // P16：provider 地址的信任边界（纯函数，可离线断言）。
 import { validateProviderBaseUrl, assertModelChannelProvider, checkAgentMessages } from './ai/provider-url.mjs';
+// 一键成书（方案 P8）：Job 生命周期与产物清单由独立模块持有，这里只做协议入口。
+import { handleOneClickBookAPI } from './ai/one-click-book/http.mjs';
 // R01：真实 SDK 子进程通道（默认关闭；未设 NOVELSTUDIO_SDK_ROUTE 时行为与改造前逐字一致）。
 import { runSdkAnalysis, routeShapeFor } from './ai/runtime/sdk-route.mjs';
 import { recordIntent as recordAnalysisIntent } from './ai/jobs/queue-store.mjs';
@@ -5968,6 +5970,18 @@ async function handleAPI(req, res, pathname, query) {
   // 宿主副作用路由集中 fail-closed：这些接口没有“模型提案”语义，
   // 不能因遗漏某个分支而把 X-Novel-Agent 请求当作作者操作放行。
   const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+
+  // ── 一键成书（离线确定性实现，方案 P8）─────────────────────────────────────
+  // 写操作要求作者通道：面板只应被本机同源页面驱动，避免任意脚本替作者创建 job。
+  if (resource === 'one-click-book') {
+    if (mutating) {
+      const author = requireAuthorChannel(req, '一键成书');
+      if (!author.ok) return sendError(res, author.status, author.message);
+    }
+    await handleOneClickBookAPI(req, res, segments.slice(2), query, method);
+    return;
+  }
+
   const authorOnlyHostMutation = mutating && (
     resource === 'debug' || resource === 'demo' || resource === 'import' ||
     resource === 'chapter_versions' || resource === 'shutdown' || resource === 'backup' ||

@@ -1,0 +1,15 @@
+{
+  "chapter": "004",
+  "qa": {
+    "ok": true,
+    "findings": [],
+    "char_count": 76
+  },
+  "source_map": [
+    {
+      "id": "SRC-001",
+      "location": "whole-document"
+    }
+  ],
+  "at": "2026-10-25T05:02:29.361Z"
+}

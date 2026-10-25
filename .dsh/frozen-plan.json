@@ -1,0 +1,17 @@
+{
+  "plan_id": "plan-52d26b8b5f43",
+  "snapshot_sha256": "71f2e038d66a691a06b3381d9075308b6d06c2fcfd03d5e36b02efde7297e57d",
+  "source_files": [
+    {
+      "path": "C:\\Users\\a1941\\Desktop\\dsh-one-click-book-plan.md",
+      "exists": true,
+      "sha256": "9b9ee4c8d185fd9180ea110acac3808adb0c6d56dbc0ee3fb61a47b26fee8d5c"
+    },
+    {
+      "path": "C:\\Users\\a1941\\Desktop\\dsh-one-click-book.plan.yaml",
+      "exists": true,
+      "sha256": "316a6f99f31db3fff88c04e226cf7681d53ed42ca2bacdb002a4e2b2ede2313d"
+    }
+  ],
+  "frozen_at": "2026-10-25T05:03:07.387Z"
+}

@@ -1,0 +1,285 @@
+{
+  "schema_version": "1.0.0",
+  "plan_id": "plan-52d26b8b5f43",
+  "amended_at": "2026-10-25T05:03:07.383Z",
+  "amendment": {
+    "by": "owner (a1941)",
+    "at": "2026-10-25T12:57:28+08:00",
+    "change": "取消 agent_contract.allowed_paths 白名单；其余门禁、证据与审批要求不变",
+    "reason": "原白名单（src/app/packages）与本仓库实际结构不符，实现无法落地"
+  },
+  "workspace": {
+    "mode": "isolated_detached_worktree",
+    "path": ".dsh/worktrees/one-click-book",
+    "base_revision": "9a145dbfe8a67fee74fe66dca4cd38d1989630ce",
+    "main_workspace_write": "forbidden（产品文件只在 worktree 改动）"
+  },
+  "allowed_paths": [
+    "<全部路径>（owner 已取消白名单）"
+  ],
+  "forbidden_actions": [
+    "modify_acceptance_criteria",
+    "delete_or_weaken_assertions",
+    "claim_pass_without_exit_code",
+    "publish_without_approval",
+    "read_or_emit_secrets",
+    "bypass_a_gate_or_ledger"
+  ],
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "requirement": "缺 book_kind/goal/source 只能 WAITING_CONFIRMATION",
+      "test": "missing-input negative test",
+      "evidence": [
+        "confirmation-export.json",
+        "state=WAITING_CONFIRMATION"
+      ]
+    },
+    {
+      "id": "AC-02",
+      "requirement": "越过 white-list 的写入被拒绝并回滚",
+      "test": "path escape probe",
+      "evidence": [
+        "PATH_ESCAPE 断言",
+        "resolveInside"
+      ]
+    },
+    {
+      "id": "AC-03",
+      "requirement": "前置 gate 未通过不能推进",
+      "test": "state transition negative tests",
+      "evidence": [
+        "assertTransition/assertNoSkip 断言",
+        "transition_trace"
+      ]
+    },
+    {
+      "id": "AC-04",
+      "requirement": "每章都有契约/正文/摘要/来源映射/账本增量/验证回执",
+      "test": "chapter completeness",
+      "evidence": [
+        "chapter-manifest.json",
+        "commit.json"
+      ]
+    },
+    {
+      "id": "AC-05",
+      "requirement": "范例章批准前不得批量写章",
+      "test": "exemplar lock",
+      "evidence": [
+        "EXEMPLAR_REVIEW 状态断言",
+        "无 chapters/002/draft.md"
+      ]
+    },
+    {
+      "id": "AC-06",
+      "requirement": "全章 review 未完成不得 finalize/export",
+      "test": "full-review lock",
+      "evidence": [
+        "FULL_REVIEW 状态断言",
+        "无 export/book.md"
+      ]
+    },
+    {
+      "id": "AC-07",
+      "requirement": "来源缺失、事实冲突、引用断裂必须 BLOCK",
+      "test": "provenance and contradiction probes",
+      "evidence": [
+        "PROVENANCE_BROKEN",
+        "TOC_MISMATCH"
+      ]
+    },
+    {
+      "id": "AC-08",
+      "requirement": "draft 与 commit 分离，未 commit 不得交付",
+      "test": "staging-vs-commit",
+      "evidence": [
+        "assertCommitted",
+        "deliverable-manifest.json"
+      ]
+    },
+    {
+      "id": "AC-09",
+      "requirement": "重启可恢复且不重复写入",
+      "test": "crash/restart replay",
+      "evidence": [
+        "resume_noop 事件",
+        "commit hash 不变"
+      ]
+    },
+    {
+      "id": "AC-10",
+      "requirement": "OpenViking 不可用只能 DEGRADED",
+      "test": "service outage",
+      "evidence": [
+        "memory_state=DEGRADED"
+      ]
+    },
+    {
+      "id": "AC-11",
+      "requirement": "turn-chime 失败不影响 verdict",
+      "test": "chime failure injection",
+      "evidence": [
+        "chime_state=DEGRADED",
+        "review.ok 不变"
+      ]
+    },
+    {
+      "id": "AC-12",
+      "requirement": "EXPORT/PUBLISH 必须审批且秘密扫描通过",
+      "test": "approval/hash mismatch and secret injection",
+      "evidence": [
+        "EXPORT_READY 断言",
+        "SECRET_FOUND 断言"
+      ]
+    },
+    {
+      "id": "AC-13",
+      "requirement": "插件变更先 DPIP 且版本/commit pin",
+      "test": "plugin lifecycle negative tests",
+      "evidence": [
+        ".dsh/plugin-inventory.json",
+        "模块不触碰 pluginManager"
+      ]
+    },
+    {
+      "id": "AC-14",
+      "requirement": "缺 diff/命令/退出码/快照/审批/trace 证据不得 DONE",
+      "test": "evidence completeness",
+      "evidence": [
+        "verifyEvidenceChain",
+        "completionVerdict"
+      ]
+    },
+    {
+      "id": "AC-15",
+      "requirement": "mutation/adversarial gate 未运行即失败",
+      "test": "gate bypass",
+      "evidence": [
+        "reports/quality-gates-mutation.json"
+      ]
+    },
+    {
+      "id": "AC-16",
+      "requirement": "每条风格意见有章节落点或未采用理由",
+      "test": "style traceability",
+      "evidence": [
+        "review/style-traceability.json"
+      ]
+    },
+    {
+      "id": "AC-17",
+      "requirement": "定点修改显示下游影响、保留旧版并可回滚",
+      "test": "impact and rollback",
+      "evidence": [
+        "impactGraph 断言",
+        "versions/"
+      ]
+    },
+    {
+      "id": "AC-18",
+      "requirement": "八部分报告、交付清单、hash 完整一致",
+      "test": "delivery manifest",
+      "evidence": [
+        "reports/eight-part-report.json",
+        "deliverable hash 复核"
+      ]
+    },
+    {
+      "id": "AC-19",
+      "requirement": "模型自报、普通日志和 OpenViking 记忆不算完成证据",
+      "test": "self-report spoof",
+      "evidence": [
+        "completionVerdict 断言"
+      ]
+    },
+    {
+      "id": "AC-20",
+      "requirement": "失败必须产生修复包并回到对应 gate",
+      "test": "failure-repair loop",
+      "evidence": [
+        "defect-list.json",
+        "repair-package.json"
+      ]
+    }
+  ],
+  "acceptance_errors": [],
+  "status_machine": {
+    "states": [
+      "RECEIVED",
+      "PREFLIGHT",
+      "INGESTING",
+      "NORMALIZED",
+      "OUTLINED",
+      "EXEMPLAR_REVIEW",
+      "DRAFTING",
+      "QA",
+      "FULL_REVIEW",
+      "EXPORTING",
+      "EXPORT_READY",
+      "COMPLETED",
+      "BLOCKED",
+      "FAILED",
+      "FIXING",
+      "ROLLED_BACK",
+      "CANCELLED"
+    ],
+    "transitions": [
+      [
+        "RECEIVED",
+        "PREFLIGHT"
+      ],
+      [
+        "PREFLIGHT",
+        "INGESTING"
+      ],
+      [
+        "INGESTING",
+        "NORMALIZED"
+      ],
+      [
+        "NORMALIZED",
+        "OUTLINED"
+      ],
+      [
+        "OUTLINED",
+        "EXEMPLAR_REVIEW"
+      ],
+      [
+        "EXEMPLAR_REVIEW",
+        "DRAFTING"
+      ],
+      [
+        "DRAFTING",
+        "QA"
+      ],
+      [
+        "QA",
+        "FULL_REVIEW"
+      ],
+      [
+        "FULL_REVIEW",
+        "EXPORT_READY"
+      ],
+      [
+        "EXPORT_READY",
+        "EXPORTING"
+      ],
+      [
+        "EXPORTING",
+        "COMPLETED"
+      ]
+    ],
+    "failure_states": [
+      "BLOCKED",
+      "FAILED",
+      "CANCELLED",
+      "ROLLED_BACK"
+    ]
+  },
+  "budgets": {
+    "max_cost_cents": 200,
+    "actual_cost_cents": 0,
+    "model_calls": 0
+  }
+}

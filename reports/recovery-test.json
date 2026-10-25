@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-10-25T05:03:07.511Z",
+  "steps": {
+    "paused_state": {
+      "status": "PAUSED",
+      "expected": "PAUSED",
+      "ok": true
+    },
+    "resumed": {
+      "status": "COMPLETED",
+      "expected": "COMPLETED",
+      "ok": true
+    },
+    "replay_idempotent": {
+      "status": "COMPLETED",
+      "same_commit_hash": true,
+      "ok": true
+    },
+    "cancelled": {
+      "status": "CANCELLED",
+      "expected": "CANCELLED",
+      "ok": true
+    },
+    "rollback_entrypoint": "versions/ + .job/state.json（resume 幂等）"
+  },
+  "ok": true
+}

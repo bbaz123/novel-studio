@@ -1,0 +1,18 @@
+{
+  "job_id": "job-1df085112b1a",
+  "frozen_at": "2026-10-25T05:02:29.334Z",
+  "sources": [
+    {
+      "id": "SRC-001",
+      "title": "旧书修复室的四季",
+      "path": "fixtures/ocb/source.md",
+      "sha256": "6060dc07c65933612664c685228119c527e4e2317044f1a6313daa5fa6ab2dd9",
+      "bytes": 1599,
+      "fetched_at": "2026-10-25T05:02:29.334Z",
+      "location": "whole-document",
+      "parse_errors": []
+    }
+  ],
+  "unsupported": [],
+  "citation_policy": "每个可核验主张必须回指 SRC-*；无法回指即阻断"
+}
