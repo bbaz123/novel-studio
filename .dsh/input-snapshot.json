@@ -1,0 +1,40 @@
+{
+  "plan_id": "plan-ad9f75c12fbb",
+  "generated_at": "2026-11-12T04:37:08.435Z",
+  "repo": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio",
+  "head": null,
+  "brief": "{\n  \"book_kind\": \"纪实随笔集\",\n  \"goal\": \"把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界\",\n  \"title\": \"旧书修复室的四季\",\n  \"language\": \"zh-CN\",\n  \"audience\": \"对纸质书与手艺感兴趣的普通读者\",\n  \"style_notes\": [\"句子要短\", \"不要使用感叹号\", \"避免抒情过度\"],\n  \"must_not_write\": [\"叹号堆叠\", \"绝对化断言\"],\n  \"sources\": [\"fixtures/ocb/source.md\"],\n  \"budget_cny\": 0\n}\n",
+  "brief_source": "fixtures/ocb/brief.json",
+  "snapshot_hash": "a8ede336cdbebd7a111b8e2646a7cc9d3b106a2a64d84fe2ebb26f9fc89a2ff5",
+  "required_inputs": {
+    "book_kind": "纪实随笔集",
+    "goal": "把一间旧书修复室的四季写成可读的短篇纪实，让读者理解修复的边界",
+    "title": "旧书修复室的四季",
+    "language": "zh-CN",
+    "audience": "对纸质书与手艺感兴趣的普通读者",
+    "sources": [
+      "fixtures/ocb/source.md"
+    ],
+    "output_formats_default": [
+      "md",
+      "docx",
+      "pdf"
+    ],
+    "budget_cny": 0
+  },
+  "validation": {
+    "ok": true,
+    "missing": []
+  },
+  "job": {
+    "job_id": "job-1df085112b1a",
+    "idempotency_key": "cli-旧书修复室的四季",
+    "status": "COMPLETED"
+  },
+  "approvals_existing": {
+    "exemplar": true,
+    "full_review": true,
+    "export": true
+  },
+  "idempotency_key": "cli-旧书修复室的四季"
+}

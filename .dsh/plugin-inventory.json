@@ -1,3 +1,101 @@
 {
-  "note": "缺少 P0 探测快照，详见父目录 .dsh/plugin-inventory.json"
+  "probe": "P0_PLUGIN_INVENTORY",
+  "plan_id": "plan-ad9f75c12fbb",
+  "generated_at": "2026-11-12T12:36:00+08:00",
+  "repo": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio",
+  "head": "fda67b0a19b9819c8e61ea62a06a4f9ea456ada2",
+  "profile": "C:\\Users\\a1941\\.dsh\\profiles\\desktop",
+  "evidence_layers": {
+    "L1_installable": "profile package.json dependencies 里有该包，且 node_modules/<id>/package.json 可读",
+    "L2_bundle": "包 package.json 的 dsh.bundle / dsh.bundle.patch 字段存在",
+    "L3_loader_inventory": "plugin_manager list_plugins 的真实 loader 条目（fiberPhase=active）",
+    "L4_registered_capability": "工具清单或钩子注册的真实证据",
+    "L5_readonly_smoke": "无写副作用的一次真实调用及其返回"
+  },
+  "loader_inventory_source": "plugin_manager action=list_plugins（本会话调用 4 次分页，total=210）",
+  "plugins": [
+    {
+      "id": "dsh-plugin-auto-plan-executor",
+      "version": "0.1.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "include:auto-plan-executor (active)",
+      "L3_cordis_line": 1373,
+      "L4_capability": "PASS：auto_plan_status / auto_plan_task / auto_plan_step / auto_plan_gate / auto_plan_finish 五个工具在本会话可见可调用",
+      "L5_smoke": "PASS：auto_plan_status 返回 plan-ad9f75c12fbb / stage=SNAPSHOTTED / steps=80",
+      "verdict": "PASS"
+    },
+    {
+      "id": "dsh-plugin-verification",
+      "version": "0.1.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "include:verification-gate (active)",
+      "L3_cordis_line": 1299,
+      "L4_capability": "PASS：verification_run / verification_status / verification_finalize 三个工具注册",
+      "L5_smoke": "PASS：verification_status 返回 state=working / gate=needs_evidence（尚未技术验收，属实）",
+      "verdict": "PASS"
+    },
+    {
+      "id": "dsh-plugin-confirmation-resolution",
+      "version": "1.1.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "include:confirmation-resolution (active)",
+      "L3_cordis_line": 1236,
+      "L4_capability": "PASS：confirmation_resolution 与 confirmation_resolution_v2 两个工具注册（V1+V2）",
+      "L5_smoke": "SKIPPED：本工具没有只读动作；decide 需要先有 DSH 发布的待确认项，本轮没有，按规则不制造",
+      "verdict": "PASS"
+    },
+    {
+      "id": "dsh-operation-security",
+      "version": "0.1.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "include:operation-security-desktop (active)",
+      "L3_cordis_line": 1383,
+      "L4_capability": "PARTIAL：Cordis 钩子层（pre-execute 审计/DPIP），不对外暴露工具",
+      "L5_smoke": "NOT_OBSERVED：~/.dsh/operation-security/audit.jsonl 末条仍为 2026-10-25，本会话没有新增审计行；不据此宣称已生效",
+      "verdict": "PARTIAL"
+    },
+    {
+      "id": "dsh-self-plugin-manager",
+      "version": "0.1.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "include:self-plugin-manager (active)",
+      "L3_cordis_line": 1364,
+      "L4_capability": "PARTIAL：客户端设置页 surface；插件生命周期仍受 DPIP 约束",
+      "L5_smoke": "SKIPPED：会改 profile，不属于只读冒烟",
+      "verdict": "PARTIAL"
+    },
+    {
+      "id": "dsh-openviking-autostart",
+      "version": "0.1.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "include:openviking-autostart (active)",
+      "L3_cordis_line": 1281,
+      "L4_capability": "PASS：agent/created 钩子 + 恢复探测",
+      "L5_smoke": "PASS：~/.dsh/openviking-autostart.log 本会话 2026-11-12T04:26:50Z source=resume outcome=joined endpoint=http://localhost:1933",
+      "verdict": "PASS"
+    },
+    {
+      "id": "@local/dsh-turn-chime",
+      "version": "1.0.0",
+      "L1_installed": true,
+      "L2_bundle_field": true,
+      "L3_loader_entry": "MISSING：plugin_manager 210 条 loader 清单里没有 turn-chime；chime.log 末条为 2026-10-25",
+      "L3_cordis_line": null,
+      "L4_capability": "NOT_RUN：未挂载就谈不上钩子注册",
+      "L5_smoke": "NOT_RUN：本轮没有提示音播放日志",
+      "verdict": "MISSING_MOUNT",
+      "handling": "按方案 §8「turn-chime 不可用：照常完成或阻断，提示音本身不改变状态」，记为 DEGRADED，不阻塞 G0。"
+    }
+  ],
+  "notes": [
+    "六个插件的 L1/L2/L3 全部成立；operation-security 与 self-plugin-manager 的 L4 只能记 PARTIAL（能力在钩子/客户端 surface）。",
+    "turn-chime 依赖与 bundle 字段都在，但当前 desktop profile 的 loader 清单里没有它 —— 如实记 MISSING_MOUNT，不按 README 推定已启用。",
+    "本文件与 capability-smoke.json 均使用本会话真实命令输出；模型自报不作为证据。"
+  ]
 }

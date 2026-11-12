@@ -1,0 +1,37 @@
+{
+  "plan_id": "plan-ad9f75c12fbb",
+  "generated_at": "2026-11-12T04:37:08.435Z",
+  "job_id": "job-1df085112b1a",
+  "snapshot_hash": "a8ede336cdbebd7a111b8e2646a7cc9d3b106a2a64d84fe2ebb26f9fc89a2ff5",
+  "missing": [],
+  "items": [],
+  "approvals_recorded": [
+    {
+      "key": "exemplar",
+      "value": true
+    },
+    {
+      "key": "full_review",
+      "value": true
+    },
+    {
+      "key": "export",
+      "value": true
+    }
+  ],
+  "export_approval": {
+    "kind": "EXPORT",
+    "hash": "44bfe792048e786719ea149cf87780d545467e138c8d54114f0e7718d94011f0",
+    "at": "2026-10-25T10:37:07.542Z",
+    "job_id": "job-1df085112b1a"
+  },
+  "negative_probe": {
+    "status": "WAITING_CONFIRMATION",
+    "missing": [
+      "book_kind",
+      "goal",
+      "sources"
+    ],
+    "expected": "WAITING_CONFIRMATION"
+  }
+}

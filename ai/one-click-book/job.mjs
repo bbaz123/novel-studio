@@ -356,7 +356,7 @@ export function runJob({ root, idempotencyKey, brief, approvals = {}, options = 
 
   const taskContract = {
     schema_version: '1.0.0',
-    plan_id: 'plan-52d26b8b5f43',
+    plan_id: process.env.OCB_PLAN_ID ?? 'plan-52d26b8b5f43',
     job_id: jobId,
     generated_at: new Date().toISOString(),
     acceptance: core.PLAN_ACCEPTANCE,

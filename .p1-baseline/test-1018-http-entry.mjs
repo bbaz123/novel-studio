@@ -53,16 +53,27 @@ function rawNoHost() {
     const body = JSON.stringify({ title: 'x' });
     const sock = net.connect(PORT, '127.0.0.1');
     let text = '';
-    sock.setTimeout(8000, () => { sock.destroy(); resolvePromise({ status: 0, error: 'timeout' }); });
+    let settled = false;
+    // Windows 回环上，服务端「回 403 后立刻 close」偶尔会让客户端在处理已到达的数据前先收到 RST
+    // （同一段代码在 Node 最小复现里也复现：1/3 次 ECONNRESET、2/3 次拿到 403）。断言本身不放宽：
+    // 仍然要求**真的出现** `HTTP/1.1 403` 状态行；只是在响应已到达时不再因为随后的 RST 丢掉结果。
+    const settle = (status, error) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch { /* 忽略 */ }
+      resolvePromise({ status, error });
+    };
+    const statusOf = () => {
+      const m = /^HTTP\/1\.[01] (\d{3})/.exec(text);
+      return m ? Number(m[1]) : 0;
+    };
+    sock.setTimeout(8000, () => settle(0, 'timeout'));
     sock.on('connect', () => {
       sock.write(['POST /api/works HTTP/1.0', 'Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`, '', body].join(CRLF));
     });
-    sock.on('data', (c) => { text += c; });
-    sock.on('end', () => {
-      const m = /^HTTP\/1\.[01] (\d{3})/.exec(text);
-      resolvePromise({ status: m ? Number(m[1]) : 0 });
-    });
-    sock.on('error', (e) => resolvePromise({ status: 0, error: e.message }));
+    sock.on('data', (c) => { text += c; if (statusOf() !== 0) settle(statusOf()); });
+    sock.on('end', () => settle(statusOf()));
+    sock.on('error', (e) => settle(statusOf(), text ? undefined : e.message));
   });
 }
 

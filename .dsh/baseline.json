@@ -1,0 +1,55 @@
+{
+  "plan_id": "plan-ad9f75c12fbb",
+  "generated_at": "2026-11-12T04:37:27.464Z",
+  "repo": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio",
+  "branch": "Experimental-Version-v1.0",
+  "head": "fda67b0a19b9819c8e61ea62a06a4f9ea456ada2",
+  "tree": "76ee4a4fe8d4b2fe9fd20e051daa97541a4d24fa",
+  "worktree": {
+    "relative": ".dsh/worktrees/ocb-plan-ad9f75c12fbb",
+    "absolute": "C:\\Users\\a1941\\Desktop\\DeepSeek\\novel-studio\\.dsh\\worktrees\\ocb-plan-ad9f75c12fbb",
+    "existed_before": false,
+    "head": "fda67b0a19b9819c8e61ea62a06a4f9ea456ada2",
+    "visible": {
+      "AGENTS.md": true,
+      "ai/one-click-book/core.mjs": true,
+      "scripts/test-one-click-book.mjs": true,
+      "book-project/.job/state.json": true,
+      "docs/one-click-book/task-contract.json": true
+    },
+    "list": [
+      "C:/Users/a1941/Desktop/DeepSeek/novel-studio                                               fda67b0 [Experimental-Version-v1.0]",
+      "C:/Users/a1941/.dsh/storages/verification-gate/snapshots/108c9fa7606d186d/cycle-2/worktree 752d803 (detached HEAD)",
+      "C:/Users/a1941/.dsh/storages/verification-gate/snapshots/6377f97961e7805e/cycle-2/worktree 209a1bd (detached HEAD)",
+      "C:/Users/a1941/.dsh/storages/verification-gate/snapshots/874d41cca47e769d/cycle-1/worktree 9078266 (detached HEAD)",
+      "C:/Users/a1941/.dsh/storages/verification-gate/snapshots/b70977924fb5620f/cycle-2/worktree 487f75a (detached HEAD)",
+      "C:/Users/a1941/.dsh/storages/verification-gate/snapshots/b70977924fb5620f/cycle-4/worktree 487f75a (detached HEAD)",
+      "C:/Users/a1941/Desktop/DeepSeek/novel-studio/.dsh/worktrees/ocb-plan-ad9f75c12fbb          fda67b0 (detached HEAD)"
+    ]
+  },
+  "main_workspace": {
+    "porcelain": [
+      "M .dsh/capability-smoke.json",
+      " M .dsh/one-click-book-capability-report.md",
+      " M .dsh/plugin-inventory.json",
+      "?? .dsh/confirmation-export.json",
+      "?? .dsh/evidence/",
+      "?? .dsh/input-snapshot.json"
+    ],
+    "product_paths_changed": [],
+    "note": "产品文件零改动；.dsh/** 为本方案的证据/基线写入（allowed_paths 内）"
+  },
+  "log": [
+    {
+      "step": "remove_probe_worktree",
+      "ok": true,
+      "value": ""
+    },
+    {
+      "step": "worktree_add",
+      "ok": true,
+      "value": "HEAD is now at fda67b0 chore(release): 版本号 1.2.6 → 1.2.7（仅实现，未测试）"
+    }
+  ],
+  "ok": true
+}

@@ -1936,10 +1936,54 @@
   - ai/one-click-book/http.mjs 被**生产代码** server.js（P2/P3/P4/P5/Z2/Z3/PI/L/Z6/TT/SE5/SE6/V12/V13/V14/V16/V19）import——撤掉会打断线上路径
 - **说明**：**目的**：一次触发、可恢复、带门禁的成书流水线；增强层增加来源回指、章节契约、一致性账本、独立复审与证据链。**生成方式**：抽取式确定性组装（零模型调用、零计费），所以可离线复现；不新增事实。**回滚**：删 `ai/one-click-book/`、`book-project/`、`fixtures/ocb/`、`docs/one-click-book/` 与本组报告，再撤 `server.js` 的路由块与 `index.html` 的一行 script。**边界**：docx/pdf/epub 标 UNSUPPORTED（无适配器时不伪造成功）；不自动发布。
 - **验收证据**：`docs/one-click-book/task-contract.json`、`docs/one-click-book/book-requirements.json`、`reports/quality-gates.json`、`reports/recovery-test.json`、`book-project/.job/evidence.json`、`book-project/manifest/deliverable-manifest.json`
-- **本阶段认领的文件**（99 个）：
+- **本阶段认领的文件**（143 个）：
+  - `.dsh/baseline.json`
   - `.dsh/capability-smoke.json`
+  - `.dsh/checkpoints/T-P2/baseline.json`
   - `.dsh/completion.json`
+  - `.dsh/confirmation-export.json`
+  - `.dsh/evidence/T-P0/probe.json`
+  - `.dsh/evidence/T-P0/probe.mjs`
+  - `.dsh/evidence/T-P1/p1.json`
+  - `.dsh/evidence/T-P1/p1.mjs`
+  - `.dsh/evidence/T-P10/p10.json`
+  - `.dsh/evidence/T-P10/p10.mjs`
+  - `.dsh/evidence/T-P11/p11.json`
+  - `.dsh/evidence/T-P11/p11.mjs`
+  - `.dsh/evidence/T-P2/baseline-evidence.json`
+  - `.dsh/evidence/T-P2/baseline.mjs`
+  - `.dsh/evidence/T-P3/contract-check.json`
+  - `.dsh/evidence/T-P3/contract-freeze.mjs`
+  - `.dsh/evidence/T-P4/p4.json`
+  - `.dsh/evidence/T-P4/p4.mjs`
+  - `.dsh/evidence/T-P5/p5.json`
+  - `.dsh/evidence/T-P5/p5.mjs`
+  - `.dsh/evidence/T-P6/p6.json`
+  - `.dsh/evidence/T-P6/p6.mjs`
+  - `.dsh/evidence/T-P7/p7.json`
+  - `.dsh/evidence/T-P7/p7.mjs`
+  - `.dsh/evidence/T-P8/http-probe.mjs`
+  - `.dsh/evidence/T-P8/p8.json`
+  - `.dsh/evidence/T-P9/make-honest.mjs`
+  - `.dsh/evidence/T-P9/mutation-honest.json`
+  - `.dsh/evidence/T-P9/mutation-honest.mjs`
+  - `.dsh/evidence/T-P9/p9.json`
+  - `.dsh/evidence/T-RPT/rpt.json`
+  - `.dsh/evidence/T-RPT/rpt.mjs`
+  - `.dsh/evidence/plan-ad9f75c12fbb/dsh/capability-smoke.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/dsh/cleanup-receipt.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/dsh/completion.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/dsh/frozen-plan.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/dsh/plugin-inventory.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/reports/acceptance-matrix.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/reports/eight-part-report.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/reports/eight-part-report.md`
+  - `.dsh/evidence/plan-ad9f75c12fbb/reports/quality-gates-mutation.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/reports/quality-gates.json`
+  - `.dsh/evidence/plan-ad9f75c12fbb/reports/recovery-test.json`
+  - `.dsh/evidence/verify-round-2-2026-11-12.md`
   - `.dsh/frozen-plan.json`
+  - `.dsh/input-snapshot.json`
   - `.dsh/one-click-book-capability-report.md`
   - `.dsh/plugin-inventory.json`
   - `ai/one-click-book/attest.mjs`
@@ -2039,7 +2083,7 @@
 
 ## 三、归属核对
 
-- 真实改动集：**1010** 个文件
+- 真实改动集：**1054** 个文件
 - 未被任何阶段认领：**0** 个
 
 ✓ 全部改动都有归属。

@@ -64,8 +64,8 @@ const desktop = path.join(process.env.USERPROFILE ?? '', 'Desktop')
 const planFiles = [path.join(desktop, 'dsh-one-click-book-plan.md'), path.join(desktop, 'dsh-one-click-book.plan.yaml')]
 WRITE('.dsh/plugin-inventory.json', inventory ?? { note: '缺少 P0 探测快照' })
 WRITE('.dsh/frozen-plan.json', {
-  plan_id: 'plan-52d26b8b5f43',
-  snapshot_sha256: '71f2e038d66a691a06b3381d9075308b6d06c2fcfd03d5e36b02efde7297e57d',
+  plan_id: process.env.OCB_PLAN_ID ?? 'plan-52d26b8b5f43',
+  snapshot_sha256: process.env.OCB_PLAN_SNAPSHOT ?? '71f2e038d66a691a06b3381d9075308b6d06c2fcfd03d5e36b02efde7297e57d',
   source_files: planFiles.map((file) => ({ path: file, exists: fs.existsSync(file), sha256: fs.existsSync(file) ? core.sha256(fs.readFileSync(file)) : null })),
   frozen_at: new Date().toISOString(),
 })
@@ -163,7 +163,7 @@ fs.rmSync(tmp, { recursive: true, force: true })
 
 // ── 5. 完成状态 ────────────────────────────────────────────────────────────
 WRITE('.dsh/completion.json', {
-  plan_id: 'plan-52d26b8b5f43',
+  plan_id: process.env.OCB_PLAN_ID ?? 'plan-52d26b8b5f43',
   completed_at: new Date().toISOString(),
   job_id: status.job.job_id,
   status: status.job.status,
