@@ -5,6 +5,63 @@
 
 ---
 
+### ⚡ 一键成书 · AI 托管（autopilot，开发中）
+
+> 与 **v1.2.7 的离线确定性一键成书**并存，不替换、不改变旧状态机与旧端点。
+> 本条目只记录**已写入并跑过离线验证**的事实。真实 Harness 联调已按作者授权（≤2 元）执行一次，
+> 结果如实记为"2 次调用 / 实际费用未知 / 1 章提交"；真实直连计费未执行。
+
+#### 复审修复（2026-11-15 第二轮）
+
+- **新端点被旧路由器二次处理**：`sendJSON` 返回 undefined 导致同一请求写两次响应
+  （日志 `Cannot write headers after they are sent`）。服务端改为按 `headersSent/writableEnded` 判定，
+  E2E 增加"无 double-send"断言。
+- **费用未知的接受位丢失**：`normalizeAutomation` 未保留 `accept_unpriced`，导致 Harness/未定价模型
+  在付费调用前被 `COST_UNVERIFIABLE` 误拦。已保留该字段，并让 consent hash 不包含它
+  （它是确认页追加的风险接受，不是范围扩张）。
+- **已有作品可绕过预检**：`confirm` 现在强制要求 `preflight.scanned_at`，否则
+  `409 PREFLIGHT_REQUIRED`（E2E 已覆盖）。
+- **授权 hash 增加估算章节数**：防止估算后偷改"跳过/章节范围"。
+- **提案幂等与护栏**：恢复重跑不再重复创建同 dedup_key 的事件提案/同 note 的记忆提案；
+  `settleProposals` 返回 `guard_failed` 时运行 `BLOCKED`，不再当成功。
+- **导出前重跑红线扫描**（阈值 ≥3 拒绝），导出门禁证据写入 manifest；
+  一个格式都没产出时 `EXPORT_EMPTY`，不写 COMPLETED。
+- **草稿收口**：章节提交时把本章本次运行的所有草稿（含修复中间稿）标记为已应用。
+- **预算预占按 `max_tokens` 上界**，避免只按输入字符估算而低估长文成本。
+- **Harness 无本地配置也可用**：显式选择 `harness` 且 dsh 可用时允许无 `api_configs`/路由；
+  预检的 `ai.route`/`ai.configs` 对 Harness 改为 PASS/WARNING，不再误报 BLOCK。
+- 导出 manifest 记录 `work_title`、门禁证据；既有作品的大纲候选只补大纲，不再清空已有章节标题。
+- **旧离线流水线 `committed` 去重**：两段式导出/续跑重入 COMMIT 时原本会重复追加，
+  导致进度显示 8/4；现在按章节 id 去重，并在 `scripts/test-one-click-book.mjs` 加断言。
+
+新增能力：
+
+- **独立全屏界面**（侧栏 `⚡ 一键成书`）：8 步向导、作品选择与统计、AI 通道选择、预检/补齐、
+  费用估算与最终确认、真实进度与阶段时间线、事件日志、暂停/恢复/取消/重试、完成页预览与导出。
+- **正式作品绑定**：`run_id ↔ work_id ↔ chapter_id ↔ config_id ↔ channel ↔ idempotency_key`；
+  正文写入正式 `chapters` 并保留历史版本，不使用 `book-project/` 假成品。
+- **复用现有 AI 写作链路**：`buildNovelContext` / `callAIStream` / `analyzeChapter` 同源的
+  红线与连续性判据 / 提案 settle / 章节版本原语；前端不拼上下文或 prompt。
+- **服务端 8 张附加表**：`ocb_wizard_sessions / ocb_runs / ocb_steps / ocb_events / ocb_usage /
+  ocb_decisions / ocb_pricing / ocb_exports`（`ai/one-click-book/autopilot/schema.mjs` 单点 DDL）。
+- **预算与用量**：整数微元计费、版本化价格表、真实 usage 优先；usage/价格缺失显示 unknown（不当 0）；
+  预算与 API 次数上限硬生效；失败重试计入账本。
+- **执行与恢复**：逐章 `CONTEXT → BLUEPRINT → PROSE → REDLINE → CONTINUITY → QUALITY →
+  BOUNDED_REPAIR → STATE_PROPOSALS → COMMIT`；断点落 `ocb_steps`，服务重启自动恢复在途 run；
+  `active_work_id` 部分唯一索引保证同作品互斥。
+- **SSE**：`GET /api/one-click-book/runs/:id/events`（Last-Event-ID、心跳、终态收尾、轮询降级），
+  事件不含 API Key / 完整 prompt / `reasoning_content`。
+- **导出门禁**：只导出已提交章节；逐章 hash、密钥扫描、连续性硬冲突、格式魔数；PDF 不可用时
+  如实登记 `unsupported`（新增环境开关 `NOVELSTUDIO_DISABLE_PDF=1`，语义等同"本机无 Edge"）。
+
+验证（零计费）：
+
+- `scripts/test-one-click-book-ai.mjs`：23 条（价格/账本/向导/引擎/预算/恢复）。
+- `scripts/test-one-click-book-ai-http.mjs`：17 条（隔离实例 + 本机 fake provider：向导/逐章/SSE/用量/导出/安全）。
+- `scripts/test-one-click-book.mjs`：34 条（旧离线流水线不回归；PDF 在受限 shell 下按不支持分支验证）。
+
+---
+
 ### 🚀 v1.2.7（2026-10-25 · 只实现、未测试）
 
 > ⚠️ **状态声明**：本版由作者明确标注为「**只实现，未测试**」。下面的条目记录的是**代码已写入**的事实，
@@ -20,7 +77,10 @@
 - **本地目录发布（hash 绑定）**：产物与内容哈希绑定，产物被改动或重新生成后可识别。
 - **多书工作区**：同一工作区并行管理多部作品。
 - **增强层与证据链**：离线确定性成书流水线 + 增强层 + 阶段门禁与证据链。
-- **变异门禁**：报告 `10/10 killed`，证明断言对该模块是活判据。
+- **变异门禁**：`reports/quality-gates-mutation.json` 记 12 个变异体 **12/12 killed**（score 1.0，pass）。
+  其中一轮修掉了「假绿」——早期报告把 `ERR_UNSUPPORTED_ESM_URL_SCHEME` 这类加载失败也算成 KILLED，
+  现在探测错误单独计 `probe_errors`，加载失败不再冒充"断言杀死了变异"；变异目标也从 `core.mjs`
+  扩大到 `{core,egress,attest,books,job}.mjs`。
 
 #### 🛡️ 宿主层出口隔离
 
@@ -39,10 +99,10 @@
 
 | 检查 | 本轮结果 |
 | --- | --- |
-| `node scripts/ci-offline-checks.mjs` | 通过 78 / 未通过 0 |
+| `node scripts/ci-offline-checks.mjs` | 通过 80 / 未通过 0 |
 | `node scripts/test-narrative-repair.mjs` | 20 / 20 套件 |
 | `node frontend-test.mjs` | ALL PASS（687 条） |
-| `node .p1-baseline/verify-phase-map.mjs` | 通过（1010 个改动全部有归属） |
+| `node .p1-baseline/verify-phase-map.mjs` | 通过（改动全部有归属） |
 | `node .p1-baseline/check-utf8.mjs` | 非法 UTF-8 0 个 |
 
 **未做**：真实模型付费调用、真实浏览器逐页点验、真实 EPUB/DOCX/PDF 成品在阅读器里的验收、
